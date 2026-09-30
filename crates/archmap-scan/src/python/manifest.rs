@@ -22,9 +22,10 @@ pub struct PyProject {
     /// Directory containing the manifest, relative to the repository root.
     pub dir: PathBuf,
     pub dependencies: Vec<PyDependency>,
-    /// Distributions declared for extras, development or tests. They are
-    /// not dependency edges, but importing them is not undeclared either.
-    pub optional_dependencies: Vec<String>,
+    /// Distributions declared for extras, development or tests, with the
+    /// table and group that declare them. They are not dependency edges,
+    /// but importing them is not undeclared either.
+    pub optional_dependencies: Vec<PyDependency>,
 }
 
 /// Normalize a distribution name per PEP 503.
@@ -112,47 +113,62 @@ pub fn parse_pyproject(text: &str, manifest_path: &Path) -> Result<PyProject, to
     })
 }
 
-/// Names declared outside the runtime dependencies: PEP 621 extras,
-/// PEP 735 dependency groups, poetry groups and dev-dependencies, and uv
-/// dev-dependencies.
+/// Distributions declared outside the runtime dependencies: PEP 621
+/// extras, PEP 735 dependency groups, poetry groups and dev-dependencies,
+/// and uv dev-dependencies, each with the table and group that declare it.
 fn optional_declarations(
     value: &Value,
     project: Option<&Value>,
     poetry: Option<&Value>,
-) -> Vec<String> {
-    let mut names = Vec::new();
-    let mut from_lists = |table: Option<&Value>| {
-        for list in table
-            .and_then(Value::as_table)
-            .into_iter()
-            .flat_map(|t| t.values())
-            .filter_map(Value::as_array)
-        {
-            // PEP 735 also allows `{ include-group = "..." }` entries: skip them
-            names.extend(
-                list.iter()
-                    .filter_map(Value::as_str)
-                    .filter_map(requirement_name),
-            );
-        }
+) -> Vec<PyDependency> {
+    let mut found = Vec::new();
+    let mut add = |name: String, section: String| {
+        found.push(PyDependency {
+            name,
+            line: None,
+            section,
+        })
     };
-    from_lists(project.and_then(|p| p.get("optional-dependencies")));
-    from_lists(value.get("dependency-groups"));
+    let lists = [
+        (
+            "[project.optional-dependencies]",
+            project.and_then(|p| p.get("optional-dependencies")),
+        ),
+        ("[dependency-groups]", value.get("dependency-groups")),
+    ];
+    for (table_name, table) in lists {
+        for (group, list) in table.and_then(Value::as_table).into_iter().flatten() {
+            // PEP 735 also allows `{ include-group = "..." }` entries: skip them
+            for name in list
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .filter_map(requirement_name)
+            {
+                add(name, format!("{table_name} {group}"));
+            }
+        }
+    }
 
-    let poetry_tables = poetry
+    let groups = poetry
         .and_then(|p| p.get("group"))
         .and_then(Value::as_table)
         .into_iter()
-        .flat_map(|groups| groups.values())
-        .filter_map(|group| group.get("dependencies"))
-        .chain(poetry.and_then(|p| p.get("dev-dependencies")));
-    for table in poetry_tables.filter_map(Value::as_table) {
-        names.extend(
-            table
-                .keys()
-                .filter(|k| k.as_str() != "python")
-                .map(|k| normalize_dist_name(k)),
-        );
+        .flatten()
+        .filter_map(|(group, t)| {
+            let section = format!("[tool.poetry.group.{group}.dependencies]");
+            t.get("dependencies").map(|deps| (section, deps))
+        });
+    let dev = poetry
+        .and_then(|p| p.get("dev-dependencies"))
+        .map(|deps| ("[tool.poetry.dev-dependencies]".to_owned(), deps));
+    for (section, table) in groups.chain(dev) {
+        for key in table.as_table().into_iter().flat_map(|t| t.keys()) {
+            if key != "python" {
+                add(normalize_dist_name(key), section.clone());
+            }
+        }
     }
 
     if let Some(list) = value
@@ -161,16 +177,18 @@ fn optional_declarations(
         .and_then(|uv| uv.get("dev-dependencies"))
         .and_then(Value::as_array)
     {
-        names.extend(
-            list.iter()
-                .filter_map(Value::as_str)
-                .filter_map(requirement_name),
-        );
+        for name in list
+            .iter()
+            .filter_map(Value::as_str)
+            .filter_map(requirement_name)
+        {
+            add(name, "[tool.uv] dev-dependencies".to_owned());
+        }
     }
 
-    names.sort();
-    names.dedup();
-    names
+    found.sort_by(|a, b| (&a.name, &a.section).cmp(&(&b.name, &b.section)));
+    found.dedup();
+    found
 }
 
 /// Dependencies from a `requirements.txt`-style file.
@@ -185,22 +203,63 @@ pub fn parse_requirements(text: &str) -> Vec<PyDependency> {
             requirement_name(line).map(|name| PyDependency {
                 name,
                 line: Some((idx + 1) as u32),
-                section: "requirements".to_owned(),
+                section: REQUIREMENTS.to_owned(),
             })
         })
         .collect()
 }
 
 /// Is this file name a requirements file we should read?
+/// `requirements*.txt`, `*-requirements.txt` / `*_requirements.txt`, and
+/// any `.txt` inside a `requirements/` directory.
 pub fn is_requirements_file(path: &Path) -> bool {
-    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+    let Some(stem) = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.strip_suffix(".txt"))
+    else {
         return false;
     };
     let in_requirements_dir = path
         .parent()
         .and_then(Path::file_name)
         .is_some_and(|d| d == "requirements");
-    name.ends_with(".txt") && (name.starts_with("requirements") || in_requirements_dir)
+    let suffixed = stem
+        .strip_suffix("requirements")
+        .is_some_and(|rest| rest.ends_with(['-', '_']));
+    in_requirements_dir || stem.starts_with("requirements") || suffixed
+}
+
+/// Section of a dependency in a requirements file for running the code.
+pub const REQUIREMENTS: &str = "requirements";
+/// Section of a dependency in a requirements file for development, and why.
+pub const DEV_BY_FILE_NAME: &str = "dev by file name";
+pub const DEV_BY_DIRECTORY_NAME: &str = "dev by directory name";
+
+/// Words in a requirements file name that mark it as development-only.
+const DEV_WORDS: &[&str] = &["dev", "test", "tests", "testing", "lint", "docs"];
+
+/// Why a requirements file is for development rather than for running the
+/// code, if it is: a dev word in its name (`requirements-dev.txt`,
+/// `test_requirements.txt`, `requirements/lint.txt`, but not
+/// `requirements-devices.txt`), or a directory below `project_dir` named by
+/// one word (`docs/requirements.txt`, `docs/requirements/base.txt`, but not
+/// `docs_api/requirements.txt`, nor the requirements of a project in
+/// `docs/`).
+pub fn dev_requirements(path: &Path, project_dir: &Path) -> Option<&'static str> {
+    let stem = path.file_stem()?.to_str()?;
+    if stem.split(['-', '_', '.']).any(|w| DEV_WORDS.contains(&w)) {
+        return Some(DEV_BY_FILE_NAME);
+    }
+    let mut dir = path.parent()?;
+    if dir.file_name().is_some_and(|n| n == "requirements") {
+        dir = dir.parent()?;
+    }
+    if dir == project_dir {
+        return None;
+    }
+    let name = dir.file_name()?.to_str()?;
+    DEV_WORDS.contains(&name).then_some(DEV_BY_DIRECTORY_NAME)
 }
 
 #[cfg(test)]
@@ -270,19 +329,70 @@ black = "*"
 dev-dependencies = ["mypy"]
 "#;
         let p = parse_pyproject(text, Path::new("pyproject.toml")).unwrap();
+        let optional: Vec<(&str, &str)> = p
+            .optional_dependencies
+            .iter()
+            .map(|d| (d.name.as_str(), d.section.as_str()))
+            .collect();
         assert_eq!(
-            p.optional_dependencies,
+            optional,
             vec![
-                "black",
-                "hypothesis",
-                "mypy",
-                "pytest",
-                "pytest-mock",
-                "ruff"
+                ("black", "[tool.poetry.dev-dependencies]"),
+                ("hypothesis", "[tool.poetry.group.test.dependencies]"),
+                ("mypy", "[tool.uv] dev-dependencies"),
+                ("pytest", "[project.optional-dependencies] dev"),
+                ("pytest-mock", "[project.optional-dependencies] dev"),
+                ("ruff", "[dependency-groups] lint"),
             ]
         );
         let runtime: Vec<&str> = p.dependencies.iter().map(|d| d.name.as_str()).collect();
         assert_eq!(runtime, vec!["requests"]);
+    }
+
+    #[test]
+    fn requirements_files_named_for_development_are_dev() {
+        for dev in [
+            "requirements-dev.txt",
+            "requirements_test.txt",
+            "requirements-tests.txt",
+            "requirements-dev-gpu.txt",
+            "requirements/lint.txt",
+            "requirements/test-ml.txt",
+            "docs/requirements-docs.txt",
+            "dev-requirements.txt",
+            "test_requirements.txt",
+            "docs/requirements.txt",
+            "docs/requirements/base.txt",
+        ] {
+            assert!(
+                dev_requirements(Path::new(dev), Path::new("")).is_some(),
+                "{dev}"
+            );
+        }
+        for runtime in [
+            "requirements.txt",
+            "requirements-prod.txt",
+            "requirements-ml.txt",
+            "requirements-devices.txt",
+            "devices-requirements.txt",
+            "requirements/base.txt",
+            "requirements/devices.txt",
+            "functions/notify/requirements.txt",
+            "docs_api/requirements.txt",
+            "tests/integration/requirements.txt",
+            "requirements/requirements.txt",
+        ] {
+            assert_eq!(
+                dev_requirements(Path::new(runtime), Path::new("")),
+                None,
+                "{runtime}"
+            );
+        }
+        // a project of its own named `docs` runs on its requirements.txt
+        assert_eq!(
+            dev_requirements(Path::new("docs/requirements.txt"), Path::new("docs")),
+            None
+        );
     }
 
     #[test]
@@ -298,6 +408,9 @@ dev-dependencies = ["mypy"]
         assert!(is_requirements_file(Path::new("requirements.txt")));
         assert!(is_requirements_file(Path::new("requirements-dev.txt")));
         assert!(is_requirements_file(Path::new("requirements/prod.txt")));
+        assert!(is_requirements_file(Path::new("dev-requirements.txt")));
+        assert!(is_requirements_file(Path::new("test_requirements.txt")));
         assert!(!is_requirements_file(Path::new("README.txt")));
+        assert!(!is_requirements_file(Path::new("xrequirements.txt")));
     }
 }

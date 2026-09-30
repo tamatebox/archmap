@@ -775,7 +775,7 @@ fn summary_says_what_the_map_does_not_cover_before_the_map() {
     let summary = summary_stdout(&[]);
     let coverage = [
         "\n## Coverage",
-        "python  files: 15  read: 15  imports without an edge: 3",
+        "python  files: 15  read: 15  imports without an edge: 3 (undeclared 1, extra or dev dependency 1, local name 1)",
         "not analyzed  shell: 1",
         "dynamic imports: 1  in: scripts 1",
         "runtime coupling: not analyzed (HTTP, databases, queues, subprocesses, configuration-driven loading)",
@@ -791,7 +791,7 @@ fn query_lists_imports_the_graph_does_not_map() {
     let text = query_text(&python_fixture(), &["scripts"]);
     let not_mapped = [
         "\nNot mapped: 2",
-        "  import_module  dynamic                  1 call: scripts/plugins.py:5",
+        "  import_module  dynamic                  1 call: scripts/plugins.py:5 (local)",
         "  pytest         extra or dev dependency  1 import: scripts/report.py:2\n",
     ]
     .join("\n");
@@ -984,6 +984,123 @@ fn a_directory_stands_for_the_component_that_owns_it() {
         ),
         "{folded}"
     );
+}
+
+#[test]
+fn a_symbol_wins_over_a_directory_of_the_same_name() {
+    // `run/` holds no Python code, so only the root component contains it
+    let repo = temp_repo("dir-symbol");
+    std::fs::create_dir_all(repo.join("run")).unwrap();
+    std::fs::write(repo.join("run/settings.yaml"), "a: 1\n").unwrap();
+    let text = query_text(&repo, &["run"]);
+    std::fs::remove_dir_all(&repo).unwrap();
+    assert!(text.starts_with("Symbols matching `run`: 1\n"), "{text}");
+}
+
+#[test]
+fn an_import_name_without_an_edge_lists_where_it_is_imported() {
+    // pytest is declared only as a dev extra
+    let pytest = query_text(&python_fixture(), &["pytest"]);
+    for expected in [
+        "pytest: imports without an edge, depth 2\nin: scripts 1\n",
+        "\nNot mapped: 1\n  pytest  extra or dev dependency  1 import: scripts/report.py:2\n",
+        "\nNotes: 1\n  import pytest, declared as pytest in pyproject.toml [project.optional-dependencies] dev\n",
+    ] {
+        assert!(pytest.contains(expected), "missing `{expected}` in:\n{pytest}");
+    }
+    // helpers is reached through sys.path; google covers google.api_core.*
+    let helpers = query_text(&python_fixture(), &["helpers"]);
+    assert!(
+        helpers.contains("\n  helpers  local name  1 import: tests/test_billing.py:3\n"),
+        "{helpers}"
+    );
+    let google = query_text(&python_fixture(), &["google"]);
+    assert!(
+        google.contains(
+            "\n  google.api_core.exceptions  undeclared  1 import: src/shop/analytics.py:3\n"
+        ),
+        "{google}"
+    );
+    // Rust dev-dependencies are imported by crate name
+    let rust = query_text(&fixture_root(), &["assert_cmd"]);
+    assert!(
+        rust.contains(
+            "\n  assert_cmd  extra or dev dependency  1 import: crates/app/src/main.rs:14\n"
+        ),
+        "{rust}"
+    );
+    // every import with its evidence in JSON
+    let view = fixture_json(&["query", "pytest", "--format", "json"]);
+    assert_eq!(view["module"], "pytest");
+    assert_eq!(
+        view["not_mapped"][0]["evidence"]["file"],
+        "scripts/report.py"
+    );
+    // a dotted prefix, not a string prefix
+    let out = archmap()
+        .args(["query", "google.api", "--path"])
+        .arg(python_fixture())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}
+
+#[test]
+fn imports_without_an_edge_of_one_name_are_capped() {
+    let repo = temp_repo("unmapped-caps");
+    std::fs::write(
+        repo.join("pyproject.toml"),
+        "[project]\nname = \"demo\"\n\n[project.optional-dependencies]\nml = [\"torch\"]\n",
+    )
+    .unwrap();
+    for i in 0..5 {
+        std::fs::write(repo.join(format!("pkg/m{i}.py")), "import torch\n").unwrap();
+    }
+    // the one import elsewhere, inside a function
+    std::fs::create_dir_all(repo.join("tools")).unwrap();
+    std::fs::write(repo.join("tools/run.py"), "def main():\n    import torch\n").unwrap();
+    let capped = query_text(&repo, &["torch"]);
+    let all = query_text(&repo, &["torch", "--verbose"]);
+    std::fs::remove_dir_all(&repo).unwrap();
+    assert!(capped.contains("\nin: pkg 5, tools 1\n"), "{capped}");
+    // one location per component first, so the cap cannot hide tools
+    assert!(
+        capped.contains(
+            "\n  torch  extra or dev dependency  6 imports: pkg/m0.py:1, tools/run.py:2 (local), pkg/m1.py:1, +3 more\n"
+        ),
+        "{capped}"
+    );
+    assert!(capped.contains("Lists are capped."), "{capped}");
+    assert!(all.contains("pkg/m4.py:1\n"), "{all}");
+}
+
+#[test]
+fn a_statement_that_imports_several_modules_counts_once() {
+    // `from torch import nn, Tensor` is one statement: two modules
+    // without an edge (torch.nn, and torch for Tensor), one import
+    let repo = temp_repo("statements");
+    std::fs::write(
+        repo.join("pyproject.toml"),
+        "[project]\nname = \"demo\"\n\n[project.optional-dependencies]\nml = [\"torch\"]\n",
+    )
+    .unwrap();
+    let dist_info = repo.join(".venv/lib/python3.12/site-packages/torch-2.0.dist-info");
+    std::fs::create_dir_all(&dist_info).unwrap();
+    std::fs::write(
+        dist_info.join("RECORD"),
+        "torch/__init__.py,,\ntorch/nn/__init__.py,,\n",
+    )
+    .unwrap();
+    std::fs::write(repo.join("pkg/m.py"), "from torch import nn, Tensor\n").unwrap();
+    let summary = archmap().arg("summary").arg(&repo).output().unwrap();
+    let text = query_text(&repo, &["torch"]);
+    std::fs::remove_dir_all(&repo).unwrap();
+    let summary = String::from_utf8(summary.stdout).unwrap();
+    assert!(
+        summary.contains("imports without an edge: 1 (extra or dev dependency 1)\n"),
+        "{summary}"
+    );
+    assert!(text.contains("\nin: pkg 1\n\nNot mapped: 2\n"), "{text}");
 }
 
 #[test]

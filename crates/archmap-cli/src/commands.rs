@@ -6,13 +6,13 @@ use archmap_core::rules::{FileLevel, Finding, RuleSet};
 use archmap_core::signals::Signal;
 use archmap_core::{
     ArchitectureGraph, ChangeSeed, Component, ComponentId, Edge, EdgeKind, Evidence, Symbol,
-    SymbolId,
+    SymbolId, UnmappedImport,
 };
 use archmap_scan::{ScanOptions, ScanReport};
 use serde::Serialize;
 
 use crate::output::{render, OutputFormat, ReportFormat};
-use crate::views::{ComponentView, FileView, QueryResult};
+use crate::views::{ComponentView, FileView, QueryResult, UnmappedView};
 
 fn run_scan(path: &str, manifests_only: bool) -> Result<ScanReport> {
     let options = ScanOptions { manifests_only };
@@ -200,41 +200,8 @@ pub fn query(
     let full = &report.graph;
     let rolled = full.rollup(depth);
 
-    let at = match resolve_at_depth(full, &rolled, depth, target) {
-        Some(at) => Some(at),
-        None => directory_target(full, path, target)
-            .transpose()?
-            .map(|owner| fold(full, depth, &owner.id)),
-    };
-    let result = if let Some(at) = at {
-        let component = rolled
-            .component(&at.id)
-            .with_context(|| format!("`{}` is missing after roll-up", at.id))?;
-        QueryResult::Component(ComponentView {
-            requested: target,
-            depth,
-            folded_from: at.folded_from,
-            component,
-            children: full
-                .components
-                .values()
-                .filter(|c| c.parent.as_ref() == Some(&component.id))
-                .map(|c| &c.id)
-                .collect(),
-            symbols: rolled.symbols_of(&component.id).collect(),
-            outgoing: rolled.outgoing(&component.id).collect(),
-            incoming: rolled.incoming(&component.id).collect(),
-            not_mapped: rolled
-                .unmapped_imports
-                .iter()
-                .filter(|i| i.from == component.id)
-                .collect(),
-            dynamic_imports: rolled
-                .dynamic_imports
-                .iter()
-                .filter(|i| i.from == component.id)
-                .collect(),
-        })
+    let result = if let Some(at) = resolve_at_depth(full, &rolled, depth, target) {
+        component_view(full, &rolled, depth, target, at)?
     } else if let Some(file) = file_target(path, target) {
         QueryResult::File(file_view(full, depth, target, &file))
     } else {
@@ -247,8 +214,23 @@ pub fn query(
             QueryResult::Symbols(symbols)
         } else if let Some(file) = full.file_for_dotted_name(target) {
             QueryResult::File(file_view(full, depth, target, file))
+        } else if let Some(owner) = directory_target(full, path, target).transpose()? {
+            // Late: every directory has an owner, the root at worst, so a
+            // bare word naming one must not shadow a symbol.
+            let at = fold(full, depth, &owner.id);
+            component_view(full, &rolled, depth, target, at)?
         } else {
-            bail!("no component, file or symbol named `{target}`");
+            // An import name that no component carries, such as an extra.
+            let not_mapped: Vec<&UnmappedImport> = full.unmapped_imports_of(target).collect();
+            if not_mapped.is_empty() {
+                bail!("no component, file, symbol or import named `{target}`");
+            }
+            QueryResult::NotMapped(UnmappedView {
+                requested: target,
+                module: target,
+                depth,
+                not_mapped,
+            })
         }
     };
 
@@ -260,6 +242,44 @@ pub fn query(
         ),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The component `at` points to, as `query` shows it.
+fn component_view<'a>(
+    full: &'a ArchitectureGraph,
+    rolled: &'a ArchitectureGraph,
+    depth: usize,
+    requested: &'a str,
+    at: AtDepth,
+) -> Result<QueryResult<'a>> {
+    let component = rolled
+        .component(&at.id)
+        .with_context(|| format!("`{}` is missing after roll-up", at.id))?;
+    Ok(QueryResult::Component(ComponentView {
+        requested,
+        depth,
+        folded_from: at.folded_from,
+        component,
+        children: full
+            .components
+            .values()
+            .filter(|c| c.parent.as_ref() == Some(&component.id))
+            .map(|c| &c.id)
+            .collect(),
+        symbols: rolled.symbols_of(&component.id).collect(),
+        outgoing: rolled.outgoing(&component.id).collect(),
+        incoming: rolled.incoming(&component.id).collect(),
+        not_mapped: rolled
+            .unmapped_imports
+            .iter()
+            .filter(|i| i.from == component.id)
+            .collect(),
+        dynamic_imports: rolled
+            .dynamic_imports
+            .iter()
+            .filter(|i| i.from == component.id)
+            .collect(),
+    }))
 }
 
 /// A component as seen at a roll-up depth.

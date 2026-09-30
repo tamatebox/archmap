@@ -48,10 +48,25 @@ pub struct FileView<'a> {
     pub dynamic_imports: Vec<&'a DynamicImport>,
 }
 
+/// What `archmap query` returns for an import name that no component
+/// carries (`torch` declared only as an extra, `helpers` reached through
+/// `sys.path`): every import without an edge of that module or a module
+/// below it.
+#[derive(Debug, Serialize)]
+pub struct UnmappedView<'a> {
+    /// The target as given on the command line.
+    pub requested: &'a str,
+    /// The import name looked up, the dotted prefix of every module below.
+    pub module: &'a str,
+    pub depth: usize,
+    pub not_mapped: Vec<&'a UnmappedImport>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 pub enum QueryResult<'a> {
     Component(ComponentView<'a>),
     File(FileView<'a>),
     Symbols(Vec<&'a Symbol>),
+    NotMapped(UnmappedView<'a>),
 }

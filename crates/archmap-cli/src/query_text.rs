@@ -13,7 +13,7 @@ use archmap_core::{
     Symbol, SymbolKind, UnmappedImport, UnmappedReason,
 };
 
-use crate::views::{ComponentView, FileView, QueryResult};
+use crate::views::{ComponentView, FileView, QueryResult, UnmappedView};
 
 /// Default caps, lifted by `--verbose`.
 const MAX_SYMBOLS: usize = 30;
@@ -57,6 +57,7 @@ pub fn render(
         QueryResult::Component(view) => component(&mut out, view, full, rolled, &caps),
         QueryResult::File(view) => file(&mut out, view, rolled, &caps),
         QueryResult::Symbols(symbols) => symbol_list(&mut out, symbols, target, rolled, &caps),
+        QueryResult::NotMapped(view) => unmapped_name(&mut out, view, full, rolled, &caps),
     };
     if truncated {
         let _ = writeln!(
@@ -140,13 +141,8 @@ fn not_mapped(
     const DYNAMIC: &str = "dynamic";
     let mut groups: BTreeMap<(&str, &str), Vec<&Evidence>> = BTreeMap::new();
     for import in unmapped {
-        let why = match import.reason {
-            UnmappedReason::Undeclared => "undeclared",
-            UnmappedReason::DeclaredNotRequired => "extra or dev dependency",
-            UnmappedReason::LocalName => "local name",
-        };
         groups
-            .entry((import.module.as_str(), why))
+            .entry((import.module.as_str(), reason_label(import.reason)))
             .or_default()
             .push(&import.evidence);
     }
@@ -177,7 +173,7 @@ fn not_mapped(
         let locations: Vec<String> = evidence
             .iter()
             .take(caps.locations)
-            .map(|e| location(e))
+            .map(|e| import_location(e, 0, false))
             .collect();
         let more = evidence.len().saturating_sub(caps.locations);
         truncated |= more > 0;
@@ -192,6 +188,15 @@ fn not_mapped(
         let _ = writeln!(out, "{line}");
     }
     truncated
+}
+
+/// Why an import has no edge, in the words every command uses.
+pub(crate) fn reason_label(reason: UnmappedReason) -> &'static str {
+    match reason {
+        UnmappedReason::Undeclared => "undeclared",
+        UnmappedReason::DeclaredNotRequired => "extra or dev dependency",
+        UnmappedReason::LocalName => "local name",
+    }
 }
 
 #[derive(Default)]
@@ -336,6 +341,87 @@ fn file(out: &mut String, view: &FileView, rolled: &ArchitectureGraph, caps: &Ca
         }
     }
     truncated |= not_mapped(out, &view.not_mapped, &view.dynamic_imports, caps);
+    truncated
+}
+
+/// Imports without an edge of one import name and the modules below it:
+/// which components import it, where, why no edge shows it, and what the
+/// evidence notes add (such as where an extra is declared).
+fn unmapped_name(
+    out: &mut String,
+    view: &UnmappedView,
+    full: &ArchitectureGraph,
+    rolled: &ArchitectureGraph,
+    caps: &Caps,
+) -> bool {
+    let _ = writeln!(
+        out,
+        "{}: imports without an edge, depth {}",
+        view.requested, view.depth
+    );
+    // Statements, not modules: `from torch import nn, Tensor` is one import
+    // of two modules.
+    let folded = |i: &UnmappedImport| full.ancestor_at(&i.from, view.depth);
+    let mut statements: BTreeMap<ComponentId, BTreeSet<(&str, Option<u32>)>> = BTreeMap::new();
+    for import in &view.not_mapped {
+        statements
+            .entry(folded(import))
+            .or_default()
+            .insert((import.evidence.file.as_str(), import.evidence.line));
+    }
+    let mut components: Vec<(ComponentId, usize)> = statements
+        .into_iter()
+        .map(|(id, s)| (id, s.len()))
+        .collect();
+    components.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let shown = components.len().min(caps.neighbors);
+    let mut truncated = shown < components.len();
+    let names: Vec<String> = components
+        .iter()
+        .take(shown)
+        .map(|(id, n)| format!("{} {n}", display(rolled, id)))
+        .collect();
+    let mut line = format!("in: {}", names.join(", "));
+    if truncated {
+        let _ = write!(line, ", +{} more", components.len() - shown);
+    }
+    let _ = writeln!(out, "{line}");
+
+    // One location per component first, in the order of `in:`, so the cap
+    // cannot hide a lone importer elsewhere; then the rest by file and line.
+    let rank: BTreeMap<&ComponentId, usize> = components
+        .iter()
+        .enumerate()
+        .map(|(i, (id, _))| (id, i))
+        .collect();
+    let mut by_place: Vec<(&UnmappedImport, ComponentId)> =
+        view.not_mapped.iter().map(|i| (*i, folded(i))).collect();
+    by_place.sort_by(|a, b| {
+        (&a.0.evidence.file, a.0.evidence.line).cmp(&(&b.0.evidence.file, b.0.evidence.line))
+    });
+    let mut seen = BTreeSet::new();
+    let (mut first, rest): (Vec<_>, Vec<_>) = by_place
+        .into_iter()
+        .partition(|(i, c)| seen.insert((i.module.as_str(), i.reason, c.clone())));
+    first.sort_by_key(|(_, c)| rank[c]);
+    let ordered: Vec<&UnmappedImport> = first.into_iter().chain(rest).map(|(i, _)| i).collect();
+    truncated |= not_mapped(out, &ordered, &[], caps);
+
+    // A one-word note (`import`, `use`) only names the statement.
+    let notes: BTreeSet<&str> = view
+        .not_mapped
+        .iter()
+        .filter_map(|i| i.evidence.note.as_deref())
+        .filter(|n| n.contains(' '))
+        .collect();
+    if !notes.is_empty() {
+        let shown = notes.len().min(caps.locations);
+        truncated |= shown < notes.len();
+        let _ = writeln!(out, "\nNotes: {}", count(notes.len(), shown));
+        for note in notes.iter().take(shown) {
+            let _ = writeln!(out, "  {note}");
+        }
+    }
     truncated
 }
 

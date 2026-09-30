@@ -58,6 +58,7 @@ fn a_nested_requirements_file_declares_for_its_own_directory() {
     let unmapped: Vec<(&str, &str, UnmappedReason, Option<&str>)> = graph
         .unmapped_imports
         .iter()
+        .filter(|u| u.reason == UnmappedReason::Undeclared)
         .map(|u| {
             (
                 u.from.as_str(),
@@ -135,4 +136,26 @@ fn requirements_without_python_code_nearby_declare_for_the_project() {
             "{external}"
         );
     }
+}
+
+#[test]
+fn requirements_files_named_for_development_declare_dev_dependencies() {
+    let graph = scan_fixture();
+    // requirements-dev.txt makes pytest a dev dependency: no edge, like a
+    // dev extra, and the note says why
+    assert!(graph.components.keys().all(|k| k.as_str() != "ext:pytest"));
+    let pytest: Vec<(&str, UnmappedReason, Option<&str>)> = graph
+        .unmapped_imports
+        .iter()
+        .filter(|u| u.module == "pytest")
+        .map(|u| (u.from.as_str(), u.reason, u.evidence.note.as_deref()))
+        .collect();
+    assert_eq!(
+        pytest,
+        vec![(
+            "jobs::jobs",
+            UnmappedReason::DeclaredNotRequired,
+            Some("import pytest, declared as pytest in requirements-dev.txt:1 (dev by file name)")
+        )]
+    );
 }

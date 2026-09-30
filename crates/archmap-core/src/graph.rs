@@ -549,6 +549,18 @@ impl ArchitectureGraph {
         }
     }
 
+    /// Imports without an edge of `module` or of a module below it, the
+    /// way an import names them: `torch` covers `torch` and `torch.nn`, not
+    /// `torchvision`.
+    pub fn unmapped_imports_of<'a>(
+        &'a self,
+        module: &'a str,
+    ) -> impl Iterator<Item = &'a UnmappedImport> + 'a {
+        self.unmapped_imports
+            .iter()
+            .filter(move |i| i.covered_by(module))
+    }
+
     /// Find the component that owns a file path (relative to the repo root),
     /// choosing the component with the longest matching `path` prefix.
     pub fn component_for_path(&self, file: &str) -> Option<&Component> {
@@ -697,6 +709,31 @@ mod tests {
 
     fn edge(from: &str, to: &str, file: &str, line: u32) -> Edge {
         Edge::new(from, to, EdgeKind::Import).with_evidence(Evidence::new(file).at_line(line))
+    }
+
+    #[test]
+    fn imports_without_an_edge_are_found_by_dotted_prefix() {
+        let mut g = ArchitectureGraph::default();
+        for module in [
+            "torch",
+            "torch.nn",
+            "torchvision",
+            "google.api_core.exceptions",
+        ] {
+            g.unmapped_imports.push(UnmappedImport {
+                from: "p".into(),
+                module: module.into(),
+                reason: UnmappedReason::DeclaredNotRequired,
+                provided_by: vec![],
+                evidence: Evidence::new("a.py"),
+            });
+        }
+        let of = |m: &str| -> Vec<String> {
+            g.unmapped_imports_of(m).map(|i| i.module.clone()).collect()
+        };
+        assert_eq!(of("torch"), vec!["torch", "torch.nn"]);
+        assert_eq!(of("google.api_core"), vec!["google.api_core.exceptions"]);
+        assert!(of("google.api").is_empty());
     }
 
     #[test]

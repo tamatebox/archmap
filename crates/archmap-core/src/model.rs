@@ -168,6 +168,16 @@ pub struct UnmappedImport {
     pub evidence: Evidence,
 }
 
+impl UnmappedImport {
+    /// Whether the dotted `prefix` names this import's module or a module
+    /// above it: `google.api_core` covers `google.api_core.exceptions`,
+    /// `google.api` does not.
+    pub fn covered_by(&self, prefix: &str) -> bool {
+        let prefix = prefix.trim();
+        self.module == prefix || self.module.starts_with(&format!("{prefix}."))
+    }
+}
+
 /// Why an import maps to no component.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

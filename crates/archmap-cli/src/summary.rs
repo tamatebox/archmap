@@ -17,7 +17,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 use std::path::Path;
 
-use archmap_core::{ArchitectureGraph, Component, ComponentId, ComponentKind, EdgeKind};
+use archmap_core::{
+    ArchitectureGraph, Component, ComponentId, ComponentKind, EdgeKind, UnmappedReason,
+};
+
+use crate::query_text::reason_label;
 
 /// How many components the "most depended on" section lists.
 const TOP_DEPENDED_ON: usize = 10;
@@ -227,25 +231,45 @@ fn header(
 fn coverage(out: &mut String, graph: &ArchitectureGraph, rolled: &ArchitectureGraph) {
     let _ = writeln!(out, "\n## Coverage");
 
-    let mut without_edge: BTreeMap<&str, usize> = BTreeMap::new();
+    // Language -> why imports have no edge -> the statements, so that
+    // `from torch import nn, Tensor` counts once.
+    type Statements<'a> = BTreeSet<(&'a str, Option<u32>)>;
+    let mut without_edge: BTreeMap<&str, BTreeMap<UnmappedReason, Statements>> = BTreeMap::new();
     for import in &graph.unmapped_imports {
         if let Some(language) = graph
             .component(&import.from)
             .and_then(|c| c.language.as_deref())
         {
-            *without_edge.entry(language).or_default() += 1;
+            without_edge
+                .entry(language)
+                .or_default()
+                .entry(import.reason)
+                .or_default()
+                .insert((import.evidence.file.as_str(), import.evidence.line));
         }
     }
     let mut not_analyzed = Vec::new();
     for (language, c) in &graph.meta.coverage {
         match c.read {
             Some(read) => {
-                let without = without_edge.get(language.as_str()).copied().unwrap_or(0);
-                let _ = writeln!(
-                    out,
-                    "{language}  files: {}  read: {read}  imports without an edge: {without}",
+                let reasons = without_edge.get(language.as_str());
+                let total: usize = reasons
+                    .into_iter()
+                    .flat_map(|r| r.values())
+                    .map(BTreeSet::len)
+                    .sum();
+                let mut line = format!(
+                    "{language}  files: {}  read: {read}  imports without an edge: {total}",
                     c.files
                 );
+                if let Some(reasons) = reasons {
+                    let parts: Vec<String> = reasons
+                        .iter()
+                        .map(|(reason, s)| format!("{} {}", reason_label(*reason), s.len()))
+                        .collect();
+                    let _ = write!(line, " ({})", parts.join(", "));
+                }
+                let _ = writeln!(out, "{line}");
             }
             None => not_analyzed.push(format!("{language}: {}", c.files)),
         }

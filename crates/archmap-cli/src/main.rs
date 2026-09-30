@@ -67,8 +67,8 @@ enum Command {
     /// component resolves to the component it is folded into.
     Query {
         /// Component id or name (e.g. `archmap-core`), a file or directory
-        /// path relative to the repository root, or a symbol name (e.g.
-        /// `scan`).
+        /// path relative to the repository root, a symbol name (e.g.
+        /// `scan`), or an import name no component carries (e.g. `torch`).
         target: String,
         /// Repository root to scan.
         #[arg(long, default_value = ".")]

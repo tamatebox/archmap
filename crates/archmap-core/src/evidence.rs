@@ -15,7 +15,9 @@ pub struct Evidence {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line: Option<u32>,
     /// Free-form note explaining the derivation (for example `use` or
-    /// `Cargo.toml [dependencies]`).
+    /// `Cargo.toml [dependencies]`). A note of one word names only the kind
+    /// of statement (`import`, `use`); longer notes say how a name was
+    /// resolved or where it is declared, and views may show only those.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
     /// For a dependency on a file in the repository: that file, relative to

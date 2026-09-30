@@ -109,8 +109,12 @@ can use a copy of it.
 - Python analyzer:
   - `pyproject.toml` (PEP 621 or poetry), `setup.py` / `setup.cfg` directories become `package` components;
     a tree of `.py` files without any manifest gets one root component named after the directory
-  - `[project] dependencies`, `[tool.poetry.dependencies]` and `requirements*.txt` become `dependency` edges
-    to `ext:*` components (names normalized per PEP 503)
+  - `[project] dependencies`, `[tool.poetry.dependencies]` and `requirements*.txt` (or `*-requirements.txt`)
+    become `dependency` edges to `ext:*` components (names normalized per PEP 503); a requirements file
+    whose name has the word `dev`, `test`, `tests`, `testing`, `lint` or `docs` (`requirements-dev.txt`,
+    `test_requirements.txt`, `requirements/lint.txt`), or whose directory is named by one of them
+    (`docs/requirements.txt`), declares dev dependencies instead, like the extras, dependency groups and
+    dev dependencies of `pyproject.toml`
   - a declaration covers the files below its manifest: `pyproject.toml` the whole project, a requirements
     file the closest directory at or above it with Python code below it, so `functions/notify/requirements.txt`
     covers `functions/notify/` while `requirements/prod.txt` and `docker/requirements.txt` cover the project;
@@ -132,10 +136,11 @@ can use a copy of it.
     table of well-known names (`sklearn`, `yaml`); the evidence note of each import says which one matched
   - an import that maps to no component, standard library aside, is recorded without an edge and with
     its reason: `undeclared` (no manifest declares it), `declared_not_required` (declared only as an
-    extra, a dependency group or a dev dependency) or `local_name` (a file or directory of that name
-    exists, but not as a file next to the importer, probably reached through a `sys.path` entry added at
-    runtime); a name imported from a package that an installed distribution provides as a module of its
-    own (`from google.cloud import bigquery`) is recorded as that module, each name on its own
+    extra, a dependency group or a dev dependency; the evidence note says where) or `local_name` (a
+    file or directory of that name exists, but not as a file next to the importer, probably reached
+    through a `sys.path` entry added at runtime); a name imported from a package that an installed
+    distribution provides as a module of its own (`from google.cloud import bigquery`) is recorded as
+    that module, each name on its own
   - calls to `import_module`, `__import__` and `spec_from_file_location` are recorded as dynamic imports,
     which no edge can follow
   - public top-level `def` / `class` / `CONSTANT` and public methods of public classes become symbols
@@ -147,14 +152,16 @@ can use a copy of it.
   what the scan could not see
 - `query` on top of the rolled-up graph, for a component, a symbol or a single file, including the
   imports no edge shows, and `impact` that follows imports file by file; both take a directory for
-  the component that owns it
+  the component that owns it, and `query` takes an import name that no component carries (`torch`
+  declared as an extra) for the imports of it that no edge shows
 - `check` compares the graph with a declared architecture in `archmap.toml`: forbidden
   dependencies, layers, allow lists, coverage, cycles, undeclared imports, and declarations
   that match nothing; it also reports structural signals, with or without `archmap.toml`
 
 Known gaps: imports of the standard library, undeclared packages, extras and
 dev dependencies produce no edges by design, though `query` lists all but the
-standard library as not mapped and `check` can report the undeclared ones;
+standard library as not mapped (`query <import name>` lists where one module
+is imported) and `check` can report the undeclared ones;
 dynamic imports are recorded but not followed, and `sys.path` changes made at
 runtime are not seen; `impact` does not follow the parent `__init__.py` that
 Python loads implicitly before a submodule. For Rust, `use` declarations and
@@ -270,7 +277,7 @@ contains:
   the full graph` (`N shown of K at depth` when the tree is capped), counts,
   the `source` of the facts and the `next` commands
 - `## Coverage`, before the map: for each analyzed language `files`, `read`
-  and `imports without an edge`; the languages no analyzer reads, such as
+  and `imports without an edge`, counted in statements per reason; the languages no analyzer reads, such as
   `not analyzed  sql: 145  notebook: 68`; the number of `dynamic imports` and
   the components that make them; and a fixed line naming the runtime coupling
   no analyzer reads (HTTP, databases, queues, subprocesses,

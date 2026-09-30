@@ -274,7 +274,7 @@ pub fn check(graph: &ArchitectureGraph, rules: &RuleSet, depth: usize) -> Vec<Fi
             .filter(|i| i.reason == UnmappedReason::Undeclared)
             .collect();
         for import in &undeclared {
-            if !ignore.iter().any(|prefix| covers(prefix, &import.module)) {
+            if !ignore.iter().any(|prefix| import.covered_by(prefix)) {
                 let UnmappedImport {
                     from,
                     module,
@@ -291,7 +291,7 @@ pub fn check(graph: &ArchitectureGraph, rules: &RuleSet, depth: usize) -> Vec<Fi
             }
         }
         for prefix in ignore {
-            if !undeclared.iter().any(|i| covers(prefix, &i.module)) {
+            if !undeclared.iter().any(|i| i.covered_by(prefix)) {
                 findings.push(Finding::Unmatched {
                     declared: "undeclared_imports.ignore".into(),
                     selector: prefix.clone(),
@@ -563,12 +563,6 @@ fn file_level(
     }
 }
 
-/// Does the dotted `prefix` cover `module` (`a.b` covers `a.b` and `a.b.c`)?
-fn covers(prefix: &str, module: &str) -> bool {
-    let prefix = prefix.trim();
-    module == prefix || module.starts_with(&format!("{prefix}."))
-}
-
 /// Does `selector` cover `component`?
 pub fn selector_matches(selector: &str, component: &Component) -> bool {
     let selector = selector.trim();
@@ -823,8 +817,6 @@ mod tests {
                 },
             ]
         );
-        assert!(covers("google.api_core", "google.api_core.exceptions"));
-        assert!(!covers("google.api", "google.api_core"));
     }
 
     #[test]

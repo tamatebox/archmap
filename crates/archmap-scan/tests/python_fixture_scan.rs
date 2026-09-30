@@ -673,6 +673,20 @@ fn imports_of_files_next_to_the_importer_resolve_to_them() {
 }
 
 #[test]
+fn extras_and_dev_dependencies_say_where_they_are_declared() {
+    let graph = scan_fixture();
+    let note = graph
+        .unmapped_imports
+        .iter()
+        .find(|u| u.module == "pytest")
+        .and_then(|u| u.evidence.note.as_deref());
+    assert_eq!(
+        note,
+        Some("import pytest, declared as pytest in pyproject.toml [project.optional-dependencies] dev")
+    );
+}
+
+#[test]
 fn dynamic_imports_are_recorded_where_they_are_called() {
     let graph = scan_fixture();
     assert_eq!(

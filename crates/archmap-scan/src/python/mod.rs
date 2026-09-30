@@ -11,7 +11,10 @@
 //!   Python code (`functions/notify/`, but the project for
 //!   `requirements/prod.txt` or `docker/requirements.txt`). Imports resolve
 //!   against the declarations that cover their file, and the edge comes
-//!   from the module of the covered directory
+//!   from the module of the covered directory. A requirements file named for
+//!   development (`requirements-dev.txt`, `docs/requirements.txt`) declares
+//!   dev dependencies, which make no edges, like the extras and groups of
+//!   `pyproject.toml`
 //! - every directory with `__init__.py` becomes a `Module` component whose
 //!   name is its dotted import path relative to the project (a `src/` without
 //!   `__init__.py` is treated as the source root)
@@ -77,19 +80,20 @@ struct Project {
     /// Relative directory; empty for the repository root.
     dir: PathBuf,
     evidence: Vec<Evidence>,
-    /// Required dependencies, each with the directory it is declared for.
+    /// Declared dependencies, each with the directory it is declared for.
     declarations: Vec<Declaration>,
-    /// Extras, groups and dev dependencies: declared, but not edges.
-    optional: BTreeSet<String>,
 }
 
-/// A required dependency a manifest declares for the files under `scope`.
+/// A dependency a manifest declares for the files under `scope`.
 struct Declaration {
     /// PEP 503 normalized distribution name.
     name: String,
     /// The project directory for `pyproject.toml`; for a requirements file,
     /// see [`requirements_scope`].
     scope: PathBuf,
+    /// A runtime dependency. Extras, groups and dev dependencies are
+    /// declared too, but they are not edges.
+    required: bool,
     evidence: Evidence,
 }
 
@@ -146,8 +150,8 @@ impl Analyzer for PythonAnalyzer {
             .iter()
             .map(|p| p.declarations.iter().map(|d| d.name.clone()).collect())
             .collect();
-        // Directory -> what is declared for its files.
-        let mut declared_for: BTreeMap<(usize, PathBuf), BTreeSet<String>> = BTreeMap::new();
+        // Directory -> what is declared for its files: required, optional.
+        let mut declared_for: BTreeMap<(usize, PathBuf), [BTreeSet<String>; 2]> = BTreeMap::new();
         let installed = load_installed(ctx, &projects);
         let names = local_names(&py_files);
         let local_names: Vec<BTreeSet<String>> = projects
@@ -200,20 +204,23 @@ impl Analyzer for PythonAnalyzer {
             }
             let project = &projects[project_idx];
             let dir = file.parent().unwrap_or(Path::new(""));
-            let declared = declared_for
+            let [required, optional] = declared_for
                 .entry((project_idx, dir.to_path_buf()))
                 .or_insert_with(|| {
-                    project
+                    let mut sets: [BTreeSet<String>; 2] = Default::default();
+                    for d in project
                         .declarations
                         .iter()
                         .filter(|d| dir.starts_with(&d.scope))
-                        .map(|d| d.name.clone())
-                        .collect()
+                    {
+                        sets[usize::from(!d.required)].insert(d.name.clone());
+                    }
+                    sets
                 });
             let scope = ImportScope {
                 project,
                 declared: resolve::Resolver {
-                    declared,
+                    declared: required,
                     installed: &installed[project_idx],
                 },
                 anywhere: resolve::Resolver {
@@ -221,7 +228,7 @@ impl Analyzer for PythonAnalyzer {
                     installed: &installed[project_idx],
                 },
                 optional: resolve::Resolver {
-                    declared: &projects[project_idx].optional,
+                    declared: optional,
                     installed: &installed[project_idx],
                 },
                 installed: &installed[project_idx],
@@ -267,13 +274,15 @@ fn discover_projects(
                     parsed.dir.clone(),
                     Evidence::new(display_path(rel)).with_note("pyproject.toml"),
                 );
+                let file = display_path(rel);
+                add_dependencies(&mut project, &parsed.dependencies, &file, &parsed.dir, true);
                 add_dependencies(
                     &mut project,
-                    &parsed.dependencies,
-                    &display_path(rel),
+                    &parsed.optional_dependencies,
+                    &file,
                     &parsed.dir,
+                    false,
                 );
-                project.optional = parsed.optional_dependencies.iter().cloned().collect();
                 projects.push(project);
             }
             Err(err) => warnings.push(format!(
@@ -332,14 +341,27 @@ fn discover_projects(
             continue;
         };
         let text = ctx.read_to_string(&rel)?;
-        let deps = manifest::parse_requirements(&text);
+        let mut deps = manifest::parse_requirements(&text);
+        let dev = manifest::dev_requirements(&rel, &projects[idx].dir);
+        if let Some(why) = dev {
+            for dep in &mut deps {
+                dep.section = why.to_owned();
+            }
+        }
         let own_files: Vec<&Path> = file_projects
             .iter()
             .filter(|(_, owner)| *owner == Some(idx))
             .map(|(f, _)| *f)
             .collect();
         let scope = requirements_scope(&rel, &projects[idx].dir, &own_files);
-        add_dependencies(&mut projects[idx], &deps, &display_path(&rel), &scope);
+        let required = dev.is_none();
+        add_dependencies(
+            &mut projects[idx],
+            &deps,
+            &display_path(&rel),
+            &scope,
+            required,
+        );
     }
 
     Ok(projects)
@@ -368,11 +390,16 @@ fn new_project(name: String, dir: PathBuf, evidence: Evidence) -> Project {
         dir,
         evidence: vec![evidence],
         declarations: Vec::new(),
-        optional: BTreeSet::new(),
     }
 }
 
-fn add_dependencies(project: &mut Project, deps: &[PyDependency], file: &str, scope: &Path) {
+fn add_dependencies(
+    project: &mut Project,
+    deps: &[PyDependency],
+    file: &str,
+    scope: &Path,
+    required: bool,
+) {
     for dep in deps {
         let mut evidence = Evidence::new(file).with_note(&dep.section);
         if let Some(line) = dep.line {
@@ -381,6 +408,7 @@ fn add_dependencies(project: &mut Project, deps: &[PyDependency], file: &str, sc
         project.declarations.push(Declaration {
             name: dep.name.clone(),
             scope: scope.to_path_buf(),
+            required,
             evidence,
         });
     }
@@ -583,7 +611,7 @@ fn emit_components(
         component.evidence = project.evidence.clone();
         output.fragment.push_component(component);
 
-        for declaration in &project.declarations {
+        for declaration in project.declarations.iter().filter(|d| d.required) {
             let target = external_id(&declaration.name);
             let mut external =
                 Component::new(target.clone(), &declaration.name, ComponentKind::External);
@@ -846,7 +874,12 @@ fn emit_imports(
                     ctx.installed.providers_of(module),
                     declared_elsewhere(ctx.project, &ctx.anywhere, &looked_up),
                 ),
-                _ => (Vec::new(), None),
+                UnmappedReason::DeclaredNotRequired => {
+                    let dir = file.parent().unwrap_or(Path::new(""));
+                    let note = declared_optionally(ctx.project, &ctx.optional, &looked_up, dir);
+                    (Vec::new(), note)
+                }
+                UnmappedReason::LocalName => (Vec::new(), None),
             };
             output.fragment.push_unmapped_import(UnmappedImport {
                 from: owner.clone(),
@@ -897,24 +930,68 @@ fn declared_elsewhere(
         .declarations
         .iter()
         .filter(|d| d.name == resolved.distribution)
-        .map(|d| {
-            let at = match d.evidence.line {
-                Some(line) => format!("{}:{line}", d.evidence.file),
-                None => d.evidence.file.clone(),
-            };
-            format!("for {}/ in {at}", display_path(&d.scope))
-        })
+        .map(|d| format!("for {}/ in {}", display_path(&d.scope), declared_at(d)))
         .collect();
+    Some(declaration_note(&resolved, "only", places))
+}
+
+/// Evidence note for an import of an extra, group or dev dependency, saying
+/// where it is declared for the importing directory: `import pytest,
+/// declared as pytest in pyproject.toml [project.optional-dependencies] dev`.
+fn declared_optionally(
+    project: &Project,
+    optional: &resolve::Resolver,
+    candidates: &[&String],
+    dir: &Path,
+) -> Option<String> {
+    let resolved = candidates.iter().find_map(|c| optional.resolve(c))?;
+    let places: BTreeSet<String> = project
+        .declarations
+        .iter()
+        .filter(|d| !d.required && d.name == resolved.distribution && dir.starts_with(&d.scope))
+        .map(|d| format!("in {}", declared_at(d)))
+        .collect();
+    Some(declaration_note(&resolved, "", places))
+}
+
+/// `import yaml, declared as pyyaml (matched by known import name)`, then
+/// `qualifier` and the places.
+fn declaration_note(
+    resolved: &resolve::Resolved,
+    qualifier: &str,
+    places: BTreeSet<String>,
+) -> String {
     let method = resolved
         .method_note()
         .map(|m| format!(" ({m})"))
         .unwrap_or_default();
-    Some(format!(
-        "import {}, declared as {}{method} only {}",
-        resolved.matched,
-        resolved.distribution,
-        places.into_iter().collect::<Vec<_>>().join(", ")
-    ))
+    let places: Vec<String> = places.into_iter().collect();
+    let mut note = format!(
+        "import {}, declared as {}{method}",
+        resolved.matched, resolved.distribution
+    );
+    for part in [qualifier.to_owned(), places.join(", ")] {
+        if !part.is_empty() {
+            note.push(' ');
+            note.push_str(&part);
+        }
+    }
+    note
+}
+
+/// Where a declaration is written: `functions/notify/requirements.txt:2`,
+/// `requirements-dev.txt:1 (dev by file name)`, or for a table without
+/// lines `pyproject.toml [project.optional-dependencies] dev`.
+fn declared_at(declaration: &Declaration) -> String {
+    let e = &declaration.evidence;
+    match (e.line, e.note.as_deref()) {
+        (Some(line), Some(note)) if note != manifest::REQUIREMENTS => {
+            format!("{}:{line} ({note})", e.file)
+        }
+        (Some(line), _) => format!("{}:{line}", e.file),
+        (None, Some(note)) => format!("{} {note}", e.file),
+        (None, None) => e.file.clone(),
+    }
 }
 
 /// The file a dotted import path loads inside `module`: `pkg/sub.py` for
