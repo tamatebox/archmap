@@ -85,10 +85,23 @@ fn write_output(
     Ok(Some(file))
 }
 
+/// Depth that `summary`, `query` and `impact` roll up to unless told
+/// otherwise, so the three always describe the same components.
+pub const DEFAULT_DEPTH: usize = 2;
+
 /// What `archmap query` returns for a component.
 #[derive(Debug, Serialize)]
 pub struct ComponentView<'a> {
+    /// The target as given on the command line.
+    pub requested: &'a str,
+    pub depth: usize,
+    /// The requested component, when it is folded into `component` at this
+    /// depth.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub folded_from: Option<ComponentId>,
     pub component: &'a Component,
+    /// Direct children in the unrolled graph, to query with a larger depth.
+    pub children: Vec<&'a ComponentId>,
     pub symbols: Vec<&'a Symbol>,
     pub outgoing: Vec<&'a Edge>,
     pub incoming: Vec<&'a Edge>,
@@ -101,17 +114,35 @@ pub enum QueryResult<'a> {
     Symbols(Vec<&'a Symbol>),
 }
 
-pub fn query(path: &str, target: &str, format: OutputFormat) -> Result<ExitCode> {
+pub fn query(path: &str, target: &str, depth: usize, format: OutputFormat) -> Result<ExitCode> {
     let report = run_scan(path, false)?;
-    let graph = &report.graph;
+    let full = &report.graph;
+    let rolled = full.rollup(depth);
 
-    let result = if let Some(component) = find_component(graph, target) {
-        QueryResult::Component(component_view(graph, component))
+    let result = if let Some(at) = resolve_at_depth(full, &rolled, depth, target) {
+        let component = rolled
+            .component(&at.id)
+            .with_context(|| format!("`{}` is missing after roll-up", at.id))?;
+        QueryResult::Component(ComponentView {
+            requested: target,
+            depth,
+            folded_from: at.folded_from,
+            component,
+            children: full
+                .components
+                .values()
+                .filter(|c| c.parent.as_ref() == Some(&component.id))
+                .map(|c| &c.id)
+                .collect(),
+            symbols: rolled.symbols_of(&component.id).collect(),
+            outgoing: rolled.outgoing(&component.id).collect(),
+            incoming: rolled.incoming(&component.id).collect(),
+        })
     } else {
-        let symbols: Vec<&Symbol> = graph
+        let symbols: Vec<&Symbol> = rolled
             .symbol(&SymbolId::new(target))
             .into_iter()
-            .chain(graph.symbols_named(target))
+            .chain(rolled.symbols_named(target))
             .collect();
         if symbols.is_empty() {
             bail!("no component or symbol named `{target}`");
@@ -121,6 +152,38 @@ pub fn query(path: &str, target: &str, format: OutputFormat) -> Result<ExitCode>
 
     println!("{}", render(&result, format)?);
     Ok(ExitCode::SUCCESS)
+}
+
+/// A component as seen at a roll-up depth.
+struct AtDepth {
+    id: ComponentId,
+    folded_from: Option<ComponentId>,
+}
+
+/// Find `target` among the components visible at `depth`. A component that
+/// is folded at this depth resolves to the ancestor it was folded into.
+fn resolve_at_depth(
+    full: &ArchitectureGraph,
+    rolled: &ArchitectureGraph,
+    depth: usize,
+    target: &str,
+) -> Option<AtDepth> {
+    if let Some(visible) = find_component(rolled, target) {
+        return Some(AtDepth {
+            id: visible.id.clone(),
+            folded_from: None,
+        });
+    }
+    find_component(full, target).map(|c| fold(full, depth, &c.id))
+}
+
+fn fold(full: &ArchitectureGraph, depth: usize, id: &ComponentId) -> AtDepth {
+    let ancestor = full.ancestor_at(id, depth);
+    let folded_from = (ancestor != *id).then(|| id.clone());
+    AtDepth {
+        id: ancestor,
+        folded_from,
+    }
 }
 
 /// Exact id first, then a unique match on the display name.
@@ -134,40 +197,42 @@ fn find_component<'a>(graph: &'a ArchitectureGraph, target: &str) -> Option<&'a 
     })
 }
 
-fn component_view<'a>(graph: &'a ArchitectureGraph, component: &'a Component) -> ComponentView<'a> {
-    ComponentView {
-        component,
-        symbols: graph.symbols_of(&component.id).collect(),
-        outgoing: graph.outgoing(&component.id).collect(),
-        incoming: graph.incoming(&component.id).collect(),
-    }
-}
-
 #[derive(Debug, Serialize)]
 pub struct ImpactResult<'a> {
-    pub target: &'a ComponentId,
+    /// The target as given on the command line.
+    pub requested: &'a str,
+    pub depth: usize,
+    pub target: ComponentId,
+    /// The component that owns the request, when it is folded into `target`
+    /// at this depth.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub folded_from: Option<ComponentId>,
     /// Components that directly depend on the target.
     pub direct: Vec<ComponentId>,
     /// Every component that transitively depends on the target.
     pub transitive: Vec<ComponentId>,
 }
 
-pub fn impact(path: &str, target: &str, format: OutputFormat) -> Result<ExitCode> {
+pub fn impact(path: &str, target: &str, depth: usize, format: OutputFormat) -> Result<ExitCode> {
     // Import edges come from source, so impact needs a full scan.
     let report = run_scan(path, false)?;
-    let graph = &report.graph;
+    let full = &report.graph;
+    let rolled = full.rollup(depth);
 
-    let component = find_component(graph, target)
-        .or_else(|| graph.component_for_path(target))
+    let at = resolve_at_depth(full, &rolled, depth, target)
+        .or_else(|| {
+            full.component_for_path(target)
+                .map(|c| fold(full, depth, &c.id))
+        })
         .with_context(|| format!("no component or file `{target}` in graph"))?;
 
     let result = ImpactResult {
-        target: &component.id,
-        direct: graph.dependents_of(&component.id).into_iter().collect(),
-        transitive: graph
-            .transitive_dependents(&component.id)
-            .into_iter()
-            .collect(),
+        requested: target,
+        depth,
+        direct: rolled.dependents_of(&at.id).into_iter().collect(),
+        transitive: rolled.transitive_dependents(&at.id).into_iter().collect(),
+        target: at.id,
+        folded_from: at.folded_from,
     };
     println!("{}", render(&result, format)?);
     Ok(ExitCode::SUCCESS)

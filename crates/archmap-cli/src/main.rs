@@ -50,29 +50,40 @@ enum Command {
         #[arg(default_value = ".")]
         path: String,
         /// Containment depth to roll modules up to; 0 keeps only packages.
-        #[arg(long, default_value_t = 2)]
+        #[arg(long, default_value_t = commands::DEFAULT_DEPTH)]
         depth: usize,
         /// File to write the summary to; `-` writes to stdout.
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
     /// Show a component or symbol with its relationships.
+    ///
+    /// Components are rolled up to `--depth` like in `summary`; a deeper
+    /// component resolves to the component it is folded into.
     Query {
         /// Component id (e.g. `archmap-core`) or symbol name (e.g. `scan`).
         target: String,
         /// Repository root to scan.
         #[arg(long, default_value = ".")]
         path: String,
+        /// Containment depth to roll modules up to, as in `summary`.
+        #[arg(long, default_value_t = commands::DEFAULT_DEPTH)]
+        depth: usize,
         #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
         format: OutputFormat,
     },
     /// List components that may be affected when a component or file changes.
+    ///
+    /// Components are rolled up to `--depth` like in `summary`.
     Impact {
         /// Component id or a file path relative to the repository root.
         target: String,
         /// Repository root to scan.
         #[arg(long, default_value = ".")]
         path: String,
+        /// Containment depth to roll modules up to, as in `summary`.
+        #[arg(long, default_value_t = commands::DEFAULT_DEPTH)]
+        depth: usize,
         #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
         format: OutputFormat,
     },
@@ -100,13 +111,15 @@ fn main() -> ExitCode {
         Command::Query {
             target,
             path,
+            depth,
             format,
-        } => commands::query(&path, &target, format),
+        } => commands::query(&path, &target, depth, format),
         Command::Impact {
             target,
             path,
+            depth,
             format,
-        } => commands::impact(&path, &target, format),
+        } => commands::impact(&path, &target, depth, format),
         Command::Check { path } => commands::check(&path),
     };
 

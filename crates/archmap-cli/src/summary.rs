@@ -51,7 +51,8 @@ fn header(out: &mut String, graph: &ArchitectureGraph, depth: usize) {
     );
     let _ = writeln!(
         out,
-        "Drill down with `archmap query <component>` and `archmap impact <component-or-file>`.\n"
+        "Drill down with `archmap query <component> --depth {depth}` and \
+         `archmap impact <component-or-file> --depth {depth}`; they list the same components as this summary.\n"
     );
 }
 
@@ -284,7 +285,7 @@ fn most_depended_on(out: &mut String, rolled: &ArchitectureGraph) {
             "- {}: used by {}, uses {}",
             name_of(rolled, id),
             plural(n_in, "component"),
-            plural(n_out, "component")
+            plural(n_out, "internal component")
         );
     }
 }

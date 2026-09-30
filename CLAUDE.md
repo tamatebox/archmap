@@ -43,11 +43,21 @@ Never add a dependency that points against the arrow. Never make `archmap-core` 
 4. Add a fixture under `fixtures/` and an integration test in `crates/archmap-scan/tests/`.
 5. Do not change `archmap-core` unless a genuinely new *kind* of fact appears. Prefer a new `EdgeKind` / `SymbolKind` variant over new structs.
 
+## Distributed plugin
+
+- `plugins/archmap/` is what users install, for agents that *use* archmap in their own repositories; this file is for agents that develop archmap. `.claude-plugin/marketplace.json` lists it.
+- The plugin only calls the `archmap` binary. Keep the CLI vendor-neutral: nothing in `crates/` knows about any agent.
+- `plugins/archmap/skills/archmap/SKILL.md` restates CLI behavior. When a change alters commands, flags, output wording or a known gap the skill names, update the skill in the same change.
+- Keep the skill a short guide to reading output and choosing the next command, not a manual. Its frontmatter follows the [Agent Skills](https://agentskills.io/specification) spec, so the skill directory also works outside Claude Code.
+- `plugin.json` omits `version` on purpose so installs follow commits. After editing, run `claude plugin validate .`; it warns about the missing version and must otherwise pass.
+
 ## Conventions
 
 - Component ids: internal packages use the package name; sub-units (Python packages) use `<package>::<dotted.path>`; external dependencies use the `ext:` prefix. `Component.name` is the short, human-typed form (`shop.billing`) and `query` / `impact` accept it when unique.
 - Symbol ids: `<component>::<module path>::<name>`; methods are `Type::method` (Rust) or `Class.method` (Python).
 - A `Module` component sets `parent` to its enclosing component. Containment is a field, not an edge.
+- `summary`, `query` and `impact` share `DEFAULT_DEPTH` and roll up the same way. Never let them describe different components.
+- External dependency edges point only at declared distributions. An import is not a declaration; undeclared imports belong to rules, not edges. Evidence notes record how an import name was resolved.
 - Paths in evidence are relative to the scanned root with `/` separators.
 - Output must be deterministic: sort collections, no timestamps. Evidence and the summary never contain absolute paths.
 - `SCHEMA_VERSION` in `archmap-core` is bumped on breaking JSON changes.

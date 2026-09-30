@@ -29,6 +29,23 @@ The graph is meant to be consumed by agents as much as by humans:
 
 An MCP adapter is planned, but the engine and CLI come first.
 
+### Agent plugin
+
+`plugins/archmap/` is a plugin whose skill tells a coding agent how to read
+archmap output: start from `summary`, drill down with `query` and `impact`,
+and keep in mind what the graph cannot see. It only calls the CLI, so
+install both:
+
+```bash
+cargo install --path crates/archmap-cli   # puts `archmap` on PATH
+claude plugin marketplace add ./          # Claude Code, from the root of a clone
+claude plugin install archmap@archmap
+```
+
+The skill directory, `plugins/archmap/skills/archmap/`, follows the
+[Agent Skills](https://agentskills.io/specification) format, so other agents
+can use a copy of it.
+
 ## Core ideas
 
 1. **Code Graph is not Architecture Graph.** Nodes are components and public
@@ -64,6 +81,10 @@ An MCP adapter is planned, but the engine and CLI come first.
     components (PEP 420), so `tests/`, `scripts/` or `experiments/` are components of their own
   - `import` / `from ... import` (including relative imports) become `import` edges between modules,
     or to a declared external dependency
+  - import names are matched to declared distributions by name (`pandas_gbq`), by dotted name
+    (`google.cloud.bigquery`), through installed `RECORD` files in a `.venv`, and finally through a small
+    table of well-known names (`sklearn`, `yaml`); the evidence note of each import says which one matched,
+    and imports of undeclared packages are not edges
   - public top-level `def` / `class` / `CONSTANT` and public methods of public classes become symbols
     for files inside a regular package tree; test files (pytest conventions) and namespace trees outside
     any regular package contribute imports only
@@ -72,10 +93,10 @@ An MCP adapter is planned, but the engine and CLI come first.
 - structural roll-up and a deterministic Markdown summary, written to `<root>/.archmap/summary.md`
 - `query` and `impact` implemented on top of the scanned graph; `check` is a stub
 
-Known gaps: `import yaml` is not linked to the `PyYAML` distribution (import
-name and distribution name differ); imports of undeclared third-party
-packages and the standard library produce no edges; Rust components are
-package-level while Python components are module-level.
+Known gaps: imports of undeclared packages and the standard library produce
+no edges by design, so an undeclared dependency is invisible until rules
+exist; dynamic imports are not seen; Rust components are package-level while
+Python components are module-level.
 
 ## Usage
 
@@ -90,6 +111,7 @@ cargo run -p archmap-cli -- query archmap-core
 cargo run -p archmap-cli -- query scan            # by symbol name
 cargo run -p archmap-cli -- impact archmap-core
 cargo run -p archmap-cli -- impact crates/archmap-scan/src/lib.rs
+cargo run -p archmap-cli -- query src.pipeline.components --depth 3 --path ../some-python-repo
 cargo run -p archmap-cli -- check                 # not implemented yet, exits 2
 
 # any Python project or package directory works the same way
@@ -147,28 +169,36 @@ folded into its ancestor. The summary lists:
 On a 380-file Python repository, depth 2 turns a 528 KB graph into a
 summary of about 10 KB.
 
+`summary`, `query` and `impact` share one default depth, so they always
+describe the same components. Asking `query` or `impact` about a component
+that is folded at that depth answers for the component it is folded into,
+reports `folded_from`, and `query` lists the `children` to ask about with a
+larger `--depth`.
+
 ## Roadmap
 
 | Phase | Scope | Status |
 |---|---|---|
 | 0 Discovery | languages, manifests, packages; report detected languages even without an analyzer | Rust and Python only |
 | 1 Structural Facts | modules, public symbols, imports, dependencies | Rust and Python |
-| 2 Structural Compression | roll-up, summary, query, impact | in progress |
+| 2 Structural Compression | roll-up, summary, and query and impact at the summary's depth | done for Python |
 | 3 Rules & Declared Architecture | declared components and layers, cycles, forbidden dependencies, drift, CI `check` | planned |
 | 4 Cross-system Graph | OpenAPI, Terraform, databases, HTTP, events | planned |
 | 5 Semantic Enrichment | LLM naming and responsibilities, stored as inferred facts | planned |
 | 6 Agent Interface | MCP adapter over the same engine | planned |
 | 7 Incremental / Runtime | diff scans, cache, runtime traces | planned |
 
-Before going past Phase 2, the summary is evaluated with a coding agent:
-the same tasks run with and without it, comparing correctness first and
-tokens, tool calls and turns second. Next items inside Phase 2:
+Python is evaluation-ready: import names resolve to declared distributions,
+and `query` and `impact` see the same components as `summary`. The next step
+is an evaluation with a coding agent, comparing the same tasks without
+archmap and with archmap as a whole: the summary up front, plus `query` and
+`impact` on demand. Correctness is compared first, then tokens, tool calls
+and turns.
 
-- resolve import names to declared distributions (`google.cloud.bigquery`
-  to `google-cloud-bigquery`, installed `RECORD` files, a small alias table)
-  and record how each was resolved
-- generic discovery so that repositories in unsupported languages still get
-  a language and manifest overview
+Rules, cross-system graphs, LLM enrichment and MCP do not change what an
+agent learns about a repository, so they wait for that evaluation. Before
+Rust repositories are evaluated, Rust needs module-level components; generic
+discovery for unsupported languages completes Phase 0.
 
 ## Development
 

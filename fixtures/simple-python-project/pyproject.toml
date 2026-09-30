@@ -1,7 +1,7 @@
 [project]
 name = "shop"
 version = "0.1.0"
-dependencies = ["requests>=2", "SQLAlchemy[asyncio]>=2"]
+dependencies = ["requests>=2", "SQLAlchemy[asyncio]>=2", "google-cloud-bigquery>=3", "scikit-learn>=1"]
 
 [project.optional-dependencies]
 dev = ["pytest"]

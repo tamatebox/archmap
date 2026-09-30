@@ -181,7 +181,7 @@ fn summary_is_deterministic_markdown() {
         "## External dependencies",
         "- requests: declared in `pyproject.toml`, `requirements.txt`; \
          imported by 1 component: shop.billing (1)",
-        "- pyyaml: declared in `requirements.txt`; no resolved imports",
+        "- pyyaml: declared in `requirements.txt`; imported by 1 component: shop.billing (1)",
         "## Most depended-on",
     ] {
         assert!(
@@ -223,4 +223,93 @@ fn summary_writes_under_dot_archmap_by_default() {
     let written = std::fs::read_to_string(repo.join(".archmap/summary.md")).unwrap();
     assert!(written.starts_with("# Architecture summary: "));
     std::fs::remove_dir_all(&repo).unwrap();
+}
+
+/// Run an archmap subcommand against the Python fixture and parse its JSON.
+fn fixture_json(args: &[&str]) -> serde_json::Value {
+    let out = archmap()
+        .args(args)
+        .arg("--path")
+        .arg(python_fixture())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
+#[test]
+fn query_folds_deep_components_like_the_summary() {
+    let view = fixture_json(&["query", "shop.integrations.slack"]);
+    assert_eq!(view["depth"], 2);
+    assert_eq!(view["component"]["id"], "shop::shop.integrations");
+    assert_eq!(view["folded_from"], "shop::shop.integrations.slack");
+    assert_eq!(
+        view["children"],
+        serde_json::json!(["shop::shop.integrations.slack"])
+    );
+    let symbols: Vec<&str> = view["symbols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(symbols, vec!["notify", "send_webhook"]);
+
+    let deeper = fixture_json(&["query", "shop.integrations.slack", "--depth", "3"]);
+    assert_eq!(deeper["component"]["id"], "shop::shop.integrations.slack");
+    assert!(deeper.get("folded_from").is_none());
+}
+
+#[test]
+fn impact_of_a_file_uses_the_summary_depth() {
+    let result = fixture_json(&["impact", "src/shop/integrations/slack/__init__.py"]);
+    assert_eq!(result["target"], "shop::shop.integrations");
+    assert_eq!(result["folded_from"], "shop::shop.integrations.slack");
+    assert_eq!(result["direct"], serde_json::json!(["shop::shop"]));
+    assert_eq!(
+        result["transitive"],
+        serde_json::json!([
+            "shop::scripts",
+            "shop::shop",
+            "shop::shop.billing",
+            "shop::tests",
+            "shop::tests.unit"
+        ])
+    );
+}
+
+#[test]
+fn every_summary_component_is_visible_to_query_and_impact() {
+    let summary = summary_stdout(&[]);
+    let components = summary
+        .split("## Components")
+        .nth(1)
+        .and_then(|rest| rest.split("\n## ").next())
+        .unwrap();
+    let names: std::collections::BTreeSet<&str> = components
+        .lines()
+        .filter_map(|l| l.trim_start().strip_prefix("- "))
+        .filter_map(|l| l.split(": ").next())
+        .collect();
+    assert!(names.contains("shop.billing") && names.contains("tests.unit"));
+
+    for name in names {
+        let view = fixture_json(&["query", name]);
+        assert!(view.get("folded_from").is_none(), "`{name}` is folded");
+        assert_eq!(view["component"]["name"], name);
+
+        let impact = fixture_json(&["impact", name]);
+        assert!(impact.get("folded_from").is_none());
+        for id in impact["transitive"].as_array().unwrap() {
+            let dependent = fixture_json(&["query", id.as_str().unwrap()]);
+            assert!(
+                dependent.get("folded_from").is_none(),
+                "impact of `{name}` names `{id}`, which the summary does not show"
+            );
+        }
+    }
 }

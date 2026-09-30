@@ -99,8 +99,28 @@ fn imports_resolve_between_modules_and_to_declared_externals() {
 
     assert!(find("shop::shop.billing", "ext:requests").is_some());
     assert!(find("shop::shop.billing", "ext:sqlalchemy").is_some());
-    // `import yaml` cannot be matched to the `PyYAML` distribution: no edge
-    assert!(find("shop::shop.billing", "ext:pyyaml").is_none());
+    // import names that differ from distribution names still resolve, and
+    // the evidence says how
+    let note = |from: &str, to: &str| {
+        find(from, to).map(|e| e.evidence[0].note.clone().unwrap_or_default())
+    };
+    assert_eq!(
+        note("shop::shop.billing", "ext:pyyaml").as_deref(),
+        Some("import yaml, matched by known import name")
+    );
+    assert_eq!(
+        note("shop::shop", "ext:google-cloud-bigquery").as_deref(),
+        Some("import google.cloud.bigquery, matched by dotted name")
+    );
+    assert_eq!(
+        note("shop::shop", "ext:scikit-learn").as_deref(),
+        Some("import sklearn, matched by known import name")
+    );
+    // google.api_core is imported but not declared: not a dependency edge
+    assert!(graph
+        .components
+        .keys()
+        .all(|k| !k.as_str().contains("api-core")));
     // stdlib and self-imports are not edges
     assert!(graph.edges.iter().all(|e| e.from != e.to));
     assert!(graph.components.keys().all(|k| !k.as_str().contains("os")));
@@ -302,4 +322,54 @@ fn scanning_a_package_directory_uses_its_name_as_top_level() {
         .edges
         .iter()
         .any(|e| e.from == sub && e.to == top && e.kind == EdgeKind::Import));
+}
+
+#[test]
+fn installed_record_files_resolve_import_names() {
+    let dir = std::env::temp_dir().join(format!("archmap-venv-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let dist_info = dir.join(".venv/lib/python3.12/site-packages/fancy_lib-1.0.dist-info");
+    std::fs::create_dir_all(&dist_info).unwrap();
+    std::fs::create_dir_all(dir.join("app")).unwrap();
+    std::fs::write(
+        dir.join("pyproject.toml"),
+        "[project]\nname = \"demo\"\ndependencies = [\"fancy-lib\", \"other-lib\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dist_info.join("RECORD"),
+        "fancylib/__init__.py,sha256=x,10\nfancy_lib-1.0.dist-info/RECORD,,\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("app/__init__.py"),
+        "import fancylib\nimport otherlib\n",
+    )
+    .unwrap();
+
+    let graph = scan(&dir, &ScanOptions::default()).unwrap().graph;
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    let edge = graph
+        .edges
+        .iter()
+        .find(|e| e.from == id("demo::app") && e.to == id("ext:fancy-lib"))
+        .expect("resolved through the installed RECORD");
+    assert_eq!(
+        edge.evidence[0].note.as_deref(),
+        Some(
+            "import fancylib, provided per \
+             .venv/lib/python3.12/site-packages/fancy_lib-1.0.dist-info/RECORD"
+        )
+    );
+    // nothing says which distribution provides `otherlib`: no edge
+    assert!(!graph
+        .edges
+        .iter()
+        .any(|e| e.to == id("ext:other-lib") && e.kind == EdgeKind::Import));
+    // the virtualenv itself is never scanned as source
+    assert!(graph
+        .components
+        .keys()
+        .all(|k| !k.as_str().contains("fancylib")));
 }

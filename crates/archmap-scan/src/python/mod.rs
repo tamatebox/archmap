@@ -14,7 +14,9 @@
 //!   `experiments/` are components of their own instead of being folded into
 //!   the project
 //! - `import` / `from ... import` statements become `Import` edges between
-//!   modules, or to a declared external dependency
+//!   modules, or to a declared external dependency (see [`resolve`] for how
+//!   import names are matched to distributions; undeclared imports are not
+//!   edges)
 //! - public top-level `def` / `class` / `CONSTANT` and public methods become
 //!   symbols for files inside a regular package tree (a namespace directory
 //!   nested in a regular package still counts); test files and namespace
@@ -25,6 +27,7 @@
 //! parsed.
 
 mod manifest;
+mod resolve;
 mod source;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -102,6 +105,12 @@ impl Analyzer for PythonAnalyzer {
             return Ok(output);
         }
 
+        let declared: Vec<BTreeSet<String>> = projects
+            .iter()
+            .map(|p| p.dependencies.keys().cloned().collect())
+            .collect();
+        let installed = load_installed(ctx, &projects);
+
         for file in py_files {
             let (owner, project_idx, base_dotted, in_package_tree) =
                 match owning_module(&modules, file) {
@@ -137,10 +146,15 @@ impl Analyzer for PythonAnalyzer {
                     &mut output,
                 );
             }
+            let resolver = resolve::Resolver {
+                declared: &declared[project_idx],
+                installed: &installed[project_idx],
+            };
             emit_imports(
                 &owner,
                 base_dotted,
                 &projects[project_idx],
+                &resolver,
                 &modules,
                 &by_dotted,
                 &file_display,
@@ -538,6 +552,7 @@ fn emit_imports(
     owner: &ComponentId,
     base_dotted: Option<&str>,
     project: &Project,
+    resolver: &resolve::Resolver,
     modules: &[Module],
     by_dotted: &BTreeMap<&str, usize>,
     file: &str,
@@ -545,8 +560,6 @@ fn emit_imports(
     output: &mut AnalyzerOutput,
 ) {
     for import in &scanned.imports {
-        let mut targets: BTreeSet<ComponentId> = BTreeSet::new();
-
         let full = match resolve_base(base_dotted, import) {
             Some(full) => full,
             None => continue,
@@ -567,37 +580,68 @@ fn emit_imports(
             candidates.push(full.clone());
         }
 
+        // Target -> evidence note. Internal modules win; externals are only
+        // considered when nothing in the repository matches.
+        let mut targets: BTreeMap<ComponentId, String> = BTreeMap::new();
+        let internal_note = if import.level > 0 {
+            "relative import"
+        } else {
+            "import"
+        };
         for candidate in &candidates {
             if let Some(idx) = longest_known_prefix(candidate, by_dotted) {
-                targets.insert(modules[idx].id.clone());
+                targets.insert(modules[idx].id.clone(), internal_note.to_owned());
             }
         }
 
         if targets.is_empty() && import.level == 0 {
-            let top = full.split('.').next().unwrap_or("");
-            if let Some(external) = project
-                .dependencies
-                .get(&manifest::normalize_dist_name(top))
-            {
-                targets.insert(external.clone());
+            for candidate in &candidates {
+                let Some(resolved) = resolver.resolve(candidate) else {
+                    continue;
+                };
+                if let Some(external) = project.dependencies.get(&resolved.distribution) {
+                    targets
+                        .entry(external.clone())
+                        .or_insert_with(|| resolved.note());
+                }
             }
         }
 
-        for target in targets {
+        for (target, note) in targets {
             if target == *owner {
                 continue;
             }
-            let note = if import.level > 0 {
-                "relative import"
-            } else {
-                "import"
-            };
             output.fragment.push_edge(
                 Edge::new(owner.clone(), target, EdgeKind::Import)
                     .with_evidence(Evidence::new(file).at_line(import.line).with_note(note)),
             );
         }
     }
+}
+
+/// Installed metadata for each project: the `.venv` in the project
+/// directory, else the one at the scanned root. Projects sharing a
+/// virtualenv share one index.
+fn load_installed(ctx: &RepoContext, projects: &[Project]) -> Vec<resolve::InstalledIndex> {
+    let mut loaded: BTreeMap<PathBuf, resolve::InstalledIndex> = BTreeMap::new();
+    projects
+        .iter()
+        .map(|project| {
+            let venv = [
+                ctx.absolute(&project.dir).join(".venv"),
+                ctx.root().join(".venv"),
+            ]
+            .into_iter()
+            .find(|v| v.is_dir());
+            match venv {
+                Some(venv) => loaded
+                    .entry(venv.clone())
+                    .or_insert_with(|| resolve::InstalledIndex::load(ctx.root(), &venv))
+                    .clone(),
+                None => resolve::InstalledIndex::default(),
+            }
+        })
+        .collect()
 }
 
 /// Absolute dotted path an import refers to, resolving leading dots against
