@@ -23,7 +23,7 @@ Run from the repository root.
 
 - `archmap --version`: if missing, tell the user and continue without archmap.
 - `archmap summary .`: the components, what the map misses (`## Coverage`), and dependencies. `components: 0 shown`: archmap cannot read these languages; continue without it.
-- `archmap query <component|file|symbol>`: public symbols with `file:line`, dependencies both ways with example locations (`file:line -> loaded file`; `(local)`: inside a function), and imports without an edge (`Not mapped`). Give a file by path or as `<component>.<file stem>` (`src/shop/users.py`, `shop.users`); it also lists the statements that import it (`Imported by`).
+- `archmap query <component|file|symbol>`: public symbols with `file:line`, dependencies both ways with example locations (`file:line -> loaded file`; `(local)`: inside a function), and imports without an edge (`Not mapped`). Give a file by path or as `<component>.<file stem>` (`src/shop/users.py`, `shop.users`); a Rust module is its own component, named as `use` writes it (`archmap_core::graph`). A file query also lists the statements that import it (`Imported by`).
 - `archmap impact <component|file>`: components that depend on the target, directly or transitively; for a file, `importers` lists the importing statements.
 - `archmap check`: with an `archmap.toml`, after a change; exit 1 lists broken rules with evidence. `signal:` lines are observations, never failures.
 
@@ -31,9 +31,9 @@ Options: lists are capped (`--verbose` shows all, `--format json` all evidence).
 
 ## Reading the output
 
-- **Observed, not inferred.** Names are package and directory names, not responsibilities; label any role you infer as inference.
+- **Observed, not inferred.** Names are package, directory and module names, not responsibilities; label any role you infer as inference.
 - **A missing edge is not a missing dependency.** `## Coverage` and `Not mapped` show what the map misses, and runtime coupling (HTTP, databases, queues, subprocesses) is unseen. `importers: none resolved` does not mean unused; search the code before calling anything unused.
 - **Everything is rolled up to one depth.** Deeper modules fold into their ancestor (`folded: N`), and on a folded name `query` and `impact` answer for the ancestor (`folded from`). `imports: N` counts statements; `declared: yes` means a manifest declares the dependency too.
 - **Check what a name resolved to.** Names repeat: read the `id:` line (query) or `target` (impact), and retry with the id or a file inside it when a result is surprising.
-- **impact is reachability, not a verdict.** Python is traced file by file, Rust per crate. Listed components may not use what you change; unlisted ones may still depend on it.
+- **impact is reachability, not a verdict.** Python and Rust are traced file by file. In Rust only `use` declarations count: paths written without one (`crate::summary::render(..)`) and unit tests are missed, so search for callers before changing a Rust signature. Listed components may not use what you change; unlisted ones may still depend on it.
 - **Components cover everything under the root**, fixtures and vendored code included: check the path before treating one as product code.
