@@ -1,6 +1,6 @@
 ---
 name: archmap
-description: Explains how to run archmap, a CLI that maps a repository's components and dependencies, and how to read its output. Use when orienting in an unfamiliar Rust or Python repository, locating where code lives, tracing dependencies, judging what a change could affect, or reading archmap output (summary, query, impact, .archmap/ files).
+description: Explains how to run archmap, a CLI that maps a repository's components and dependencies, and how to read its output. Use when orienting in an unfamiliar Rust or Python repository, locating where code lives, tracing dependencies, judging what a change could affect, checking a finished change against the rules in an archmap.toml, or reading archmap output (summary, query, impact, check, .archmap/ files).
 license: MIT
 compatibility: Requires the archmap CLI on PATH.
 ---

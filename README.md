@@ -33,10 +33,11 @@ An MCP adapter is planned, but the engine and CLI come first.
 
 ### Agent plugin
 
-`plugins/archmap/` is a plugin whose skill tells a coding agent how to read
-archmap output: start from `summary`, drill down with `query` and `impact`,
-and keep in mind what the graph cannot see. It only calls the CLI, so
-install both:
+`plugins/archmap/` is a plugin whose skill tells a coding agent how to use
+archmap around a change: start from `summary`, drill down with `query` and
+`impact`, edit only the source that matters, then run `check` when the
+repository declares rules in `archmap.toml`. It also says what the graph
+cannot see. It only calls the CLI, so install both:
 
 ```bash
 cargo install --path crates/archmap-cli   # puts `archmap` on PATH
@@ -95,12 +96,12 @@ can use a copy of it.
 - structural roll-up and a deterministic Markdown summary, written to `<root>/.archmap/summary.md`
 - `query` and `impact` implemented on top of the scanned graph
 - `check` compares the graph with a declared architecture in `archmap.toml`: forbidden
-  dependencies, cycles, and declarations that match nothing
+  dependencies, cycles, undeclared imports, and declarations that match nothing
 
-Known gaps: imports of undeclared packages and the standard library produce
-no edges by design, so an undeclared dependency is invisible until rules
-exist; dynamic imports are not seen; Rust components are package-level while
-Python components are module-level.
+Known gaps: the standard library and undeclared packages produce no edges by
+design, though `check` can report undeclared imports; dynamic imports and
+`sys.path` changes made at runtime are not seen; Rust components are
+package-level while Python components are module-level.
 
 ## Usage
 
@@ -178,7 +179,7 @@ folded into its ancestor. The summary lists:
 - external dependencies with where they are declared and who imports them
 - the components depended on by the most others
 
-On a 380-file Python repository, depth 2 turns a 528 KB graph into a
+On a 380-file Python repository, depth 2 turns a 650 KB graph into a
 summary of about 10 KB.
 
 `summary`, `query` and `impact` share one default depth, so they always
@@ -224,21 +225,26 @@ overlap, the most specific one owns a component.
 `check` reports forbidden dependencies with the evidence behind them,
 dependency cycles at the roll-up depth (`depth` in the file or `--depth`,
 default 2), undeclared imports, and declarations, rule sides or `ignore`
-entries that match nothing, so a typo never silently disables a rule.
+entries that match nothing, so a typo never silently disables a rule. It
+exits 0 without findings, 1 with findings, and 2 when the rules or the
+repository cannot be read. archmap checks its own `cli -> scan -> core`
+direction this way; see `archmap.toml`.
 
 For Python, an import counts as declared when a runtime dependency, an extra,
 a dependency group or a dev dependency declares its distribution. Without a
 `.venv`, archmap cannot match every import name to its distribution; add
 such names to `ignore`. With a `.venv`, the finding also names the installed
 distribution that provides the module, which is usually a transitive
-dependency. It exits 0 without findings, 1 with findings,
-and 2 when the rules or the repository cannot be read. archmap checks its own
-`cli -> scan -> core` direction this way; see `archmap.toml`.
+dependency.
 
 The declared architecture never changes what `scan`, `summary`, `query` or
 `impact` report.
 
 ## Roadmap
+
+Phases describe capability layers, not a strict order of work. Phase 6
+already ships a plugin and skill because they only wrap the CLI, while
+Phase 3 is still open.
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -258,19 +264,18 @@ for `impact`, with complete data one `--format json` away. Shrinking
 
 Python is evaluation-ready: import names resolve to declared distributions,
 `query` and `impact` see the same components as `summary`, and the outputs
-meet those sizes. The next step
-is an evaluation with a coding agent, comparing the same tasks without
-archmap and with archmap as a whole: the summary up front, plus `query` and
-`impact` on demand. Correctness is compared first, then tokens, tool calls
-and turns.
+meet those sizes. The next step is an evaluation with a coding agent,
+comparing the same tasks without archmap and with archmap as a whole: the
+summary up front, plus `query` and `impact` on demand. Correctness is
+compared first, then tokens, tool calls and turns.
 
 Cross-system graphs, LLM enrichment and MCP do not change what an agent
 learns about a repository, so they wait for that evaluation. Rules started
 early for the same reason: they never change what `summary`, `query` or
 `impact` report. Still open in Phase 3: ordered layers, and drift beyond
-declarations that match nothing. Before
-Rust repositories are evaluated, Rust needs module-level components; generic
-discovery for unsupported languages completes Phase 0.
+declarations that match nothing. Before Rust repositories are evaluated, Rust
+needs module-level components; generic discovery for unsupported languages
+completes Phase 0.
 
 ## Development
 
