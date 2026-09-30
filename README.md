@@ -240,14 +240,18 @@ says so, and `query` lists the children to ask about with a larger
 
 `query` prints compact text by default: public symbols with their location,
 and each neighboring component with its import count and a few example
-locations. A `Not mapped` section then lists the imports of the component
-that no edge shows, one line per module with the reason (`local name`,
-`extra or dev dependency`, `undeclared`, or `dynamic` for a call that loads
-modules by name) and where they are, so an absent edge is never mistaken for
-an absent dependency. Lists are capped at 30 entries and 3 locations, and the
-rest is counted. On the repository above, its busiest component takes 8 KB as
-text and 118 KB as JSON. `--verbose` lifts the caps and `--format json` adds
-every piece of evidence.
+locations. A location names the file the statement loads when archmap knows
+it, as in `src/core/raw_data.py:6 -> src/utils/log.py`, and ends in
+`(local)` when the import sits inside a function body and so runs only when
+the function is called; the others run when their file loads. A `Not mapped`
+section then lists the imports of the component that no edge shows, one line
+per module with the reason (`local name`, `extra or dev dependency`,
+`undeclared`, or `dynamic` for a call that loads modules by name) and where
+they are, so an absent edge is never mistaken for an absent dependency.
+Lists are capped at 30 entries and 3 locations, and the rest is counted. On
+the repository above, its busiest component takes 10 KB as text and 118 KB
+as JSON. `--verbose` lifts the caps and `--format json` adds every piece of
+evidence.
 
 `impact` follows imports file by file where the evidence names the imported
 file: a component is affected only when one of its files imports what
@@ -379,7 +383,7 @@ Phases 4 to 6 have not started.
 |---|---|---|
 | 0 Discovery | languages, manifests, packages; report detected languages even without an analyzer | Rust and Python; other languages are counted in `summary`, not analyzed |
 | 1 Structural Facts | modules, public symbols, imports with their target file and scope, dependencies | Rust and Python; target files and scope for Python |
-| 2 Structural Compression & Agent Context | roll-up; `summary`, `query` and `impact` small enough for an agent and at one granularity; full detail with `--format json` | done for Python; `impact` follows files; `summary` and `query` say what the graph does not map |
+| 2 Structural Compression & Agent Context | roll-up; `summary`, `query` and `impact` small enough for an agent and at one granularity; full detail with `--format json` | done for Python: `impact` follows files, `query` locations name the imported file, and `summary` and `query` say what the graph does not map |
 | 3 Rules & Declared Architecture | declared components and layers, cycles, forbidden dependencies, drift, CI `check` | done: deny rules, layers, allow lists, coverage, cycles with a file-level reading, undeclared imports, stale declarations; structural signals |
 | 4 Deep Static Analysis | precise symbol resolution, call and reference graph, type relationships, selective data flow, test-to-code links; on demand for one component | planned |
 | 5 Cross-system Graph | OpenAPI, Terraform, databases, HTTP, events | planned |

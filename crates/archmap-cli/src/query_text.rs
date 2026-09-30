@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
 use archmap_core::{
-    ArchitectureGraph, ComponentId, ComponentKind, Edge, EdgeKind, Evidence, Symbol, SymbolKind,
-    UnmappedReason,
+    ArchitectureGraph, ComponentId, ComponentKind, Edge, EdgeKind, Evidence, Scope, Symbol,
+    SymbolKind, UnmappedReason,
 };
 
 use crate::commands::{ComponentView, QueryResult};
@@ -190,7 +190,8 @@ fn not_mapped(out: &mut String, view: &ComponentView, caps: &Caps) -> bool {
 
 #[derive(Default)]
 struct Neighbor<'a> {
-    imports: Vec<&'a Evidence>,
+    /// One entry per import statement, with how many more files it loads.
+    imports: Vec<(&'a Evidence, usize)>,
     declared: BTreeSet<&'a str>,
     other: BTreeMap<&'static str, usize>,
 }
@@ -212,12 +213,14 @@ fn neighbors<'a>(
             EdgeKind::Import => {
                 // one entry per statement: a statement can point at several files
                 for e in &edge.evidence {
-                    if !n
+                    match n
                         .imports
-                        .iter()
-                        .any(|x| x.file == e.file && x.line == e.line)
+                        .iter_mut()
+                        .find(|(x, _)| x.file == e.file && x.line == e.line)
                     {
-                        n.imports.push(e);
+                        Some((first, more)) if e.target != first.target => *more += 1,
+                        Some(_) => {}
+                        None => n.imports.push((e, 0)),
                     }
                 }
             }
@@ -257,7 +260,7 @@ fn neighbors<'a>(
                 .imports
                 .iter()
                 .take(caps.locations)
-                .map(|e| location(e))
+                .map(|(e, more)| import_location(e, *more))
                 .collect();
             let more = n.imports.len().saturating_sub(caps.locations);
             truncated |= more > 0;
@@ -325,6 +328,24 @@ fn display(graph: &ArchitectureGraph, id: &ComponentId) -> String {
         Some(c) if c.kind != ComponentKind::External => c.name.clone(),
         _ => id.as_str().to_owned(),
     }
+}
+
+/// `src/a.py:3 -> src/b.py (local)`: where the statement is, the file it
+/// loads when the evidence names one (and how many more), and `(local)` when
+/// it sits inside a function body, so it runs only when the function is
+/// called.
+fn import_location(evidence: &Evidence, more_files: usize) -> String {
+    let mut out = location(evidence);
+    if let Some(target) = &evidence.target {
+        let _ = write!(out, " -> {target}");
+        if more_files > 0 {
+            let _ = write!(out, " (+{})", plural(more_files, "file"));
+        }
+    }
+    if evidence.scope == Some(Scope::Local) {
+        out.push_str(" (local)");
+    }
+    out
 }
 
 fn location(evidence: &Evidence) -> String {

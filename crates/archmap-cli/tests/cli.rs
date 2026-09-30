@@ -522,7 +522,7 @@ fn query_text_is_a_compact_drill_down() {
         "Public symbols: 2\n",
         "  def notify(message: str) -> None  src/shop/integrations/slack/__init__.py:1\n",
         "Depends on: none\n",
-        "Used by: 1\n  shop  1 import: src/shop/__init__.py:3\n",
+        "Used by: 1\n  shop  1 import: src/shop/__init__.py:3 -> src/shop/integrations/slack/__init__.py\n",
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
     }
@@ -553,7 +553,7 @@ fn query_text_caps_long_lists_and_verbose_lifts_the_caps() {
     );
     assert!(
         capped.contains(
-            "app  5 imports: app/__init__.py:1, app/__init__.py:2, app/__init__.py:3, +2 more\n"
+            "app  5 imports: app/__init__.py:1 -> pkg/__init__.py, app/__init__.py:2 -> pkg/__init__.py, app/__init__.py:3 -> pkg/__init__.py, +2 more\n"
         ),
         "{capped}"
     );
@@ -561,7 +561,7 @@ fn query_text_caps_long_lists_and_verbose_lifts_the_caps() {
 
     let full = query_text(&repo, &["pkg", "--verbose"]);
     assert!(full.contains("Public symbols: 40\n"));
-    assert!(full.contains("app/__init__.py:5\n"));
+    assert!(full.contains("app/__init__.py:5 -> pkg/__init__.py\n"));
     assert!(!full.contains("more") && !full.contains("Lists are capped"));
     std::fs::remove_dir_all(&repo).unwrap();
 }
@@ -747,4 +747,48 @@ fn query_lists_imports_the_graph_does_not_map() {
     assert_eq!(view["not_mapped"][2]["reason"], "declared_not_required");
     assert_eq!(view["dynamic_imports"][0]["call"], "import_module");
     assert_eq!(view["dynamic_imports"][0]["evidence"]["scope"], "local");
+}
+
+#[test]
+fn query_locations_name_the_imported_file_and_mark_local_imports() {
+    let utils = query_text(&mixed_fixture(), &["app.utils"]);
+    for expected in [
+        "Depends on: 2\n  app.core    1 import: app/utils/store.py:1 -> app/core/__init__.py\n  app.models  1 import: app/utils/registry.py:1 -> app/models/__init__.py\n",
+        "Used by: 2\n  app.core    1 import: app/core/__init__.py:1 -> app/utils/log.py\n  app.models  1 import: app/models/__init__.py:1 -> app/utils/log.py\n",
+    ] {
+        assert!(utils.contains(expected), "missing `{expected}` in:\n{utils}");
+    }
+    // an import inside a function body runs only when the function is called
+    let a = query_text(&mixed_fixture(), &["app.a"]);
+    assert!(
+        a.contains("\n  app.b  1 import: app/b/__init__.py:2 -> app/a/__init__.py (local)\n"),
+        "{a}"
+    );
+    // manifests and Rust name no file: locations stay as they were
+    let lib_core = query_text(&fixture_root(), &["lib_core"]);
+    assert!(
+        lib_core.contains("\n  app  3 imports: crates/app/src/config.rs:1, crates/app/src/main.rs:1, crates/app/src/main.rs:2; declared in crates/app/Cargo.toml\n"),
+        "{lib_core}"
+    );
+}
+
+#[test]
+fn a_statement_that_loads_several_files_names_the_first_and_counts_the_rest() {
+    let repo = temp_repo("multi-target");
+    std::fs::create_dir_all(repo.join("pkg/lib")).unwrap();
+    std::fs::create_dir_all(repo.join("pkg/app")).unwrap();
+    std::fs::write(repo.join("pkg/lib/__init__.py"), "").unwrap();
+    std::fs::write(repo.join("pkg/lib/a.py"), "def f():\n    pass\n").unwrap();
+    std::fs::write(repo.join("pkg/lib/b.py"), "def g():\n    pass\n").unwrap();
+    std::fs::write(
+        repo.join("pkg/app/__init__.py"),
+        "from pkg.lib import a, b\n",
+    )
+    .unwrap();
+    let text = query_text(&repo, &["pkg.app"]);
+    std::fs::remove_dir_all(&repo).unwrap();
+    assert!(
+        text.contains("\n  pkg.lib  1 import: pkg/app/__init__.py:1 -> pkg/lib/a.py (+1 file)\n"),
+        "{text}"
+    );
 }
