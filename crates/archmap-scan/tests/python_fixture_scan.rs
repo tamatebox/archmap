@@ -446,6 +446,122 @@ fn installed_record_files_resolve_import_names() {
         .all(|k| !k.as_str().contains("fancylib")));
 }
 
+/// A temporary project whose `.venv` holds `google-cloud-bigquery`,
+/// `google-cloud-storage` and `pyyaml`, with `dependencies` declared and the
+/// given files. The caller removes the directory.
+fn namespace_project(name: &str, dependencies: &str, files: &[(&str, &str)]) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("archmap-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let site = dir.join(".venv/lib/python3.12/site-packages");
+    for (dist_info, record) in [
+        (
+            "google_cloud_bigquery-3.0.dist-info",
+            "google/cloud/bigquery/__init__.py,,\n",
+        ),
+        (
+            "google_cloud_storage-2.0.dist-info",
+            "google/cloud/storage/__init__.py,,\n",
+        ),
+        ("PyYAML-6.0.dist-info", "yaml/__init__.py,,\n"),
+    ] {
+        std::fs::create_dir_all(site.join(dist_info)).unwrap();
+        std::fs::write(site.join(dist_info).join("RECORD"), record).unwrap();
+    }
+    std::fs::write(
+        dir.join("pyproject.toml"),
+        format!("[project]\nname = \"demo\"\ndependencies = [{dependencies}]\n"),
+    )
+    .unwrap();
+    for (file, text) in files {
+        let path = dir.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    dir
+}
+
+#[test]
+fn names_imported_from_a_package_that_are_modules_count_on_their_own() {
+    let dir = namespace_project(
+        "names",
+        "",
+        &[
+            ("app/__init__.py", ""),
+            ("app/a.py", "from google.cloud import bigquery, storage\n"),
+            ("app/b.py", "from google.cloud import bigquery, SomeAttr\n"),
+            ("app/c.py", "from yaml import safe_load\n"),
+        ],
+    );
+    let graph = scan(&dir, &ScanOptions::default()).unwrap().graph;
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    let unmapped: Vec<(&str, &str, Vec<&str>)> = graph
+        .unmapped_imports
+        .iter()
+        .map(|u| {
+            (
+                u.evidence.file.as_str(),
+                u.module.as_str(),
+                u.provided_by.iter().map(String::as_str).collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        unmapped,
+        vec![
+            // a name that is not a module is an attribute of the package
+            (
+                "app/b.py",
+                "google.cloud",
+                vec!["google-cloud-bigquery", "google-cloud-storage"]
+            ),
+            (
+                "app/a.py",
+                "google.cloud.bigquery",
+                vec!["google-cloud-bigquery"]
+            ),
+            (
+                "app/b.py",
+                "google.cloud.bigquery",
+                vec!["google-cloud-bigquery"]
+            ),
+            (
+                "app/a.py",
+                "google.cloud.storage",
+                vec!["google-cloud-storage"]
+            ),
+            ("app/c.py", "yaml", vec!["pyyaml"]),
+        ]
+    );
+}
+
+#[test]
+fn a_declared_name_does_not_hide_an_undeclared_one_beside_it() {
+    let dir = namespace_project(
+        "partial",
+        "\"google-cloud-bigquery\"",
+        &[
+            ("app/__init__.py", ""),
+            ("app/a.py", "from google.cloud import bigquery, storage\n"),
+        ],
+    );
+    let graph = scan(&dir, &ScanOptions::default()).unwrap().graph;
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    assert!(graph.edges.iter().any(|e| e.from == id("demo::app")
+        && e.to == id("ext:google-cloud-bigquery")
+        && e.kind == EdgeKind::Import));
+    let unmapped: Vec<(&str, UnmappedReason)> = graph
+        .unmapped_imports
+        .iter()
+        .map(|u| (u.module.as_str(), u.reason))
+        .collect();
+    assert_eq!(
+        unmapped,
+        vec![("google.cloud.storage", UnmappedReason::Undeclared)]
+    );
+}
+
 #[test]
 fn coverage_counts_files_read_per_language() {
     let graph = scan_fixture();
@@ -495,19 +611,6 @@ fn imports_without_an_edge_say_why() {
     assert_eq!(
         unmapped,
         vec![
-            // scripts/report.py: files next to it, reached through sys.path
-            (
-                "shop::scripts",
-                "backfill",
-                UnmappedReason::LocalName,
-                Some(4)
-            ),
-            (
-                "shop::scripts",
-                "helpers",
-                UnmappedReason::LocalName,
-                Some(3)
-            ),
             // declared, but only as the `dev` extra
             (
                 "shop::scripts",
@@ -520,6 +623,50 @@ fn imports_without_an_edge_say_why() {
                 "google.api_core.exceptions",
                 UnmappedReason::Undeclared,
                 Some(3)
+            ),
+            // tests/test_billing.py: scripts/helpers.py, reached through a
+            // sys.path entry that a static scan cannot see
+            ("shop::tests", "helpers", UnmappedReason::LocalName, Some(3)),
+        ]
+    );
+}
+
+#[test]
+fn imports_of_files_next_to_the_importer_resolve_to_them() {
+    let graph = scan_fixture();
+    // scripts/report.py imports helpers.py and backfill.py beside it by bare
+    // name, as a script run directly can
+    let intra = graph
+        .edges
+        .iter()
+        .find(|e| e.from == id("shop::scripts") && e.to == e.from && e.kind == EdgeKind::Import)
+        .expect("self-edge inside scripts");
+    let statements: Vec<_> = intra
+        .evidence
+        .iter()
+        .map(|e| {
+            (
+                e.file.as_str(),
+                e.line,
+                e.target.as_deref(),
+                e.note.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        statements,
+        vec![
+            (
+                "scripts/report.py",
+                Some(3),
+                Some("scripts/helpers.py"),
+                Some("import helpers, next to the importing file (assumes its directory is on sys.path)")
+            ),
+            (
+                "scripts/report.py",
+                Some(4),
+                Some("scripts/backfill.py"),
+                Some("import backfill, next to the importing file (assumes its directory is on sys.path)")
             ),
         ]
     );

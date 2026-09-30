@@ -66,7 +66,9 @@ enum Command {
     /// Components are rolled up to `--depth` like in `summary`; a deeper
     /// component resolves to the component it is folded into.
     Query {
-        /// Component id (e.g. `archmap-core`) or symbol name (e.g. `scan`).
+        /// Component id or name (e.g. `archmap-core`), a file or directory
+        /// path relative to the repository root, or a symbol name (e.g.
+        /// `scan`).
         target: String,
         /// Repository root to scan.
         #[arg(long, default_value = ".")]
@@ -85,7 +87,8 @@ enum Command {
     ///
     /// Components are rolled up to `--depth` like in `summary`.
     Impact {
-        /// Component id or a file path relative to the repository root.
+        /// Component id or name, or a file or directory path relative to
+        /// the repository root.
         target: String,
         /// Repository root to scan.
         #[arg(long, default_value = ".")]

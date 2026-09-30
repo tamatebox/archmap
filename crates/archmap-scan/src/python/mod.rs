@@ -5,7 +5,13 @@
 //!   `Package` component; a repository with `.py` files but no manifest gets
 //!   one root component named after the directory
 //! - declared dependencies (`[project] dependencies`, poetry, requirements
-//!   files) become `Dependency` edges to `ext:*` components
+//!   files) become `Dependency` edges to `ext:*` components. A declaration
+//!   covers the files below its manifest: `pyproject.toml` the whole
+//!   project, a requirements file the closest directory at or above it with
+//!   Python code (`functions/notify/`, but the project for
+//!   `requirements/prod.txt` or `docker/requirements.txt`). Imports resolve
+//!   against the declarations that cover their file, and the edge comes
+//!   from the module of the covered directory
 //! - every directory with `__init__.py` becomes a `Module` component whose
 //!   name is its dotted import path relative to the project (a `src/` without
 //!   `__init__.py` is treated as the source root)
@@ -16,12 +22,18 @@
 //! - `import` / `from ... import` statements become `Import` edges between
 //!   modules, or to a required external dependency (see [`resolve`] for how
 //!   import names are matched to distributions)
+//! - a bare import that matches no module but a `.py` file next to the
+//!   importing file (`import helpers` beside `helpers.py`) loads that file,
+//!   as it does when the directory is on `sys.path` for a script run
+//!   directly or a function deployed from it; the evidence note says so
 //! - an absolute import that maps to no component and is not in the standard
 //!   library is recorded as an [`UnmappedImport`], never as an edge, with
 //!   its reason: declared only as an extra, group or dev dependency; a file
 //!   or directory name in the project (tests and scripts often extend
 //!   `sys.path` at runtime, which a static scan cannot see); or undeclared,
-//!   which `check` can report
+//!   which `check` can report. A name imported from a package that an
+//!   installed distribution provides as a module of its own (`from
+//!   google.cloud import bigquery`) is recorded as that module
 //! - calls that load a module by a computed name (`import_module`,
 //!   `__import__`, `spec_from_file_location`) become [`DynamicImport`]s
 //! - public top-level `def` / `class` / `CONSTANT` and public methods become
@@ -65,11 +77,20 @@ struct Project {
     /// Relative directory; empty for the repository root.
     dir: PathBuf,
     evidence: Vec<Evidence>,
-    /// Normalized distribution name -> external component id.
-    dependencies: BTreeMap<String, ComponentId>,
-    dependency_evidence: Vec<(ComponentId, Evidence)>,
+    /// Required dependencies, each with the directory it is declared for.
+    declarations: Vec<Declaration>,
     /// Extras, groups and dev dependencies: declared, but not edges.
     optional: BTreeSet<String>,
+}
+
+/// A required dependency a manifest declares for the files under `scope`.
+struct Declaration {
+    /// PEP 503 normalized distribution name.
+    name: String,
+    /// The project directory for `pyproject.toml`; for a requirements file,
+    /// see [`requirements_scope`].
+    scope: PathBuf,
+    evidence: Evidence,
 }
 
 struct Module {
@@ -110,17 +131,23 @@ impl Analyzer for PythonAnalyzer {
             map
         };
 
-        emit_components(&projects, &modules, &mut output);
+        let modules_by_dir: BTreeMap<&Path, &Module> =
+            modules.iter().map(|m| (m.dir.as_path(), m)).collect();
+        emit_components(&projects, &modules, &modules_by_dir, &mut output);
 
         output.read.insert(LANGUAGE.to_owned(), 0);
         if ctx.options().manifests_only {
             return Ok(output);
         }
 
-        let declared: Vec<BTreeSet<String>> = projects
+        // What each project declares anywhere, to say where an import that
+        // is undeclared for its own file is declared instead.
+        let declared_anywhere: Vec<BTreeSet<String>> = projects
             .iter()
-            .map(|p| p.dependencies.keys().cloned().collect())
+            .map(|p| p.declarations.iter().map(|d| d.name.clone()).collect())
             .collect();
+        // Directory -> what is declared for its files.
+        let mut declared_for: BTreeMap<(usize, PathBuf), BTreeSet<String>> = BTreeMap::new();
         let installed = load_installed(ctx, &projects);
         let names = local_names(&py_files);
         let local_names: Vec<BTreeSet<String>> = projects
@@ -134,8 +161,6 @@ impl Analyzer for PythonAnalyzer {
             })
             .collect();
 
-        let modules_by_dir: BTreeMap<&Path, &Module> =
-            modules.iter().map(|m| (m.dir.as_path(), m)).collect();
         let known_files: BTreeSet<&Path> = py_files.iter().copied().collect();
         for file in py_files {
             let (owner, project_idx, base_dotted, in_package_tree) =
@@ -173,10 +198,26 @@ impl Analyzer for PythonAnalyzer {
                     &mut output,
                 );
             }
+            let project = &projects[project_idx];
+            let dir = file.parent().unwrap_or(Path::new(""));
+            let declared = declared_for
+                .entry((project_idx, dir.to_path_buf()))
+                .or_insert_with(|| {
+                    project
+                        .declarations
+                        .iter()
+                        .filter(|d| dir.starts_with(&d.scope))
+                        .map(|d| d.name.clone())
+                        .collect()
+                });
             let scope = ImportScope {
-                project: &projects[project_idx],
+                project,
                 declared: resolve::Resolver {
-                    declared: &declared[project_idx],
+                    declared,
+                    installed: &installed[project_idx],
+                },
+                anywhere: resolve::Resolver {
+                    declared: &declared_anywhere[project_idx],
                     installed: &installed[project_idx],
                 },
                 optional: resolve::Resolver {
@@ -226,7 +267,12 @@ fn discover_projects(
                     parsed.dir.clone(),
                     Evidence::new(display_path(rel)).with_note("pyproject.toml"),
                 );
-                add_dependencies(&mut project, &parsed.dependencies, &display_path(rel));
+                add_dependencies(
+                    &mut project,
+                    &parsed.dependencies,
+                    &display_path(rel),
+                    &parsed.dir,
+                );
                 project.optional = parsed.optional_dependencies.iter().cloned().collect();
                 projects.push(project);
             }
@@ -253,7 +299,8 @@ fn discover_projects(
     }
 
     // Requirements files attach to the closest enclosing project, creating a
-    // root project when nothing encloses them.
+    // root project when nothing encloses them, and declare for the files
+    // near them.
     let requirements: Vec<PathBuf> = ctx
         .files()
         .iter()
@@ -276,16 +323,42 @@ fn discover_projects(
             Evidence::new(".").with_note("python files without a manifest"),
         ));
     }
+    let file_projects: Vec<(&Path, Option<usize>)> = py_files
+        .iter()
+        .map(|f| (*f, owning_project(&projects, f).map(|(idx, _)| idx)))
+        .collect();
     for rel in requirements {
         let Some((idx, _)) = owning_project(&projects, &rel) else {
             continue;
         };
         let text = ctx.read_to_string(&rel)?;
         let deps = manifest::parse_requirements(&text);
-        add_dependencies(&mut projects[idx], &deps, &display_path(&rel));
+        let own_files: Vec<&Path> = file_projects
+            .iter()
+            .filter(|(_, owner)| *owner == Some(idx))
+            .map(|(f, _)| *f)
+            .collect();
+        let scope = requirements_scope(&rel, &projects[idx].dir, &own_files);
+        add_dependencies(&mut projects[idx], &deps, &display_path(&rel), &scope);
     }
 
     Ok(projects)
+}
+
+/// The directory whose files a requirements file declares dependencies for:
+/// the closest directory at or above it with some of the project's own
+/// Python files below it, never above the project.
+/// `functions/notify/requirements.txt` next to a `main.py` declares for
+/// `functions/notify/`; `requirements/prod.txt`, `docker/requirements.txt`
+/// and a requirements file whose directory holds only nested projects
+/// declare for the whole project.
+fn requirements_scope(file: &Path, project_dir: &Path, own_files: &[&Path]) -> PathBuf {
+    file.ancestors()
+        .skip(1)
+        .take_while(|dir| dir.starts_with(project_dir))
+        .find(|dir| own_files.iter().any(|f| f.starts_with(dir)))
+        .unwrap_or(project_dir)
+        .to_path_buf()
 }
 
 fn new_project(name: String, dir: PathBuf, evidence: Evidence) -> Project {
@@ -294,24 +367,27 @@ fn new_project(name: String, dir: PathBuf, evidence: Evidence) -> Project {
         name,
         dir,
         evidence: vec![evidence],
-        dependencies: BTreeMap::new(),
-        dependency_evidence: Vec::new(),
+        declarations: Vec::new(),
         optional: BTreeSet::new(),
     }
 }
 
-fn add_dependencies(project: &mut Project, deps: &[PyDependency], file: &str) {
+fn add_dependencies(project: &mut Project, deps: &[PyDependency], file: &str, scope: &Path) {
     for dep in deps {
-        let target = ComponentId::new(format!("{EXTERNAL_PREFIX}{}", dep.name));
-        project
-            .dependencies
-            .insert(dep.name.clone(), target.clone());
         let mut evidence = Evidence::new(file).with_note(&dep.section);
         if let Some(line) = dep.line {
             evidence = evidence.at_line(line);
         }
-        project.dependency_evidence.push((target, evidence));
+        project.declarations.push(Declaration {
+            name: dep.name.clone(),
+            scope: scope.to_path_buf(),
+            evidence,
+        });
     }
+}
+
+fn external_id(distribution: &str) -> ComponentId {
+    ComponentId::new(format!("{EXTERNAL_PREFIX}{distribution}"))
 }
 
 fn dir_name(root: &Path, dir: &Path) -> String {
@@ -493,8 +569,13 @@ fn owning_module<'a>(by_dir: &BTreeMap<&Path, &'a Module>, file: &Path) -> Optio
 // ---------------------------------------------------------------------------
 // emission
 
-fn emit_components(projects: &[Project], modules: &[Module], output: &mut AnalyzerOutput) {
-    for project in projects {
+fn emit_components(
+    projects: &[Project],
+    modules: &[Module],
+    modules_by_dir: &BTreeMap<&Path, &Module>,
+    output: &mut AnalyzerOutput,
+) {
+    for (idx, project) in projects.iter().enumerate() {
         let mut component =
             Component::new(project.id.clone(), &project.name, ComponentKind::Package);
         component.language = Some(LANGUAGE.to_owned());
@@ -502,18 +583,17 @@ fn emit_components(projects: &[Project], modules: &[Module], output: &mut Analyz
         component.evidence = project.evidence.clone();
         output.fragment.push_component(component);
 
-        for (target, evidence) in &project.dependency_evidence {
-            let mut external = Component::new(
-                target.clone(),
-                target.as_str().trim_start_matches(EXTERNAL_PREFIX),
-                ComponentKind::External,
-            );
+        for declaration in &project.declarations {
+            let target = external_id(&declaration.name);
+            let mut external =
+                Component::new(target.clone(), &declaration.name, ComponentKind::External);
             external.language = Some(LANGUAGE.to_owned());
-            external.evidence.push(evidence.clone());
+            external.evidence.push(declaration.evidence.clone());
             output.fragment.push_component(external);
+            let from = declaring_component(modules_by_dir, idx, project, &declaration.scope);
             output.fragment.push_edge(
-                Edge::new(project.id.clone(), target.clone(), EdgeKind::Dependency)
-                    .with_evidence(evidence.clone()),
+                Edge::new(from, target, EdgeKind::Dependency)
+                    .with_evidence(declaration.evidence.clone()),
             );
         }
     }
@@ -531,6 +611,25 @@ fn emit_components(projects: &[Project], modules: &[Module], output: &mut Analyz
         });
         output.fragment.push_component(component);
     }
+}
+
+/// The component that declares dependencies for `scope`: the innermost
+/// module of the project at or above it, else the project itself.
+fn declaring_component(
+    modules_by_dir: &BTreeMap<&Path, &Module>,
+    project_idx: usize,
+    project: &Project,
+    scope: &Path,
+) -> ComponentId {
+    if scope == project.dir {
+        return project.id.clone();
+    }
+    scope
+        .ancestors()
+        .take_while(|dir| dir.starts_with(&project.dir))
+        .filter_map(|dir| modules_by_dir.get(dir))
+        .find(|m| m.project == project_idx)
+        .map_or_else(|| project.id.clone(), |m| m.id.clone())
 }
 
 /// Module path used inside symbol ids: the file stem, or nothing for
@@ -581,7 +680,10 @@ fn emit_symbols(
 /// What an import of one file can resolve against.
 struct ImportScope<'a> {
     project: &'a Project,
+    /// Required dependencies declared for the file's directory.
     declared: resolve::Resolver<'a>,
+    /// Required dependencies declared anywhere in the project.
+    anywhere: resolve::Resolver<'a>,
     optional: resolve::Resolver<'a>,
     installed: &'a resolve::InstalledIndex,
     /// Every file stem and directory name with Python code in the project.
@@ -682,11 +784,9 @@ fn emit_imports(
             let Some(resolved) = ctx.declared.resolve(candidate) else {
                 continue;
             };
-            if let Some(external) = ctx.project.dependencies.get(&resolved.distribution) {
-                externals
-                    .entry(external.clone())
-                    .or_insert_with(|| resolved.note());
-            }
+            externals
+                .entry(external_id(&resolved.distribution))
+                .or_insert_with(|| resolved.note());
         }
         for (target, note) in &externals {
             output.fragment.push_edge(
@@ -695,28 +795,65 @@ fn emit_imports(
             );
         }
 
-        if externals.is_empty() && !full.is_empty() {
-            let top = full.split('.').next().unwrap_or_default();
-            if stdlib::is_stdlib(top) {
-                continue;
+        if full.is_empty() {
+            continue;
+        }
+        let top = full.split('.').next().unwrap_or_default();
+        if stdlib::is_stdlib(top) {
+            continue;
+        }
+        // What no edge covers: each imported name that an installed
+        // distribution provides as a module of its own (`from google.cloud
+        // import bigquery, storage`), and the statement's module for the
+        // other names. Without a virtualenv every name is one of the others.
+        let names = &candidates[..import.names.len()];
+        let (modules, others): (Vec<&String>, Vec<&String>) =
+            names.iter().partition(|c| ctx.installed.is_module(c));
+        let mut uncovered: Vec<(&str, Vec<&String>)> = modules
+            .into_iter()
+            .filter(|m| ctx.declared.resolve(m).is_none())
+            .map(|m| (m.as_str(), vec![m]))
+            .collect();
+        if names.is_empty() || !others.is_empty() {
+            let rest: Vec<&String> = others.into_iter().chain([&full]).collect();
+            if rest.iter().all(|c| ctx.declared.resolve(c).is_none()) {
+                uncovered.push((full.as_str(), rest));
             }
-            let reason = if candidates.iter().any(|c| ctx.optional.resolve(c).is_some()) {
+        }
+        for (module, looked_up) in uncovered {
+            let reason = if looked_up.iter().any(|c| ctx.optional.resolve(c).is_some()) {
                 UnmappedReason::DeclaredNotRequired
             } else if ctx.local_names.contains(top) {
                 UnmappedReason::LocalName
             } else {
                 UnmappedReason::Undeclared
             };
-            let provided_by = match reason {
-                UnmappedReason::Undeclared => ctx.installed.providers_of(&full),
-                _ => Vec::new(),
+            if reason == UnmappedReason::LocalName {
+                if let Some(sibling) = sibling_file(file, top, ctx.known_files) {
+                    let note = format!(
+                        "import {top}, next to the importing file \
+                         (assumes its directory is on sys.path)"
+                    );
+                    output.fragment.push_edge(
+                        Edge::new(owner.clone(), owner.clone(), EdgeKind::Import)
+                            .with_evidence(evidence().with_note(note).pointing_at(sibling)),
+                    );
+                    continue;
+                }
+            }
+            let (provided_by, note) = match reason {
+                UnmappedReason::Undeclared => (
+                    ctx.installed.providers_of(module),
+                    declared_elsewhere(ctx.project, &ctx.anywhere, &looked_up),
+                ),
+                _ => (Vec::new(), None),
             };
             output.fragment.push_unmapped_import(UnmappedImport {
                 from: owner.clone(),
-                module: full.clone(),
+                module: module.to_owned(),
                 reason,
                 provided_by,
-                evidence: evidence().with_note("import"),
+                evidence: evidence().with_note(note.unwrap_or_else(|| "import".to_owned())),
             });
         }
     }
@@ -735,6 +872,49 @@ fn emit_imports(
                 .in_scope(scope),
         });
     }
+}
+
+/// `<name>.py` beside `file`, other than `file` itself: what `import <name>`
+/// loads when the file's directory is on `sys.path`, as it is for a script
+/// run directly or a function deployed from that directory. The file shares
+/// its directory, so it belongs to the importer's own component.
+fn sibling_file(file: &Path, name: &str, known: &BTreeSet<&Path>) -> Option<String> {
+    let sibling = file.parent()?.join(format!("{name}.py"));
+    (sibling != file && known.contains(sibling.as_path())).then(|| display_path(&sibling))
+}
+
+/// Evidence note for an import that is undeclared for its file although the
+/// project declares it for other directories: `import slack_sdk, declared
+/// as slack-sdk only for functions/notify/ in
+/// functions/notify/requirements.txt:2`.
+fn declared_elsewhere(
+    project: &Project,
+    anywhere: &resolve::Resolver,
+    candidates: &[&String],
+) -> Option<String> {
+    let resolved = candidates.iter().find_map(|c| anywhere.resolve(c))?;
+    let places: BTreeSet<String> = project
+        .declarations
+        .iter()
+        .filter(|d| d.name == resolved.distribution)
+        .map(|d| {
+            let at = match d.evidence.line {
+                Some(line) => format!("{}:{line}", d.evidence.file),
+                None => d.evidence.file.clone(),
+            };
+            format!("for {}/ in {at}", display_path(&d.scope))
+        })
+        .collect();
+    let method = resolved
+        .method_note()
+        .map(|m| format!(" ({m})"))
+        .unwrap_or_default();
+    Some(format!(
+        "import {}, declared as {}{method} only {}",
+        resolved.matched,
+        resolved.distribution,
+        places.into_iter().collect::<Vec<_>>().join(", ")
+    ))
 }
 
 /// The file a dotted import path loads inside `module`: `pkg/sub.py` for

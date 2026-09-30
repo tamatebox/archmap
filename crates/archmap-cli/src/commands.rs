@@ -106,6 +106,20 @@ fn file_target(path: &str, target: &str) -> Option<String> {
         .then(|| relative.replace('\\', "/"))
 }
 
+/// The component that owns `target` as a directory under the scanned root,
+/// the same for `query` and `impact`. `Err` when no component contains it.
+fn directory_target<'a>(
+    full: &'a ArchitectureGraph,
+    path: &str,
+    target: &str,
+) -> Option<Result<&'a Component>> {
+    let relative = target.trim_start_matches("./").trim_end_matches('/');
+    Path::new(path).join(relative).is_dir().then(|| {
+        full.component_for_path(&relative.replace('\\', "/"))
+            .with_context(|| format!("no component contains `{target}`"))
+    })
+}
+
 /// Group a file's import evidence by the component at `depth` on the other side.
 fn edges_at_depth(
     full: &ArchitectureGraph,
@@ -186,7 +200,13 @@ pub fn query(
     let full = &report.graph;
     let rolled = full.rollup(depth);
 
-    let result = if let Some(at) = resolve_at_depth(full, &rolled, depth, target) {
+    let at = match resolve_at_depth(full, &rolled, depth, target) {
+        Some(at) => Some(at),
+        None => directory_target(full, path, target)
+            .transpose()?
+            .map(|owner| fold(full, depth, &owner.id)),
+    };
+    let result = if let Some(at) = at {
         let component = rolled
             .component(&at.id)
             .with_context(|| format!("`{}` is missing after roll-up", at.id))?;
@@ -355,26 +375,20 @@ pub fn impact(path: &str, target: &str, depth: usize, format: OutputFormat) -> R
     let component = find_component(&rolled, target)
         .or_else(|| find_component(full, target))
         .map(|c| c.id.clone());
-    let relative = target.trim_start_matches("./").trim_end_matches('/');
-    let on_disk = Path::new(path).join(relative);
     let mut importers = None;
     let (at, reach) = if let Some(id) = component {
         let reach = full.change_impact(ChangeSeed::Component(&id), depth);
         (fold(full, depth, &id), reach)
-    } else if on_disk.is_file() {
+    } else if let Some(file) = file_target(path, target) {
         let owner = full
-            .component_for_path(relative)
+            .component_for_path(&file)
             .with_context(|| format!("no component contains `{target}`"))?;
-        let reach = full.change_impact(ChangeSeed::File(relative), depth);
-        importers = Some(import_sites(full, depth, relative));
+        let reach = full.change_impact(ChangeSeed::File(&file), depth);
+        importers = Some(import_sites(full, depth, &file));
         (fold(full, depth, &owner.id), reach)
-    } else if on_disk.is_dir() {
-        let owner = full
-            .component_for_path(relative)
-            .with_context(|| format!("no component contains `{target}`"))?;
-        let id = owner.id.clone();
-        let reach = full.change_impact(ChangeSeed::Component(&id), depth);
-        (fold(full, depth, &id), reach)
+    } else if let Some(owner) = directory_target(full, path, target).transpose()? {
+        let reach = full.change_impact(ChangeSeed::Component(&owner.id), depth);
+        (fold(full, depth, &owner.id), reach)
     } else {
         bail!("no component or file `{target}` in graph");
     };

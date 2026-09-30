@@ -775,7 +775,7 @@ fn summary_says_what_the_map_does_not_cover_before_the_map() {
     let summary = summary_stdout(&[]);
     let coverage = [
         "\n## Coverage",
-        "python  files: 15  read: 15  imports without an edge: 4",
+        "python  files: 15  read: 15  imports without an edge: 3",
         "not analyzed  shell: 1",
         "dynamic imports: 1  in: scripts 1",
         "runtime coupling: not analyzed (HTTP, databases, queues, subprocesses, configuration-driven loading)",
@@ -790,21 +790,26 @@ fn summary_says_what_the_map_does_not_cover_before_the_map() {
 fn query_lists_imports_the_graph_does_not_map() {
     let text = query_text(&python_fixture(), &["scripts"]);
     let not_mapped = [
-        "\nNot mapped: 4",
-        "  backfill       local name               1 import: scripts/report.py:4",
-        "  helpers        local name               1 import: scripts/report.py:3",
+        "\nNot mapped: 2",
         "  import_module  dynamic                  1 call: scripts/plugins.py:5",
         "  pytest         extra or dev dependency  1 import: scripts/report.py:2\n",
     ]
     .join("\n");
     assert!(text.contains(&not_mapped), "{text}");
+    let tests = query_text(&python_fixture(), &["tests"]);
+    assert!(
+        tests.contains(
+            "\nNot mapped: 1\n  helpers  local name  1 import: tests/test_billing.py:3\n"
+        ),
+        "{tests}"
+    );
     let billing = query_text(&python_fixture(), &["shop.billing"]);
     assert!(billing.contains("\nNot mapped: none\n"), "{billing}");
 
     // every piece of it, with evidence, in JSON
     let view = fixture_json(&["query", "scripts", "--format", "json"]);
-    assert_eq!(view["not_mapped"].as_array().unwrap().len(), 3);
-    assert_eq!(view["not_mapped"][2]["reason"], "declared_not_required");
+    assert_eq!(view["not_mapped"].as_array().unwrap().len(), 1);
+    assert_eq!(view["not_mapped"][0]["reason"], "declared_not_required");
     assert_eq!(view["dynamic_imports"][0]["call"], "import_module");
     assert_eq!(view["dynamic_imports"][0]["evidence"]["scope"], "local");
 }
@@ -889,7 +894,24 @@ fn query_a_file_shows_its_symbols_imports_and_importers() {
     );
     // imports without an edge are listed per file too
     let report = query_text(&python_fixture(), &["scripts/report.py"]);
-    assert!(report.contains("\nNot mapped: 3\n"), "{report}");
+    assert!(report.contains("\nNot mapped: 1\n"), "{report}");
+}
+
+#[test]
+fn a_file_imported_by_bare_name_from_its_own_directory_has_that_importer() {
+    // scripts/report.py runs as a script and writes `import helpers`
+    let text = query_text(&python_fixture(), &["scripts/helpers.py"]);
+    assert!(
+        text.contains("\nImported by: 1\n  scripts  1 import: scripts/report.py:3\n"),
+        "{text}"
+    );
+    let impact = fixture_json(&["impact", "scripts/helpers.py"]);
+    assert_eq!(
+        impact["importers"]["shown"],
+        serde_json::json!([
+            {"file": "scripts/report.py", "line": 3, "component": "shop::scripts"}
+        ])
+    );
 }
 
 #[test]
@@ -942,6 +964,26 @@ fn impact_of_a_file_lists_the_statements_that_import_it() {
         .unwrap();
     let result: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert!(result.get("importers").is_none(), "{result}");
+}
+
+#[test]
+fn a_directory_stands_for_the_component_that_owns_it() {
+    // query answers for the same component as impact, by name or by path
+    let by_name = query_text(&python_fixture(), &["shop.billing"]);
+    for dir in ["src/shop/billing", "./src/shop/billing/"] {
+        assert_eq!(query_text(&python_fixture(), &[dir]), by_name, "{dir}");
+        let impact = fixture_json(&["impact", dir]);
+        assert_eq!(impact["target"], "shop::shop.billing", "{dir}");
+    }
+    // a directory inside a folded component answers for that component
+    let folded = query_text(&python_fixture(), &["src/shop/integrations/slack"]);
+    assert!(
+        folded.starts_with(
+            "shop.integrations (module, python) at src/shop/integrations, depth 2\n\
+             id: shop::shop.integrations\nfolded from: shop.integrations.slack\n"
+        ),
+        "{folded}"
+    );
 }
 
 #[test]

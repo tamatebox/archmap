@@ -111,6 +111,10 @@ can use a copy of it.
     a tree of `.py` files without any manifest gets one root component named after the directory
   - `[project] dependencies`, `[tool.poetry.dependencies]` and `requirements*.txt` become `dependency` edges
     to `ext:*` components (names normalized per PEP 503)
+  - a declaration covers the files below its manifest: `pyproject.toml` the whole project, a requirements
+    file the closest directory at or above it with Python code below it, so `functions/notify/requirements.txt`
+    covers `functions/notify/` while `requirements/prod.txt` and `docker/requirements.txt` cover the project;
+    an import resolves against the declarations that cover its file, including those of enclosing directories
   - every directory with `__init__.py` becomes a `module` component named by its dotted import path
     relative to the project; a `src/` without `__init__.py` is the source root
   - importable directories without `__init__.py` that hold Python files become namespace `module`
@@ -120,13 +124,18 @@ can use a copy of it.
   - the evidence of each import names the file it loads (`pkg/sub.py`, otherwise `pkg/__init__.py`)
     and its scope: `local` inside a function body, `module` elsewhere (including under `if`, `try` and
     `class`); imports between files of one component are kept as self edges, which roll-up hides
+  - a bare import that matches no module but a `.py` file next to the importing file (`import helpers`
+    beside `helpers.py`) loads that file, as it does when the directory is on `sys.path` for a script run
+    directly or a function deployed from it; its evidence note says so
   - import names are matched to declared distributions by name (`pandas_gbq`), by dotted name
     (`google.cloud.bigquery`), through installed `RECORD` files in a `.venv`, and finally through a small
     table of well-known names (`sklearn`, `yaml`); the evidence note of each import says which one matched
   - an import that maps to no component, standard library aside, is recorded without an edge and with
     its reason: `undeclared` (no manifest declares it), `declared_not_required` (declared only as an
     extra, a dependency group or a dev dependency) or `local_name` (a file or directory of that name
-    exists, probably reached through `sys.path`)
+    exists, but not as a file next to the importer, probably reached through a `sys.path` entry added at
+    runtime); a name imported from a package that an installed distribution provides as a module of its
+    own (`from google.cloud import bigquery`) is recorded as that module, each name on its own
   - calls to `import_module`, `__import__` and `spec_from_file_location` are recorded as dynamic imports,
     which no edge can follow
   - public top-level `def` / `class` / `CONSTANT` and public methods of public classes become symbols
@@ -137,7 +146,8 @@ can use a copy of it.
 - structural roll-up and a deterministic, line-oriented summary printed to stdout, starting with
   what the scan could not see
 - `query` on top of the rolled-up graph, for a component, a symbol or a single file, including the
-  imports no edge shows, and `impact` that follows imports file by file
+  imports no edge shows, and `impact` that follows imports file by file; both take a directory for
+  the component that owns it
 - `check` compares the graph with a declared architecture in `archmap.toml`: forbidden
   dependencies, layers, allow lists, coverage, cycles, undeclared imports, and declarations
   that match nothing; it also reports structural signals, with or without `archmap.toml`
@@ -415,7 +425,10 @@ files of each component and different files can close the loop:
 None of these says whether the program fails at runtime.
 
 For Python, an import counts as declared when a runtime dependency, an extra,
-a dependency group or a dev dependency declares its distribution. Without a
+a dependency group or a dev dependency declares its distribution for the
+file's directory. When only a requirements file for another directory
+declares it, such as the one next to a separately deployed function, the
+finding names that file. Without a
 `.venv`, archmap cannot match every import name to its distribution; add
 such names to `ignore`. With a `.venv`, the finding also names the installed
 distribution that provides the module, which is usually a transitive
@@ -460,7 +473,7 @@ comes later.
 |---|---|---|
 | 0 Discovery | languages, manifests, packages; report detected languages even without an analyzer | Rust and Python; Rust targets other than `src/lib.rs` and `src/main.rs` are not discovered; other languages are counted in `summary`, not analyzed |
 | 1 Structural Facts | modules, public symbols, imports with their target file and scope, dependencies | Rust and Python, target files and scope included; Rust imports are `use` declarations and module paths in code, not code inside macro calls |
-| 2 Structural Compression & Agent Context | roll-up; `summary`, `query` and `impact` small enough for an agent and at one granularity; file and module queries whose evidence leads directly to source; full detail with `--format json` | done for Python: `impact` follows files, `query` accepts components, symbols and files, direct importers point to `file:line`, `summary` caps its lists to an 8 KiB budget, and agent-facing commands say what the graph does not map; the same for Rust, except code inside macro calls |
+| 2 Structural Compression & Agent Context | roll-up; `summary`, `query` and `impact` small enough for an agent and at one granularity; file and module queries whose evidence leads directly to source; full detail with `--format json` | done for Python: `impact` follows files, `query` accepts components, symbols, files and directories, direct importers point to `file:line`, `summary` caps its lists to an 8 KiB budget, and agent-facing commands say what the graph does not map; the same for Rust, except code inside macro calls |
 | 3 Rules & Declared Architecture | declared components and layers, cycles, forbidden dependencies, drift, CI `check` | done: deny rules, layers, allow lists, coverage, cycles with a file-level reading, undeclared imports, stale declarations; structural signals |
 | 4 Deep Static Analysis | precise symbol resolution, callers and reference graph, type relationships, selective data flow, test-to-code links; on demand for one selected area | planned; agent traces so far point first to callers and references, then selective data flow |
 | 5 Cross-system Graph | OpenAPI, Terraform, databases, HTTP, events, CI/build/deploy relationships | planned |

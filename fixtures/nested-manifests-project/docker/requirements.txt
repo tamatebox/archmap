@@ -1,0 +1,2 @@
+# image for the batch jobs; no Python code lives here
+PyYAML==6.0

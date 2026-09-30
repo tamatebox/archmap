@@ -1,5 +1,6 @@
 from shop.billing import pay
 from shop.users import User
+import helpers  # scripts/ is on sys.path through pytest's pythonpath
 
 
 def test_pay():

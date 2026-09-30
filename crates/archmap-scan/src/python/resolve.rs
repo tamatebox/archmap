@@ -98,12 +98,20 @@ pub struct Resolved {
 impl Resolved {
     /// Evidence note for an import statement resolved this way.
     pub fn note(&self) -> String {
-        let matched = &self.matched;
+        match self.method_note() {
+            Some(method) => format!("import {}, {method}", self.matched),
+            None => "import".to_owned(),
+        }
+    }
+
+    /// How the import name was matched, unless it is simply the
+    /// distribution name: `matched by dotted name`.
+    pub fn method_note(&self) -> Option<String> {
         match &self.method {
-            Method::Name => "import".to_owned(),
-            Method::DottedName => format!("import {matched}, matched by dotted name"),
-            Method::Installed { record } => format!("import {matched}, provided per {record}"),
-            Method::KnownImportName => format!("import {matched}, matched by known import name"),
+            Method::Name => None,
+            Method::DottedName => Some("matched by dotted name".to_owned()),
+            Method::Installed { record } => Some(format!("provided per {record}")),
+            Method::KnownImportName => Some("matched by known import name".to_owned()),
         }
     }
 }
@@ -155,6 +163,13 @@ impl InstalledIndex {
             .find_map(|len| self.providers.get(&segments[..len].join(".")))
             .map(|dists| dists.iter().cloned().collect())
             .unwrap_or_default()
+    }
+
+    /// Whether an installed distribution placed a module or package at
+    /// exactly `dotted`: `google.cloud.bigquery` is one, `yaml.safe_load`
+    /// is not.
+    pub fn is_module(&self, dotted: &str) -> bool {
+        self.providers.contains_key(dotted)
     }
 
     /// Register one distribution's `RECORD` text.

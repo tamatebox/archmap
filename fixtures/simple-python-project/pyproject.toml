@@ -5,3 +5,6 @@ dependencies = ["requests>=2", "SQLAlchemy[asyncio]>=2", "google-cloud-bigquery>
 
 [project.optional-dependencies]
 dev = ["pytest"]
+
+[tool.pytest.ini_options]
+pythonpath = ["scripts"]
