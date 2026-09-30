@@ -52,6 +52,7 @@ Never add a dependency that points against the arrow. Never make `archmap-core` 
 
 - `plugins/archmap/` is what users install, for agents that *use* archmap in their own repositories; this file is for agents that develop archmap. `.claude-plugin/marketplace.json` lists it.
 - The plugin only calls the `archmap` binary. Keep the CLI vendor-neutral: nothing in `crates/` knows about any agent.
+- `archmap` on PATH is a copy from the last `cargo install`, not the working tree. Develop and verify with `cargo run`; before trying a change through the plugin, reinstall with `cargo install --path crates/archmap-cli`.
 - `plugins/archmap/skills/archmap/SKILL.md` restates CLI behavior. When a change alters commands, flags, output wording or a known gap the skill names, update the skill in the same change.
 - Keep the skill a short guide to reading output and choosing the next command, not a manual. Its frontmatter follows the [Agent Skills](https://agentskills.io/specification) spec, so the skill directory also works outside Claude Code.
 - `plugin.json` omits `version` on purpose so installs follow commits. After editing, run `claude plugin validate .`; it warns about the missing version and must otherwise pass.

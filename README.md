@@ -47,6 +47,11 @@ claude plugin marketplace add ./          # Claude Code, from the root of a clon
 claude plugin install archmap@archmap
 ```
 
+`cargo install` copies the binary, so the `archmap` on PATH does not follow
+the source. Re-run it after pulling or changing the code. While developing,
+use `cargo run -p archmap-cli -- ...` as in [Usage](#usage), which always
+builds the current tree.
+
 The skill directory, `plugins/archmap/skills/archmap/`, follows the
 [Agent Skills](https://agentskills.io/specification) format, so other agents
 can use a copy of it.
