@@ -792,3 +792,84 @@ fn a_statement_that_loads_several_files_names_the_first_and_counts_the_rest() {
         "{text}"
     );
 }
+
+#[test]
+fn query_a_file_shows_its_symbols_imports_and_importers() {
+    let text = query_text(&mixed_fixture(), &["app/utils/log.py"]);
+    for expected in [
+        "app/utils/log.py (file) in app.utils (module, python), depth 2\n",
+        "id: mixed::app.utils\n",
+        "Public symbols: 1\n  def get_logger()  app/utils/log.py:1\n",
+        "Imports: none\n",
+        "Imported by: 2\n  app.core    1 import: app/core/__init__.py:1\n  app.models  1 import: app/models/__init__.py:1\n",
+        "Not mapped: none\n",
+    ] {
+        assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
+    }
+    // a dotted module name reaches the same file
+    let dotted = query_text(&mixed_fixture(), &["app.utils.log"]);
+    assert!(
+        dotted.contains("Imported by: 2\n  app.core    1 import: app/core/__init__.py:1\n"),
+        "{dotted}"
+    );
+    // what a file imports names the loaded file and marks local imports
+    let b = query_text(&mixed_fixture(), &["app/b/__init__.py"]);
+    assert!(
+        b.contains(
+            "Imports: 1\n  app.a  1 import: app/b/__init__.py:2 -> app/a/__init__.py (local)\n"
+        ),
+        "{b}"
+    );
+    // imports without an edge are listed per file too
+    let report = query_text(&python_fixture(), &["scripts/report.py"]);
+    assert!(report.contains("\nNot mapped: 3\n"), "{report}");
+}
+
+#[test]
+fn query_a_rust_file_says_importers_are_not_recorded() {
+    let text = query_text(&fixture_root(), &["crates/lib_core/src/lib.rs"]);
+    assert!(text.contains("\nPublic symbols: "), "{text}");
+    assert!(text.contains("\nImported by: unknown"), "{text}");
+}
+
+#[test]
+fn impact_of_a_file_lists_the_statements_that_import_it() {
+    let out = archmap()
+        .args(["impact", "app/utils/log.py", "--path"])
+        .arg(mixed_fixture())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let result: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(result["importers"]["total"], 2);
+    assert_eq!(
+        result["importers"]["shown"],
+        serde_json::json!([
+            {"file": "app/core/__init__.py", "line": 1, "component": "mixed::app.core"},
+            {"file": "app/models/__init__.py", "line": 1, "component": "mixed::app.models"}
+        ])
+    );
+    // a component target has no importer list
+    let out = archmap()
+        .args(["impact", "app.utils", "--path"])
+        .arg(mixed_fixture())
+        .output()
+        .unwrap();
+    let result: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(result.get("importers").is_none(), "{result}");
+}
+
+#[test]
+fn query_an_unknown_dotted_module_fails() {
+    let out = archmap()
+        .args(["query", "app.utils.nope", "--path"])
+        .arg(mixed_fixture())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("app.utils.nope"));
+}

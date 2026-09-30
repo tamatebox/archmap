@@ -5,8 +5,8 @@ use anyhow::{bail, Context, Result};
 use archmap_core::rules::{FileLevel, Finding, RuleSet};
 use archmap_core::signals::Signal;
 use archmap_core::{
-    ArchitectureGraph, ChangeSeed, Component, ComponentId, DynamicImport, Edge, Evidence, Symbol,
-    SymbolId, UnmappedImport,
+    ArchitectureGraph, ChangeSeed, Component, ComponentId, DynamicImport, Edge, EdgeKind, Evidence,
+    Symbol, SymbolId, UnmappedImport,
 };
 use archmap_scan::{ScanOptions, ScanReport};
 use serde::Serialize;
@@ -119,11 +119,111 @@ pub struct ComponentView<'a> {
     pub dynamic_imports: Vec<&'a DynamicImport>,
 }
 
+/// What `archmap query` returns for a file: the file-level facts behind a
+/// component, rolled up to the same depth.
+#[derive(Debug, Serialize)]
+pub struct FileView<'a> {
+    /// The target as given on the command line (a path or a dotted module name).
+    pub requested: &'a str,
+    pub depth: usize,
+    pub file: String,
+    /// The component that contains the file, at this depth.
+    pub component: Option<ComponentId>,
+    pub symbols: Vec<&'a Symbol>,
+    /// The file's import statements, one edge per imported component.
+    pub imports: Vec<Edge>,
+    /// Statements elsewhere that import the file, one edge per importing
+    /// component. `None` when no evidence names imported files for the
+    /// file's language, so importers are unknown rather than absent.
+    pub importers: Option<Vec<Edge>>,
+    pub not_mapped: Vec<&'a UnmappedImport>,
+    pub dynamic_imports: Vec<&'a DynamicImport>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 pub enum QueryResult<'a> {
     Component(ComponentView<'a>),
+    File(FileView<'a>),
     Symbols(Vec<&'a Symbol>),
+}
+
+/// `target` as a file under the scanned root, relative with `/` separators.
+fn file_target(path: &str, target: &str) -> Option<String> {
+    let relative = target.trim_start_matches("./").trim_end_matches('/');
+    Path::new(path)
+        .join(relative)
+        .is_file()
+        .then(|| relative.replace('\\', "/"))
+}
+
+/// Group a file's import evidence by the component at `depth` on the other side.
+fn edges_at_depth(
+    full: &ArchitectureGraph,
+    depth: usize,
+    pairs: &[(&Edge, &Evidence)],
+    other_side: impl Fn(&Edge) -> &ComponentId,
+    edge: impl Fn(ComponentId, Vec<Evidence>) -> Edge,
+) -> Vec<Edge> {
+    let mut grouped: std::collections::BTreeMap<ComponentId, Vec<Evidence>> = Default::default();
+    for (e, evidence) in pairs {
+        grouped
+            .entry(full.ancestor_at(other_side(e), depth))
+            .or_default()
+            .push((*evidence).clone());
+    }
+    grouped
+        .into_iter()
+        .map(|(id, evidence)| edge(id, evidence))
+        .collect()
+}
+
+fn file_view<'a>(
+    full: &'a ArchitectureGraph,
+    depth: usize,
+    requested: &'a str,
+    file: &str,
+) -> FileView<'a> {
+    let facts = full.file_facts(file);
+    let owner = facts.component.map(|c| full.ancestor_at(c, depth));
+    let here = owner.clone().unwrap_or_else(|| ComponentId::new(file));
+    let imports = edges_at_depth(
+        full,
+        depth,
+        &facts.imports,
+        |e| &e.to,
+        |to, evidence| Edge {
+            from: here.clone(),
+            to,
+            kind: EdgeKind::Import,
+            evidence,
+        },
+    );
+    let importers = facts.importers_recorded.then(|| {
+        edges_at_depth(
+            full,
+            depth,
+            &facts.importers,
+            |e| &e.from,
+            |from, evidence| Edge {
+                from,
+                to: here.clone(),
+                kind: EdgeKind::Import,
+                evidence,
+            },
+        )
+    });
+    FileView {
+        requested,
+        depth,
+        file: facts.file,
+        component: owner,
+        symbols: facts.symbols,
+        imports,
+        importers,
+        not_mapped: facts.unmapped_imports,
+        dynamic_imports: facts.dynamic_imports,
+    }
 }
 
 pub fn query(
@@ -166,16 +266,21 @@ pub fn query(
                 .filter(|i| i.from == component.id)
                 .collect(),
         })
+    } else if let Some(file) = file_target(path, target) {
+        QueryResult::File(file_view(full, depth, target, &file))
     } else {
         let symbols: Vec<&Symbol> = rolled
             .symbol(&SymbolId::new(target))
             .into_iter()
             .chain(rolled.symbols_named(target))
             .collect();
-        if symbols.is_empty() {
-            bail!("no component or symbol named `{target}`");
+        if !symbols.is_empty() {
+            QueryResult::Symbols(symbols)
+        } else if let Some(file) = full.file_for_dotted_name(target) {
+            QueryResult::File(file_view(full, depth, target, file))
+        } else {
+            bail!("no component, file or symbol named `{target}`");
         }
-        QueryResult::Symbols(symbols)
     };
 
     match format {
@@ -245,6 +350,51 @@ pub struct ImpactResult<'a> {
     pub direct: Vec<ComponentId>,
     /// Every component that transitively depends on the target.
     pub transitive: Vec<ComponentId>,
+    /// For a file target: the statements that import the file directly.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub importers: Option<ImportSites>,
+}
+
+/// How many import sites `impact` shows for a file; the rest is counted.
+const MAX_IMPORT_SITES: usize = 5;
+
+#[derive(Debug, Serialize)]
+pub struct ImportSites {
+    /// False when no evidence names imported files for the file's language:
+    /// the importers are unknown, not absent.
+    pub recorded: bool,
+    pub total: usize,
+    pub shown: Vec<ImportSite>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ImportSite {
+    pub file: String,
+    pub line: Option<u32>,
+    /// The importing component, at the roll-up depth.
+    pub component: ComponentId,
+}
+
+fn import_sites(full: &ArchitectureGraph, depth: usize, file: &str) -> ImportSites {
+    let facts = full.file_facts(file);
+    let mut sites: Vec<ImportSite> = Vec::new();
+    for (edge, e) in &facts.importers {
+        if !sites.iter().any(|s| s.file == e.file && s.line == e.line) {
+            sites.push(ImportSite {
+                file: e.file.clone(),
+                line: e.line,
+                component: full.ancestor_at(&edge.from, depth),
+            });
+        }
+    }
+    sites.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+    let total = sites.len();
+    sites.truncate(MAX_IMPORT_SITES);
+    ImportSites {
+        recorded: facts.importers_recorded,
+        total,
+        shown: sites,
+    }
 }
 
 pub fn impact(path: &str, target: &str, depth: usize, format: OutputFormat) -> Result<ExitCode> {
@@ -258,6 +408,7 @@ pub fn impact(path: &str, target: &str, depth: usize, format: OutputFormat) -> R
         .map(|c| c.id.clone());
     let relative = target.trim_start_matches("./").trim_end_matches('/');
     let on_disk = Path::new(path).join(relative);
+    let mut importers = None;
     let (at, reach) = if let Some(id) = component {
         let reach = full.change_impact(ChangeSeed::Component(&id), depth);
         (fold(full, depth, &id), reach)
@@ -266,6 +417,7 @@ pub fn impact(path: &str, target: &str, depth: usize, format: OutputFormat) -> R
             .component_for_path(relative)
             .with_context(|| format!("no component contains `{target}`"))?;
         let reach = full.change_impact(ChangeSeed::File(relative), depth);
+        importers = Some(import_sites(full, depth, relative));
         (fold(full, depth, &owner.id), reach)
     } else if on_disk.is_dir() {
         let owner = full
@@ -285,6 +437,7 @@ pub fn impact(path: &str, target: &str, depth: usize, format: OutputFormat) -> R
         transitive: reach.transitive.into_iter().collect(),
         target: at.id,
         folded_from: at.folded_from,
+        importers,
     };
     println!("{}", render(&result, format)?);
     Ok(ExitCode::SUCCESS)

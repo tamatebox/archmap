@@ -459,6 +459,96 @@ impl ArchitectureGraph {
         out
     }
 
+    /// Files the graph holds evidence about: where public symbols are defined,
+    /// where imports are written, and which files imports load.
+    pub fn known_files(&self) -> BTreeSet<&str> {
+        let mut files: BTreeSet<&str> = BTreeSet::new();
+        for symbol in self.symbols.values() {
+            files.extend(symbol.evidence.iter().map(|e| e.file.as_str()));
+        }
+        for edge in self.edges.iter().filter(|e| e.kind == EdgeKind::Import) {
+            for e in &edge.evidence {
+                files.insert(e.file.as_str());
+                files.extend(e.target.as_deref());
+            }
+        }
+        files.extend(
+            self.unmapped_imports
+                .iter()
+                .map(|i| i.evidence.file.as_str()),
+        );
+        files.extend(
+            self.dynamic_imports
+                .iter()
+                .map(|i| i.evidence.file.as_str()),
+        );
+        files
+    }
+
+    /// The known file addressed as `<component name>.<file stem>`, such as
+    /// `shop.billing.charge` for `src/shop/billing/charge.py` directly inside
+    /// the component `shop.billing`. `None` when no file or several match.
+    pub fn file_for_dotted_name(&self, name: &str) -> Option<&str> {
+        let (prefix, stem) = name.rsplit_once('.')?;
+        let mut found = self.known_files().into_iter().filter(|file| {
+            let (dir, file_name) = file.rsplit_once('/').unwrap_or((".", file));
+            let file_stem = file_name.rsplit_once('.').map_or(file_name, |(s, _)| s);
+            file_stem == stem
+                && self.component_for_path(file).is_some_and(|c| {
+                    c.name == prefix
+                        && c.path.as_deref().map(|p| p.trim_end_matches('/')) == Some(dir)
+                })
+        });
+        match (found.next(), found.next()) {
+            (Some(file), None) => Some(file),
+            _ => None,
+        }
+    }
+
+    /// Everything the graph records about `file`: its public symbols, the
+    /// imports it writes, the imports elsewhere that load it, and the imports
+    /// in it that map to no component.
+    pub fn file_facts(&self, file: &str) -> FileFacts<'_> {
+        let file = file.trim_start_matches("./");
+        let component = self.component_for_path(file);
+        let language = component.and_then(|c| c.language.as_deref());
+        let (mut imports, mut importers, mut recorded) = (Vec::new(), Vec::new(), false);
+        for edge in self.edges.iter().filter(|e| e.kind == EdgeKind::Import) {
+            let to_language = self.component(&edge.to).and_then(|c| c.language.as_deref());
+            for e in &edge.evidence {
+                if e.file == file {
+                    imports.push((edge, e));
+                }
+                if e.target.as_deref() == Some(file) {
+                    importers.push((edge, e));
+                }
+                recorded |= e.target.is_some() && to_language == language;
+            }
+        }
+        FileFacts {
+            file: file.to_owned(),
+            component: component.map(|c| &c.id),
+            symbols: self
+                .symbols
+                .values()
+                .filter(|s| s.evidence.iter().any(|e| e.file == file))
+                .collect(),
+            importers_recorded: recorded || !importers.is_empty(),
+            imports,
+            importers,
+            unmapped_imports: self
+                .unmapped_imports
+                .iter()
+                .filter(|i| i.evidence.file == file)
+                .collect(),
+            dynamic_imports: self
+                .dynamic_imports
+                .iter()
+                .filter(|i| i.evidence.file == file)
+                .collect(),
+        }
+    }
+
     /// Find the component that owns a file path (relative to the repo root),
     /// choosing the component with the longest matching `path` prefix.
     pub fn component_for_path(&self, file: &str) -> Option<&Component> {
@@ -473,6 +563,26 @@ impl ArchitectureGraph {
             })
             .max_by_key(|c| c.path.as_deref().map(str::len).unwrap_or(0))
     }
+}
+
+/// What the graph records about one file, for a file-level query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileFacts<'a> {
+    /// The file, relative to the root.
+    pub file: String,
+    /// The component whose path contains the file.
+    pub component: Option<&'a ComponentId>,
+    /// Public symbols defined in the file.
+    pub symbols: Vec<&'a Symbol>,
+    /// Import statements written in the file, with their edge.
+    pub imports: Vec<(&'a Edge, &'a Evidence)>,
+    /// Import statements elsewhere that load the file, with their edge.
+    pub importers: Vec<(&'a Edge, &'a Evidence)>,
+    /// Whether evidence names imported files for the file's language at all.
+    /// Without it, `importers` is unknown rather than empty (Rust today).
+    pub importers_recorded: bool,
+    pub unmapped_imports: Vec<&'a UnmappedImport>,
+    pub dynamic_imports: Vec<&'a DynamicImport>,
 }
 
 /// Where a change starts, for [`ArchitectureGraph::change_impact`].
@@ -932,6 +1042,70 @@ mod tests {
             dep("pipeline", "util", "pipeline/run.py", "util/store.py"),
         ]);
         graph
+    }
+
+    #[test]
+    fn file_facts_collect_what_a_file_imports_and_who_imports_it() {
+        let graph = files_graph();
+        let log = graph.file_facts("util/log.py");
+        assert_eq!(log.component, Some(&ComponentId::new("util")));
+        assert!(log.imports.is_empty());
+        let importers: Vec<(&str, Option<u32>)> = log
+            .importers
+            .iter()
+            .map(|(_, e)| (e.file.as_str(), e.line))
+            .collect();
+        assert_eq!(
+            importers,
+            vec![("app/main.py", Some(1)), ("core/types.py", Some(1))]
+        );
+        assert!(log.importers_recorded);
+
+        let store = graph.file_facts("util/store.py");
+        let imports: Vec<(&str, Option<&str>)> = store
+            .imports
+            .iter()
+            .map(|(edge, e)| (edge.to.as_str(), e.target.as_deref()))
+            .collect();
+        assert_eq!(imports, vec![("core", Some("core/types.py"))]);
+        assert_eq!(store.importers.len(), 1);
+        assert_eq!(store.importers[0].1.file, "pipeline/run.py");
+    }
+
+    #[test]
+    fn importers_are_unknown_when_no_evidence_names_imported_files() {
+        let mut graph = ArchitectureGraph::default();
+        for id in ["a", "b"] {
+            let mut c = Component::new(id, id, ComponentKind::Package);
+            c.path = Some(id.into());
+            c.language = Some("rust".into());
+            graph.add_component(c);
+        }
+        graph.add_edge(edge("a", "b", "a/src/lib.rs", 3));
+        let facts = graph.file_facts("b/src/lib.rs");
+        assert!(facts.importers.is_empty());
+        assert!(
+            !facts.importers_recorded,
+            "no target files recorded: unknown, not none"
+        );
+        assert_eq!(graph.file_facts("a/src/lib.rs").imports.len(), 1);
+    }
+
+    #[test]
+    fn dotted_names_address_files_directly_inside_a_component() {
+        let graph = files_graph();
+        assert_eq!(graph.file_for_dotted_name("util.log"), Some("util/log.py"));
+        assert_eq!(
+            graph.file_for_dotted_name("core.types"),
+            Some("core/types.py")
+        );
+        assert_eq!(graph.file_for_dotted_name("util.nope"), None);
+        assert_eq!(
+            graph.file_for_dotted_name("util"),
+            None,
+            "a component is not a file"
+        );
+        assert!(graph.known_files().contains("pipeline/run.py"));
     }
 
     #[test]

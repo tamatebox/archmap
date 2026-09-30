@@ -74,6 +74,15 @@ Never add a dependency that points against the arrow. Never make `archmap-core` 
 - Structural scanning (line-based, as in `python/source.rs`) is acceptable when it stays behind the analyzer boundary and is covered by tests; swap in a real parser only when a fixture shows the need.
 - `scan` writes `<root>/.archmap/graph.<ext>` by default and `summary` prints to stdout; `-o <file>` saves either elsewhere and `-o -` is stdout. Write nothing else into the scanned repository: no `.gitignore`, no config. Do not design features that assume graphs are committed to git.
 
+## Navigating this repository
+
+Use archmap on itself, the way the plugin skill teaches, running the current source with `cargo run -q -p archmap-cli --`:
+
+- `summary .` first; fixtures appear as components too, so check paths.
+- Before searching inside a crate or file, `query <crate|file>` and open the `file:line` it gives.
+- Before changing a public item, `impact <file>`.
+- Rust evidence does not name imported files yet: for a Rust file `Imported by` is unknown and `impact` answers per crate, so search for uses inside a crate as before.
+
 ## Commands to run after every change
 
 ```bash

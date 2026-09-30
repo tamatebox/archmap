@@ -7,20 +7,21 @@ compatibility: Requires the archmap CLI on PATH.
 
 # archmap
 
-archmap maps a repository into components (packages, modules, external dependencies) and the dependencies observed in manifests and imports. Use it to decide what to read; the code stays the source of truth.
+archmap maps a repository into components (packages, modules, external dependencies) and the dependencies observed in manifests and imports. Its commands replace searches: run the command first, then open the `file:line` it gives. The code decides what is true; archmap decides where to look.
 
 ## Workflow
 
 Run from the repository root.
 
 1. `archmap --version`. If missing, tell the user and continue without it.
-2. `archmap summary .` for the overview. `components: 0 shown`: archmap cannot read these languages; continue without it.
-3. `archmap query <component>`: public symbols with `file:line`, dependencies both ways with import counts and example locations (`file:line -> loaded file`, `(local)`: inside a function), and children. Lists are capped; `--verbose` shows all, `--format json` all evidence.
-4. `archmap impact <component-or-file>` before a change: components depending on the target.
-5. Open evidence lines, then the source you need.
-6. With an `archmap.toml`, run `archmap check` after a change; exit 1 lists broken rules with evidence. `signal:` lines are observations, never failures.
+2. `archmap summary .` once, to see the components. `components: 0 shown`: archmap cannot read these languages; continue without it.
+3. Pick the component the task most likely touches: a name from the summary, or the component of a file the task names. Before searching inside it, run `archmap query <component>`. It replaces the first grep: public symbols with `file:line`, and dependencies both ways with example locations (`file:line -> loaded file`; `(local)`: inside a function). For one file, pass its path or `<component>.<file stem>` (`src/shop/users.py`, `shop.users`): its symbols, `Imports`, and the statements that import it (`Imported by`).
+4. When `query` shows the `file:line` you need, open it directly. Do not grep for that symbol first.
+5. Before changing a public symbol, a signature, a dependency, or code whose effect may cross components, run `archmap impact <component-or-file>`. It replaces searching for importers; for a file, `importers` lists the importing statements. Skip it for an obviously local edit.
+6. Search normally when `query` lacks what you need, `Not mapped` or `dynamic imports` cover the code in question, or a result is surprising.
+7. With an `archmap.toml`, run `archmap check` after a change; exit 1 lists broken rules with evidence. `signal:` lines are observations, never failures.
 
-Options: `--depth N` (default 2; 0 keeps only packages) applies to `summary`, `query` and `impact`; use one value throughout. `query` also takes a symbol name (`Type::method`, `Class.method`). For another root, `summary <root>`, but `query`/`impact` take `--path <root>`. Do not read the full graph (`archmap scan`, `.archmap/graph.json`).
+Options: lists are capped; `--verbose` shows all, `--format json` all evidence. `--depth N` (default 2; 0 keeps only packages) applies to `summary`, `query` and `impact`; use one value throughout. `query` also takes a symbol name (`Type::method`, `Class.method`). For another root, `summary <root>`, but `query`/`impact` take `--path <root>`. Do not read the full graph (`archmap scan`, `.archmap/graph.json`).
 
 ## Reading the output
 

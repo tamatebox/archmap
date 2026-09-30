@@ -9,11 +9,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
 use archmap_core::{
-    ArchitectureGraph, ComponentId, ComponentKind, Edge, EdgeKind, Evidence, Scope, Symbol,
-    SymbolKind, UnmappedReason,
+    ArchitectureGraph, ComponentId, ComponentKind, DynamicImport, Edge, EdgeKind, Evidence, Scope,
+    Symbol, SymbolKind, UnmappedImport, UnmappedReason,
 };
 
-use crate::commands::{ComponentView, QueryResult};
+use crate::commands::{ComponentView, FileView, QueryResult};
 
 /// Default caps, lifted by `--verbose`.
 const MAX_SYMBOLS: usize = 30;
@@ -55,6 +55,7 @@ pub fn render(
     let mut out = String::new();
     let truncated = match result {
         QueryResult::Component(view) => component(&mut out, view, full, rolled, &caps),
+        QueryResult::File(view) => file(&mut out, view, rolled, &caps),
         QueryResult::Symbols(symbols) => symbol_list(&mut out, symbols, target, rolled, &caps),
     };
     if truncated {
@@ -118,10 +119,10 @@ fn component(
 
     let outgoing = view.outgoing.iter().map(|e| (&e.to, *e));
     let incoming = view.incoming.iter().map(|e| (&e.from, *e));
-    truncated |= neighbors(out, "Depends on", outgoing, rolled, caps);
-    truncated |= neighbors(out, "Used by", incoming, rolled, caps);
+    truncated |= neighbors(out, "Depends on", outgoing, rolled, true, caps);
+    truncated |= neighbors(out, "Used by", incoming, rolled, true, caps);
     if c.kind != ComponentKind::External {
-        truncated |= not_mapped(out, view, caps);
+        truncated |= not_mapped(out, &view.not_mapped, &view.dynamic_imports, caps);
     }
     truncated
 }
@@ -130,10 +131,15 @@ fn component(
 /// loads modules by name) with why and where: the places to read in the
 /// source instead of trusting the edges alone. Returns whether anything was
 /// left out.
-fn not_mapped(out: &mut String, view: &ComponentView, caps: &Caps) -> bool {
+fn not_mapped(
+    out: &mut String,
+    unmapped: &[&UnmappedImport],
+    dynamic: &[&DynamicImport],
+    caps: &Caps,
+) -> bool {
     const DYNAMIC: &str = "dynamic";
     let mut groups: BTreeMap<(&str, &str), Vec<&Evidence>> = BTreeMap::new();
-    for import in &view.not_mapped {
+    for import in unmapped {
         let why = match import.reason {
             UnmappedReason::Undeclared => "undeclared",
             UnmappedReason::DeclaredNotRequired => "extra or dev dependency",
@@ -144,7 +150,7 @@ fn not_mapped(out: &mut String, view: &ComponentView, caps: &Caps) -> bool {
             .or_default()
             .push(&import.evidence);
     }
-    for import in &view.dynamic_imports {
+    for import in dynamic {
         groups
             .entry((import.call.as_str(), DYNAMIC))
             .or_default()
@@ -204,6 +210,7 @@ fn neighbors<'a>(
     title: &str,
     edges: impl Iterator<Item = (&'a ComponentId, &'a Edge)>,
     rolled: &ArchitectureGraph,
+    show_targets: bool,
     caps: &Caps,
 ) -> bool {
     let mut by_id: BTreeMap<&ComponentId, Neighbor> = BTreeMap::new();
@@ -260,7 +267,7 @@ fn neighbors<'a>(
                 .imports
                 .iter()
                 .take(caps.locations)
-                .map(|(e, more)| import_location(e, *more))
+                .map(|(e, more)| import_location(e, *more, show_targets))
                 .collect();
             let more = n.imports.len().saturating_sub(caps.locations);
             truncated |= more > 0;
@@ -283,6 +290,52 @@ fn neighbors<'a>(
         }
         let _ = writeln!(out, "  {name:<width$}  {}", parts.join("; "));
     }
+    truncated
+}
+
+/// A file-level drill-down: the file's public symbols, what it imports, who
+/// imports it (where evidence records that), and its imports without an edge.
+fn file(out: &mut String, view: &FileView, rolled: &ArchitectureGraph, caps: &Caps) -> bool {
+    let component = view.component.as_ref().and_then(|id| rolled.component(id));
+    let mut head = format!("{} (file)", view.file);
+    if let Some(c) = component {
+        let _ = write!(head, " in {} ({}", c.name, component_kind(c.kind));
+        if let Some(language) = &c.language {
+            let _ = write!(head, ", {language}");
+        }
+        head.push(')');
+    }
+    let _ = writeln!(out, "{head}, depth {}", view.depth);
+    if let Some(c) = component {
+        let _ = writeln!(out, "id: {}", c.id);
+    }
+
+    let total = view.symbols.len();
+    let shown = total.min(caps.symbols);
+    let mut truncated = shown < total;
+    let _ = writeln!(out, "\nPublic symbols: {}", count(total, shown));
+    for symbol in view.symbols.iter().take(shown) {
+        let _ = writeln!(out, "  {}", symbol_line(symbol));
+    }
+
+    let imports = view.imports.iter().map(|e| (&e.to, e));
+    truncated |= neighbors(out, "Imports", imports, rolled, true, caps);
+    match &view.importers {
+        Some(edges) => {
+            let importers = edges.iter().map(|e| (&e.from, e));
+            truncated |= neighbors(out, "Imported by", importers, rolled, false, caps);
+        }
+        None => {
+            let language = component
+                .and_then(|c| c.language.as_deref())
+                .unwrap_or("this language");
+            let _ = writeln!(
+                out,
+                "\nImported by: unknown (no evidence names imported files for {language})"
+            );
+        }
+    }
+    truncated |= not_mapped(out, &view.not_mapped, &view.dynamic_imports, caps);
     truncated
 }
 
@@ -334,9 +387,9 @@ fn display(graph: &ArchitectureGraph, id: &ComponentId) -> String {
 /// loads when the evidence names one (and how many more), and `(local)` when
 /// it sits inside a function body, so it runs only when the function is
 /// called.
-fn import_location(evidence: &Evidence, more_files: usize) -> String {
+fn import_location(evidence: &Evidence, more_files: usize, show_target: bool) -> String {
     let mut out = location(evidence);
-    if let Some(target) = &evidence.target {
+    if let Some(target) = evidence.target.as_ref().filter(|_| show_target) {
         let _ = write!(out, " -> {target}");
         if more_files > 0 {
             let _ = write!(out, " (+{})", plural(more_files, "file"));

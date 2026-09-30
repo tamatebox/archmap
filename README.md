@@ -108,8 +108,8 @@ can use a copy of it.
 - JSON output with evidence on every node and edge, written to `<root>/.archmap/graph.json` by default
 - structural roll-up and a deterministic, line-oriented summary printed to stdout, starting with
   what the scan could not see
-- `query` on top of the rolled-up graph, including the imports no edge shows, and `impact` that
-  follows imports file by file
+- `query` on top of the rolled-up graph, for a component, a symbol or a single file, including the
+  imports no edge shows, and `impact` that follows imports file by file
 - `check` compares the graph with a declared architecture in `archmap.toml`: forbidden
   dependencies, layers, allow lists, coverage, cycles, undeclared imports, and declarations
   that match nothing; it also reports structural signals, with or without `archmap.toml`
@@ -148,6 +148,8 @@ cargo run -p archmap-cli -- check --path ../some-python-repo   # no archmap.toml
 cargo run -p archmap-cli -- scan ../some-python-repo
 cargo run -p archmap-cli -- query shop.billing --path ../some-python-repo   # by dotted name
 cargo run -p archmap-cli -- impact src/shop/users.py --path ../some-python-repo
+cargo run -p archmap-cli -- query src/shop/users.py --path ../some-python-repo  # one file
+cargo run -p archmap-cli -- query shop.users --path ../some-python-repo         # the same file
 ```
 
 Example edge from the output:
@@ -253,6 +255,13 @@ the repository above, its busiest component takes 10 KB as text and 118 KB
 as JSON. `--verbose` lifts the caps and `--format json` adds every piece of
 evidence.
 
+`query` also takes a single file, by path (`src/shop/users.py`) or as
+`<component>.<file stem>` (`shop.users`), and answers with the file-level
+facts behind its component: the file's public symbols, what it imports
+(`Imports`), the statements elsewhere that import it (`Imported by`), and its
+imports without an edge. Where no evidence names imported files, as for Rust
+today, `Imported by` says it is unknown rather than showing none.
+
 `impact` follows imports file by file where the evidence names the imported
 file: a component is affected only when one of its files imports what
 changed, directly or through other files, not merely because it imports some
@@ -261,7 +270,9 @@ target starts from all of its files. Dependencies without a target file
 (manifests, external packages, Rust) are followed component by component,
 and the result is still reported at the roll-up depth. It does not follow the
 parent `__init__.py` that Python runs before a submodule, and a path that
-names no component or file is an error. On the repository above, a cycle
+names no component or file is an error. For a file target, `importers`
+lists the statements that import the file directly, up to 5 with the total,
+so the next read can go straight to them. On the repository above, a cycle
 between its two most shared components made a change to either reach 29
 components; following files, a single changed file in them reaches 8 to 27
 components depending on the file.
