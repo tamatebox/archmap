@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 
 use archmap_core::{ComponentId, Scope};
 
-use super::source::{ModDecl, ModuleFacts, RustFile, UseDecl};
+use super::source::{ModDecl, ModuleFacts, PathRef, RustFile, UseDecl};
 use crate::context::display_path;
 
 /// Crates of the standard distribution, which never become components.
@@ -489,17 +489,36 @@ impl<'a> Resolver<'a> {
 
     /// Resolve `decl`, written in module `node`.
     pub fn resolve(&self, node: usize, decl: &UseDecl) -> Resolved {
-        let mut walk = Walk {
+        let mut walk = self.walk(node);
+        let mut via = None;
+        let pos = self.path(node, &decl.path, decl.leading_colon, &mut via, &mut walk);
+        resolved(pos, via)
+    }
+
+    /// Resolve a module path written in code in module `node`. It counts only
+    /// when it names a module by itself: when its first segment is a name
+    /// that a `use` of `node` brought in, or that `node` defines, the
+    /// dependency is that `use`'s, and the path resolves to nothing.
+    pub fn resolve_path(&self, node: usize, path: &PathRef) -> Resolved {
+        let Some((first, rest)) = path.segments.split_first() else {
+            return Resolved::Nothing;
+        };
+        let mut walk = self.walk(node);
+        let mut via = None;
+        let pos = if path.leading_colon {
+            self.crate_named(node, first)
+        } else {
+            self.first_direct(node, first, &mut walk)
+        };
+        let pos = self.rest(pos, rest, node, &mut via, &mut walk);
+        resolved(pos, via)
+    }
+
+    fn walk(&self, node: usize) -> Walk {
+        Walk {
             origin: self.forest.nodes[node].file,
             active: Vec::new(),
             globs: BTreeMap::new(),
-        };
-        let mut via = None;
-        match self.path(node, &decl.path, decl.leading_colon, &mut via, &mut walk) {
-            Pos::Module(m) | Pos::Item(m) => Resolved::Module { node: m, via },
-            Pos::Crate(id) => Resolved::Crate { id, via },
-            Pos::DevOnly(name) => Resolved::DevOnly(name),
-            Pos::Nothing => Resolved::Nothing,
         }
     }
 
@@ -520,20 +539,69 @@ impl<'a> Resolver<'a> {
         let Some((first, rest)) = segments.split_first() else {
             return Pos::Module(at);
         };
-        let mut pos = if leading_colon {
-            self.extern_crate(at, first)
-                .or_else(|| self.other_package(at, first))
-                .unwrap_or_else(|| self.unknown_crate(at, first))
+        let pos = if leading_colon {
+            self.crate_named(at, first)
         } else {
             self.first(at, first, via, walk)
         };
-        for segment in rest {
+        self.rest(pos, rest, at, via, walk)
+    }
+
+    /// Follow the segments after the first from `pos`, for a path written in
+    /// module `at`.
+    fn rest(
+        &self,
+        mut pos: Pos,
+        segments: &[String],
+        at: usize,
+        via: &mut Option<Via>,
+        walk: &mut Walk,
+    ) -> Pos {
+        for segment in segments {
             pos = match pos {
                 Pos::Module(m) => self.step(m, segment, at, via, walk),
                 other => return other,
             };
         }
         pos
+    }
+
+    /// A crate by name alone, as after `::`.
+    fn crate_named(&self, at: usize, name: &str) -> Pos {
+        self.extern_crate(at, name)
+            .or_else(|| self.other_package(at, name))
+            .unwrap_or_else(|| self.unknown_crate(at, name))
+    }
+
+    /// The first segment of a path in code when it names a module or crate by
+    /// itself: `crate`, `self`, `super`, a child module or a crate. Nothing
+    /// for a name that `at` defines or that one of its `use` declarations
+    /// (an alias or a glob) brought in.
+    fn first_direct(&self, at: usize, name: &str, walk: &mut Walk) -> Pos {
+        let node = &self.forest.nodes[at];
+        match name {
+            "crate" => return node.root.map_or(Pos::Nothing, Pos::Module),
+            "self" => return Pos::Module(at),
+            "super" => return node.parent.map_or(Pos::Nothing, Pos::Module),
+            _ => {}
+        }
+        if let Some(&child) = node.children.get(name) {
+            return Pos::Module(child);
+        }
+        let facts = self.facts(at);
+        let imported = facts.uses.iter().any(|u| u.binds.as_deref() == Some(name));
+        let defined = facts.items.contains(name) || node.unloaded.contains(name);
+        if imported || defined || STANDARD.contains(&name) {
+            return Pos::Nothing;
+        }
+        if let Some(pos) = self.extern_crate(at, name) {
+            return pos;
+        }
+        if self.glob(at, name, at, &mut None, walk).is_some() {
+            return Pos::Nothing;
+        }
+        self.other_package(at, name)
+            .unwrap_or_else(|| self.unknown_crate(at, name))
     }
 
     fn first(&self, at: usize, name: &str, via: &mut Option<Via>, walk: &mut Walk) -> Pos {
@@ -730,6 +798,15 @@ impl<'a> Resolver<'a> {
     }
 }
 
+fn resolved(pos: Pos, via: Option<Via>) -> Resolved {
+    match pos {
+        Pos::Module(m) | Pos::Item(m) => Resolved::Module { node: m, via },
+        Pos::Crate(id) => Resolved::Crate { id, via },
+        Pos::DevOnly(name) => Resolved::DevOnly(name),
+        Pos::Nothing => Resolved::Nothing,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -768,6 +845,21 @@ mod tests {
         build(files, &BTreeSet::new(), packages)
     }
 
+    fn describe(forest: &Forest, files: &[SourceFile], resolved: Resolved) -> String {
+        match resolved {
+            Resolved::Module { node, via } => {
+                let mut to = display_path(&files[forest.nodes[node].file].rel);
+                if let Some((f, line)) = via {
+                    to.push_str(&format!(" via {}:{line}", display_path(&files[f].rel)));
+                }
+                to
+            }
+            Resolved::Crate { id, .. } => id.to_string(),
+            Resolved::DevOnly(name) => format!("dev {name}"),
+            Resolved::Nothing => "nothing".into(),
+        }
+    }
+
     /// Where each `use` of `file` resolves, as (path, where).
     fn resolved(
         forest: &Forest,
@@ -783,19 +875,30 @@ mod tests {
                 continue;
             }
             for decl in &source.parsed.modules[node.module].uses {
-                let to = match resolver.resolve(n, decl) {
-                    Resolved::Module { node, via } => {
-                        let mut to = display_path(&files[forest.nodes[node].file].rel);
-                        if let Some((f, line)) = via {
-                            to.push_str(&format!(" via {}:{line}", display_path(&files[f].rel)));
-                        }
-                        to
-                    }
-                    Resolved::Crate { id, .. } => id.to_string(),
-                    Resolved::DevOnly(name) => format!("dev {name}"),
-                    Resolved::Nothing => "nothing".into(),
-                };
+                let to = describe(forest, files, resolver.resolve(n, decl));
                 out.push((decl.path.join("::"), to));
+            }
+        }
+        out
+    }
+
+    /// Where each module path in the code of `file` resolves.
+    fn resolved_paths(
+        forest: &Forest,
+        files: &[SourceFile],
+        packages: &[ResolvedPackage],
+        file: &str,
+    ) -> Vec<(String, String)> {
+        let resolver = Resolver::new(forest, files, packages);
+        let mut out = Vec::new();
+        for (n, node) in forest.nodes.iter().enumerate() {
+            let source = &files[node.file];
+            if source.rel != Path::new(file) {
+                continue;
+            }
+            for path in &source.parsed.modules[node.module].paths {
+                let to = describe(forest, files, resolver.resolve_path(n, path));
+                out.push((path.segments.join("::"), to));
             }
         }
         out
@@ -1197,6 +1300,59 @@ use self::r#type::Kind;
         assert_eq!(rows[2], row("std::fmt", "nothing"));
         assert_eq!(rows[3].0, "crate::S7");
         assert!(rows[3].1.starts_with("src/m7.rs"), "{:?}", rows[3]);
+    }
+
+    #[test]
+    fn a_module_path_counts_only_when_it_names_the_module_itself() {
+        let packages = [package("p", "", &[("serde", "ext:serde")])];
+        let files = files(
+            &[
+                (
+                    "src/lib.rs",
+                    "mod a;\nmod b;\nmod prelude;\npub use b::Thing;\n",
+                ),
+                (
+                    "src/a.rs",
+                    "\
+mod child;
+use crate::b;
+use crate::prelude::*;
+pub fn f() {
+    crate::b::make();
+    b::make();
+    helper::x();
+    child::go();
+    serde::de::Error::custom(1);
+    std::mem::drop(1);
+    self::g();
+}
+fn g() {}
+pub fn h(_: crate::Thing) {}
+",
+                ),
+                ("src/a/child.rs", "pub fn go() {}\n"),
+                ("src/b.rs", "pub struct Thing;\npub fn make() {}\n"),
+                ("src/prelude.rs", "pub mod helper {\n    pub fn x() {}\n}\n"),
+            ],
+            &packages,
+        );
+        let forest = forest(&files, &packages);
+        assert_eq!(
+            resolved_paths(&forest, &files, &packages, "src/a.rs"),
+            vec![
+                row("crate::b::make", "src/b.rs"),
+                // `use crate::b` brought `b` in: that `use` is the dependency
+                row("b::make", "nothing"),
+                // and so is a name a glob brought in
+                row("helper::x", "nothing"),
+                row("child::go", "src/a/child.rs"),
+                row("serde::de::Error::custom", "ext:serde"),
+                row("std::mem::drop", "nothing"),
+                row("self::g", "src/a.rs"),
+                // a re-export on the way is followed, as for `use`
+                row("crate::Thing", "src/b.rs via src/lib.rs:4"),
+            ]
+        );
     }
 
     #[test]

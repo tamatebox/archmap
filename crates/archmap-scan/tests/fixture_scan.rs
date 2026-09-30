@@ -168,7 +168,7 @@ fn imports(
 }
 
 #[test]
-fn every_use_names_the_file_it_imports() {
+fn every_use_and_module_path_names_the_file_it_imports() {
     let graph = scan_fixture();
     let lib = Some("crates/lib_core/src/lib.rs".to_owned());
     let billing = Some("crates/lib_core/src/billing.rs".to_owned());
@@ -186,6 +186,15 @@ fn every_use_names_the_file_it_imports() {
     assert_eq!(
         imports(&graph),
         vec![
+            // a child module called by path, with no `use`
+            row(
+                "app",
+                "app::config",
+                "crates/app/src/main.rs:9",
+                &Some("crates/app/src/config.rs".to_owned()),
+                "path",
+                Scope::Local
+            ),
             // another crate, by its name
             row(
                 "app",
@@ -210,6 +219,15 @@ fn every_use_names_the_file_it_imports() {
                 &lib,
                 "use",
                 module
+            ),
+            // the same dependency by `use` and by path: two pieces of evidence
+            row(
+                "app::config",
+                "lib_core",
+                "crates/app/src/config.rs:12",
+                &lib,
+                "path",
+                Scope::Local
             ),
             // through the `pub use` in lib.rs, to the file that defines it
             row(
@@ -238,6 +256,25 @@ fn every_use_names_the_file_it_imports() {
                 "use",
                 module
             ),
+            // once per file: a signature at module scope wins over an earlier
+            // path in a function body
+            row(
+                "lib_core::api::v1",
+                "lib_core::billing",
+                "crates/lib_core/src/api/v1.rs:11",
+                &billing,
+                "path",
+                module
+            ),
+            // a path in `#[derive(..)]`; the one in test code is left out
+            row(
+                "lib_core::billing",
+                "ext:serde",
+                "crates/lib_core/src/billing.rs:19",
+                &None,
+                "path",
+                module
+            ),
             row(
                 "lib_core::billing::invoice",
                 "lib_core",
@@ -254,6 +291,15 @@ fn every_use_names_the_file_it_imports() {
                 &billing,
                 "use",
                 module
+            ),
+            // two calls of `crate::store::open()`: one piece of evidence
+            row(
+                "lib_core::billing::invoice",
+                "lib_core::store",
+                "crates/lib_core/src/billing/invoice.rs:16",
+                &Some("crates/lib_core/src/store/mod.rs".to_owned()),
+                "path",
+                Scope::Local
             ),
             row(
                 "lib_core::billing::invoice",
@@ -319,11 +365,14 @@ fn only_public_items_become_symbols() {
     );
     assert_eq!(
         names("lib_core::billing"),
-        vec!["CURRENCY", "Charge", "invoice"]
+        vec!["CURRENCY", "Charge", "Receipt", "invoice"]
     );
     // a private module's public items are still part of the crate's code
     assert_eq!(names("lib_core::store"), vec!["Ledger", "open"]);
-    assert_eq!(names("lib_core::api::v1"), vec!["lookup"]);
+    assert_eq!(
+        names("lib_core::api::v1"),
+        vec!["charge", "currency", "lookup"]
+    );
 
     let greet = graph.symbol(&"lib_core::greet".into()).unwrap();
     assert_eq!(greet.kind, SymbolKind::Function);
@@ -353,7 +402,12 @@ fn impact_follows_the_files_that_import_a_change() {
     let reach = graph.change_impact(ChangeSeed::File("crates/lib_core/src/billing.rs"), 2);
     assert_eq!(
         reach.direct.into_iter().collect::<Vec<_>>(),
-        ids(&["app", "lib_core::billing::invoice", "lib_core::store"])
+        ids(&[
+            "app",
+            "lib_core::api::v1",
+            "lib_core::billing::invoice",
+            "lib_core::store"
+        ])
     );
     // config.rs imports the invoice module, which imports billing.rs
     assert_eq!(
@@ -361,6 +415,7 @@ fn impact_follows_the_files_that_import_a_change() {
         ids(&[
             "app",
             "app::config",
+            "lib_core::api::v1",
             "lib_core::billing::invoice",
             "lib_core::store"
         ])

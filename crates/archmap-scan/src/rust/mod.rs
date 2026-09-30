@@ -14,25 +14,29 @@
 //! - `use` declarations become `Import` edges to the module that defines
 //!   what they name, through re-exports and globs, with the evidence naming
 //!   that module's file; an external crate is named without a file
+//! - a module path written in code (`crate::graph::build(..)`, `child::run()`)
+//!   is an `Import` too, noted `path`, once per file and target, unless its
+//!   first name came from a `use`, whose edge already shows the dependency
 //! - a re-export from the subtree of the file's own module (`pub use
 //!   child::Item`) is how the module presents its contents, a relation other
 //!   than an import: it is followed when resolving other paths, never an edge
 //! - `use` in `#[cfg(test)]` code is no dependency of the package on itself
 //! - a `use` of a `[dev-dependencies]` crate becomes an [`UnmappedImport`]
 //!
-//! Not extracted (yet): paths written without `use` (`module::f()`), call
-//! graphs, trait impls, macros, `#[path]` modules, and targets other than
-//! `src/lib.rs` and `src/main.rs`.
+//! Not extracted (yet): which items a module uses after importing them (call
+//! and reference graphs), code inside macro calls, trait impls, `#[path]`
+//! modules, and targets other than `src/lib.rs` and `src/main.rs`.
 
 mod manifest;
 mod source;
 mod tree;
 
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use archmap_core::{
-    Component, ComponentId, ComponentKind, Edge, EdgeKind, Evidence, Symbol, SymbolId,
+    Component, ComponentId, ComponentKind, Edge, EdgeKind, Evidence, Scope, Symbol, SymbolId,
     UnmappedImport, UnmappedReason,
 };
 
@@ -131,6 +135,7 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
     }
 
     let resolver = tree::Resolver::new(&forest, &files, packages);
+    let mut paths: BTreeMap<(usize, PathTarget), PathHit> = BTreeMap::new();
     for (n, node) in forest.nodes.iter().enumerate() {
         let package = &packages[node.package];
         let file = display_path(&files[node.file].rel);
@@ -158,13 +163,7 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
 
         for decl in &facts.uses {
             let evidence = Evidence::new(&file).at_line(decl.line).in_scope(decl.scope);
-            // how the name was resolved: through which other `use`, if any
-            let note = |via: Option<tree::Via>| match via {
-                Some((f, line)) => {
-                    format!("{} via {}:{line}", decl.note, display_path(&files[f].rel))
-                }
-                None => decl.note.to_owned(),
-            };
+            let note = |via| note(decl.note, via, &files);
             match resolver.resolve(n, decl) {
                 Resolved::Module { node: target, via } => {
                     let target_file = forest.nodes[target].file;
@@ -213,6 +212,95 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
                 Resolved::Nothing => {}
             }
         }
+
+        for path in &facts.paths {
+            let (target, via) = match resolver.resolve_path(n, path) {
+                Resolved::Module { node: target, via } => {
+                    let target_file = forest.nodes[target].file;
+                    let test =
+                        (node.test || path.test) && forest.nodes[target].package == node.package;
+                    if target_file == node.file || test {
+                        continue;
+                    }
+                    (PathTarget::File(target_file), via)
+                }
+                Resolved::Crate { id, via } if id != package.id => (PathTarget::Crate(id), via),
+                Resolved::DevOnly(module) => (PathTarget::DevOnly(module), None),
+                Resolved::Crate { .. } | Resolved::Nothing => continue,
+            };
+            let hit = PathHit {
+                rank: (path.scope != Scope::Module, path.line),
+                scope: path.scope,
+                via,
+            };
+            match paths.entry((node.file, target)) {
+                Entry::Vacant(entry) => {
+                    entry.insert(hit);
+                }
+                Entry::Occupied(mut entry) if hit.rank < entry.get().rank => {
+                    entry.insert(hit);
+                }
+                Entry::Occupied(_) => {}
+            }
+        }
+    }
+
+    // however many paths lead from a file to a target, one piece of evidence
+    for ((file, target), hit) in paths {
+        let owner = forest.owners[file].clone();
+        let evidence = Evidence::new(display_path(&files[file].rel))
+            .at_line(hit.rank.1)
+            .in_scope(hit.scope);
+        match target {
+            PathTarget::File(target_file) => output.fragment.push_edge(
+                Edge::new(owner, forest.owners[target_file].clone(), EdgeKind::Import)
+                    .with_evidence(
+                        evidence
+                            .with_note(note("path", hit.via, &files))
+                            .pointing_at(display_path(&files[target_file].rel)),
+                    ),
+            ),
+            PathTarget::Crate(id) => output.fragment.push_edge(
+                Edge::new(owner, id, EdgeKind::Import)
+                    .with_evidence(evidence.with_note(note("path", hit.via, &files))),
+            ),
+            PathTarget::DevOnly(module) => output.fragment.push_unmapped_import(UnmappedImport {
+                from: owner,
+                module,
+                reason: UnmappedReason::DeclaredNotRequired,
+                provided_by: Vec::new(),
+                evidence: evidence.with_note("path"),
+            }),
+        }
+    }
+}
+
+/// Where a module path in code leads, to merge the paths of one file.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum PathTarget {
+    /// A file of the repository.
+    File(usize),
+    /// A crate without a module tree.
+    Crate(ComponentId),
+    /// A crate that only a dev-dependency provides.
+    DevOnly(String),
+}
+
+/// The path that stands for all paths from one file to one target: the
+/// first at module scope, else the first, so that a cycle check still sees
+/// a dependency at module scope.
+struct PathHit {
+    /// Local scope after module scope, then by line.
+    rank: (bool, u32),
+    scope: Scope,
+    via: Option<tree::Via>,
+}
+
+/// An evidence note: how a name was resolved, and through which other `use`.
+fn note(kind: &str, via: Option<tree::Via>, files: &[SourceFile]) -> String {
+    match via {
+        Some((file, line)) => format!("{kind} via {}:{line}", display_path(&files[file].rel)),
+        None => kind.to_owned(),
     }
 }
 

@@ -1,9 +1,11 @@
 //! Per-file facts from `syn`: `mod` declarations, the names each module
-//! defines, `use` declarations and `pub` symbols. Nothing here knows where a
-//! file sits in its crate; [`super::tree`] places files in module trees.
+//! defines, `use` declarations, module paths written in code, and `pub`
+//! symbols. Nothing here knows where a file sits in its crate;
+//! [`super::tree`] places files in module trees.
 //!
 //! This is a structural scan. Function bodies are parsed by `syn` but only
-//! visited for `use` declarations, which are recorded with local scope.
+//! visited for `use` declarations and module paths, both recorded with local
+//! scope; which item a path names, calls and data flow are not recorded.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -13,8 +15,15 @@ use syn::ext::IdentExt;
 use syn::punctuated::Punctuated;
 use syn::visit::Visit;
 use syn::{
-    Attribute, Block, Ident, ImplItem, Item, ItemUse, Meta, Token, TraitItem, UseTree, Visibility,
+    Attribute, Block, Ident, ImplItem, Item, ItemUse, Meta, Path, Token, TraitItem, UseTree,
+    Visibility,
 };
+
+/// Primitive types, whose associated items (`u32::MAX`) are no module paths.
+const PRIMITIVES: &[&str] = &[
+    "bool", "char", "str", "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64",
+    "i128", "isize", "f32", "f64",
+];
 
 /// What one file declares. `modules[0]` is the file's own module; the others
 /// are the inline modules (`mod name { .. }`) inside it, in source order.
@@ -42,7 +51,24 @@ pub(super) struct ModuleFacts {
     /// `#[macro_export]` macros defined here, which live at the crate root.
     pub exported_macros: Vec<String>,
     pub uses: Vec<UseDecl>,
+    /// Paths in code that may name a module, outside `use` declarations.
+    pub paths: Vec<PathRef>,
     pub symbols: Vec<SymbolDecl>,
+}
+
+/// A path written in code that may name a module: two or more segments,
+/// starting with `crate`, `self`, `super`, `::` or a lowercase name
+/// (`crate::graph::build(..)`, `child::run()`, `serde_json::to_string`).
+/// Paths starting with a type (`Self::`, `String::new`) are left out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PathRef {
+    pub segments: Vec<String>,
+    pub leading_colon: bool,
+    pub line: u32,
+    /// `Local` inside a function body, `Module` elsewhere (signatures, types).
+    pub scope: Scope,
+    /// In `#[cfg(test)]` or `#[test]` code.
+    pub test: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,6 +130,14 @@ fn collect(items: &[Item], module: usize, file: &mut RustFile) {
     let public = file.modules[module].public;
     for item in items {
         let test = cfg_test(attrs(item));
+        if !matches!(item, Item::Use(_) | Item::ExternCrate(_) | Item::Mod(_)) {
+            Paths {
+                out: &mut file.modules[module].paths,
+                scope: Scope::Module,
+                test,
+            }
+            .visit_item(item);
+        }
         let mut facts = Facts {
             module: &mut file.modules[module],
             public,
@@ -299,6 +333,83 @@ fn local_uses(block: &Block, module: &mut ModuleFacts, test: bool) {
     .visit_block(block);
 }
 
+/// Module paths in an item: in signatures and types at module scope, in
+/// function bodies at local scope. `use` declarations, inline modules,
+/// visibility restrictions and attributes other than `#[derive(..)]` are left
+/// out, and so is anything inside a macro call's arguments, which `syn` keeps
+/// as tokens.
+struct Paths<'a> {
+    out: &'a mut Vec<PathRef>,
+    scope: Scope,
+    test: bool,
+}
+
+impl<'ast> Visit<'ast> for Paths<'_> {
+    fn visit_path(&mut self, path: &'ast Path) {
+        if let Some(segments) = module_path(path) {
+            self.out.push(PathRef {
+                segments,
+                leading_colon: path.leading_colon.is_some(),
+                line: line_of(path.segments[0].ident.span()),
+                scope: self.scope,
+                test: self.test,
+            });
+        }
+        // generic arguments hold paths of their own
+        syn::visit::visit_path(self, path);
+    }
+
+    fn visit_block(&mut self, block: &'ast Block) {
+        let outer = std::mem::replace(&mut self.scope, Scope::Local);
+        syn::visit::visit_block(self, block);
+        self.scope = outer;
+    }
+
+    fn visit_item_fn(&mut self, f: &'ast syn::ItemFn) {
+        let outer = self.test;
+        self.test |= cfg_test(&f.attrs);
+        syn::visit::visit_item_fn(self, f);
+        self.test = outer;
+    }
+
+    fn visit_impl_item_fn(&mut self, f: &'ast syn::ImplItemFn) {
+        let outer = self.test;
+        self.test |= cfg_test(&f.attrs);
+        syn::visit::visit_impl_item_fn(self, f);
+        self.test = outer;
+    }
+
+    fn visit_attribute(&mut self, attr: &'ast Attribute) {
+        if !attr.path().is_ident("derive") {
+            return;
+        }
+        let Ok(paths) = attr.parse_args_with(Punctuated::<Path, Token![,]>::parse_terminated)
+        else {
+            return;
+        };
+        for path in &paths {
+            self.visit_path(path);
+        }
+    }
+
+    fn visit_item_use(&mut self, _: &'ast ItemUse) {}
+    fn visit_item_mod(&mut self, _: &'ast syn::ItemMod) {}
+    fn visit_vis_restricted(&mut self, _: &'ast syn::VisRestricted) {}
+}
+
+/// The segments of `path` when it may name a module: see [`PathRef`].
+fn module_path(path: &Path) -> Option<Vec<String>> {
+    if path.segments.len() < 2 {
+        return None;
+    }
+    let first = name(&path.segments[0].ident);
+    let lowercase = first.starts_with(|c: char| c.is_lowercase() || c == '_');
+    if path.leading_colon.is_none() && (!lowercase || PRIMITIVES.contains(&first.as_str())) {
+        return None;
+    }
+    Some(path.segments.iter().map(|s| name(&s.ident)).collect())
+}
+
 fn use_decls(u: &ItemUse, line: u32, scope: Scope, test: bool) -> Vec<UseDecl> {
     let mut leaves = Vec::new();
     use_leaves(&u.tree, &mut Vec::new(), &mut leaves);
@@ -401,7 +512,8 @@ fn attrs(item: &Item) -> &[Attribute] {
     }
 }
 
-/// Compiled only for tests: `#[cfg(test)]`, or `test` inside `all(..)`.
+/// Compiled only for tests: `#[test]`, `#[cfg(test)]`, or `test` inside
+/// `all(..)`.
 fn cfg_test(attrs: &[Attribute]) -> bool {
     fn requires_test(meta: &Meta) -> bool {
         match meta {
@@ -413,7 +525,8 @@ fn cfg_test(attrs: &[Attribute]) -> bool {
         }
     }
     attrs.iter().any(|a| {
-        a.path().is_ident("cfg") && a.parse_args::<Meta>().is_ok_and(|m| requires_test(&m))
+        a.path().is_ident("test")
+            || (a.path().is_ident("cfg") && a.parse_args::<Meta>().is_ok_and(|m| requires_test(&m)))
     })
 }
 
@@ -565,6 +678,14 @@ mod tests {
 }
 #[cfg(test)]
 mod fixtures;
+#[test]
+fn case() {
+    use crate::e::E;
+    crate::f::g();
+}
+fn production() {
+    crate::h::i();
+}
 ";
         let file = parse_file(text).unwrap();
         let root = &file.modules[0];
@@ -576,10 +697,72 @@ mod fixtures;
         // only what is compiled for tests alone
         assert_eq!(
             test,
-            vec![("a", true), ("b", true), ("c", false), ("d", false)]
+            vec![
+                ("a", true),
+                ("b", true),
+                ("c", false),
+                ("d", false),
+                ("e", true)
+            ]
         );
+        let paths: Vec<(&str, bool)> = root
+            .paths
+            .iter()
+            .map(|p| (p.segments[1].as_str(), p.test))
+            .collect();
+        assert_eq!(paths, vec![("f", true), ("h", false)]);
         assert!(file.modules[root.inline["tests"]].test);
         assert!(root.declared[0].test);
+    }
+
+    #[test]
+    fn module_paths_in_code_are_recorded_with_their_scope() {
+        let text = "\
+#[derive(Debug, serde::Serialize)]
+pub struct S {
+    field: crate::a::A,
+    other: Vec<super::b::B>,
+}
+pub fn f(x: &dyn crate::c::C) -> self::d::D {
+    crate::e::run();
+    let _ = String::new();
+    let _ = u32::MAX;
+    let _ = Option::<u8>::None;
+    crate::m::shout!();
+    format!(\"{}\", crate::hidden::X);
+    child::go(::other::f());
+}
+pub(in crate::vis) fn g() {}
+use crate::u::U;
+mod inline {
+    fn h() { crate::i::j(); }
+}
+";
+        let file = parse_file(text).unwrap();
+        let found: Vec<(String, u32, Scope)> = file.modules[0]
+            .paths
+            .iter()
+            .map(|p| (p.segments.join("::"), p.line, p.scope))
+            .collect();
+        let row = |path: &str, line, scope| (path.to_owned(), line, scope);
+        assert_eq!(
+            found,
+            vec![
+                row("serde::Serialize", 1, Scope::Module),
+                row("crate::a::A", 3, Scope::Module),
+                row("super::b::B", 4, Scope::Module),
+                row("crate::c::C", 6, Scope::Module),
+                row("self::d::D", 6, Scope::Module),
+                row("crate::e::run", 7, Scope::Local),
+                row("crate::m::shout", 11, Scope::Local),
+                row("child::go", 13, Scope::Local),
+                row("other::f", 13, Scope::Local),
+            ]
+        );
+        assert!(file.modules[0].paths[8].leading_colon);
+        // an inline module keeps its own paths
+        let inline = &file.modules[file.modules[0].inline["inline"]];
+        assert_eq!(inline.paths[0].segments, vec!["crate", "i", "j"]);
     }
 
     #[test]

@@ -7,3 +7,7 @@ pub fn load() -> Option<User> {
 pub fn last_invoice() -> Option<Invoice> {
     None
 }
+
+pub fn greeting() -> String {
+    lib_core::greet(&User::new(0))
+}

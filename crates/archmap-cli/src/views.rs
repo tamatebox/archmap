@@ -1,0 +1,57 @@
+//! What `archmap query` returns: built by [`crate::commands`], rendered as
+//! JSON there or as text by [`crate::query_text`].
+
+use archmap_core::{Component, ComponentId, DynamicImport, Edge, Symbol, UnmappedImport};
+use serde::Serialize;
+
+/// What `archmap query` returns for a component.
+#[derive(Debug, Serialize)]
+pub struct ComponentView<'a> {
+    /// The target as given on the command line.
+    pub requested: &'a str,
+    pub depth: usize,
+    /// The requested component, when it is folded into `component` at this
+    /// depth.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub folded_from: Option<ComponentId>,
+    pub component: &'a Component,
+    /// Direct children in the unrolled graph, to query with a larger depth.
+    pub children: Vec<&'a ComponentId>,
+    pub symbols: Vec<&'a Symbol>,
+    pub outgoing: Vec<&'a Edge>,
+    pub incoming: Vec<&'a Edge>,
+    /// Imports in the component that map to no component: dependencies
+    /// that no edge shows.
+    pub not_mapped: Vec<&'a UnmappedImport>,
+    /// Modules the component loads by names computed at runtime.
+    pub dynamic_imports: Vec<&'a DynamicImport>,
+}
+
+/// What `archmap query` returns for a file: the file-level facts behind a
+/// component, rolled up to the same depth.
+#[derive(Debug, Serialize)]
+pub struct FileView<'a> {
+    /// The target as given on the command line (a path or a dotted module name).
+    pub requested: &'a str,
+    pub depth: usize,
+    pub file: String,
+    /// The component that contains the file, at this depth.
+    pub component: Option<ComponentId>,
+    pub symbols: Vec<&'a Symbol>,
+    /// The file's import statements, one edge per imported component.
+    pub imports: Vec<Edge>,
+    /// Statements elsewhere that import the file, one edge per importing
+    /// component. `None` when no evidence names imported files for the
+    /// file's language, so importers are unknown rather than absent.
+    pub importers: Option<Vec<Edge>>,
+    pub not_mapped: Vec<&'a UnmappedImport>,
+    pub dynamic_imports: Vec<&'a DynamicImport>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum QueryResult<'a> {
+    Component(ComponentView<'a>),
+    File(FileView<'a>),
+    Symbols(Vec<&'a Symbol>),
+}

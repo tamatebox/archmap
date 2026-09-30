@@ -140,6 +140,7 @@ fn impact_accepts_component_or_file() {
             serde_json::json!([
                 "app",
                 "app::config",
+                "lib_core::api::v1",
                 "lib_core::billing::invoice",
                 "lib_core::store"
             ]),
@@ -857,7 +858,8 @@ fn query_a_rust_file_lists_the_statements_that_import_it() {
         "crates/lib_core/src/lib.rs (file) in lib_core (package, rust), depth 2\n",
         "\nImports: 1\n  ext:serde  1 import: crates/lib_core/src/lib.rs:2\n",
         "\nImported by: 4\n",
-        "\n  app::config                 1 import: crates/app/src/config.rs:1\n",
+        // a `use` and a module path in a function body
+        "\n  app::config                 2 imports: crates/app/src/config.rs:1, crates/app/src/config.rs:12 (local)\n",
         "\n  lib_core::billing::invoice  1 import: crates/lib_core/src/billing/invoice.rs:3\n",
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");

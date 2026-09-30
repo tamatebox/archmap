@@ -364,7 +364,7 @@ fn discover_modules(
         };
         // A namespace directory is only a module if `import a.b.c` could
         // name it.
-        if !regular && !dotted.split('.').all(is_identifier) {
+        if !regular && !dotted.split('.').all(resolve::is_identifier) {
             continue;
         }
         resolved.insert(dir.clone(), (project_idx, dotted, *regular));
@@ -428,12 +428,6 @@ fn source_root(
     } else {
         Some(project.dir.clone())
     }
-}
-
-fn is_identifier(segment: &str) -> bool {
-    let mut chars = segment.chars();
-    chars.next().is_some_and(|c| c == '_' || c.is_alphabetic())
-        && chars.all(|c| c == '_' || c.is_alphanumeric())
 }
 
 /// Import path of a package directory.

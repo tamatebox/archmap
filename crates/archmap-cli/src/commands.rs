@@ -5,13 +5,14 @@ use anyhow::{bail, Context, Result};
 use archmap_core::rules::{FileLevel, Finding, RuleSet};
 use archmap_core::signals::Signal;
 use archmap_core::{
-    ArchitectureGraph, ChangeSeed, Component, ComponentId, DynamicImport, Edge, EdgeKind, Evidence,
-    Symbol, SymbolId, UnmappedImport,
+    ArchitectureGraph, ChangeSeed, Component, ComponentId, Edge, EdgeKind, Evidence, Symbol,
+    SymbolId,
 };
 use archmap_scan::{ScanOptions, ScanReport};
 use serde::Serialize;
 
 use crate::output::{render, OutputFormat, ReportFormat};
+use crate::views::{ComponentView, FileView, QueryResult};
 
 fn run_scan(path: &str, manifests_only: bool) -> Result<ScanReport> {
     let options = ScanOptions { manifests_only };
@@ -95,58 +96,6 @@ fn write_output(
 /// Depth that `summary`, `query` and `impact` roll up to unless told
 /// otherwise, so the three always describe the same components.
 pub const DEFAULT_DEPTH: usize = 2;
-
-/// What `archmap query` returns for a component.
-#[derive(Debug, Serialize)]
-pub struct ComponentView<'a> {
-    /// The target as given on the command line.
-    pub requested: &'a str,
-    pub depth: usize,
-    /// The requested component, when it is folded into `component` at this
-    /// depth.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub folded_from: Option<ComponentId>,
-    pub component: &'a Component,
-    /// Direct children in the unrolled graph, to query with a larger depth.
-    pub children: Vec<&'a ComponentId>,
-    pub symbols: Vec<&'a Symbol>,
-    pub outgoing: Vec<&'a Edge>,
-    pub incoming: Vec<&'a Edge>,
-    /// Imports in the component that map to no component: dependencies
-    /// that no edge shows.
-    pub not_mapped: Vec<&'a UnmappedImport>,
-    /// Modules the component loads by names computed at runtime.
-    pub dynamic_imports: Vec<&'a DynamicImport>,
-}
-
-/// What `archmap query` returns for a file: the file-level facts behind a
-/// component, rolled up to the same depth.
-#[derive(Debug, Serialize)]
-pub struct FileView<'a> {
-    /// The target as given on the command line (a path or a dotted module name).
-    pub requested: &'a str,
-    pub depth: usize,
-    pub file: String,
-    /// The component that contains the file, at this depth.
-    pub component: Option<ComponentId>,
-    pub symbols: Vec<&'a Symbol>,
-    /// The file's import statements, one edge per imported component.
-    pub imports: Vec<Edge>,
-    /// Statements elsewhere that import the file, one edge per importing
-    /// component. `None` when no evidence names imported files for the
-    /// file's language, so importers are unknown rather than absent.
-    pub importers: Option<Vec<Edge>>,
-    pub not_mapped: Vec<&'a UnmappedImport>,
-    pub dynamic_imports: Vec<&'a DynamicImport>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(untagged)]
-pub enum QueryResult<'a> {
-    Component(ComponentView<'a>),
-    File(FileView<'a>),
-    Symbols(Vec<&'a Symbol>),
-}
 
 /// `target` as a file under the scanned root, relative with `/` separators.
 fn file_target(path: &str, target: &str) -> Option<String> {

@@ -7,6 +7,7 @@ mod commands;
 mod output;
 mod query_text;
 mod summary;
+mod views;
 
 use std::path::PathBuf;
 use std::process::ExitCode;

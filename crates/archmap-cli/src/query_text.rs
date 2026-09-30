@@ -13,7 +13,7 @@ use archmap_core::{
     Symbol, SymbolKind, UnmappedImport, UnmappedReason,
 };
 
-use crate::commands::{ComponentView, FileView, QueryResult};
+use crate::views::{ComponentView, FileView, QueryResult};
 
 /// Default caps, lifted by `--verbose`.
 const MAX_SYMBOLS: usize = 30;

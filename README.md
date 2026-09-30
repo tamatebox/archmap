@@ -92,12 +92,18 @@ can use a copy of it.
     module's file and the scope (`local` inside a function body, `module` elsewhere), and the note
     names the first `use` in another file the path went through, usually a re-export
     (`use via crates/archmap-core/src/lib.rs:22`); an external crate is an edge without a file
+  - a module path written in code, in a signature, a type, a pattern, an expression or
+    `#[derive(..)]` (`crate::summary::render(..)`, `child::run()`, `serde_json::to_string(..)`), is an
+    `import` too, noted `path`: one piece of evidence per file and target (the first at module scope,
+    else the first), added to the edge a `use` may already give; a path whose first name a `use`
+    brought in is that `use`'s dependency and adds nothing, and what a module does with the names it
+    imported (calls, references) is not recorded
   - a re-export from the subtree of the file's own module (`pub use graph::ArchitectureGraph` in
     `lib.rs`, also inside an inline `pub mod prelude { .. }` there) is how the module presents what it
     contains, a relation other than an import: it is followed when resolving and never becomes an
     edge, so a crate root and the modules it re-exports form no cycle
-  - `use` declarations in `#[cfg(test)]` code are not dependencies of their package on itself, so
-    unit tests add no edges or cycles between the modules of a crate
+  - `use` declarations and paths in `#[cfg(test)]` and `#[test]` code are not dependencies of their
+    package on itself, so unit tests add no edges or cycles between the modules of a crate
   - a `use` of a `[dev-dependencies]` crate (in a test module) is an import without an edge
   - only files under `src/` are read, so `tests/`, `benches/`, `examples/` and `build.rs` are not
 - Python analyzer:
@@ -141,10 +147,11 @@ dev dependencies produce no edges by design, though `query` lists all but the
 standard library as not mapped and `check` can report the undeclared ones;
 dynamic imports are recorded but not followed, and `sys.path` changes made at
 runtime are not seen; `impact` does not follow the parent `__init__.py` that
-Python loads implicitly before a submodule. For Rust, only `use` declarations
-are imports: a path written in code without one (`rust::RustAnalyzer`,
-`crate::summary::render(..)`), and a module's own use of what it re-exports,
-are not seen, so `query` and `impact` miss those dependents. Files under
+Python loads implicitly before a submodule. For Rust, `use` declarations and
+module paths in code are imports, but code inside macro calls
+(`vec![Box::new(rust::RustAnalyzer)]`, `print!("{}", crate::query_text::render(..))`)
+is not read, and neither is a module's own use of what it re-exports, so
+`query` and `impact` miss those dependents. Files under
 `src/bin/`, `#[path]` modules and targets that `Cargo.toml` places elsewhere
 belong to their package without a module tree, and the crate-relative `use`
 paths of Rust 2015 resolve only in the crate root. A path through a `mod`
@@ -304,8 +311,8 @@ file of the same component. A file target starts from that file; a component
 target starts from all of its files. Dependencies without a target file
 (manifests, external packages) are followed component by component, and the
 result is still reported at the roll-up depth. It does not follow the parent
-`__init__.py` that Python runs before a submodule, nor Rust paths written
-without `use`, and a path that names no component or file is an error. For a file target, `importers`
+`__init__.py` that Python runs before a submodule, nor Rust code inside macro
+calls, and a path that names no component or file is an error. For a file target, `importers`
 lists the statements that import the file directly, up to 5 with the total,
 so the next read can go straight to them. On the repository above, a cycle
 between its two most shared components made a change to either reach 29
@@ -432,8 +439,8 @@ comes later.
 | Phase | Scope | Status |
 |---|---|---|
 | 0 Discovery | languages, manifests, packages; report detected languages even without an analyzer | Rust and Python; Rust targets other than `src/lib.rs` and `src/main.rs` are not discovered; other languages are counted in `summary`, not analyzed |
-| 1 Structural Facts | modules, public symbols, imports with their target file and scope, dependencies | Rust and Python, target files and scope included; Rust imports are `use` declarations only, not paths written without one |
-| 2 Structural Compression & Agent Context | roll-up; `summary`, `query` and `impact` small enough for an agent and at one granularity; file and module queries whose evidence leads directly to source; full detail with `--format json` | done for Python: `impact` follows files, `query` accepts components, symbols and files, direct importers point to `file:line`, and agent-facing commands say what the graph does not map; the same for Rust, except dependencies written as paths without `use` |
+| 1 Structural Facts | modules, public symbols, imports with their target file and scope, dependencies | Rust and Python, target files and scope included; Rust imports are `use` declarations and module paths in code, not code inside macro calls |
+| 2 Structural Compression & Agent Context | roll-up; `summary`, `query` and `impact` small enough for an agent and at one granularity; file and module queries whose evidence leads directly to source; full detail with `--format json` | done for Python: `impact` follows files, `query` accepts components, symbols and files, direct importers point to `file:line`, and agent-facing commands say what the graph does not map; the same for Rust, except code inside macro calls |
 | 3 Rules & Declared Architecture | declared components and layers, cycles, forbidden dependencies, drift, CI `check` | done: deny rules, layers, allow lists, coverage, cycles with a file-level reading, undeclared imports, stale declarations; structural signals |
 | 4 Deep Static Analysis | precise symbol resolution, callers and reference graph, type relationships, selective data flow, test-to-code links; on demand for one selected area | planned; agent traces so far point first to callers and references, then selective data flow |
 | 5 Cross-system Graph | OpenAPI, Terraform, databases, HTTP, events, CI/build/deploy relationships | planned |
@@ -527,9 +534,10 @@ More knowledge should not mean proportionally more agent context: the
 graph may grow, while each task receives only the part it needs.
 
 Rust has module-level components and target files in its evidence, as
-Python does, so Rust repositories can get the same treatment. Paths written
-without `use` (`module::f()`) remain invisible to `query` and `impact`;
-Phase 4 references would cover them. Extending language and manifest
+Python does, so Rust repositories can get the same treatment. Module paths
+written in code count as imports too; what stays invisible to `query` and
+`impact` is code inside macro calls, and which items a module uses after
+importing them, which Phase 4 references would cover. Extending language and manifest
 discovery, including Cargo targets other than `src/lib.rs` and
 `src/main.rs`, completes Phase 0 for additional ecosystems.
 

@@ -292,6 +292,13 @@ fn record_path(line: &str) -> &str {
     }
 }
 
+/// Can `segment` be one part of a dotted import path (`import a.b`)?
+pub(super) fn is_identifier(segment: &str) -> bool {
+    let mut chars = segment.chars();
+    chars.next().is_some_and(|c| c == '_' || c.is_alphabetic())
+        && chars.all(|c| c == '_' || c.is_alphanumeric())
+}
+
 /// Importable module for an installed file: `google/cloud/bigquery/table.py`
 /// is `google.cloud.bigquery.table`, `yaml/__init__.py` is `yaml`, and
 /// `_yaml.cpython-312-darwin.so` is `_yaml`. Metadata, scripts and caches are
@@ -322,7 +329,7 @@ fn module_of_record_path(path: &str) -> Option<String> {
     if module != "__init__" {
         parts.push(module);
     }
-    if parts.is_empty() || !parts.iter().all(|p| super::is_identifier(p)) {
+    if parts.is_empty() || !parts.iter().all(|p| is_identifier(p)) {
         return None;
     }
     Some(parts.join("."))

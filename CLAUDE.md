@@ -83,7 +83,7 @@ Use archmap on itself, the way the plugin skill teaches, running the current sou
 - `summary .` first; fixtures appear as components too, so check paths.
 - Before searching inside a crate, module or file, `query <crate|module|file>` and open the `file:line` it gives.
 - Before changing a public item, `impact <file>`.
-- Only `use` declarations are imports in Rust. A path written without one (`rust::RustAnalyzer`, `crate::summary::render(..)`) is missing from `Imported by` and `impact`, so also search for callers of what you change.
+- In Rust, `use` declarations and module paths in code (noted `path`) are imports, but code inside macro calls (`vec![Box::new(rust::RustAnalyzer)]`, `print!("{}", crate::query_text::render(..))`) is not read, so also search for callers of what you change.
 
 ## Commands to run after every change
 
