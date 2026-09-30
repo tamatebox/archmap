@@ -14,15 +14,16 @@
 //!   `experiments/` are components of their own instead of being folded into
 //!   the project
 //! - `import` / `from ... import` statements become `Import` edges between
-//!   modules, or to a declared external dependency (see [`resolve`] for how
-//!   import names are matched to distributions; undeclared imports are not
-//!   edges)
-//! - an absolute import that matches no internal module, no standard-library
-//!   module, no declared distribution (runtime, extra, group or dev) and no
-//!   file or directory name anywhere in the project is recorded as an
-//!   [`UnresolvedImport`] for `check`, never as an edge. Any local name
-//!   counts because tests and scripts often extend `sys.path` at runtime,
-//!   which a static scan cannot see
+//!   modules, or to a required external dependency (see [`resolve`] for how
+//!   import names are matched to distributions)
+//! - an absolute import that maps to no component and is not in the standard
+//!   library is recorded as an [`UnmappedImport`], never as an edge, with
+//!   its reason: declared only as an extra, group or dev dependency; a file
+//!   or directory name in the project (tests and scripts often extend
+//!   `sys.path` at runtime, which a static scan cannot see); or undeclared,
+//!   which `check` can report
+//! - calls that load a module by a computed name (`import_module`,
+//!   `__import__`, `spec_from_file_location`) become [`DynamicImport`]s
 //! - public top-level `def` / `class` / `CONSTANT` and public methods become
 //!   symbols for files inside a regular package tree (a namespace directory
 //!   nested in a regular package still counts); test files and namespace
@@ -41,8 +42,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use archmap_core::{
-    Component, ComponentId, ComponentKind, Edge, EdgeKind, Evidence, Scope, Symbol, SymbolId,
-    UnresolvedImport,
+    Component, ComponentId, ComponentKind, DynamicImport, Edge, EdgeKind, Evidence, Scope, Symbol,
+    SymbolId, UnmappedImport, UnmappedReason,
 };
 
 use crate::analyzer::AnalyzerOutput;
@@ -111,6 +112,7 @@ impl Analyzer for PythonAnalyzer {
 
         emit_components(&projects, &modules, &mut output);
 
+        output.read.insert(LANGUAGE.to_owned(), 0);
         if ctx.options().manifests_only {
             return Ok(output);
         }
@@ -159,6 +161,7 @@ impl Analyzer for PythonAnalyzer {
                 }
             };
             let scanned = source::scan_source(&text);
+            *output.read.entry(LANGUAGE.to_owned()).or_default() += 1;
             let file_display = display_path(file);
 
             if in_package_tree && !is_test_file(file) {
@@ -700,16 +703,43 @@ fn emit_imports(
 
         if externals.is_empty() && !full.is_empty() {
             let top = full.split('.').next().unwrap_or_default();
-            let declared_elsewhere = candidates.iter().any(|c| ctx.optional.resolve(c).is_some());
-            if !stdlib::is_stdlib(top) && !declared_elsewhere && !ctx.local_names.contains(top) {
-                output.fragment.push_unresolved_import(UnresolvedImport {
-                    from: owner.clone(),
-                    module: full.clone(),
-                    provided_by: ctx.installed.providers_of(&full),
-                    evidence: evidence().with_note("import"),
-                });
+            if stdlib::is_stdlib(top) {
+                continue;
             }
+            let reason = if candidates.iter().any(|c| ctx.optional.resolve(c).is_some()) {
+                UnmappedReason::DeclaredNotRequired
+            } else if ctx.local_names.contains(top) {
+                UnmappedReason::LocalName
+            } else {
+                UnmappedReason::Undeclared
+            };
+            let provided_by = match reason {
+                UnmappedReason::Undeclared => ctx.installed.providers_of(&full),
+                _ => Vec::new(),
+            };
+            output.fragment.push_unmapped_import(UnmappedImport {
+                from: owner.clone(),
+                module: full.clone(),
+                reason,
+                provided_by,
+                evidence: evidence().with_note("import"),
+            });
         }
+    }
+
+    for dynamic in &scanned.dynamic_imports {
+        let scope = if dynamic.local {
+            Scope::Local
+        } else {
+            Scope::Module
+        };
+        output.fragment.push_dynamic_import(DynamicImport {
+            from: owner.clone(),
+            call: dynamic.call.to_owned(),
+            evidence: Evidence::new(&file_display)
+                .at_line(dynamic.line)
+                .in_scope(scope),
+        });
     }
 }
 

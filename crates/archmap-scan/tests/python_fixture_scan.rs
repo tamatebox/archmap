@@ -2,7 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
-use archmap_core::{ArchitectureGraph, ComponentId, ComponentKind, EdgeKind, SymbolKind};
+use archmap_core::{
+    ArchitectureGraph, ComponentId, ComponentKind, DynamicImport, EdgeKind, Evidence,
+    LanguageCoverage, Scope, SymbolKind, UnmappedReason,
+};
 use archmap_scan::{scan, ScanOptions};
 
 fn fixture_root() -> PathBuf {
@@ -346,8 +349,9 @@ fn scanning_a_package_directory_uses_its_name_as_top_level() {
 fn undeclared_imports_are_observations_not_edges() {
     let graph = scan_fixture();
     let unresolved: Vec<(&str, &str, &str, Option<u32>)> = graph
-        .unresolved_imports
+        .unmapped_imports
         .iter()
+        .filter(|u| u.reason == UnmappedReason::Undeclared)
         .map(|u| {
             (
                 u.from.as_str(),
@@ -358,7 +362,8 @@ fn undeclared_imports_are_observations_not_edges() {
         })
         .collect();
     // scripts/report.py also imports json (standard library), pytest (a dev
-    // extra) and helpers / backfill (files in the project): none of those
+    // extra) and helpers / backfill (files in the project): none of those is
+    // undeclared
     assert_eq!(
         unresolved,
         vec![(
@@ -423,7 +428,7 @@ fn installed_record_files_resolve_import_names() {
     // both remain unresolved; installed metadata names the provider of the
     // undeclared one
     let unresolved: Vec<(&str, Vec<String>)> = graph
-        .unresolved_imports
+        .unmapped_imports
         .iter()
         .map(|u| (u.module.as_str(), u.provided_by.clone()))
         .collect();
@@ -439,4 +444,98 @@ fn installed_record_files_resolve_import_names() {
         .components
         .keys()
         .all(|k| !k.as_str().contains("fancylib")));
+}
+
+#[test]
+fn coverage_counts_files_read_per_language() {
+    let graph = scan_fixture();
+    let coverage: Vec<(&str, &LanguageCoverage)> = graph
+        .meta
+        .coverage
+        .iter()
+        .map(|(language, c)| (language.as_str(), c))
+        .collect();
+    assert_eq!(
+        coverage,
+        vec![
+            (
+                "python",
+                &LanguageCoverage {
+                    files: 15,
+                    read: Some(15)
+                }
+            ),
+            // scripts/deploy.sh: seen, but no analyzer reads shell
+            (
+                "shell",
+                &LanguageCoverage {
+                    files: 1,
+                    read: None
+                }
+            ),
+        ]
+    );
+}
+
+#[test]
+fn imports_without_an_edge_say_why() {
+    let graph = scan_fixture();
+    let unmapped: Vec<(&str, &str, UnmappedReason, Option<u32>)> = graph
+        .unmapped_imports
+        .iter()
+        .map(|u| {
+            (
+                u.from.as_str(),
+                u.module.as_str(),
+                u.reason,
+                u.evidence.line,
+            )
+        })
+        .collect();
+    assert_eq!(
+        unmapped,
+        vec![
+            // scripts/report.py: files next to it, reached through sys.path
+            (
+                "shop::scripts",
+                "backfill",
+                UnmappedReason::LocalName,
+                Some(4)
+            ),
+            (
+                "shop::scripts",
+                "helpers",
+                UnmappedReason::LocalName,
+                Some(3)
+            ),
+            // declared, but only as the `dev` extra
+            (
+                "shop::scripts",
+                "pytest",
+                UnmappedReason::DeclaredNotRequired,
+                Some(2)
+            ),
+            (
+                "shop::shop",
+                "google.api_core.exceptions",
+                UnmappedReason::Undeclared,
+                Some(3)
+            ),
+        ]
+    );
+}
+
+#[test]
+fn dynamic_imports_are_recorded_where_they_are_called() {
+    let graph = scan_fixture();
+    assert_eq!(
+        graph.dynamic_imports,
+        vec![DynamicImport {
+            from: id("shop::scripts"),
+            call: "import_module".into(),
+            evidence: Evidence::new("scripts/plugins.py")
+                .at_line(5)
+                .in_scope(Scope::Local),
+        }]
+    );
 }

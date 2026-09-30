@@ -5,7 +5,8 @@ use anyhow::{bail, Context, Result};
 use archmap_core::rules::{FileLevel, Finding, RuleSet};
 use archmap_core::signals::Signal;
 use archmap_core::{
-    ArchitectureGraph, ChangeSeed, Component, ComponentId, Edge, Evidence, Symbol, SymbolId,
+    ArchitectureGraph, ChangeSeed, Component, ComponentId, DynamicImport, Edge, Evidence, Symbol,
+    SymbolId, UnmappedImport,
 };
 use archmap_scan::{ScanOptions, ScanReport};
 use serde::Serialize;
@@ -111,6 +112,11 @@ pub struct ComponentView<'a> {
     pub symbols: Vec<&'a Symbol>,
     pub outgoing: Vec<&'a Edge>,
     pub incoming: Vec<&'a Edge>,
+    /// Imports in the component that map to no component: dependencies
+    /// that no edge shows.
+    pub not_mapped: Vec<&'a UnmappedImport>,
+    /// Modules the component loads by names computed at runtime.
+    pub dynamic_imports: Vec<&'a DynamicImport>,
 }
 
 #[derive(Debug, Serialize)]
@@ -149,6 +155,16 @@ pub fn query(
             symbols: rolled.symbols_of(&component.id).collect(),
             outgoing: rolled.outgoing(&component.id).collect(),
             incoming: rolled.incoming(&component.id).collect(),
+            not_mapped: rolled
+                .unmapped_imports
+                .iter()
+                .filter(|i| i.from == component.id)
+                .collect(),
+            dynamic_imports: rolled
+                .dynamic_imports
+                .iter()
+                .filter(|i| i.from == component.id)
+                .collect(),
         })
     } else {
         let symbols: Vec<&Symbol> = rolled

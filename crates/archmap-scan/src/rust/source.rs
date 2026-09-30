@@ -5,12 +5,14 @@
 
 use std::path::Path;
 
-use archmap_core::{Edge, EdgeKind, Evidence, Symbol, SymbolId, SymbolKind};
+use archmap_core::{
+    Edge, EdgeKind, Evidence, Symbol, SymbolId, SymbolKind, UnmappedImport, UnmappedReason,
+};
 use quote::ToTokens;
 use syn::spanned::Spanned;
 use syn::{Item, UseTree, Visibility};
 
-use super::{owning_package, ResolvedPackage};
+use super::{owning_package, ResolvedPackage, LANGUAGE};
 use crate::analyzer::AnalyzerOutput;
 use crate::context::display_path;
 use crate::RepoContext;
@@ -46,6 +48,7 @@ pub(super) fn source_pass(
                 continue;
             }
         };
+        *output.read.entry(LANGUAGE.to_owned()).or_default() += 1;
 
         let mut visitor = FileVisitor {
             pkg,
@@ -250,18 +253,29 @@ impl FileVisitor<'_> {
         ) {
             return;
         }
+        let evidence = Evidence::new(&self.file)
+            .at_line(line as u32)
+            .with_note(note);
         let Some(target) = self.pkg.import_targets.get(first_segment) else {
-            return; // local module or unknown crate
+            // Code that compiles names only known crates, so anything else
+            // is a local module or item, except dev-dependencies (tests).
+            if self.pkg.dev_imports.contains(first_segment) {
+                self.output.fragment.push_unmapped_import(UnmappedImport {
+                    from: self.pkg.id.clone(),
+                    module: first_segment.to_owned(),
+                    reason: UnmappedReason::DeclaredNotRequired,
+                    provided_by: Vec::new(),
+                    evidence,
+                });
+            }
+            return;
         };
         if *target == self.pkg.id {
             return;
         }
         self.output.fragment.push_edge(
-            Edge::new(self.pkg.id.clone(), target.clone(), EdgeKind::Import).with_evidence(
-                Evidence::new(&self.file)
-                    .at_line(line as u32)
-                    .with_note(note),
-            ),
+            Edge::new(self.pkg.id.clone(), target.clone(), EdgeKind::Import)
+                .with_evidence(evidence),
         );
     }
 

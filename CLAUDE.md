@@ -20,6 +20,8 @@ and impact without re-reading the whole repository.
 - **Fact Extraction != Semantic Inference.** Analyzers record what code and manifests literally say. Guesses such as "this module is the Billing component" must live in a separate, clearly labeled layer (not yet built). Never mix the two in one type.
 - **Compression is structural.** Roll-up maps components to their ancestor at a depth through `parent` and merges edges while keeping every piece of evidence. Naming, grouping by meaning and layering belong to declared config (Phase 3) or the inferred layer (Phase 5), never to roll-up or `summary`.
 - **Declared != Observed.** `archmap.toml` is only ever compared with the observed graph by `check`. It never changes what `scan`, `summary`, `query` or `impact` report, and declared names never appear in their output.
+- **Roll-up hides detail; evidence keeps it.** Which files a dependency connects stays in `Evidence.target` and `scope`. `impact` and cycle checks read it there instead of adding file nodes.
+- **Signals are measurements, not verdicts.** A signal reports what the graph shows and never fails `check`. A judgement label comes only from a threshold the user declares.
 - **Full graph != agent context.** Agent-facing defaults (`summary`, text `query`, `impact`) stay small however large the repository is: cap lists and count the rest. Complete detail lives behind `--format json`. Commands never read `graph.json`; it is an export.
 - **Cheap structural scan first, selective semantic scan later.** Do not parse bodies or docstrings by default; design so deeper passes can be added for chosen targets.
 - **Many inputs, one model.** Each language / manifest / schema may be analyzed differently, but everything normalizes into `archmap-core` types.
@@ -42,8 +44,9 @@ Never add a dependency that points against the arrow. Never make `archmap-core` 
 1. Create `crates/archmap-scan/src/<lang>/` implementing `Analyzer` (`name`, cheap `detect`, `analyze -> AnalyzerOutput`).
 2. Register it in `default_analyzers()`. Static registration only; no dynamic plugin system.
 3. Per-file problems go into `AnalyzerOutput::warnings`, not `Err`.
-4. Add a fixture under `fixtures/` and an integration test in `crates/archmap-scan/tests/`.
-5. Do not change `archmap-core` unless a genuinely new *kind* of fact appears. Prefer a new `EdgeKind` / `SymbolKind` variant over new structs.
+4. Report source files read per language in `AnalyzerOutput::read`, and record every import that maps to no component (standard library aside) as an `UnmappedImport` with its reason. `summary` and `query` rely on both to say what the graph does not show.
+5. Add a fixture under `fixtures/` and an integration test in `crates/archmap-scan/tests/`.
+6. Do not change `archmap-core` unless a genuinely new *kind* of fact appears. Prefer a new `EdgeKind` / `SymbolKind` variant over new structs.
 
 ## Distributed plugin
 
@@ -61,7 +64,7 @@ Never add a dependency that points against the arrow. Never make `archmap-core` 
 - `summary`, `query` and `impact` share `DEFAULT_DEPTH` and roll up the same way. Never let them describe different components.
 - A rule selector or declaration that matches no component is a finding, never silently skipped, so a typo cannot disable a rule.
 - `deny` sides accept declared names or selectors; `layers` and `allow` accept declared names only. Membership goes to the most specific matching selector.
-- External dependency edges point only at declared distributions. An import is not a declaration: undeclared imports are recorded in `unresolved_imports` for `check`, never as edges. Evidence notes record how an import name was resolved.
+- External dependency edges point only at required dependencies. An import is not a declaration: an import that maps to no component goes to `unmapped_imports` with its reason, never to an edge, and `check` reports the undeclared ones. Evidence notes record how an import name was resolved.
 - Prefer missing a finding to raising a false one: rules end up in CI, and a noisy rule gets switched off. The Python analyzer treats any file or directory name in the project as local code because `sys.path` changes at runtime.
 - Bulk-insert edges with `add_edges` / `merge`; `add_edge` is linear per call.
 - Paths in evidence are relative to the scanned root with `/` separators.
@@ -69,7 +72,7 @@ Never add a dependency that points against the arrow. Never make `archmap-core` 
 - `SCHEMA_VERSION` in `archmap-core` is bumped on breaking JSON changes.
 - Avoid abstractions without a second concrete use. Three similar lines beat one premature trait.
 - Structural scanning (line-based, as in `python/source.rs`) is acceptable when it stays behind the analyzer boundary and is covered by tests; swap in a real parser only when a fixture shows the need.
-- `scan` writes `<root>/.archmap/graph.<ext>` and `summary` writes `<root>/.archmap/summary.md` by default (`-o <file>` overrides, `-o -` is stdout). Write nothing else into the scanned repository: no `.gitignore`, no config. Do not design features that assume graphs are committed to git.
+- `scan` writes `<root>/.archmap/graph.<ext>` by default and `summary` prints to stdout; `-o <file>` saves either elsewhere and `-o -` is stdout. Write nothing else into the scanned repository: no `.gitignore`, no config. Do not design features that assume graphs are committed to git.
 
 ## Commands to run after every change
 

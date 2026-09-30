@@ -21,7 +21,8 @@ queryable by a machine.
 
 The graph is meant to be consumed by agents as much as by humans:
 
-- `archmap summary` gives an agent a few kilobytes of structure to read before exploring
+- `archmap summary` gives an agent a few kilobytes of structure to read before exploring,
+  starting with what the scan could not see
 - `archmap scan` writes the full graph for tools, export and debugging; agents never need to read it,
   because `summary`, `query` and `impact` return the parts they need
 - `archmap query` answers "what does component X expose and depend on"
@@ -73,7 +74,9 @@ can use a copy of it.
   - every `Cargo.toml` package becomes a `package` component; `[dependencies]` become `dependency` edges
   - path / workspace dependencies resolve to internal packages, others become `ext:*` components
   - `pub` items and `pub` inherent methods under `src/` become symbols with signatures
-  - `use` statements pointing at other packages become `import` edges
+  - `use` statements pointing at other packages become `import` edges; a `use` of a
+    `[dev-dependencies]` crate (in a test module) is an import without an edge
+  - only files under `src/` are read, so `tests/`, `benches/`, `examples/` and `build.rs` are not
 - Python analyzer:
   - `pyproject.toml` (PEP 621 or poetry), `setup.py` / `setup.cfg` directories become `package` components;
     a tree of `.py` files without any manifest gets one root component named after the directory
@@ -90,25 +93,34 @@ can use a copy of it.
     `class`); imports between files of one component are kept as self edges, which roll-up hides
   - import names are matched to declared distributions by name (`pandas_gbq`), by dotted name
     (`google.cloud.bigquery`), through installed `RECORD` files in a `.venv`, and finally through a small
-    table of well-known names (`sklearn`, `yaml`); the evidence note of each import says which one matched,
-    and imports of undeclared packages are not edges
+    table of well-known names (`sklearn`, `yaml`); the evidence note of each import says which one matched
+  - an import that maps to no component, standard library aside, is recorded without an edge and with
+    its reason: `undeclared` (no manifest declares it), `declared_not_required` (declared only as an
+    extra, a dependency group or a dev dependency) or `local_name` (a file or directory of that name
+    exists, probably reached through `sys.path`)
+  - calls to `import_module`, `__import__` and `spec_from_file_location` are recorded as dynamic imports,
+    which no edge can follow
   - public top-level `def` / `class` / `CONSTANT` and public methods of public classes become symbols
     for files inside a regular package tree; test files (pytest conventions) and namespace trees outside
     any regular package contribute imports only
   - source files are scanned structurally line by line, not parsed; function bodies are read only for imports
 - JSON output with evidence on every node and edge, written to `<root>/.archmap/graph.json` by default
-- structural roll-up and a deterministic, line-oriented summary printed to stdout
-- `query` on top of the rolled-up graph, and `impact` that follows imports file by file
+- structural roll-up and a deterministic, line-oriented summary printed to stdout, starting with
+  what the scan could not see
+- `query` on top of the rolled-up graph, including the imports no edge shows, and `impact` that
+  follows imports file by file
 - `check` compares the graph with a declared architecture in `archmap.toml`: forbidden
   dependencies, layers, allow lists, coverage, cycles, undeclared imports, and declarations
   that match nothing; it also reports structural signals, with or without `archmap.toml`
 
-Known gaps: the standard library and undeclared packages produce no edges by
-design, though `check` can report undeclared imports; dynamic imports and
-`sys.path` changes made at runtime are not seen; `impact` does not follow the
-parent `__init__.py` that Python loads implicitly before a submodule; Rust
-components are package-level while Python components are module-level, and
-Rust evidence does not name target files yet.
+Known gaps: imports of the standard library, undeclared packages, extras and
+dev dependencies produce no edges by design, though `query` lists all but the
+standard library as not mapped and `check` can report the undeclared ones;
+dynamic imports are recorded but not followed, and `sys.path` changes made at
+runtime are not seen; `impact` does not follow the parent `__init__.py` that
+Python loads implicitly before a submodule; Rust components are package-level
+while Python components are module-level, and Rust evidence does not name
+target files yet.
 
 ## Usage
 
@@ -154,10 +166,12 @@ Example edge from the output:
 
 ```text
 ArchitectureGraph
+├── meta:       { root, analyzers, tool_version, coverage: { language -> { files, read? } } }
 ├── components: { id -> Component { kind: package | module | external, language, path, parent?, evidence } }
 ├── symbols:    { id -> Symbol { kind: function | struct | enum | trait | ..., component, signature, evidence } }
 ├── edges:      [ Edge { from, to, kind: import | dependency | call | http | database | event | unknown, evidence } ]
-└── unresolved_imports: [ UnresolvedImport { from, module, provided_by?, evidence } ]
+├── unmapped_imports: [ UnmappedImport { from, module, reason: undeclared | declared_not_required | local_name, provided_by?, evidence } ]
+└── dynamic_imports:  [ DynamicImport { from, call, evidence } ]
 
 Evidence { file, line?, note?, target?, scope?: module | local }
 ```
@@ -168,9 +182,14 @@ function is called (`local`). Roll-up hides which files of a component are
 involved; `impact` and the cycle check read `target` and `scope` to recover
 it. Python records both; Rust records neither yet.
 
-An unresolved import is an import that matches no internal module, no
-standard-library module, no declared distribution and no file or directory
-name in the project. It is an observation for `check`, never an edge.
+An unmapped import is an import that maps to no component, standard-library
+imports aside, and `reason` says why. A dynamic import is a call that loads a
+module by a name computed at runtime. Both are observations, never edges:
+they mark where a dependency may exist that no edge shows. `query` lists them
+and `check` reports the undeclared ones. `meta.coverage` counts the files of
+each recognized source language and how many an analyzer read; a language
+without `read` has no analyzer. Configuration, data and documentation files
+are not counted. The JSON carries `schema_version: 2`.
 
 Each analyzer produces a `GraphFragment`; the graph merges fragments,
 collapses edges that describe the same relationship, and keeps all of their
@@ -193,6 +212,12 @@ contains:
 
 - a header of `key: value` lines: `root`, `depth`, `components: N shown, M in
   the full graph`, counts, the `source` of the facts and the `next` commands
+- `## Coverage`, before the map: for each analyzed language `files`, `read`
+  and `imports without an edge`; the languages no analyzer reads, such as
+  `not analyzed  sql: 145  notebook: 68`; the number of `dynamic imports` and
+  the components that make them; and a fixed line naming the runtime coupling
+  no analyzer reads (HTTP, databases, queues, subprocesses,
+  configuration-driven loading)
 - the component tree, indented by containment, with kind, language, path,
   `symbols: N` and `folded: N` for submodules folded into the component
 - internal dependencies as `a -> b  imports: N`, plus `declared: yes` when a
@@ -203,7 +228,7 @@ contains:
 - the components depended on by the most others, with `dependents`,
   `dependencies` and `rank`
 
-On a 380-file Python repository, depth 2 turns a 760 KB graph into a
+On a 380-file Python repository, depth 2 turns a 790 KB graph into a
 summary of about 11 KB.
 
 `summary`, `query` and `impact` share one default depth, so they always
@@ -214,10 +239,14 @@ says so, and `query` lists the children to ask about with a larger
 
 `query` prints compact text by default: public symbols with their location,
 and each neighboring component with its import count and a few example
-locations. Lists are capped at 30 entries and 3 locations, and the rest is
-counted. On the repository above, its busiest component takes 8 KB as text
-and 117 KB as JSON. `--verbose` lifts the caps and `--format json` adds every
-piece of evidence.
+locations. A `Not mapped` section then lists the imports of the component
+that no edge shows, one line per module with the reason (`local name`,
+`extra or dev dependency`, `undeclared`, or `dynamic` for a call that loads
+modules by name) and where they are, so an absent edge is never mistaken for
+an absent dependency. Lists are capped at 30 entries and 3 locations, and the
+rest is counted. On the repository above, its busiest component takes 8 KB as
+text and 118 KB as JSON. `--verbose` lifts the caps and `--format json` adds
+every piece of evidence.
 
 `impact` follows imports file by file where the evidence names the imported
 file: a component is affected only when one of its files imports what
@@ -349,7 +378,7 @@ Phases 4 and 5 have not started.
 |---|---|---|
 | 0 Discovery | languages, manifests, packages; report detected languages even without an analyzer | Rust and Python only |
 | 1 Structural Facts | modules, public symbols, imports, dependencies | Rust and Python |
-| 2 Structural Compression & Agent Context | roll-up; `summary`, `query` and `impact` small enough for an agent and at one granularity; full detail with `--format json` | done for Python; `impact` follows files |
+| 2 Structural Compression & Agent Context | roll-up; `summary`, `query` and `impact` small enough for an agent and at one granularity; full detail with `--format json` | done for Python; `impact` follows files; `summary` and `query` say what the graph does not map |
 | 3 Rules & Declared Architecture | declared components and layers, cycles, forbidden dependencies, drift, CI `check` | done: deny rules, layers, allow lists, coverage, cycles with a file-level reading, undeclared imports, stale declarations; structural signals |
 | 4 Cross-system Graph | OpenAPI, Terraform, databases, HTTP, events | planned |
 | 5 Semantic Enrichment | LLM naming and responsibilities, stored as inferred facts | planned |

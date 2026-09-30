@@ -2,7 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
-use archmap_core::{ArchitectureGraph, ComponentId, ComponentKind, EdgeKind, SymbolKind};
+use archmap_core::{
+    ArchitectureGraph, ComponentId, ComponentKind, EdgeKind, Evidence, LanguageCoverage,
+    SymbolKind, UnmappedImport, UnmappedReason,
+};
 use archmap_scan::{scan, ScanOptions};
 
 fn fixture_root() -> PathBuf {
@@ -145,6 +148,7 @@ fn manifests_only_skips_symbols_but_keeps_dependencies() {
     assert!(graph.symbols.is_empty());
     assert!(graph.edges.iter().all(|e| e.kind == EdgeKind::Dependency));
     assert_eq!(graph.components.len(), 3);
+    assert_eq!(graph.meta.coverage["rust"].read, Some(0));
 }
 
 #[test]
@@ -158,4 +162,35 @@ fn scan_is_deterministic() {
 fn missing_root_is_an_error() {
     let result = scan(Path::new("/definitely/not/here"), &ScanOptions::default());
     assert!(result.is_err());
+}
+
+#[test]
+fn coverage_counts_only_the_files_under_src() {
+    let graph = scan_fixture();
+    // crates/app/tests/smoke.rs is seen but not read
+    assert_eq!(
+        graph.meta.coverage["rust"],
+        LanguageCoverage {
+            files: 5,
+            read: Some(4)
+        }
+    );
+}
+
+#[test]
+fn a_dev_dependency_used_under_src_is_an_import_without_an_edge() {
+    let graph = scan_fixture();
+    assert_eq!(
+        graph.unmapped_imports,
+        vec![UnmappedImport {
+            from: id("app"),
+            module: "assert_cmd".into(),
+            reason: UnmappedReason::DeclaredNotRequired,
+            provided_by: vec![],
+            evidence: Evidence::new("crates/app/src/main.rs")
+                .at_line(14)
+                .with_note("use"),
+        }]
+    );
+    assert!(graph.component(&id("ext:assert_cmd")).is_none());
 }

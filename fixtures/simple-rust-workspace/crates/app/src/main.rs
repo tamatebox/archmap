@@ -8,3 +8,8 @@ fn main() {
     println!("{} {}", greet(&user), CURRENCY);
     config::load();
 }
+
+#[cfg(test)]
+mod tests {
+    use assert_cmd::Command;
+}

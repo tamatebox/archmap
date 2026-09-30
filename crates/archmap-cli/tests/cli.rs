@@ -35,7 +35,7 @@ fn scan_writes_graph_under_dot_archmap_by_default() {
     let graph: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(repo.join(".archmap/graph.json")).unwrap())
             .unwrap();
-    assert_eq!(graph["schema_version"], 1);
+    assert_eq!(graph["schema_version"], 2);
     // only the graph is written; whether to ignore it is the repository's call
     let written: Vec<String> = std::fs::read_dir(repo.join(".archmap"))
         .unwrap()
@@ -90,7 +90,7 @@ fn scan_emits_json_graph_to_stdout_with_dash() {
     );
 
     let graph: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid json");
-    assert_eq!(graph["schema_version"], 1);
+    assert_eq!(graph["schema_version"], 2);
     assert_eq!(graph["components"]["app"]["kind"], "package");
     assert!(graph["symbols"]["lib_core::greet"].is_object());
     assert!(graph["edges"]
@@ -708,4 +708,43 @@ fn impact_does_not_travel_through_a_shared_component() {
         .output()
         .unwrap();
     assert!(!out.status.success());
+}
+
+#[test]
+fn summary_says_what_the_map_does_not_cover_before_the_map() {
+    let summary = summary_stdout(&[]);
+    let coverage = [
+        "\n## Coverage",
+        "python  files: 15  read: 15  imports without an edge: 4",
+        "not analyzed  shell: 1",
+        "dynamic imports: 1  in: scripts 1",
+        "runtime coupling: not analyzed (HTTP, databases, queues, subprocesses, configuration-driven loading)",
+        "",
+        "## Components\n",
+    ]
+    .join("\n");
+    assert!(summary.contains(&coverage), "{summary}");
+}
+
+#[test]
+fn query_lists_imports_the_graph_does_not_map() {
+    let text = query_text(&python_fixture(), &["scripts"]);
+    let not_mapped = [
+        "\nNot mapped: 4",
+        "  backfill       local name               1 import: scripts/report.py:4",
+        "  helpers        local name               1 import: scripts/report.py:3",
+        "  import_module  dynamic                  1 call: scripts/plugins.py:5",
+        "  pytest         extra or dev dependency  1 import: scripts/report.py:2\n",
+    ]
+    .join("\n");
+    assert!(text.contains(&not_mapped), "{text}");
+    let billing = query_text(&python_fixture(), &["shop.billing"]);
+    assert!(billing.contains("\nNot mapped: none\n"), "{billing}");
+
+    // every piece of it, with evidence, in JSON
+    let view = fixture_json(&["query", "scripts", "--format", "json"]);
+    assert_eq!(view["not_mapped"].as_array().unwrap().len(), 3);
+    assert_eq!(view["not_mapped"][2]["reason"], "declared_not_required");
+    assert_eq!(view["dynamic_imports"][0]["call"], "import_module");
+    assert_eq!(view["dynamic_imports"][0]["evidence"]["scope"], "local");
 }

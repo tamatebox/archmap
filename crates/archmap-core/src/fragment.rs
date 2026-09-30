@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{Component, Edge, Symbol, UnresolvedImport};
+use crate::{Component, DynamicImport, Edge, Symbol, UnmappedImport};
 
 /// A partial graph produced by a single analyzer.
 ///
@@ -16,7 +16,9 @@ pub struct GraphFragment {
     #[serde(default)]
     pub edges: Vec<Edge>,
     #[serde(default)]
-    pub unresolved_imports: Vec<UnresolvedImport>,
+    pub unmapped_imports: Vec<UnmappedImport>,
+    #[serde(default)]
+    pub dynamic_imports: Vec<DynamicImport>,
 }
 
 impl GraphFragment {
@@ -28,7 +30,8 @@ impl GraphFragment {
         self.components.is_empty()
             && self.symbols.is_empty()
             && self.edges.is_empty()
-            && self.unresolved_imports.is_empty()
+            && self.unmapped_imports.is_empty()
+            && self.dynamic_imports.is_empty()
     }
 
     pub fn push_component(&mut self, component: Component) {
@@ -43,8 +46,12 @@ impl GraphFragment {
         self.edges.push(edge);
     }
 
-    pub fn push_unresolved_import(&mut self, import: UnresolvedImport) {
-        self.unresolved_imports.push(import);
+    pub fn push_unmapped_import(&mut self, import: UnmappedImport) {
+        self.unmapped_imports.push(import);
+    }
+
+    pub fn push_dynamic_import(&mut self, import: DynamicImport) {
+        self.dynamic_imports.push(import);
     }
 
     /// Append another fragment into this one without normalizing.
@@ -52,6 +59,7 @@ impl GraphFragment {
         self.components.extend(other.components);
         self.symbols.extend(other.symbols);
         self.edges.extend(other.edges);
-        self.unresolved_imports.extend(other.unresolved_imports);
+        self.unmapped_imports.extend(other.unmapped_imports);
+        self.dynamic_imports.extend(other.dynamic_imports);
     }
 }

@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use crate::graph::strongly_connected;
 use crate::{
     ArchitectureGraph, Component, ComponentId, ComponentKind, EdgeKind, Evidence, Scope,
-    UnresolvedImport,
+    UnmappedImport, UnmappedReason,
 };
 
 /// The rules file as written by its authors.
@@ -268,14 +268,20 @@ pub fn check(graph: &ArchitectureGraph, rules: &RuleSet, depth: usize) -> Vec<Fi
 
     if rules.undeclared_imports.forbid {
         let ignore = &rules.undeclared_imports.ignore;
-        for import in &graph.unresolved_imports {
+        let undeclared: Vec<&UnmappedImport> = graph
+            .unmapped_imports
+            .iter()
+            .filter(|i| i.reason == UnmappedReason::Undeclared)
+            .collect();
+        for import in &undeclared {
             if !ignore.iter().any(|prefix| covers(prefix, &import.module)) {
-                let UnresolvedImport {
+                let UnmappedImport {
                     from,
                     module,
                     provided_by,
                     evidence,
-                } = import.clone();
+                    ..
+                } = (*import).clone();
                 findings.push(Finding::UndeclaredImport {
                     from,
                     module,
@@ -285,11 +291,7 @@ pub fn check(graph: &ArchitectureGraph, rules: &RuleSet, depth: usize) -> Vec<Fi
             }
         }
         for prefix in ignore {
-            if !graph
-                .unresolved_imports
-                .iter()
-                .any(|i| covers(prefix, &i.module))
-            {
+            if !undeclared.iter().any(|i| covers(prefix, &i.module)) {
                 findings.push(Finding::Unmatched {
                     declared: "undeclared_imports.ignore".into(),
                     selector: prefix.clone(),
@@ -788,9 +790,10 @@ mod tests {
     fn undeclared_imports_are_reported_unless_ignored() {
         let mut g = graph();
         for (module, line) in [("scipy.stats", 1), ("ujson", 2)] {
-            g.unresolved_imports.push(UnresolvedImport {
+            g.unmapped_imports.push(UnmappedImport {
                 from: "scripts".into(),
                 module: module.into(),
+                reason: UnmappedReason::Undeclared,
                 provided_by: vec![],
                 evidence: Evidence::new("scripts/run.py").at_line(line),
             });
@@ -822,6 +825,47 @@ mod tests {
         );
         assert!(covers("google.api_core", "google.api_core.exceptions"));
         assert!(!covers("google.api", "google.api_core"));
+    }
+
+    #[test]
+    fn only_undeclared_imports_are_findings() {
+        let mut g = graph();
+        for (module, reason, line) in [
+            ("scipy", UnmappedReason::Undeclared, 1),
+            ("pytest", UnmappedReason::DeclaredNotRequired, 2),
+            ("helpers", UnmappedReason::LocalName, 3),
+        ] {
+            g.unmapped_imports.push(UnmappedImport {
+                from: "scripts".into(),
+                module: module.into(),
+                reason,
+                provided_by: vec![],
+                evidence: Evidence::new("scripts/run.py").at_line(line),
+            });
+        }
+        let set = RuleSet {
+            undeclared_imports: UndeclaredImportRule {
+                forbid: true,
+                // covers only an import that is declared, so it is stale
+                ignore: vec!["pytest".into()],
+            },
+            ..RuleSet::default()
+        };
+        assert_eq!(
+            check(&g, &set, 2),
+            vec![
+                Finding::UndeclaredImport {
+                    from: "scripts".into(),
+                    module: "scipy".into(),
+                    provided_by: vec![],
+                    evidence: Evidence::new("scripts/run.py").at_line(1),
+                },
+                Finding::Unmatched {
+                    declared: "undeclared_imports.ignore".into(),
+                    selector: "pytest".into(),
+                },
+            ]
+        );
     }
 
     fn declared(pairs: &[(&str, &str)]) -> BTreeMap<String, Vec<String>> {

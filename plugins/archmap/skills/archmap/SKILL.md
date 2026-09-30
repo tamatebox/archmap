@@ -14,10 +14,10 @@ archmap maps a repository into components (packages, modules, external dependenc
 Run from the repository root.
 
 1. `archmap --version`. If missing, tell the user archmap is not installed and continue without it.
-2. `archmap summary .` for the overview. `components: 0 shown` means archmap cannot read these languages: continue without it.
+2. `archmap summary .` for the overview. `components: 0 shown`: archmap cannot read these languages; continue without it.
 3. `archmap query <component>`: public symbols with `file:line`, dependencies both ways with import counts and example locations, and children. Lists are capped; `--verbose` shows all, `--format json` all evidence.
 4. `archmap impact <component-or-file>` before a change: components depending on the target.
-5. Open the evidence lines, then the source you need.
+5. Open evidence lines, then the source you need.
 6. With an `archmap.toml`, run `archmap check` after a change; exit 1 lists broken rules with evidence. `signal:` lines are observations, never failures.
 
 Options: `--depth N` (default 2; 0 keeps only packages) applies to `summary`, `query` and `impact`; use one value for all three. `query` also takes a symbol name (`Type::method`, `Class.method`). For another root, `summary <root>`, but `query`/`impact` take `--path <root>`. Do not read the full graph (`archmap scan`, `.archmap/graph.json`).
@@ -25,7 +25,7 @@ Options: `--depth N` (default 2; 0 keeps only packages) applies to `summary`, `q
 ## Reading the output
 
 - **Observed, not inferred.** Names are package and directory names, not responsibilities; label any role you infer as inference.
-- **A missing edge is not a missing dependency.** No edges exist for the standard library or undeclared packages (`check` lists the latter); dynamic imports, runtime coupling (HTTP, database, events, config, subprocess) and languages other than Rust and Python are invisible. `importers: none resolved` does not mean unused: Rust paths used without `use` (`serde_json::to_string`, `#[derive(thiserror::Error)]`), packages used without an import (pytest plugin fixtures, servers run as commands) and import names archmap cannot match without a `.venv` are missed. Search the code before calling anything unused.
+- **A missing edge is not a missing dependency.** `## Coverage` counts what the map misses: files no analyzer read (`not analyzed`), `imports without an edge`, `dynamic imports`; runtime coupling (HTTP, databases, queues, subprocesses, config) is unseen. `query` lists a component's gaps under `Not mapped` with `file:line`: read them before trusting the edges. `importers: none resolved` does not mean unused: Rust paths used without `use` (`serde_json::to_string`) and packages used without an import (pytest plugins, servers run as commands) are missed. Search the code before calling anything unused.
 - **Everything is rolled up to one depth.** Modules deeper than `--depth` are folded into their ancestor (`folded: N`), whose edges and counts include theirs. `imports: N` counts import statements; `declared: yes` means a manifest also declares the dependency. On a folded name, `query` and `impact` answer for its ancestor and say so (`folded from`); go deeper with the children and a larger `--depth`.
 - **Check what a name resolved to.** Names repeat (a package and its top module can both be `shop`), and an exact id beats a name. Read the `id:` line (query) or `target` (impact). If a result is empty or surprising, retry with the id (`shop::shop`) or a file inside it (`src/shop/__init__.py`).
 - **impact is structural reachability, not a verdict.** It lists components that import or declare the target, directly or transitively (`transitive` includes `direct`), at the chosen depth. Python is traced file by file (a file reaches only its importers, not via the implicitly loaded parent `__init__.py`); Rust per crate. Listed components may not use what you change; unlisted ones may still depend on it. Search each for the changed symbol.

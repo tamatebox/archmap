@@ -10,6 +10,7 @@ use std::fmt::Write;
 
 use archmap_core::{
     ArchitectureGraph, ComponentId, ComponentKind, Edge, EdgeKind, Evidence, Symbol, SymbolKind,
+    UnmappedReason,
 };
 
 use crate::commands::{ComponentView, QueryResult};
@@ -119,6 +120,71 @@ fn component(
     let incoming = view.incoming.iter().map(|e| (&e.from, *e));
     truncated |= neighbors(out, "Depends on", outgoing, rolled, caps);
     truncated |= neighbors(out, "Used by", incoming, rolled, caps);
+    if c.kind != ComponentKind::External {
+        truncated |= not_mapped(out, view, caps);
+    }
+    truncated
+}
+
+/// Imports that no edge shows, one line per module (or per function that
+/// loads modules by name) with why and where: the places to read in the
+/// source instead of trusting the edges alone. Returns whether anything was
+/// left out.
+fn not_mapped(out: &mut String, view: &ComponentView, caps: &Caps) -> bool {
+    const DYNAMIC: &str = "dynamic";
+    let mut groups: BTreeMap<(&str, &str), Vec<&Evidence>> = BTreeMap::new();
+    for import in &view.not_mapped {
+        let why = match import.reason {
+            UnmappedReason::Undeclared => "undeclared",
+            UnmappedReason::DeclaredNotRequired => "extra or dev dependency",
+            UnmappedReason::LocalName => "local name",
+        };
+        groups
+            .entry((import.module.as_str(), why))
+            .or_default()
+            .push(&import.evidence);
+    }
+    for import in &view.dynamic_imports {
+        groups
+            .entry((import.call.as_str(), DYNAMIC))
+            .or_default()
+            .push(&import.evidence);
+    }
+    if groups.is_empty() {
+        let _ = writeln!(out, "\nNot mapped: none");
+        return false;
+    }
+
+    let mut list: Vec<((&str, &str), Vec<&Evidence>)> = groups.into_iter().collect();
+    list.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
+    let total = list.len();
+    let shown = total.min(caps.neighbors);
+    let mut truncated = shown < total;
+    let _ = writeln!(out, "\nNot mapped: {}", count(total, shown));
+
+    let list = &list[..shown];
+    let name_width = list.iter().map(|((n, _), _)| n.chars().count()).max();
+    let why_width = list.iter().map(|((_, w), _)| w.chars().count()).max();
+    let (name_width, why_width) = (name_width.unwrap_or(0), why_width.unwrap_or(0));
+    for ((name, why), evidence) in list {
+        let noun = if *why == DYNAMIC { "call" } else { "import" };
+        let locations: Vec<String> = evidence
+            .iter()
+            .take(caps.locations)
+            .map(|e| location(e))
+            .collect();
+        let more = evidence.len().saturating_sub(caps.locations);
+        truncated |= more > 0;
+        let mut line = format!(
+            "  {name:<name_width$}  {why:<why_width$}  {}: {}",
+            plural(evidence.len(), noun),
+            locations.join(", ")
+        );
+        if more > 0 {
+            let _ = write!(line, ", +{more} more");
+        }
+        let _ = writeln!(out, "{line}");
+    }
     truncated
 }
 

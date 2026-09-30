@@ -31,10 +31,22 @@ pub struct PyDef {
     pub line: u32,
 }
 
+/// A call that loads a module by a name computed at runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PyDynamicImport {
+    /// The function called: `import_module`, `__import__` or
+    /// `spec_from_file_location`.
+    pub call: &'static str,
+    pub line: u32,
+    /// Inside a function body.
+    pub local: bool,
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct PyFile {
     pub imports: Vec<PyImport>,
     pub defs: Vec<PyDef>,
+    pub dynamic_imports: Vec<PyDynamicImport>,
 }
 
 struct ClassCtx {
@@ -94,6 +106,14 @@ pub fn scan_source(text: &str) -> PyFile {
             if ctx.body_indent.is_none() {
                 ctx.body_indent = Some(indent);
             }
+        }
+
+        if let Some(call) = dynamic_call(trimmed) {
+            out.dynamic_imports.push(PyDynamicImport {
+                call,
+                line: line_no,
+                local,
+            });
         }
 
         if let Some(rest) = trimmed.strip_prefix("import ") {
@@ -197,6 +217,25 @@ pub fn scan_source(text: &str) -> PyFile {
     }
 
     out
+}
+
+/// Functions that load a module by a name computed at runtime.
+const DYNAMIC_CALLS: &[&str] = &["__import__", "import_module", "spec_from_file_location"];
+
+/// A call to one of [`DYNAMIC_CALLS`] on this line. Definitions of functions
+/// with those names and longer names ending in them (`my_import_module`)
+/// do not count.
+fn dynamic_call(trimmed: &str) -> Option<&'static str> {
+    if trimmed.starts_with("def ") || trimmed.starts_with("async def ") {
+        return None;
+    }
+    DYNAMIC_CALLS.iter().copied().find(|name| {
+        trimmed.match_indices(name).any(|(at, _)| {
+            let before = trimmed[..at].chars().next_back();
+            let is_call = trimmed[at + name.len()..].trim_start().starts_with('(');
+            is_call && !before.is_some_and(|c| c.is_alphanumeric() || c == '_')
+        })
+    })
 }
 
 /// A line that opens a triple-quoted string without closing it.
@@ -421,6 +460,38 @@ CURRENCY = "JPY"
                 ("f2", true),
                 ("h", true),
                 ("i", false),
+            ]
+        );
+    }
+
+    #[test]
+    fn calls_that_load_modules_by_name_are_dynamic_imports() {
+        let text = "\
+import importlib
+from importlib import import_module
+# importlib.import_module(\"commented out\")
+\"\"\"
+__import__(\"inside a docstring\")
+\"\"\"
+PLUGIN = importlib.import_module(NAME)
+def import_module(name):
+    return __import__(name)
+def load(path):
+    spec = importlib.util.spec_from_file_location(\"m\", path)
+    return my_import_module(path)
+";
+        let file = scan_source(text);
+        let calls: Vec<(&str, u32, bool)> = file
+            .dynamic_imports
+            .iter()
+            .map(|d| (d.call, d.line, d.local))
+            .collect();
+        assert_eq!(
+            calls,
+            vec![
+                ("import_module", 7, false),
+                ("__import__", 9, true),
+                ("spec_from_file_location", 11, true),
             ]
         );
     }

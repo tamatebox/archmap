@@ -14,7 +14,7 @@
 mod manifest;
 mod source;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use archmap_core::{Component, ComponentId, ComponentKind, Edge, EdgeKind, Evidence};
@@ -45,6 +45,8 @@ pub(crate) struct ResolvedPackage {
     /// to the component it refers to. Includes internal packages and declared
     /// external dependencies.
     pub import_targets: BTreeMap<String, ComponentId>,
+    /// Crate names of `[dev-dependencies]`, which have no edges.
+    pub dev_imports: BTreeSet<String>,
 }
 
 impl Analyzer for RustAnalyzer {
@@ -62,6 +64,7 @@ impl Analyzer for RustAnalyzer {
         let manifests = load_manifests(ctx, &mut output.warnings)?;
         let packages = manifest_pass(&manifests, &mut output);
 
+        output.read.insert(LANGUAGE.to_owned(), 0);
         if !ctx.options().manifests_only {
             source::source_pass(ctx, &packages, &mut output);
         }
@@ -122,10 +125,12 @@ fn manifest_pass(
         output.fragment.push_component(component);
 
         let mut import_targets: BTreeMap<String, ComponentId> = BTreeMap::new();
+        let mut dev_imports: BTreeSet<String> = BTreeSet::new();
         let workspace = nearest_workspace(&workspaces, &pkg.dir);
 
         for dep in &pkg.dependencies {
             if dep.kind == DependencyKind::Dev {
+                dev_imports.insert(dep.import_name());
                 continue;
             }
             let dep = resolve_workspace_dep(dep, workspace, &manifest_file, &mut output.warnings);
@@ -163,6 +168,7 @@ fn manifest_pass(
             name: pkg.name.clone(),
             dir: pkg.dir.clone(),
             import_targets,
+            dev_imports,
         });
     }
 

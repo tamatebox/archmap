@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use archmap_core::GraphFragment;
 
 use crate::{RepoContext, ScanError};
@@ -7,6 +9,10 @@ use crate::{RepoContext, ScanError};
 pub struct AnalyzerOutput {
     pub fragment: GraphFragment,
     pub warnings: Vec<String>,
+    /// Source files the analyzer read, per language (`python`), including
+    /// languages it ran for but read nothing of, such as with
+    /// `--manifests-only`.
+    pub read: BTreeMap<String, usize>,
 }
 
 /// One source of architectural facts (a language, a manifest format, an

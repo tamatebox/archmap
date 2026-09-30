@@ -21,11 +21,11 @@ pub use evidence::{Evidence, Scope};
 pub use fragment::GraphFragment;
 pub use graph::{ArchitectureGraph, ChangeSeed, GraphMeta, Reach};
 pub use model::{
-    Component, ComponentId, ComponentKind, Edge, EdgeKind, Symbol, SymbolId, SymbolKind,
-    UnresolvedImport,
+    Component, ComponentId, ComponentKind, DynamicImport, Edge, EdgeKind, LanguageCoverage, Symbol,
+    SymbolId, SymbolKind, UnmappedImport, UnmappedReason,
 };
 
 /// Version of the JSON schema emitted by [`ArchitectureGraph`].
 ///
 /// Bump when a breaking change is made to the serialized shape.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;

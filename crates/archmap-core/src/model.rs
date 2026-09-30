@@ -148,22 +148,59 @@ pub struct Symbol {
     pub evidence: Vec<Evidence>,
 }
 
-/// An import that matches no internal module, no standard-library module
-/// and no declared distribution.
+/// An import that maps to no component, standard-library imports aside.
 ///
-/// It is an observation, not a dependency: `check` can report it, but it
-/// never becomes an edge, because an import is not a declaration.
+/// It is an observation, not a dependency: it never becomes an edge, and
+/// `reason` says why. It tells readers of the graph where a dependency may
+/// exist that no edge shows; `check` reports the undeclared ones.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct UnresolvedImport {
+pub struct UnmappedImport {
     /// The component whose source contains the import.
     pub from: ComponentId,
     /// Dotted module path as imported (`google.api_core.exceptions`).
     pub module: String,
+    pub reason: UnmappedReason,
     /// Installed distributions that provide the module, when a virtualenv
     /// shows it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provided_by: Vec<String>,
     pub evidence: Evidence,
+}
+
+/// Why an import maps to no component.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnmappedReason {
+    /// No manifest declares the package.
+    Undeclared,
+    /// A manifest declares the package, but not as a required dependency:
+    /// an extra, a dependency group or a development dependency. Only
+    /// required dependencies become edges.
+    DeclaredNotRequired,
+    /// Matches no module, but a file or directory of that name exists in
+    /// the repository: probably local code reached through `sys.path`.
+    LocalName,
+}
+
+/// A module loaded by a name computed at runtime (`importlib.import_module`,
+/// `__import__`). No edge can follow it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct DynamicImport {
+    /// The component whose source makes the call.
+    pub from: ComponentId,
+    /// The function called (`import_module`).
+    pub call: String,
+    pub evidence: Evidence,
+}
+
+/// What a scan saw of one language.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LanguageCoverage {
+    /// Files of the language under the root, after ignore rules.
+    pub files: usize,
+    /// Files an analyzer read. `None` when no analyzer reads the language.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read: Option<usize>,
 }
 
 /// The nature of a relationship between two components.

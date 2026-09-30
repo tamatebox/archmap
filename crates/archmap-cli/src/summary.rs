@@ -20,6 +20,14 @@ const TOP_DEPENDED_ON: usize = 10;
 /// telling an agent where to look.
 const MAX_IMPORTERS: usize = 5;
 
+/// How many components the dynamic-imports line names before counting the
+/// rest.
+const MAX_DYNAMIC_IMPORTERS: usize = 5;
+
+/// Coupling that no analyzer reads, whatever the repository contains.
+const RUNTIME_COUPLING: &str = "runtime coupling: not analyzed \
+     (HTTP, databases, queues, subprocesses, configuration-driven loading)";
+
 /// One internal dependency at the summary's depth.
 #[derive(Default)]
 struct Dependency {
@@ -80,11 +88,69 @@ pub fn render(graph: &ArchitectureGraph, depth: usize) -> String {
         "next: archmap query <component> --depth {depth}; archmap impact <component-or-file> --depth {depth}"
     );
 
+    coverage(&mut out, graph, &rolled);
     components(&mut out, graph, &rolled, &internal, depth);
     internal_dependencies(&mut out, &rolled, &dependencies);
     external_dependencies(&mut out, &rolled, &externals);
     most_depended_on(&mut out, &rolled, &internal, &dependencies);
     out
+}
+
+/// What the map leaves out, before the map: files no analyzer read, imports
+/// without an edge, modules loaded by computed names, and coupling that no
+/// analyzer reads. An agent can then tell an absent edge from an unseen one.
+fn coverage(out: &mut String, graph: &ArchitectureGraph, rolled: &ArchitectureGraph) {
+    let _ = writeln!(out, "\n## Coverage");
+
+    let mut without_edge: BTreeMap<&str, usize> = BTreeMap::new();
+    for import in &graph.unmapped_imports {
+        if let Some(language) = graph
+            .component(&import.from)
+            .and_then(|c| c.language.as_deref())
+        {
+            *without_edge.entry(language).or_default() += 1;
+        }
+    }
+    let mut not_analyzed = Vec::new();
+    for (language, c) in &graph.meta.coverage {
+        match c.read {
+            Some(read) => {
+                let without = without_edge.get(language.as_str()).copied().unwrap_or(0);
+                let _ = writeln!(
+                    out,
+                    "{language}  files: {}  read: {read}  imports without an edge: {without}",
+                    c.files
+                );
+            }
+            None => not_analyzed.push(format!("{language}: {}", c.files)),
+        }
+    }
+    if not_analyzed.is_empty() {
+        let _ = writeln!(out, "not analyzed: none");
+    } else {
+        let _ = writeln!(out, "not analyzed  {}", not_analyzed.join("  "));
+    }
+
+    let mut importers: BTreeMap<&ComponentId, usize> = BTreeMap::new();
+    for import in &rolled.dynamic_imports {
+        *importers.entry(&import.from).or_default() += 1;
+    }
+    let mut importers: Vec<(&ComponentId, usize)> = importers.into_iter().collect();
+    importers.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    let mut line = format!("dynamic imports: {}", rolled.dynamic_imports.len());
+    if !importers.is_empty() {
+        let mut top: Vec<String> = importers
+            .iter()
+            .take(MAX_DYNAMIC_IMPORTERS)
+            .map(|(id, n)| format!("{} {n}", name_of(rolled, id)))
+            .collect();
+        if importers.len() > MAX_DYNAMIC_IMPORTERS {
+            top.push(format!("+{} more", importers.len() - MAX_DYNAMIC_IMPORTERS));
+        }
+        let _ = write!(line, "  in: {}", top.join(", "));
+    }
+    let _ = writeln!(out, "{line}");
+    let _ = writeln!(out, "{RUNTIME_COUPLING}");
 }
 
 fn components(

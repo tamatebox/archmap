@@ -12,6 +12,7 @@
 mod analyzer;
 mod context;
 mod error;
+mod languages;
 pub mod python;
 pub mod rust;
 mod walk;
@@ -20,9 +21,10 @@ pub use analyzer::Analyzer;
 pub use context::RepoContext;
 pub use error::ScanError;
 
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
-use archmap_core::{ArchitectureGraph, GraphMeta};
+use archmap_core::{ArchitectureGraph, GraphMeta, LanguageCoverage};
 
 /// Options controlling a scan.
 #[derive(Debug, Clone, Default)]
@@ -66,8 +68,10 @@ pub fn scan_with(
         root: ctx.root_display(),
         analyzers: Vec::new(),
         tool_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+        coverage: BTreeMap::new(),
     });
     let mut warnings = Vec::new();
+    let mut read: BTreeMap<String, usize> = BTreeMap::new();
 
     for analyzer in analyzers {
         if !analyzer.detect(&ctx) {
@@ -77,8 +81,27 @@ pub fn scan_with(
         graph.meta.analyzers.push(analyzer.name().to_owned());
         graph.merge(output.fragment);
         warnings.extend(output.warnings);
+        for (language, n) in output.read {
+            *read.entry(language).or_default() += n;
+        }
     }
 
+    graph.meta.coverage = coverage(ctx.files(), read);
     graph.normalize();
     Ok(ScanReport { graph, warnings })
+}
+
+/// Files of each recognized language, with how many an analyzer read.
+fn coverage(
+    files: &[PathBuf],
+    read: BTreeMap<String, usize>,
+) -> BTreeMap<String, LanguageCoverage> {
+    let mut coverage: BTreeMap<String, LanguageCoverage> = languages::count_files(files)
+        .into_iter()
+        .map(|(language, files)| (language.to_owned(), LanguageCoverage { files, read: None }))
+        .collect();
+    for (language, n) in read {
+        coverage.entry(language).or_default().read = Some(n);
+    }
+    coverage
 }

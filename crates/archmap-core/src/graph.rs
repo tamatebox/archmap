@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Component, ComponentId, Edge, EdgeKind, Evidence, GraphFragment, Symbol, SymbolId,
-    UnresolvedImport, SCHEMA_VERSION,
+    Component, ComponentId, DynamicImport, Edge, EdgeKind, Evidence, GraphFragment,
+    LanguageCoverage, Symbol, SymbolId, UnmappedImport, SCHEMA_VERSION,
 };
 
 /// Information about how a graph was produced.
@@ -19,6 +19,10 @@ pub struct GraphMeta {
     /// Version of the tool that produced the graph.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_version: Option<String>,
+    /// What the scan saw of each language, including languages no analyzer
+    /// reads.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub coverage: BTreeMap<String, LanguageCoverage>,
 }
 
 /// The normalized architecture graph.
@@ -37,10 +41,14 @@ pub struct ArchitectureGraph {
     pub symbols: BTreeMap<SymbolId, Symbol>,
     #[serde(default)]
     pub edges: Vec<Edge>,
-    /// Imports that resolve to nothing internal, standard or declared.
-    /// Observations for `check`, never edges.
+    /// Imports that map to no component, standard library aside.
+    /// Observations, never edges.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub unresolved_imports: Vec<UnresolvedImport>,
+    pub unmapped_imports: Vec<UnmappedImport>,
+    /// Modules loaded by names computed at runtime. Observations, never
+    /// edges.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dynamic_imports: Vec<DynamicImport>,
 }
 
 impl Default for ArchitectureGraph {
@@ -51,7 +59,8 @@ impl Default for ArchitectureGraph {
             components: BTreeMap::new(),
             symbols: BTreeMap::new(),
             edges: Vec::new(),
-            unresolved_imports: Vec::new(),
+            unmapped_imports: Vec::new(),
+            dynamic_imports: Vec::new(),
         }
     }
 }
@@ -146,7 +155,8 @@ impl ArchitectureGraph {
             self.add_symbol(symbol);
         }
         self.add_edges(fragment.edges);
-        self.unresolved_imports.extend(fragment.unresolved_imports);
+        self.unmapped_imports.extend(fragment.unmapped_imports);
+        self.dynamic_imports.extend(fragment.dynamic_imports);
     }
 
     /// Sort edges so that serialized output is stable regardless of the
@@ -157,8 +167,10 @@ impl ArchitectureGraph {
         for edge in &mut self.edges {
             edge.evidence.sort();
         }
-        self.unresolved_imports.sort();
-        self.unresolved_imports.dedup();
+        self.unmapped_imports.sort();
+        self.unmapped_imports.dedup();
+        self.dynamic_imports.sort();
+        self.dynamic_imports.dedup();
     }
 
     pub fn component(&self, id: &ComponentId) -> Option<&Component> {
@@ -417,15 +429,24 @@ impl ArchitectureGraph {
             out.add_symbol(symbol);
         }
 
-        out.unresolved_imports = self
-            .unresolved_imports
+        out.unmapped_imports = self
+            .unmapped_imports
             .iter()
-            .map(|import| UnresolvedImport {
+            .map(|import| UnmappedImport {
                 from: folded(&import.from),
                 ..import.clone()
             })
             .collect();
-        out.unresolved_imports.sort();
+        out.unmapped_imports.sort();
+        out.dynamic_imports = self
+            .dynamic_imports
+            .iter()
+            .map(|import| DynamicImport {
+                from: folded(&import.from),
+                ..import.clone()
+            })
+            .collect();
+        out.dynamic_imports.sort();
         out.add_edges(self.edges.iter().filter_map(|edge| {
             let (from, to) = (folded(&edge.from), folded(&edge.to));
             (from != to).then(|| Edge {
@@ -558,7 +579,7 @@ fn merge_evidence(into: &mut Vec<Evidence>, from: Vec<Evidence>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ComponentKind, EdgeKind, Evidence, SymbolKind};
+    use crate::{ComponentKind, DynamicImport, EdgeKind, Evidence, SymbolKind, UnmappedReason};
 
     fn component(id: &str) -> Component {
         Component::new(id, id, ComponentKind::Package)
@@ -868,20 +889,21 @@ mod tests {
     }
 
     #[test]
-    fn rollup_keeps_unresolved_imports_on_the_folded_component() {
+    fn rollup_keeps_unmapped_imports_on_the_folded_component() {
         let mut graph = tree();
-        graph.unresolved_imports.push(UnresolvedImport {
+        graph.unmapped_imports.push(UnmappedImport {
             from: "a.b.c".into(),
             module: "scipy".into(),
+            reason: UnmappedReason::Undeclared,
             provided_by: vec![],
             evidence: Evidence::new("a/b/c.py").at_line(1),
         });
         let rolled = graph.rollup(1);
-        assert_eq!(rolled.unresolved_imports.len(), 1);
-        assert_eq!(rolled.unresolved_imports[0].from, "a".into());
+        assert_eq!(rolled.unmapped_imports.len(), 1);
+        assert_eq!(rolled.unmapped_imports[0].from, "a".into());
         assert!(
             rolled.edges.is_empty(),
-            "an unresolved import is never an edge"
+            "an unmapped import is never an edge"
         );
     }
 
@@ -954,6 +976,37 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_imports_merge_sorted_and_fold_like_unmapped_imports() {
+        let dynamic = |from: &str, line: u32| DynamicImport {
+            from: from.into(),
+            call: "import_module".into(),
+            evidence: Evidence::new("a/b/c.py").at_line(line),
+        };
+        let mut graph = tree();
+        let mut fragment = GraphFragment::new();
+        for import in [
+            dynamic("a.b.c", 9),
+            dynamic("a.b.c", 2),
+            dynamic("a.b.c", 9),
+        ] {
+            fragment.push_dynamic_import(import);
+        }
+        graph.merge(fragment);
+        graph.normalize();
+        assert_eq!(
+            graph.dynamic_imports,
+            vec![dynamic("a.b.c", 2), dynamic("a.b.c", 9)]
+        );
+
+        let rolled = graph.rollup(1);
+        assert_eq!(
+            rolled.dynamic_imports,
+            vec![dynamic("a", 2), dynamic("a", 9)]
+        );
+        assert!(rolled.edges.is_empty(), "a dynamic import is never an edge");
+    }
+
+    #[test]
     fn json_roundtrip_preserves_graph() {
         let mut graph = ArchitectureGraph::default();
         let mut c = component("a");
@@ -972,7 +1025,7 @@ mod tests {
         let json = serde_json::to_string(&graph).unwrap();
         let back: ArchitectureGraph = serde_json::from_str(&json).unwrap();
         assert_eq!(graph, back);
-        assert!(json.contains("\"schema_version\":1"));
+        assert!(json.contains("\"schema_version\":2"));
         assert!(json.contains("\"kind\":\"import\""));
     }
 }
