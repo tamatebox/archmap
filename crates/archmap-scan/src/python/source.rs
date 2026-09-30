@@ -60,7 +60,9 @@ pub fn scan_source(text: &str) -> PyFile {
     let lines: Vec<&str> = text.lines().collect();
     let mut out = PyFile::default();
     let mut class: Option<ClassCtx> = None;
-    let mut in_string: Option<&str> = None;
+    // Delimiter of the open multi-line string, and whether the statement
+    // that opened it is inside a function.
+    let mut in_string: Option<(&str, bool)> = None;
     // Indentation of the enclosing `def` headers, innermost last.
     let mut functions: Vec<usize> = Vec::new();
     let mut i = 0;
@@ -71,9 +73,21 @@ pub fn scan_source(text: &str) -> PyFile {
         i += 1;
 
         // Track multi-line string literals so docstrings are not scanned.
-        if let Some(delim) = in_string {
-            if raw.contains(delim) {
-                in_string = None;
+        if let Some((delim, local)) = in_string {
+            if let Some(end) = raw.find(delim) {
+                // The statement may go on after the string (`"""; f(x)`),
+                // even into another one (`""" + """`).
+                let rest = &raw[end + delim.len()..];
+                let reopened = opens_multiline_string(rest);
+                let code = reopened.map_or(rest, |(_, at)| &rest[..at]);
+                if let Some(call) = dynamic_call(code) {
+                    out.dynamic_imports.push(PyDynamicImport {
+                        call,
+                        line: line_no,
+                        local,
+                    });
+                }
+                in_string = reopened.map(|(open, _)| (open, local));
             }
             continue;
         }
@@ -84,10 +98,20 @@ pub fn scan_source(text: &str) -> PyFile {
         }
         let indent = raw.len() - trimmed.len();
 
-        if let Some(open) = opens_multiline_string(trimmed) {
-            in_string = Some(open);
+        if let Some((open, at)) = opens_multiline_string(trimmed) {
             // A statement may still start on this line (e.g. `X = """`), but
-            // we only care about defs/imports, which never do.
+            // only a call before the string matters: defs and imports never
+            // open one. The line may continue a call at any indentation, so
+            // it does not close functions.
+            let local = functions.first().is_some_and(|&d| indent > d);
+            in_string = Some((open, local));
+            if let Some(call) = dynamic_call(&trimmed[..at]) {
+                out.dynamic_imports.push(PyDynamicImport {
+                    call,
+                    line: line_no,
+                    local,
+                });
+            }
             continue;
         }
 
@@ -116,7 +140,8 @@ pub fn scan_source(text: &str) -> PyFile {
             });
         }
 
-        if let Some(rest) = trimmed.strip_prefix("import ") {
+        let code = strip_comment(trimmed);
+        if let Some(rest) = code.strip_prefix("import ") {
             for module in rest.split(',') {
                 let module = module.split_whitespace().next().unwrap_or("");
                 if !module.is_empty() {
@@ -132,7 +157,7 @@ pub fn scan_source(text: &str) -> PyFile {
             continue;
         }
 
-        if let Some(rest) = trimmed.strip_prefix("from ") {
+        if let Some(rest) = code.strip_prefix("from ") {
             if let Some((target, names)) = rest.split_once(" import ") {
                 let target = target.trim();
                 let level = target.chars().take_while(|c| *c == '.').count();
@@ -222,29 +247,63 @@ pub fn scan_source(text: &str) -> PyFile {
 /// Functions that load a module by a name computed at runtime.
 const DYNAMIC_CALLS: &[&str] = &["__import__", "import_module", "spec_from_file_location"];
 
-/// A call to one of [`DYNAMIC_CALLS`] on this line. Definitions of functions
-/// with those names and longer names ending in them (`my_import_module`)
-/// do not count.
-fn dynamic_call(trimmed: &str) -> Option<&'static str> {
-    if trimmed.starts_with("def ") || trimmed.starts_with("async def ") {
+/// A call to one of [`DYNAMIC_CALLS`] in this code. Definitions of functions
+/// with those names, longer names ending in them (`my_import_module`) and
+/// names inside string literals or comments do not count.
+fn dynamic_call(code: &str) -> Option<&'static str> {
+    let code = code.trim_start();
+    if code.starts_with("def ") || code.starts_with("async def ") {
         return None;
     }
     DYNAMIC_CALLS.iter().copied().find(|name| {
-        trimmed.match_indices(name).any(|(at, _)| {
-            let before = trimmed[..at].chars().next_back();
-            let is_call = trimmed[at + name.len()..].trim_start().starts_with('(');
-            is_call && !before.is_some_and(|c| c.is_alphanumeric() || c == '_')
+        code.match_indices(name).any(|(at, _)| {
+            let before = code[..at].chars().next_back();
+            let is_call = code[at + name.len()..].trim_start().starts_with('(');
+            is_call && !before.is_some_and(|c| c.is_alphanumeric() || c == '_') && is_code(code, at)
         })
     })
 }
 
-/// A line that opens a triple-quoted string without closing it.
-fn opens_multiline_string(trimmed: &str) -> Option<&'static str> {
+/// Whether byte `at` of `line` is code: outside string literals (single,
+/// double and triple quotes, with backslash escapes) and before a comment.
+fn is_code(line: &str, at: usize) -> bool {
+    let bytes = line.as_bytes();
+    let mut quote: Option<&[u8]> = None;
+    let mut i = 0;
+    while i < at {
+        match quote {
+            Some(_) if bytes[i] == b'\\' => i += 2,
+            Some(q) if bytes[i..].starts_with(q) => {
+                i += q.len();
+                quote = None;
+            }
+            Some(_) => i += 1,
+            None => match bytes[i] {
+                b'#' => return false,
+                c @ (b'"' | b'\'') => {
+                    let len = if bytes[i..].starts_with(&[c; 3]) {
+                        3
+                    } else {
+                        1
+                    };
+                    quote = Some(&bytes[i..i + len]);
+                    i += len;
+                }
+                _ => i += 1,
+            },
+        }
+    }
+    quote.is_none()
+}
+
+/// A line that opens a triple-quoted string without closing it: the
+/// delimiter and where it starts.
+fn opens_multiline_string(trimmed: &str) -> Option<(&'static str, usize)> {
     for delim in ["\"\"\"", "'''"] {
         if let Some(pos) = trimmed.find(delim) {
             let after = &trimmed[pos + 3..];
             if !after.contains(delim) {
-                return Some(delim);
+                return Some((delim, pos));
             }
             return None;
         }
@@ -285,19 +344,11 @@ fn collect_header(lines: &[&str], start: usize) -> (String, usize) {
     )
 }
 
+/// `line` up to its comment: the first `#` outside string literals.
 fn strip_comment(line: &str) -> &str {
-    // Good enough for headers: a `#` outside quotes ends the code.
-    let mut in_quote: Option<char> = None;
-    for (idx, c) in line.char_indices() {
-        match (in_quote, c) {
-            (Some(q), c) if c == q => in_quote = None,
-            (Some(_), _) => {}
-            (None, '"' | '\'') => in_quote = Some(c),
-            (None, '#') => return &line[..idx],
-            _ => {}
-        }
-    }
-    line
+    line.match_indices('#')
+        .find(|(at, _)| is_code(line, *at))
+        .map_or(line, |(at, _)| &line[..at])
 }
 
 fn def_name(header: &str) -> Option<String> {
@@ -494,6 +545,98 @@ def load(path):
                 ("spec_from_file_location", 11, true),
             ]
         );
+    }
+
+    #[test]
+    fn calls_written_inside_strings_or_comments_are_not_dynamic_imports() {
+        let text = r#"guard('__import__("os").system("ls")')
+check("import_module(x)")
+text = "escaped \"__import__(x)\" is still text"
+x = 1  # import_module(y)
+mod = importlib.import_module(name)  # a real call before a comment
+s = 'it\'s'; plugin = import_module(name)
+"#;
+        let file = scan_source(text);
+        let calls: Vec<(&str, u32)> = file
+            .dynamic_imports
+            .iter()
+            .map(|d| (d.call, d.line))
+            .collect();
+        assert_eq!(calls, vec![("import_module", 5), ("import_module", 6)]);
+    }
+
+    #[test]
+    fn calls_beside_a_multiline_string_are_dynamic_imports() {
+        let text = r#"doc = """
+__import__("inside the string")
+"""; plugin = import_module(name)
+mod = import_module(name); note = """
+import_module("inside the string")
+"""
+"#;
+        let file = scan_source(text);
+        let calls: Vec<(&str, u32)> = file
+            .dynamic_imports
+            .iter()
+            .map(|d| (d.call, d.line))
+            .collect();
+        assert_eq!(calls, vec![("import_module", 3), ("import_module", 4)]);
+
+        // a string opened at column 0 inside a function does not end it
+        let text = "def f():\n    sql = dedent(\n\"\"\"\nSELECT 1\n\"\"\")\n    import os\n";
+        let file = scan_source(text);
+        assert_eq!(
+            file.imports.iter().map(|i| i.local).collect::<Vec<_>>(),
+            vec![true]
+        );
+
+        // a call after the string belongs to the statement that opened it
+        let text = "def f():\n    pass\nX = \"\"\"\n\"\"\"; m = importlib.import_module(n)\n";
+        let file = scan_source(text);
+        let calls: Vec<(u32, bool)> = file
+            .dynamic_imports
+            .iter()
+            .map(|d| (d.line, d.local))
+            .collect();
+        assert_eq!(calls, vec![(4, false)]);
+    }
+
+    #[test]
+    fn a_multiline_string_can_reopen_where_it_closes() {
+        let text = "s = \"\"\"\ntext\n\"\"\" + \"\"\"\nimport not_an_import\n\"\"\"\nimport real\n";
+        let file = scan_source(text);
+        let modules: Vec<&str> = file.imports.iter().map(|i| i.module.as_str()).collect();
+        assert_eq!(modules, vec!["real"]);
+    }
+
+    #[test]
+    fn an_escaped_quote_does_not_end_a_string_in_a_header() {
+        let file = scan_source("def f(x=\"\\\"#\"):\n    pass\ndef g():\n    pass\n");
+        let defs: Vec<(&str, Option<&str>)> = file
+            .defs
+            .iter()
+            .map(|d| (d.name.as_str(), d.signature.as_deref()))
+            .collect();
+        assert_eq!(
+            defs,
+            vec![("f", Some("def f(x=\"\\\"#\")")), ("g", Some("def g()"))]
+        );
+    }
+
+    #[test]
+    fn comments_after_imports_name_nothing() {
+        let file = scan_source("import os  # os, sys\nfrom shop import users  # users, billing\n");
+        let imports: Vec<(&str, Vec<&str>)> = file
+            .imports
+            .iter()
+            .map(|i| {
+                (
+                    i.module.as_str(),
+                    i.names.iter().map(String::as_str).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(imports, vec![("os", vec![]), ("shop", vec!["users"])]);
     }
 
     #[test]
