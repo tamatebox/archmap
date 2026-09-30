@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
@@ -18,7 +18,7 @@ fn run_scan(path: &str, manifests_only: bool) -> Result<ScanReport> {
     Ok(report)
 }
 
-/// Directory, relative to the scanned root, that holds generated graphs.
+/// Directory, relative to the scanned root, that holds generated output.
 pub const OUTPUT_DIR: &str = ".archmap";
 
 pub fn scan(
@@ -28,39 +28,61 @@ pub fn scan(
     manifests_only: bool,
 ) -> Result<ExitCode> {
     let report = run_scan(path, manifests_only)?;
-    let rendered = render(&report.graph, format)?;
+    let rendered = render(&report.graph, format)? + "\n";
+    let default_name = format!("graph.{}", format.extension());
+    if let Some(file) = write_output(path, &default_name, output, &rendered)? {
+        let graph = &report.graph;
+        eprintln!(
+            "wrote {} ({} components, {} symbols, {} edges)",
+            file.display(),
+            graph.components.len(),
+            graph.symbols.len(),
+            graph.edges.len()
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
 
+pub fn summary(path: &str, depth: usize, output: Option<&Path>) -> Result<ExitCode> {
+    let report = run_scan(path, false)?;
+    let markdown = crate::summary::render(&report.graph, depth);
+    if let Some(file) = write_output(path, "summary.md", output, &markdown)? {
+        eprintln!(
+            "wrote {} (depth {depth}, {} bytes)",
+            file.display(),
+            markdown.len()
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Write `content` to `output`, or to `<path>/.archmap/<default_name>` when
+/// no output is given. `-` means stdout. Returns the file written, if any.
+fn write_output(
+    path: &str,
+    default_name: &str,
+    output: Option<&Path>,
+    content: &str,
+) -> Result<Option<PathBuf>> {
     let file = match output {
         Some(p) if p == Path::new("-") => {
-            println!("{rendered}");
-            return Ok(ExitCode::SUCCESS);
+            print!("{content}");
+            return Ok(None);
         }
         Some(p) => p.to_path_buf(),
-        None => Path::new(path)
-            .join(OUTPUT_DIR)
-            .join(format!("graph.{}", format.extension())),
+        None => Path::new(path).join(OUTPUT_DIR).join(default_name),
     };
-
     if let Some(parent) = file.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    std::fs::write(&file, rendered + "\n").with_context(|| {
+    std::fs::write(&file, content).with_context(|| {
         format!(
             "writing {} (use `--output <file>` or `--output -` for stdout)",
             file.display()
         )
     })?;
-
-    let graph = &report.graph;
-    eprintln!(
-        "wrote {} ({} components, {} symbols, {} edges)",
-        file.display(),
-        graph.components.len(),
-        graph.symbols.len(),
-        graph.edges.len()
-    );
-    Ok(ExitCode::SUCCESS)
+    Ok(Some(file))
 }
 
 /// What `archmap query` returns for a component.

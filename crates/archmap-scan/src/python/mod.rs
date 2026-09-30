@@ -8,13 +8,18 @@
 //!   files) become `Dependency` edges to `ext:*` components
 //! - every directory with `__init__.py` becomes a `Module` component whose
 //!   name is its dotted import path relative to the project (a `src/` without
-//!   `__init__.py` is treated as the source root; namespace directories stay
-//!   in the path)
+//!   `__init__.py` is treated as the source root)
+//! - importable directories without `__init__.py` that contain Python files
+//!   become namespace `Module` components (PEP 420), so that `tests/` or
+//!   `experiments/` are components of their own instead of being folded into
+//!   the project
 //! - `import` / `from ... import` statements become `Import` edges between
 //!   modules, or to a declared external dependency
-//! - public top-level `def` / `class` / `CONSTANT` and public methods of
-//!   files inside a package become symbols; test files and loose scripts
-//!   contribute imports only
+//! - public top-level `def` / `class` / `CONSTANT` and public methods become
+//!   symbols for files inside a regular package tree (a namespace directory
+//!   nested in a regular package still counts); test files and namespace
+//!   trees outside any regular package, such as `experiments/`, contribute
+//!   imports only
 //!
 //! Source files are scanned structurally (see [`source`]); bodies are not
 //! parsed.
@@ -59,6 +64,11 @@ struct Module {
     dir: PathBuf,
     project: usize,
     parent: ComponentId,
+    /// Has `__init__.py`. Namespace packages (PEP 420) do not.
+    regular: bool,
+    /// This directory or one of its ancestors is a regular package, so its
+    /// files are part of an importable library rather than loose scripts.
+    in_package_tree: bool,
 }
 
 impl Analyzer for PythonAnalyzer {
@@ -93,13 +103,19 @@ impl Analyzer for PythonAnalyzer {
         }
 
         for file in py_files {
-            let (owner, project_idx, base_dotted) = match owning_module(&modules, file) {
-                Some(m) => (m.id.clone(), m.project, Some(m.dotted.as_str())),
-                None => match owning_project(&projects, file) {
-                    Some((idx, p)) => (p.id.clone(), idx, None),
-                    None => continue,
-                },
-            };
+            let (owner, project_idx, base_dotted, in_package_tree) =
+                match owning_module(&modules, file) {
+                    Some(m) => (
+                        m.id.clone(),
+                        m.project,
+                        Some(m.dotted.as_str()),
+                        m.in_package_tree,
+                    ),
+                    None => match owning_project(&projects, file) {
+                        Some((idx, p)) => (p.id.clone(), idx, None, false),
+                        None => continue,
+                    },
+                };
             let text = match ctx.read_to_string(file) {
                 Ok(text) => text,
                 Err(err) => {
@@ -112,7 +128,7 @@ impl Analyzer for PythonAnalyzer {
             let scanned = source::scan_source(&text);
             let file_display = display_path(file);
 
-            if base_dotted.is_some() && !is_test_file(file) {
+            if in_package_tree && !is_test_file(file) {
                 emit_symbols(
                     &owner,
                     &symbol_scope(file),
@@ -269,17 +285,44 @@ fn discover_modules(
         .filter_map(|f| f.parent().map(Path::to_path_buf))
         .collect();
 
-    let mut seen: BTreeMap<String, PathBuf> = BTreeMap::new();
-    let mut modules = Vec::new();
-    for dir in &package_dirs {
+    // Directory -> is it a regular package. Namespace packages are every
+    // directory between a Python file and its source root.
+    let mut module_dirs: BTreeMap<PathBuf, bool> =
+        package_dirs.iter().map(|d| (d.clone(), true)).collect();
+    for file in py_files {
+        let Some((_, project)) = owning_project(projects, file) else {
+            continue;
+        };
+        let root = source_root(file, project, &package_dirs);
+        for dir in file.ancestors().skip(1) {
+            if root.as_deref() == Some(dir) || !dir.starts_with(&project.dir) {
+                break;
+            }
+            module_dirs.entry(dir.to_path_buf()).or_insert(false);
+        }
+    }
+
+    let mut resolved: BTreeMap<PathBuf, (usize, String, bool)> = BTreeMap::new();
+    for (dir, regular) in &module_dirs {
         let Some((project_idx, project)) = owning_project(projects, dir) else {
             continue;
         };
         let Some(dotted) = dotted_path(dir, project, &package_dirs, root_name) else {
             continue;
         };
+        // A namespace directory is only a module if `import a.b.c` could
+        // name it.
+        if !regular && !dotted.split('.').all(is_identifier) {
+            continue;
+        }
+        resolved.insert(dir.clone(), (project_idx, dotted, *regular));
+    }
 
-        if let Some(other) = seen.get(&dotted) {
+    let mut seen: BTreeMap<String, PathBuf> = BTreeMap::new();
+    let mut modules = Vec::new();
+    for (dir, (project_idx, dotted, regular)) in &resolved {
+        let project = &projects[*project_idx];
+        if let Some(other) = seen.get(dotted) {
             warnings.push(format!(
                 "{}: package `{dotted}` also found at {}; imports resolve to the first",
                 display_path(dir),
@@ -289,26 +332,56 @@ fn discover_modules(
             seen.insert(dotted.clone(), dir.clone());
         }
 
-        // Nearest enclosing regular package; namespace directories in
-        // between are skipped because they are not components.
-        let parent = dir
+        // Enclosing modules, nearest first.
+        let enclosing: Vec<&(usize, String, bool)> = dir
             .ancestors()
             .skip(1)
             .take_while(|a| a.starts_with(&project.dir))
-            .find(|a| package_dirs.contains(*a))
-            .and_then(|a| dotted_path(a, project, &package_dirs, root_name))
-            .map(|d| ComponentId::new(format!("{}::{d}", project.name)))
+            .filter_map(|a| resolved.get(a))
+            .collect();
+        let parent = enclosing
+            .first()
+            .map(|(_, d, _)| ComponentId::new(format!("{}::{d}", project.name)))
             .unwrap_or_else(|| project.id.clone());
+        let in_package_tree = *regular || enclosing.iter().any(|(_, _, r)| *r);
 
         modules.push(Module {
             id: ComponentId::new(format!("{}::{dotted}", project.name)),
-            dotted,
+            dotted: dotted.clone(),
             dir: dir.clone(),
-            project: project_idx,
+            project: *project_idx,
             parent,
+            regular: *regular,
+            in_package_tree,
         });
     }
     modules
+}
+
+/// The directory whose children are top-level import names for `file`:
+/// `src/` in a `src/` layout, otherwise the project directory. `None` when
+/// the project directory is itself a package, whose own name is then the
+/// top-level segment.
+fn source_root(
+    file: &Path,
+    project: &Project,
+    package_dirs: &BTreeSet<PathBuf>,
+) -> Option<PathBuf> {
+    if package_dirs.contains(&project.dir) {
+        return None;
+    }
+    let src = project.dir.join("src");
+    if file.starts_with(&src) && !package_dirs.contains(&src) {
+        Some(src)
+    } else {
+        Some(project.dir.clone())
+    }
+}
+
+fn is_identifier(segment: &str) -> bool {
+    let mut chars = segment.chars();
+    chars.next().is_some_and(|c| c == '_' || c.is_alphabetic())
+        && chars.all(|c| c == '_' || c.is_alphanumeric())
 }
 
 /// Import path of a package directory.
@@ -406,9 +479,11 @@ fn emit_components(projects: &[Project], modules: &[Module], output: &mut Analyz
         component.language = Some(LANGUAGE.to_owned());
         component.path = Some(display_path(&module.dir));
         component.parent = Some(module.parent.clone());
-        component.evidence.push(
-            Evidence::new(display_path(&module.dir.join("__init__.py"))).with_note("package"),
-        );
+        component.evidence.push(if module.regular {
+            Evidence::new(display_path(&module.dir.join("__init__.py"))).with_note("package")
+        } else {
+            Evidence::new(display_path(&module.dir)).with_note("namespace package")
+        });
         output.fragment.push_component(component);
     }
 }

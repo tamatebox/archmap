@@ -21,7 +21,8 @@ queryable by a machine.
 
 The graph is meant to be consumed by agents as much as by humans:
 
-- `archmap scan` gives an agent a structural overview far cheaper than reading every file
+- `archmap summary` gives an agent a few kilobytes of structure to read before exploring
+- `archmap scan` writes the full graph for tools and drill-down
 - `archmap query` answers "what does component X expose and depend on"
 - `archmap impact` answers "if I touch this file or component, what else might be affected"
 - every fact points to `file:line` evidence, so an agent can verify and jump to the source
@@ -37,9 +38,12 @@ An MCP adapter is planned, but the engine and CLI come first.
 3. **Facts, not inference.** The MVP records only what the code and
    manifests literally say. Semantic labels ("this is the Billing service")
    are a separate future layer.
-4. **Many inputs, one model.** Rust, TypeScript, Python, OpenAPI... are
+4. **Compression is structural.** A summary folds modules into their
+   ancestors at a chosen depth and merges edges, keeping the evidence. It
+   never renames, groups by meaning, or adds prose.
+5. **Many inputs, one model.** Rust, TypeScript, Python, OpenAPI... are
    analyzed differently but normalized into one graph.
-5. **MCP is an adapter.** The core is the graph engine and the CLI.
+6. **MCP is an adapter.** The core is the graph engine and the CLI.
 
 ## MVP scope (current)
 
@@ -55,14 +59,17 @@ An MCP adapter is planned, but the engine and CLI come first.
   - `[project] dependencies`, `[tool.poetry.dependencies]` and `requirements*.txt` become `dependency` edges
     to `ext:*` components (names normalized per PEP 503)
   - every directory with `__init__.py` becomes a `module` component named by its dotted import path
-    relative to the project; a `src/` without `__init__.py` is the source root, and directories without
-    `__init__.py` in between (PEP 420 namespace packages) stay in the path
+    relative to the project; a `src/` without `__init__.py` is the source root
+  - importable directories without `__init__.py` that hold Python files become namespace `module`
+    components (PEP 420), so `tests/`, `scripts/` or `experiments/` are components of their own
   - `import` / `from ... import` (including relative imports) become `import` edges between modules,
     or to a declared external dependency
-  - public top-level `def` / `class` / `CONSTANT` and public methods of public classes become symbols;
-    test files (pytest conventions) and scripts outside any package contribute imports only
+  - public top-level `def` / `class` / `CONSTANT` and public methods of public classes become symbols
+    for files inside a regular package tree; test files (pytest conventions) and namespace trees outside
+    any regular package contribute imports only
   - source files are scanned structurally line by line, not parsed; bodies are ignored
 - JSON output with evidence on every node and edge, written to `<root>/.archmap/graph.json` by default
+- structural roll-up and a deterministic Markdown summary, written to `<root>/.archmap/summary.md`
 - `query` and `impact` implemented on top of the scanned graph; `check` is a stub
 
 Known gaps: `import yaml` is not linked to the `PyYAML` distribution (import
@@ -73,6 +80,8 @@ package-level while Python components are module-level.
 ## Usage
 
 ```bash
+cargo run -p archmap-cli -- summary .                 # writes ./.archmap/summary.md
+cargo run -p archmap-cli -- summary . --depth 1 -o -  # coarser, to stdout
 cargo run -p archmap-cli -- scan .                    # writes ./.archmap/graph.json
 cargo run -p archmap-cli -- scan . -o graph.json      # explicit file
 cargo run -p archmap-cli -- scan . -o - | jq .edges   # stdout
@@ -116,35 +125,50 @@ collapses edges that describe the same relationship, and keeps all of their
 evidence. Output is deterministic (sorted, no timestamps) so graphs can be
 diffed.
 
-`archmap scan` writes only the graph file. It does not add a `.gitignore`
-or otherwise decide whether the graph is committed; add `.archmap/` to your
-repository's ignore rules if you do not want it tracked. `query` and
-`impact` currently re-scan instead of reading the saved graph.
+`archmap scan` and `archmap summary` write only their own output files. They
+do not add a `.gitignore` or otherwise decide whether the output is
+committed; add `.archmap/` to your repository's ignore rules if you do not
+want it tracked. `summary`, `query` and `impact` re-scan instead of reading
+the saved graph, so they are never stale.
+
+## Summary
+
+`archmap summary` rolls the graph up and renders it as Markdown. Depth
+counts containment levels below a package: depth 0 keeps only packages,
+depth 2 keeps packages and two levels of modules, and anything deeper is
+folded into its ancestor. The summary lists:
+
+- the component tree with paths, public symbol counts and how many
+  submodules were folded
+- internal dependencies with the number of import statements behind each
+- external dependencies with where they are declared and who imports them
+- the components depended on by the most others
+
+On a 380-file Python repository, depth 2 turns a 528 KB graph into a
+summary of about 10 KB.
 
 ## Roadmap
 
-```text
-Phase 1 (now)
-- repo scan, Cargo manifests, Rust public symbols, imports
-- Python analyzer (manifests, packages as modules, imports, public defs)
-- JSON graph, query / impact on components
+| Phase | Scope | Status |
+|---|---|---|
+| 0 Discovery | languages, manifests, packages; report detected languages even without an analyzer | Rust and Python only |
+| 1 Structural Facts | modules, public symbols, imports, dependencies | Rust and Python |
+| 2 Structural Compression | roll-up, summary, query, impact | in progress |
+| 3 Rules & Declared Architecture | declared components and layers, cycles, forbidden dependencies, drift, CI `check` | planned |
+| 4 Cross-system Graph | OpenAPI, Terraform, databases, HTTP, events | planned |
+| 5 Semantic Enrichment | LLM naming and responsibilities, stored as inferred facts | planned |
+| 6 Agent Interface | MCP adapter over the same engine | planned |
+| 7 Incremental / Runtime | diff scans, cache, runtime traces | planned |
 
-Phase 2
-- TypeScript analyzer
-- OpenAPI / schema analyzer
-- module-level components for Rust
-- scan exclusions (fixtures, vendored code)
+Before going past Phase 2, the summary is evaluated with a coding agent:
+the same tasks run with and without it, comparing correctness first and
+tokens, tool calls and turns second. Next items inside Phase 2:
 
-Phase 3
-- architecture rules / drift detection (`archmap check`)
-- incremental scan
-- cache
-
-Phase 4
-- MCP adapter
-- agent-oriented context retrieval
-- YAML / Markdown / Mermaid / Graphviz output
-```
+- resolve import names to declared distributions (`google.cloud.bigquery`
+  to `google-cloud-bigquery`, installed `RECORD` files, a small alias table)
+  and record how each was resolved
+- generic discovery so that repositories in unsupported languages still get
+  a language and manifest overview
 
 ## Development
 

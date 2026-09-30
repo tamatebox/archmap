@@ -145,3 +145,82 @@ fn check_is_a_stub_with_distinct_exit_code() {
     let out = archmap().arg("check").output().unwrap();
     assert_eq!(out.status.code(), Some(2));
 }
+
+fn python_fixture() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/simple-python-project")
+}
+
+fn summary_stdout(args: &[&str]) -> String {
+    let out = archmap()
+        .arg("summary")
+        .arg(python_fixture())
+        .args(args)
+        .args(["-o", "-"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap()
+}
+
+#[test]
+fn summary_is_deterministic_markdown() {
+    let first = summary_stdout(&[]);
+    assert_eq!(first, summary_stdout(&[]), "same scan, same summary");
+
+    assert!(first.starts_with("# Architecture summary: simple-python-project\n"));
+    for expected in [
+        "## Components",
+        "  - shop: `src/shop`, 3 public symbols",
+        "    - shop.billing: `src/shop/billing`, 4 public symbols",
+        "## Internal dependencies",
+        "- shop.billing -> shop (2)",
+        "## External dependencies",
+        "- requests: declared in `pyproject.toml`, `requirements.txt`; \
+         imported by 1 component: shop.billing (1)",
+        "- pyyaml: declared in `requirements.txt`; no resolved imports",
+        "## Most depended-on",
+    ] {
+        assert!(
+            first.contains(expected),
+            "missing `{expected}` in:\n{first}"
+        );
+    }
+    // machine-specific paths never leak into the summary
+    let root = python_fixture().canonicalize().unwrap();
+    assert!(!first.contains(&root.display().to_string()));
+}
+
+#[test]
+fn summary_depth_controls_the_roll_up() {
+    let shallow = summary_stdout(&["--depth", "1"]);
+    assert!(
+        !shallow.contains("shop.billing:"),
+        "billing is folded:\n{shallow}"
+    );
+    assert!(shallow.contains("  - shop: `src/shop`, 9 public symbols, 3 submodules folded"));
+    assert!(shallow.contains("- tests -> shop (3)"));
+
+    let packages_only = summary_stdout(&["--depth", "0"]);
+    assert!(packages_only
+        .contains("- shop: python package, `.`, 9 public symbols, 7 submodules folded"));
+    assert!(packages_only.contains("No internal dependencies."));
+}
+
+#[test]
+fn summary_writes_under_dot_archmap_by_default() {
+    let repo = temp_repo("summary");
+    let out = archmap().arg("summary").arg(&repo).output().unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.stdout.is_empty());
+    let written = std::fs::read_to_string(repo.join(".archmap/summary.md")).unwrap();
+    assert!(written.starts_with("# Architecture summary: "));
+    std::fs::remove_dir_all(&repo).unwrap();
+}

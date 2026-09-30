@@ -18,6 +18,7 @@ and impact without re-reading the whole repository.
 
 - **Code Graph != Architecture Graph.** Do not turn every function or call into a node. Compress to components, modules, public symbols and dependencies.
 - **Fact Extraction != Semantic Inference.** Analyzers record what code and manifests literally say. Guesses such as "this module is the Billing component" must live in a separate, clearly labeled layer (not yet built). Never mix the two in one type.
+- **Compression is structural.** Roll-up maps components to their ancestor at a depth through `parent` and merges edges while keeping every piece of evidence. Naming, grouping by meaning and layering belong to declared config (Phase 3) or the inferred layer (Phase 5), never to roll-up or `summary`.
 - **Cheap structural scan first, selective semantic scan later.** Do not parse bodies or docstrings by default; design so deeper passes can be added for chosen targets.
 - **Many inputs, one model.** Each language / manifest / schema may be analyzed differently, but everything normalizes into `archmap-core` types.
 - **MCP is an adapter, not the core.** CLI is the first interface; MCP, if added, is a thin layer over the same engine.
@@ -28,9 +29,9 @@ and impact without re-reading the whole repository.
 archmap-cli  ->  archmap-scan  ->  archmap-core
 ```
 
-- `archmap-core`: graph model (`Component`, `Symbol`, `Edge`, `Evidence`, `GraphFragment`, `ArchitectureGraph`), merge/normalize, query and impact primitives. No I/O, no language knowledge, no dependency on other workspace crates.
+- `archmap-core`: graph model (`Component`, `Symbol`, `Edge`, `Evidence`, `GraphFragment`, `ArchitectureGraph`), merge/normalize, roll-up, query and impact primitives. No I/O, no language knowledge, no dependency on other workspace crates.
 - `archmap-scan`: repo walking, project detection, the `Analyzer` trait and concrete analyzers (`rust/`, `python/`). Emits `GraphFragment`s; `scan()` merges them.
-- `archmap-cli`: `clap` commands and output rendering only. No analysis logic.
+- `archmap-cli`: `clap` commands and output rendering (JSON, Markdown summary) only. No analysis logic.
 
 Never add a dependency that points against the arrow. Never make `archmap-core` aware of Cargo, `syn`, files or paths beyond plain strings.
 
@@ -48,11 +49,11 @@ Never add a dependency that points against the arrow. Never make `archmap-core` 
 - Symbol ids: `<component>::<module path>::<name>`; methods are `Type::method` (Rust) or `Class.method` (Python).
 - A `Module` component sets `parent` to its enclosing component. Containment is a field, not an edge.
 - Paths in evidence are relative to the scanned root with `/` separators.
-- Output must be deterministic: sort collections, no timestamps in the graph.
+- Output must be deterministic: sort collections, no timestamps. Evidence and the summary never contain absolute paths.
 - `SCHEMA_VERSION` in `archmap-core` is bumped on breaking JSON changes.
 - Avoid abstractions without a second concrete use. Three similar lines beat one premature trait.
 - Structural scanning (line-based, as in `python/source.rs`) is acceptable when it stays behind the analyzer boundary and is covered by tests; swap in a real parser only when a fixture shows the need.
-- `scan` writes `<root>/.archmap/graph.<ext>` by default (`-o <file>` overrides, `-o -` is stdout). Write nothing else into the scanned repository: no `.gitignore`, no config. Do not design features that assume graphs are committed to git.
+- `scan` writes `<root>/.archmap/graph.<ext>` and `summary` writes `<root>/.archmap/summary.md` by default (`-o <file>` overrides, `-o -` is stdout). Write nothing else into the scanned repository: no `.gitignore`, no config. Do not design features that assume graphs are committed to git.
 
 ## Commands to run after every change
 

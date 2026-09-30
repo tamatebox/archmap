@@ -2,7 +2,10 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Component, ComponentId, Edge, GraphFragment, Symbol, SymbolId, SCHEMA_VERSION};
+use crate::{
+    Component, ComponentId, Edge, EdgeKind, Evidence, GraphFragment, Symbol, SymbolId,
+    SCHEMA_VERSION,
+};
 
 /// Information about how a graph was produced.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -192,6 +195,86 @@ impl ArchitectureGraph {
         seen
     }
 
+    /// Components from the containment root down to `id`, following
+    /// `parent`. The walk stops at unknown ids and at cycles, so malformed
+    /// input cannot loop.
+    pub fn containment_path(&self, id: &ComponentId) -> Vec<ComponentId> {
+        let mut path = vec![id.clone()];
+        let mut current = id.clone();
+        while let Some(parent) = self.components.get(&current).and_then(|c| c.parent.clone()) {
+            if path.contains(&parent) || !self.components.contains_key(&parent) {
+                break;
+            }
+            path.push(parent.clone());
+            current = parent;
+        }
+        path.reverse();
+        path
+    }
+
+    /// Depth in the containment tree; components without a parent are 0.
+    pub fn depth_of(&self, id: &ComponentId) -> usize {
+        self.containment_path(id).len() - 1
+    }
+
+    /// The ancestor of `id` at `depth`, or `id` itself when it is not deeper.
+    pub fn ancestor_at(&self, id: &ComponentId, depth: usize) -> ComponentId {
+        let path = self.containment_path(id);
+        path[depth.min(path.len() - 1)].clone()
+    }
+
+    /// Structural roll-up: fold every component deeper than `depth` into its
+    /// ancestor at `depth`.
+    ///
+    /// Edges are re-pointed to the folded components and merged per
+    /// relationship with all their evidence, so a rolled-up edge still leads
+    /// back to every import statement or manifest entry behind it. Edges that
+    /// end up inside one component are dropped. Symbols move to their folded
+    /// component. Nothing is renamed or grouped by meaning.
+    pub fn rollup(&self, depth: usize) -> ArchitectureGraph {
+        let fold: BTreeMap<&ComponentId, ComponentId> = self
+            .components
+            .keys()
+            .map(|id| (id, self.ancestor_at(id, depth)))
+            .collect();
+        let folded = |id: &ComponentId| fold.get(id).cloned().unwrap_or_else(|| id.clone());
+
+        let mut out = ArchitectureGraph::new(self.meta.clone());
+        for component in self.components.values() {
+            if folded(&component.id) == component.id {
+                out.add_component(component.clone());
+            }
+        }
+        for symbol in self.symbols.values() {
+            let mut symbol = symbol.clone();
+            symbol.component = folded(&symbol.component);
+            out.add_symbol(symbol);
+        }
+
+        let mut merged: BTreeMap<(ComponentId, ComponentId, EdgeKind), BTreeSet<Evidence>> =
+            BTreeMap::new();
+        for edge in &self.edges {
+            let (from, to) = (folded(&edge.from), folded(&edge.to));
+            if from != to {
+                merged
+                    .entry((from, to, edge.kind))
+                    .or_default()
+                    .extend(edge.evidence.iter().cloned());
+            }
+        }
+        out.edges = merged
+            .into_iter()
+            .map(|((from, to, kind), evidence)| Edge {
+                from,
+                to,
+                kind,
+                evidence: evidence.into_iter().collect(),
+            })
+            .collect();
+        out.normalize();
+        out
+    }
+
     /// Find the component that owns a file path (relative to the repo root),
     /// choosing the component with the longest matching `path` prefix.
     pub fn component_for_path(&self, file: &str) -> Option<&Component> {
@@ -208,7 +291,7 @@ impl ArchitectureGraph {
     }
 }
 
-fn merge_evidence(into: &mut Vec<crate::Evidence>, from: Vec<crate::Evidence>) {
+fn merge_evidence(into: &mut Vec<Evidence>, from: Vec<Evidence>) {
     for e in from {
         if !into.contains(&e) {
             into.push(e);
@@ -328,6 +411,127 @@ mod tests {
         g1.normalize();
         g2.normalize();
         assert_eq!(g1, g2);
+    }
+
+    /// pkg <- a <- a.b <- {a.b.c, a.b.d} ; pkg <- x <- x.y <- x.y.z ; ext:serde
+    fn tree() -> ArchitectureGraph {
+        let mut graph = ArchitectureGraph::default();
+        graph.add_component(component("pkg"));
+        graph.add_component(Component::new(
+            "ext:serde",
+            "serde",
+            ComponentKind::External,
+        ));
+        for (id, parent) in [
+            ("a", "pkg"),
+            ("a.b", "a"),
+            ("a.b.c", "a.b"),
+            ("a.b.d", "a.b"),
+            ("x", "pkg"),
+            ("x.y", "x"),
+            ("x.y.z", "x.y"),
+        ] {
+            let mut c = Component::new(id, id, ComponentKind::Module);
+            c.parent = Some(parent.into());
+            graph.add_component(c);
+        }
+        graph
+    }
+
+    #[test]
+    fn ancestor_at_walks_the_containment_tree() {
+        let graph = tree();
+        let at = |id: &str, depth| graph.ancestor_at(&id.into(), depth);
+        assert_eq!(at("a.b.c", 0), "pkg".into());
+        assert_eq!(at("a.b.c", 1), "a".into());
+        assert_eq!(at("a.b.c", 2), "a.b".into());
+        assert_eq!(at("a.b.c", 9), "a.b.c".into());
+        assert_eq!(at("x", 2), "x".into());
+        assert_eq!(at("unknown", 1), "unknown".into());
+        assert_eq!(graph.depth_of(&"a.b.c".into()), 3);
+        assert_eq!(graph.depth_of(&"pkg".into()), 0);
+    }
+
+    #[test]
+    fn containment_cycles_terminate() {
+        let mut graph = ArchitectureGraph::default();
+        let mut p = component("p");
+        p.parent = Some("q".into());
+        let mut q = component("q");
+        q.parent = Some("p".into());
+        graph.add_component(p);
+        graph.add_component(q);
+        assert_eq!(graph.containment_path(&"p".into()).len(), 2);
+        assert_eq!(graph.ancestor_at(&"p".into(), 0), "q".into());
+    }
+
+    #[test]
+    fn rollup_folds_components_and_merges_edges_with_evidence() {
+        let mut graph = tree();
+        graph.add_edge(edge("a.b.c", "x.y.z", "a/b/c.py", 1));
+        graph.add_edge(edge("a.b.d", "x.y", "a/b/d.py", 2));
+        graph.add_edge(edge("a.b.c", "a.b.d", "a/b/c.py", 3)); // becomes internal
+        graph.add_edge(edge("a.b.c", "ext:serde", "a/b/c.py", 4));
+
+        let rolled = graph.rollup(2);
+        let ids: Vec<&str> = rolled.components.keys().map(|c| c.as_str()).collect();
+        assert_eq!(ids, vec!["a", "a.b", "ext:serde", "pkg", "x", "x.y"]);
+
+        let pairs: Vec<(&str, &str, usize)> = rolled
+            .edges
+            .iter()
+            .map(|e| (e.from.as_str(), e.to.as_str(), e.evidence.len()))
+            .collect();
+        assert_eq!(pairs, vec![("a.b", "ext:serde", 1), ("a.b", "x.y", 2)]);
+
+        // every original import statement is still there
+        let lines: Vec<Option<u32>> = rolled.edges[1].evidence.iter().map(|e| e.line).collect();
+        assert_eq!(lines, vec![Some(1), Some(2)]);
+    }
+
+    #[test]
+    fn rollup_to_depth_zero_keeps_only_roots() {
+        let mut graph = tree();
+        graph.add_edge(edge("a.b.c", "x.y.z", "a/b/c.py", 1));
+        graph.add_edge(edge("a.b.c", "ext:serde", "a/b/c.py", 4));
+        let rolled = graph.rollup(0);
+        let ids: Vec<&str> = rolled.components.keys().map(|c| c.as_str()).collect();
+        assert_eq!(ids, vec!["ext:serde", "pkg"]);
+        assert_eq!(rolled.edges.len(), 1);
+        assert_eq!(rolled.edges[0].from, "pkg".into());
+    }
+
+    #[test]
+    fn rollup_dedups_shared_evidence_and_keeps_kinds_apart() {
+        let mut graph = tree();
+        // one statement importing two modules that fold together
+        graph.add_edge(edge("a.b.c", "x.y", "a/b/c.py", 7));
+        graph.add_edge(edge("a.b.c", "x.y.z", "a/b/c.py", 7));
+        graph.add_edge(Edge::new("a.b.c", "x.y.z", EdgeKind::Dependency));
+        let rolled = graph.rollup(2);
+        assert_eq!(rolled.edges.len(), 2);
+        let import = rolled
+            .edges
+            .iter()
+            .find(|e| e.kind == EdgeKind::Import)
+            .unwrap();
+        assert_eq!(import.evidence.len(), 1);
+    }
+
+    #[test]
+    fn rollup_moves_symbols_to_folded_component() {
+        let mut graph = tree();
+        graph.add_symbol(Symbol {
+            id: SymbolId::new("pkg::a.b.c::run"),
+            name: "run".into(),
+            kind: SymbolKind::Function,
+            component: "a.b.c".into(),
+            signature: None,
+            evidence: Vec::new(),
+        });
+        let rolled = graph.rollup(1);
+        assert_eq!(rolled.symbols_of(&"a".into()).count(), 1);
+        assert_eq!(rolled.symbols.len(), 1);
     }
 
     #[test]

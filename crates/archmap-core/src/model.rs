@@ -168,6 +168,21 @@ pub enum EdgeKind {
     Unknown,
 }
 
+impl EdgeKind {
+    /// The serialized name (`import`, `dependency`, ...).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EdgeKind::Import => "import",
+            EdgeKind::Dependency => "dependency",
+            EdgeKind::Call => "call",
+            EdgeKind::Http => "http",
+            EdgeKind::Database => "database",
+            EdgeKind::Event => "event",
+            EdgeKind::Unknown => "unknown",
+        }
+    }
+}
+
 /// A directed relationship between two components with supporting evidence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Edge {

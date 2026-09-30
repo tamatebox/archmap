@@ -5,6 +5,7 @@
 
 mod commands;
 mod output;
+mod summary;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -38,6 +39,22 @@ enum Command {
         /// Only read manifests; skip source parsing.
         #[arg(long)]
         manifests_only: bool,
+    },
+    /// Write a compact, deterministic Markdown summary for agents and humans.
+    ///
+    /// Modules are rolled up to `--depth` levels below their package. The
+    /// summary is written to `<path>/.archmap/summary.md` unless `--output`
+    /// says otherwise.
+    Summary {
+        /// Repository root (defaults to the current directory).
+        #[arg(default_value = ".")]
+        path: String,
+        /// Containment depth to roll modules up to; 0 keeps only packages.
+        #[arg(long, default_value_t = 2)]
+        depth: usize,
+        /// File to write the summary to; `-` writes to stdout.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
     },
     /// Show a component or symbol with its relationships.
     Query {
@@ -75,6 +92,11 @@ fn main() -> ExitCode {
             output,
             manifests_only,
         } => commands::scan(&path, format, output.as_deref(), manifests_only),
+        Command::Summary {
+            path,
+            depth,
+            output,
+        } => commands::summary(&path, depth, output.as_deref()),
         Command::Query {
             target,
             path,

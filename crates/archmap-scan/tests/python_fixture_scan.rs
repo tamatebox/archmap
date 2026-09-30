@@ -105,8 +105,10 @@ fn imports_resolve_between_modules_and_to_declared_externals() {
     assert!(graph.edges.iter().all(|e| e.from != e.to));
     assert!(graph.components.keys().all(|k| !k.as_str().contains("os")));
 
-    // files outside any package belong to the project component
-    assert!(find("shop", "shop::shop.billing").is_some());
+    // tests/ has no __init__.py: its files belong to the `tests` namespace
+    // module, not to the project component
+    assert!(find("shop::tests", "shop::shop.billing").is_some());
+    assert!(find("shop", "shop::shop.billing").is_none());
 }
 
 #[test]
@@ -116,9 +118,29 @@ fn namespace_directories_stay_in_the_dotted_path() {
     let slack = graph
         .component(&id("shop::shop.integrations.slack"))
         .expect("namespace child");
-    assert_eq!(slack.parent, Some(id("shop::shop")));
+    assert_eq!(slack.parent, Some(id("shop::shop.integrations")));
     assert!(graph.component(&id("shop::integrations.slack")).is_none());
     assert!(graph.component(&id("shop::slack")).is_none());
+
+    // the namespace directory is a module of its own (PEP 420)
+    let namespace = graph
+        .component(&id("shop::shop.integrations"))
+        .expect("namespace module");
+    assert_eq!(namespace.kind, ComponentKind::Module);
+    assert_eq!(namespace.parent, Some(id("shop::shop")));
+    assert_eq!(namespace.evidence[0].file, "src/shop/integrations");
+    assert_eq!(
+        namespace.evidence[0].note.as_deref(),
+        Some("namespace package")
+    );
+    // `src` is the source root of a src/ layout, not a namespace module
+    assert!(graph.component(&id("shop::src")).is_none());
+
+    // a namespace directory inside a regular package is still library code
+    let webhook = graph
+        .symbol(&"shop::shop.integrations::webhooks::send_webhook".into())
+        .expect("symbols from namespace dirs inside a package");
+    assert_eq!(webhook.component, id("shop::shop.integrations"));
 
     let edge = graph
         .edges
@@ -130,6 +152,10 @@ fn namespace_directories_stay_in_the_dotted_path() {
     // tests/ has no __init__.py; tests/unit does
     assert_eq!(
         graph.component(&id("shop::tests.unit")).unwrap().parent,
+        Some(id("shop::tests"))
+    );
+    assert_eq!(
+        graph.component(&id("shop::tests")).unwrap().parent,
         Some(id("shop"))
     );
 }
@@ -143,6 +169,34 @@ fn tests_and_loose_scripts_contribute_imports_but_no_symbols() {
     assert!(graph.edges.iter().any(|e| e.from == id("shop::tests.unit")
         && e.to == id("shop::shop")
         && e.kind == EdgeKind::Import));
+
+    // scripts/ is a namespace module: imports yes, symbols no
+    assert_eq!(
+        graph.component(&id("shop::scripts")).unwrap().kind,
+        ComponentKind::Module
+    );
+    assert!(graph.symbols_named("backfill_payments").next().is_none());
+    assert!(graph.edges.iter().any(|e| e.from == id("shop::scripts")
+        && e.to == id("shop::shop.billing")
+        && e.kind == EdgeKind::Import));
+}
+
+#[test]
+fn directories_that_cannot_be_imported_are_not_modules() {
+    let graph = scan_fixture();
+    // `2024-01-migration` is not a valid identifier, so its file belongs to
+    // the nearest importable ancestor
+    assert!(graph
+        .components
+        .keys()
+        .all(|k| !k.as_str().contains("2024")));
+    let edge = graph
+        .edges
+        .iter()
+        .find(|e| e.from == id("shop::scripts") && e.to == id("shop::shop"))
+        .expect("import from the migration script");
+    assert_eq!(edge.evidence[0].file, "scripts/2024-01-migration/fix.py");
+    assert!(graph.symbols_named("fix_users").next().is_none());
 }
 
 #[test]
@@ -178,10 +232,15 @@ fn impact_of_users_module_reaches_billing_and_tests() {
     let graph = scan_fixture();
     let affected = graph.transitive_dependents(&id("shop::shop"));
     let affected: Vec<&str> = affected.iter().map(|c| c.as_str()).collect();
-    // test packages are components too, so impact reaches them
+    // test directories are components too, so impact reaches them
     assert_eq!(
         affected,
-        vec!["shop", "shop::shop.billing", "shop::tests.unit"]
+        vec![
+            "shop::scripts",
+            "shop::shop.billing",
+            "shop::tests",
+            "shop::tests.unit"
+        ]
     );
     assert_eq!(
         graph
