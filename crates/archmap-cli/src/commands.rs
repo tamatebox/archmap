@@ -7,7 +7,7 @@ use archmap_core::{ArchitectureGraph, Component, ComponentId, Edge, Evidence, Sy
 use archmap_scan::{ScanOptions, ScanReport};
 use serde::Serialize;
 
-use crate::output::{render, CheckFormat, OutputFormat};
+use crate::output::{render, OutputFormat, ReportFormat};
 
 fn run_scan(path: &str, manifests_only: bool) -> Result<ScanReport> {
     let options = ScanOptions { manifests_only };
@@ -115,7 +115,13 @@ pub enum QueryResult<'a> {
     Symbols(Vec<&'a Symbol>),
 }
 
-pub fn query(path: &str, target: &str, depth: usize, format: OutputFormat) -> Result<ExitCode> {
+pub fn query(
+    path: &str,
+    target: &str,
+    depth: usize,
+    format: ReportFormat,
+    verbose: bool,
+) -> Result<ExitCode> {
     let report = run_scan(path, false)?;
     let full = &report.graph;
     let rolled = full.rollup(depth);
@@ -151,7 +157,13 @@ pub fn query(path: &str, target: &str, depth: usize, format: OutputFormat) -> Re
         QueryResult::Symbols(symbols)
     };
 
-    println!("{}", render(&result, format)?);
+    match format {
+        ReportFormat::Json => println!("{}", render(&result, OutputFormat::Json)?),
+        ReportFormat::Text => print!(
+            "{}",
+            crate::query_text::render(&result, target, full, &rolled, verbose)
+        ),
+    }
     Ok(ExitCode::SUCCESS)
 }
 
@@ -255,7 +267,7 @@ pub fn check(
     path: &str,
     config: Option<&Path>,
     depth: Option<usize>,
-    format: CheckFormat,
+    format: ReportFormat,
 ) -> Result<ExitCode> {
     let rules_path = config
         .map(Path::to_path_buf)
@@ -279,7 +291,7 @@ pub fn check(
 
     let shown = rules_path.display().to_string();
     match format {
-        CheckFormat::Json => {
+        ReportFormat::Json => {
             let report = CheckReport {
                 rules: shown,
                 depth,
@@ -287,7 +299,7 @@ pub fn check(
             };
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
-        CheckFormat::Text => print!("{}", check_text(&report.graph, &findings, &shown, depth)),
+        ReportFormat::Text => print!("{}", check_text(&report.graph, &findings, &shown, depth)),
     }
     Ok(if findings.is_empty() {
         ExitCode::SUCCESS

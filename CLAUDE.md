@@ -20,6 +20,7 @@ and impact without re-reading the whole repository.
 - **Fact Extraction != Semantic Inference.** Analyzers record what code and manifests literally say. Guesses such as "this module is the Billing component" must live in a separate, clearly labeled layer (not yet built). Never mix the two in one type.
 - **Compression is structural.** Roll-up maps components to their ancestor at a depth through `parent` and merges edges while keeping every piece of evidence. Naming, grouping by meaning and layering belong to declared config (Phase 3) or the inferred layer (Phase 5), never to roll-up or `summary`.
 - **Declared != Observed.** `archmap.toml` is only ever compared with the observed graph by `check`. It never changes what `scan`, `summary`, `query` or `impact` report, and declared names never appear in their output.
+- **Full graph != agent context.** Agent-facing defaults (`summary`, text `query`, `impact`) stay small however large the repository is: cap lists and count the rest. Complete detail lives behind `--format json`. Commands never read `graph.json`; it is an export.
 - **Cheap structural scan first, selective semantic scan later.** Do not parse bodies or docstrings by default; design so deeper passes can be added for chosen targets.
 - **Many inputs, one model.** Each language / manifest / schema may be analyzed differently, but everything normalizes into `archmap-core` types.
 - **MCP is an adapter, not the core.** CLI is the first interface; MCP, if added, is a thin layer over the same engine.

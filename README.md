@@ -111,7 +111,9 @@ cargo run -p archmap-cli -- scan .                    # writes ./.archmap/graph.
 cargo run -p archmap-cli -- scan . -o graph.json      # explicit file
 cargo run -p archmap-cli -- scan . -o - | jq .edges   # stdout
 cargo run -p archmap-cli -- scan . --manifests-only
-cargo run -p archmap-cli -- query archmap-core
+cargo run -p archmap-cli -- query archmap-core               # compact text, capped lists
+cargo run -p archmap-cli -- query archmap-core --verbose     # every symbol and location
+cargo run -p archmap-cli -- query archmap-core --format json # complete, with all evidence
 cargo run -p archmap-cli -- query scan            # by symbol name
 cargo run -p archmap-cli -- impact archmap-core
 cargo run -p archmap-cli -- impact crates/archmap-scan/src/lib.rs
@@ -181,9 +183,16 @@ summary of about 10 KB.
 
 `summary`, `query` and `impact` share one default depth, so they always
 describe the same components. Asking `query` or `impact` about a component
-that is folded at that depth answers for the component it is folded into,
-reports `folded_from`, and `query` lists the `children` to ask about with a
-larger `--depth`.
+that is folded at that depth answers for the component it is folded into and
+says so, and `query` lists the children to ask about with a larger
+`--depth`.
+
+`query` prints compact text by default: public symbols with their location,
+and each neighboring component with its import count and a few example
+locations. Lists are capped at 30 entries and 3 locations, and the rest is
+counted. On the repository above, its busiest component takes 7 KB as text
+and 94 KB as JSON. `--verbose` lifts the caps and `--format json` adds every
+piece of evidence.
 
 ## Rules
 
@@ -235,15 +244,21 @@ The declared architecture never changes what `scan`, `summary`, `query` or
 |---|---|---|
 | 0 Discovery | languages, manifests, packages; report detected languages even without an analyzer | Rust and Python only |
 | 1 Structural Facts | modules, public symbols, imports, dependencies | Rust and Python |
-| 2 Structural Compression | roll-up, summary, and query and impact at the summary's depth | done for Python |
+| 2 Structural Compression & Agent Context | roll-up; `summary`, `query` and `impact` small enough for an agent and at one granularity; full detail with `--format json` | done for Python |
 | 3 Rules & Declared Architecture | declared components and layers, cycles, forbidden dependencies, drift, CI `check` | deny rules, cycles, undeclared imports, stale declarations; layers and wider drift open |
 | 4 Cross-system Graph | OpenAPI, Terraform, databases, HTTP, events | planned |
 | 5 Semantic Enrichment | LLM naming and responsibilities, stored as inferred facts | planned |
-| 6 Agent Interface | MCP adapter over the same engine | planned |
+| 6 Agent Interface | plugin and skill for agents, MCP adapter over the same engine | plugin and skill exist; MCP planned |
 | 7 Incremental / Runtime | diff scans, cache, runtime traces | planned |
 
+Phase 2 is done when every agent-facing output is small and consistent:
+about 10 KB for `summary`, a few KB to a few tens of KB for `query`, a few KB
+for `impact`, with complete data one `--format json` away. Shrinking
+`graph.json`, caches, databases, LLM enrichment and MCP are not part of it.
+
 Python is evaluation-ready: import names resolve to declared distributions,
-and `query` and `impact` see the same components as `summary`. The next step
+`query` and `impact` see the same components as `summary`, and the outputs
+meet those sizes. The next step
 is an evaluation with a coding agent, comparing the same tasks without
 archmap and with archmap as a whole: the summary up front, plus `query` and
 `impact` on demand. Correctness is compared first, then tokens, tool calls

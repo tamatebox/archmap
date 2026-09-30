@@ -10,9 +10,10 @@ pub enum OutputFormat {
     Json,
 }
 
-/// Output of `archmap check`: text for people and CI logs, JSON for tools.
+/// Output of `archmap query` and `archmap check`: compact text for agents,
+/// people and CI logs; complete JSON for tools.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum CheckFormat {
+pub enum ReportFormat {
     Text,
     Json,
 }

@@ -103,7 +103,7 @@ fn scan_emits_json_graph_to_stdout_with_dash() {
 #[test]
 fn query_component_lists_symbols_and_edges() {
     let out = archmap()
-        .args(["query", "lib_core", "--path"])
+        .args(["query", "lib_core", "--format", "json", "--path"])
         .arg(fixture_root())
         .output()
         .unwrap();
@@ -250,7 +250,7 @@ fn fixture_json(args: &[&str]) -> serde_json::Value {
 
 #[test]
 fn query_folds_deep_components_like_the_summary() {
-    let view = fixture_json(&["query", "shop.integrations.slack"]);
+    let view = fixture_json(&["query", "shop.integrations.slack", "--format", "json"]);
     assert_eq!(view["depth"], 2);
     assert_eq!(view["component"]["id"], "shop::shop.integrations");
     assert_eq!(view["folded_from"], "shop::shop.integrations.slack");
@@ -266,7 +266,14 @@ fn query_folds_deep_components_like_the_summary() {
         .collect();
     assert_eq!(symbols, vec!["notify", "send_webhook"]);
 
-    let deeper = fixture_json(&["query", "shop.integrations.slack", "--depth", "3"]);
+    let deeper = fixture_json(&[
+        "query",
+        "shop.integrations.slack",
+        "--depth",
+        "3",
+        "--format",
+        "json",
+    ]);
     assert_eq!(deeper["component"]["id"], "shop::shop.integrations.slack");
     assert!(deeper.get("folded_from").is_none());
 }
@@ -305,14 +312,14 @@ fn every_summary_component_is_visible_to_query_and_impact() {
     assert!(names.contains("shop.billing") && names.contains("tests.unit"));
 
     for name in names {
-        let view = fixture_json(&["query", name]);
+        let view = fixture_json(&["query", name, "--format", "json"]);
         assert!(view.get("folded_from").is_none(), "`{name}` is folded");
         assert_eq!(view["component"]["name"], name);
 
         let impact = fixture_json(&["impact", name]);
         assert!(impact.get("folded_from").is_none());
         for id in impact["transitive"].as_array().unwrap() {
-            let dependent = fixture_json(&["query", id.as_str().unwrap()]);
+            let dependent = fixture_json(&["query", id.as_str().unwrap(), "--format", "json"]);
             assert!(
                 dependent.get("folded_from").is_none(),
                 "impact of `{name}` names `{id}`, which the summary does not show"
@@ -448,4 +455,75 @@ fn check_reports_undeclared_imports_unless_ignored() {
         "{}",
         String::from_utf8_lossy(&out.stdout)
     );
+}
+
+fn query_text(root: &Path, args: &[&str]) -> String {
+    let out = archmap()
+        .arg("query")
+        .args(args)
+        .arg("--path")
+        .arg(root)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap()
+}
+
+#[test]
+fn query_text_is_a_compact_drill_down() {
+    let text = query_text(&python_fixture(), &["shop.integrations.slack"]);
+    for expected in [
+        "shop.integrations (module, python) at src/shop/integrations, depth 2\n",
+        "id: shop::shop.integrations\n",
+        "folded from: shop.integrations.slack\n",
+        "Children: 1, folded at this depth: use --depth 3\n  shop.integrations.slack\n",
+        "Public symbols: 2\n",
+        "  def notify(message: str) -> None  src/shop/integrations/slack/__init__.py:1\n",
+        "Depends on: none\n",
+        "Used by: 1\n  shop  1 import: src/shop/__init__.py:3\n",
+    ] {
+        assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
+    }
+    assert!(!text.contains("Lists are capped"), "nothing was cut");
+
+    let symbols = query_text(&fixture_root(), &["greet"]);
+    assert_eq!(
+        symbols,
+        "Symbols matching `greet`: 1\n  pub fn greet(user: &User) -> String  crates/lib_core/src/lib.rs:21  in lib_core\n"
+    );
+}
+
+#[test]
+fn query_text_caps_long_lists_and_verbose_lifts_the_caps() {
+    let repo = temp_repo("caps");
+    let functions: String = (0..40)
+        .map(|i| format!("def f{i}():\n    pass\n"))
+        .collect();
+    std::fs::write(repo.join("pkg/__init__.py"), functions).unwrap();
+    std::fs::create_dir_all(repo.join("app")).unwrap();
+    let imports: String = (0..5).map(|i| format!("from pkg import f{i}\n")).collect();
+    std::fs::write(repo.join("app/__init__.py"), imports).unwrap();
+
+    let capped = query_text(&repo, &["pkg"]);
+    assert!(
+        capped.contains("Public symbols: 40, showing 30\n"),
+        "{capped}"
+    );
+    assert!(
+        capped.contains(
+            "app  5 imports: app/__init__.py:1, app/__init__.py:2, app/__init__.py:3, +2 more\n"
+        ),
+        "{capped}"
+    );
+    assert!(capped.contains("Lists are capped."));
+
+    let full = query_text(&repo, &["pkg", "--verbose"]);
+    assert!(full.contains("Public symbols: 40\n"));
+    assert!(full.contains("app/__init__.py:5\n"));
+    assert!(!full.contains("more") && !full.contains("Lists are capped"));
+    std::fs::remove_dir_all(&repo).unwrap();
 }

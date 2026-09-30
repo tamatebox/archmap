@@ -5,6 +5,7 @@
 
 mod commands;
 mod output;
+mod query_text;
 mod summary;
 
 use std::path::PathBuf;
@@ -12,7 +13,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use crate::output::{CheckFormat, OutputFormat};
+use crate::output::{OutputFormat, ReportFormat};
 
 #[derive(Debug, Parser)]
 #[command(name = "archmap", version, about = "Architecture graph for codebases")]
@@ -69,8 +70,12 @@ enum Command {
         /// Containment depth to roll modules up to, as in `summary`.
         #[arg(long, default_value_t = commands::DEFAULT_DEPTH)]
         depth: usize,
-        #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
-        format: OutputFormat,
+        /// Compact text with capped lists, or complete JSON.
+        #[arg(long, value_enum, default_value_t = ReportFormat::Text)]
+        format: ReportFormat,
+        /// Show every symbol, neighbor and location instead of capped lists.
+        #[arg(long)]
+        verbose: bool,
     },
     /// List components that may be affected when a component or file changes.
     ///
@@ -102,8 +107,8 @@ enum Command {
         /// Roll-up depth for cycle detection; overrides `depth` in the rules.
         #[arg(long)]
         depth: Option<usize>,
-        #[arg(long, value_enum, default_value_t = CheckFormat::Text)]
-        format: CheckFormat,
+        #[arg(long, value_enum, default_value_t = ReportFormat::Text)]
+        format: ReportFormat,
     },
 }
 
@@ -126,7 +131,8 @@ fn main() -> ExitCode {
             path,
             depth,
             format,
-        } => commands::query(&path, &target, depth, format),
+            verbose,
+        } => commands::query(&path, &target, depth, format, verbose),
         Command::Impact {
             target,
             path,
