@@ -10,6 +10,15 @@ pub enum OutputFormat {
     Json,
 }
 
+impl OutputFormat {
+    /// File extension used when the graph is written to a file.
+    pub fn extension(self) -> &'static str {
+        match self {
+            OutputFormat::Json => "json",
+        }
+    }
+}
+
 pub fn render<T: Serialize>(value: &T, format: OutputFormat) -> Result<String> {
     match format {
         OutputFormat::Json => Ok(serde_json::to_string_pretty(value)?),

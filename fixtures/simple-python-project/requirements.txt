@@ -1,0 +1,3 @@
+# pinned runtime deps
+requests==2.32.0
+PyYAML==6.0

@@ -33,7 +33,15 @@ pub fn collect_files(root: &Path) -> Result<Vec<PathBuf>, ScanError> {
 
     for entry in walker {
         let entry = entry?;
-        if !entry.file_type().is_some_and(|t| t.is_file()) {
+        // Directories are not followed through symlinks (cycle safety), but a
+        // symlinked file is still a file worth reading (Homebrew site-packages
+        // and vendored trees do this).
+        let is_file = match entry.file_type() {
+            Some(t) if t.is_file() => true,
+            Some(t) if t.is_symlink() => entry.path().metadata().is_ok_and(|m| m.is_file()),
+            _ => false,
+        };
+        if !is_file {
             continue;
         }
         if let Ok(rel) = entry.path().strip_prefix(root) {

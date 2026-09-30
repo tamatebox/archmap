@@ -67,6 +67,9 @@ impl ArchitectureGraph {
                 if existing.path.is_none() {
                     existing.path = component.path;
                 }
+                if existing.parent.is_none() {
+                    existing.parent = component.parent;
+                }
                 merge_evidence(&mut existing.evidence, component.evidence);
             }
             None => {
@@ -124,6 +127,14 @@ impl ArchitectureGraph {
 
     pub fn component(&self, id: &ComponentId) -> Option<&Component> {
         self.components.get(id)
+    }
+
+    /// Components whose display name matches exactly (a Python module's
+    /// dotted path, for example), for lookups by something shorter than
+    /// the full id.
+    pub fn components_named<'a>(&'a self, name: &str) -> impl Iterator<Item = &'a Component> + 'a {
+        let name = name.to_owned();
+        self.components.values().filter(move |c| c.name == name)
     }
 
     pub fn symbol(&self, id: &SymbolId) -> Option<&Symbol> {

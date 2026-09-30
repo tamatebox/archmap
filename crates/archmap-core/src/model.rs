@@ -89,6 +89,9 @@ pub struct Component {
     /// Root path relative to the repository, when the component lives in it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// Enclosing component (a module's package), when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<ComponentId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence: Vec<Evidence>,
 }
@@ -101,6 +104,7 @@ impl Component {
             kind,
             language: None,
             path: None,
+            parent: None,
             evidence: Vec::new(),
         }
     }

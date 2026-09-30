@@ -18,9 +18,48 @@ fn run_scan(path: &str, manifests_only: bool) -> Result<ScanReport> {
     Ok(report)
 }
 
-pub fn scan(path: &str, format: OutputFormat, manifests_only: bool) -> Result<ExitCode> {
+/// Directory, relative to the scanned root, that holds generated graphs.
+pub const OUTPUT_DIR: &str = ".archmap";
+
+pub fn scan(
+    path: &str,
+    format: OutputFormat,
+    output: Option<&Path>,
+    manifests_only: bool,
+) -> Result<ExitCode> {
     let report = run_scan(path, manifests_only)?;
-    println!("{}", render(&report.graph, format)?);
+    let rendered = render(&report.graph, format)?;
+
+    let file = match output {
+        Some(p) if p == Path::new("-") => {
+            println!("{rendered}");
+            return Ok(ExitCode::SUCCESS);
+        }
+        Some(p) => p.to_path_buf(),
+        None => Path::new(path)
+            .join(OUTPUT_DIR)
+            .join(format!("graph.{}", format.extension())),
+    };
+
+    if let Some(parent) = file.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    std::fs::write(&file, rendered + "\n").with_context(|| {
+        format!(
+            "writing {} (use `--output <file>` or `--output -` for stdout)",
+            file.display()
+        )
+    })?;
+
+    let graph = &report.graph;
+    eprintln!(
+        "wrote {} ({} components, {} symbols, {} edges)",
+        file.display(),
+        graph.components.len(),
+        graph.symbols.len(),
+        graph.edges.len()
+    );
     Ok(ExitCode::SUCCESS)
 }
 
@@ -44,7 +83,7 @@ pub fn query(path: &str, target: &str, format: OutputFormat) -> Result<ExitCode>
     let report = run_scan(path, false)?;
     let graph = &report.graph;
 
-    let result = if let Some(component) = graph.component(&ComponentId::new(target)) {
+    let result = if let Some(component) = find_component(graph, target) {
         QueryResult::Component(component_view(graph, component))
     } else {
         let symbols: Vec<&Symbol> = graph
@@ -60,6 +99,17 @@ pub fn query(path: &str, target: &str, format: OutputFormat) -> Result<ExitCode>
 
     println!("{}", render(&result, format)?);
     Ok(ExitCode::SUCCESS)
+}
+
+/// Exact id first, then a unique match on the display name.
+fn find_component<'a>(graph: &'a ArchitectureGraph, target: &str) -> Option<&'a Component> {
+    graph.component(&ComponentId::new(target)).or_else(|| {
+        let mut named = graph.components_named(target);
+        match (named.next(), named.next()) {
+            (Some(only), None) => Some(only),
+            _ => None,
+        }
+    })
 }
 
 fn component_view<'a>(graph: &'a ArchitectureGraph, component: &'a Component) -> ComponentView<'a> {
@@ -81,11 +131,11 @@ pub struct ImpactResult<'a> {
 }
 
 pub fn impact(path: &str, target: &str, format: OutputFormat) -> Result<ExitCode> {
-    let report = run_scan(path, true)?;
+    // Import edges come from source, so impact needs a full scan.
+    let report = run_scan(path, false)?;
     let graph = &report.graph;
 
-    let component = graph
-        .component(&ComponentId::new(target))
+    let component = find_component(graph, target)
         .or_else(|| graph.component_for_path(target))
         .with_context(|| format!("no component or file `{target}` in graph"))?;
 

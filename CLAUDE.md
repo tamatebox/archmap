@@ -29,7 +29,7 @@ archmap-cli  ->  archmap-scan  ->  archmap-core
 ```
 
 - `archmap-core`: graph model (`Component`, `Symbol`, `Edge`, `Evidence`, `GraphFragment`, `ArchitectureGraph`), merge/normalize, query and impact primitives. No I/O, no language knowledge, no dependency on other workspace crates.
-- `archmap-scan`: repo walking, project detection, the `Analyzer` trait and concrete analyzers (`rust/`). Emits `GraphFragment`s; `scan()` merges them.
+- `archmap-scan`: repo walking, project detection, the `Analyzer` trait and concrete analyzers (`rust/`, `python/`). Emits `GraphFragment`s; `scan()` merges them.
 - `archmap-cli`: `clap` commands and output rendering only. No analysis logic.
 
 Never add a dependency that points against the arrow. Never make `archmap-core` aware of Cargo, `syn`, files or paths beyond plain strings.
@@ -44,13 +44,15 @@ Never add a dependency that points against the arrow. Never make `archmap-core` 
 
 ## Conventions
 
-- Component ids: internal packages use the package name; external dependencies use the `ext:` prefix.
-- Symbol ids: `<component>::<module path>::<name>`; methods are `Type::method`.
+- Component ids: internal packages use the package name; sub-units (Python packages) use `<package>::<dotted.path>`; external dependencies use the `ext:` prefix. `Component.name` is the short, human-typed form (`shop.billing`) and `query` / `impact` accept it when unique.
+- Symbol ids: `<component>::<module path>::<name>`; methods are `Type::method` (Rust) or `Class.method` (Python).
+- A `Module` component sets `parent` to its enclosing component. Containment is a field, not an edge.
 - Paths in evidence are relative to the scanned root with `/` separators.
 - Output must be deterministic: sort collections, no timestamps in the graph.
 - `SCHEMA_VERSION` in `archmap-core` is bumped on breaking JSON changes.
 - Avoid abstractions without a second concrete use. Three similar lines beat one premature trait.
-- Generated graphs are not committed.
+- Structural scanning (line-based, as in `python/source.rs`) is acceptable when it stays behind the analyzer boundary and is covered by tests; swap in a real parser only when a fixture shows the need.
+- `scan` writes `<root>/.archmap/graph.<ext>` by default (`-o <file>` overrides, `-o -` is stdout). Write nothing else into the scanned repository: no `.gitignore`, no config. Do not design features that assume graphs are committed to git.
 
 ## Commands to run after every change
 
@@ -61,4 +63,4 @@ cargo test --workspace
 cargo check --workspace
 ```
 
-Try the tool on itself as a smoke test: `cargo run -p archmap-cli -- scan .`
+Try the tool on itself as a smoke test without writing files: `cargo run -p archmap-cli -- scan . -o -`

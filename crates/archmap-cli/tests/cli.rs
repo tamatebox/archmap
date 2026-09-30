@@ -11,13 +11,76 @@ fn archmap() -> Command {
     Command::new(env!("CARGO_BIN_EXE_archmap"))
 }
 
+/// A throwaway directory containing one tiny Python package.
+fn temp_repo(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("archmap-cli-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("pkg")).unwrap();
+    std::fs::write(dir.join("pkg/__init__.py"), "def run():\n    pass\n").unwrap();
+    dir
+}
+
 #[test]
-fn scan_emits_json_graph() {
+fn scan_writes_graph_under_dot_archmap_by_default() {
+    let repo = temp_repo("default");
+    let out = archmap().arg("scan").arg(&repo).output().unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.stdout.is_empty(), "graph goes to the file, not stdout");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("wrote"));
+
+    let graph: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(repo.join(".archmap/graph.json")).unwrap())
+            .unwrap();
+    assert_eq!(graph["schema_version"], 1);
+    // only the graph is written; whether to ignore it is the repository's call
+    let written: Vec<String> = std::fs::read_dir(repo.join(".archmap"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(written, vec!["graph.json".to_owned()]);
+
+    // a second scan does not pick up its own output
+    let again = archmap().arg("scan").arg(&repo).output().unwrap();
+    assert!(again.status.success());
+    let graph2: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(repo.join(".archmap/graph.json")).unwrap())
+            .unwrap();
+    assert_eq!(graph, graph2);
+
+    std::fs::remove_dir_all(&repo).unwrap();
+}
+
+#[test]
+fn scan_writes_to_explicit_output_file() {
+    let repo = temp_repo("explicit");
+    let target = repo.join("out/nested/graph.json");
+    let out = archmap()
+        .arg("scan")
+        .arg(&repo)
+        .arg("-o")
+        .arg(&target)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(target.is_file());
+    assert!(!repo.join(".archmap").exists());
+    std::fs::remove_dir_all(&repo).unwrap();
+}
+
+#[test]
+fn scan_emits_json_graph_to_stdout_with_dash() {
     let out = archmap()
         .arg("scan")
         .arg(fixture_root())
-        .arg("--format")
-        .arg("json")
+        .args(["--format", "json", "--output", "-"])
         .output()
         .unwrap();
     assert!(

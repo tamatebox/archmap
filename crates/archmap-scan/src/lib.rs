@@ -12,6 +12,7 @@
 mod analyzer;
 mod context;
 mod error;
+pub mod python;
 pub mod rust;
 mod walk;
 
@@ -43,7 +44,10 @@ pub struct ScanReport {
 /// Adding a language means adding an entry here and a module implementing
 /// [`Analyzer`]; nothing in `archmap-core` needs to change.
 pub fn default_analyzers() -> Vec<Box<dyn Analyzer>> {
-    vec![Box::new(rust::RustAnalyzer)]
+    vec![
+        Box::new(rust::RustAnalyzer),
+        Box::new(python::PythonAnalyzer),
+    ]
 }
 
 /// Scan a repository with the default analyzers.

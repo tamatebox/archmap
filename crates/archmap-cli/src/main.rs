@@ -6,6 +6,7 @@
 mod commands;
 mod output;
 
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -21,13 +22,19 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Scan a repository and emit its architecture graph.
+    /// Scan a repository and write its architecture graph.
+    ///
+    /// The graph is written to `<path>/.archmap/graph.json` unless
+    /// `--output` says otherwise.
     Scan {
         /// Repository root (defaults to the current directory).
         #[arg(default_value = ".")]
         path: String,
         #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
         format: OutputFormat,
+        /// File to write the graph to; `-` writes to stdout.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
         /// Only read manifests; skip source parsing.
         #[arg(long)]
         manifests_only: bool,
@@ -65,8 +72,9 @@ fn main() -> ExitCode {
         Command::Scan {
             path,
             format,
+            output,
             manifests_only,
-        } => commands::scan(&path, format, manifests_only),
+        } => commands::scan(&path, format, output.as_deref(), manifests_only),
         Command::Query {
             target,
             path,
