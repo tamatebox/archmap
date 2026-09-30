@@ -168,6 +168,7 @@ than Python's: a module file rather than a package directory.
 ```bash
 cargo run -p archmap-cli -- summary .                 # prints to stdout
 cargo run -p archmap-cli -- summary . --depth 1       # coarser
+cargo run -p archmap-cli -- summary . --verbose       # every component and dependency
 cargo run -p archmap-cli -- summary . -o summary.md   # saves to a file instead
 cargo run -p archmap-cli -- scan .                    # writes ./.archmap/graph.json
 cargo run -p archmap-cli -- scan . -o graph.json      # explicit file
@@ -256,7 +257,8 @@ of modules, and anything deeper is folded into its ancestor. The summary
 contains:
 
 - a header of `key: value` lines: `root`, `depth`, `components: N shown, M in
-  the full graph`, counts, the `source` of the facts and the `next` commands
+  the full graph` (`N shown of K at depth` when the tree is capped), counts,
+  the `source` of the facts and the `next` commands
 - `## Coverage`, before the map: for each analyzed language `files`, `read`
   and `imports without an edge`; the languages no analyzer reads, such as
   `not analyzed  sql: 145  notebook: 68`; the number of `dynamic imports` and
@@ -273,8 +275,26 @@ contains:
 - the components depended on by the most others, with `dependents`,
   `dependencies` and `rank`
 
-On a 380-file Python repository, depth 2 turns a 790 KB graph into a
-summary of about 11 KB.
+The summary is an index for choosing what to `query` next, so it stays
+small however large the repository is. The component tree lists the
+packages first and then the modules with the most dependents plus
+dependencies, each only when it fits with its ancestors, up to 30 lines.
+Internal dependencies keep 30: those between packages first, then those
+into components more others depend on, then those with more import
+statements. External dependencies keep the 20 imported by the most
+components. A capped list ends in an `omitted:` line that counts the rest,
+says where they are and names the query that shows them:
+
+```text
+omitted: 12 modules  in: shop.billing 7, shop 5  next: archmap query <component>
+```
+
+The whole summary then aims at 8 KiB: over it, the largest list gives up
+its lowest-ranked entries, down to 10 each. The header, coverage, `omitted:`
+lines and the most depended on list are never trimmed, so very long names
+can exceed the target, but the size does not grow with the repository.
+`--verbose` lists everything. On a 380-file Python repository, depth 2 turns
+a 790 KB graph into a summary of about 8 KB (11 KB with `--verbose`).
 
 `summary`, `query` and `impact` share one default depth, so they always
 describe the same components. Asking `query` or `impact` about a component
@@ -440,7 +460,7 @@ comes later.
 |---|---|---|
 | 0 Discovery | languages, manifests, packages; report detected languages even without an analyzer | Rust and Python; Rust targets other than `src/lib.rs` and `src/main.rs` are not discovered; other languages are counted in `summary`, not analyzed |
 | 1 Structural Facts | modules, public symbols, imports with their target file and scope, dependencies | Rust and Python, target files and scope included; Rust imports are `use` declarations and module paths in code, not code inside macro calls |
-| 2 Structural Compression & Agent Context | roll-up; `summary`, `query` and `impact` small enough for an agent and at one granularity; file and module queries whose evidence leads directly to source; full detail with `--format json` | done for Python: `impact` follows files, `query` accepts components, symbols and files, direct importers point to `file:line`, and agent-facing commands say what the graph does not map; the same for Rust, except code inside macro calls |
+| 2 Structural Compression & Agent Context | roll-up; `summary`, `query` and `impact` small enough for an agent and at one granularity; file and module queries whose evidence leads directly to source; full detail with `--format json` | done for Python: `impact` follows files, `query` accepts components, symbols and files, direct importers point to `file:line`, `summary` caps its lists to an 8 KiB budget, and agent-facing commands say what the graph does not map; the same for Rust, except code inside macro calls |
 | 3 Rules & Declared Architecture | declared components and layers, cycles, forbidden dependencies, drift, CI `check` | done: deny rules, layers, allow lists, coverage, cycles with a file-level reading, undeclared imports, stale declarations; structural signals |
 | 4 Deep Static Analysis | precise symbol resolution, callers and reference graph, type relationships, selective data flow, test-to-code links; on demand for one selected area | planned; agent traces so far point first to callers and references, then selective data flow |
 | 5 Cross-system Graph | OpenAPI, Terraform, databases, HTTP, events, CI/build/deploy relationships | planned |
@@ -476,7 +496,7 @@ observed or declared facts.
 Phase 2 is complete when the common structural questions an agent asks
 lead directly to source without the full graph: what exists, what a
 component or file exposes, what it imports, what imports it, and what may
-be structurally affected. Each answer stays small (about 10 KB for
+be structurally affected. Each answer stays small (about 8 KB for
 `summary`, a few KB to a few tens of KB for `query`, a few KB for
 `impact`), with complete detail one `--format json` away.
 

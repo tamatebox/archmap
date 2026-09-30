@@ -44,7 +44,8 @@ enum Command {
     },
     /// Print a compact, deterministic summary for agents and humans.
     ///
-    /// Modules are rolled up to `--depth` levels below their package. The
+    /// Modules are rolled up to `--depth` levels below their package. Lists
+    /// are capped to keep it small, with `omitted:` lines for the rest. The
     /// summary goes to stdout; `--output <file>` saves it instead.
     Summary {
         /// Repository root (defaults to the current directory).
@@ -56,6 +57,9 @@ enum Command {
         /// File to save the summary to instead of printing it.
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// List every component and dependency instead of capped lists.
+        #[arg(long)]
+        verbose: bool,
     },
     /// Show a component or symbol with its relationships.
     ///
@@ -126,7 +130,8 @@ fn main() -> ExitCode {
             path,
             depth,
             output,
-        } => commands::summary(&path, depth, output.as_deref()),
+            verbose,
+        } => commands::summary(&path, depth, verbose, output.as_deref()),
         Command::Query {
             target,
             path,

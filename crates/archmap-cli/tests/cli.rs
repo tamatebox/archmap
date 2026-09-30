@@ -282,6 +282,47 @@ fn summary_prints_by_default_and_saves_only_when_asked() {
     std::fs::remove_dir_all(&repo).unwrap();
 }
 
+#[test]
+fn summary_caps_long_lists_unless_verbose() {
+    let repo = temp_repo("capped");
+    for i in 0..35 {
+        let dir = repo.join(format!("pkg/sub{i:02}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("__init__.py"), "def run():\n    pass\n").unwrap();
+    }
+    let summary = |args: &[&str]| {
+        let out = archmap()
+            .arg("summary")
+            .arg(&repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    };
+
+    let capped = summary(&[]);
+    for expected in [
+        "\ncomponents: 30 shown of 37 at depth, 37 in the full graph\n",
+        "\nomitted: 7 modules  in: pkg 7  next: archmap query <component>\n",
+    ] {
+        assert!(
+            capped.contains(expected),
+            "missing `{expected}` in:\n{capped}"
+        );
+    }
+
+    let all = summary(&["--verbose"]);
+    assert!(all.contains("\ncomponents: 37 shown, 37 in the full graph\n"));
+    assert!(!all.contains("omitted: "), "{all}");
+    assert_eq!(all.matches("\n    pkg.sub").count(), 35, "{all}");
+    std::fs::remove_dir_all(&repo).unwrap();
+}
+
 /// Run an archmap subcommand against the Python fixture and parse its JSON.
 fn fixture_json(args: &[&str]) -> serde_json::Value {
     let out = archmap()

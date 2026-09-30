@@ -22,7 +22,7 @@ archmap maps a repository into components (packages, modules, external dependenc
 Run from the repository root.
 
 - `archmap --version`: if missing, tell the user and continue without archmap.
-- `archmap summary .`: the components, what the map misses (`## Coverage`), and dependencies. `components: 0 shown`: archmap cannot read these languages; continue without it.
+- `archmap summary .`: the components, what the map misses (`## Coverage`), and dependencies. A capped list ends in `omitted:`, which says where the rest are: `query` those components rather than rerunning with `--verbose`. `components: 0 shown`: archmap cannot read these languages; continue without it.
 - `archmap query <component|file|symbol>`: public symbols with `file:line`, dependencies both ways with example locations (`file:line -> loaded file`; `(local)`: inside a function), and imports without an edge (`Not mapped`). Give a file by path or as `<component>.<file stem>` (`src/shop/users.py`, `shop.users`); a Rust module is its own component, named as `use` writes it (`archmap_core::graph`). A file query also lists the statements that import it (`Imported by`).
 - `archmap impact <component|file>`: components that depend on the target, directly or transitively; for a file, `importers` lists the importing statements.
 - `archmap check`: with an `archmap.toml`, after a change; exit 1 lists broken rules with evidence. `signal:` lines are observations, never failures.

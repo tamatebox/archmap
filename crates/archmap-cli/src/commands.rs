@@ -49,9 +49,9 @@ pub fn scan(
     Ok(ExitCode::SUCCESS)
 }
 
-pub fn summary(path: &str, depth: usize, output: Option<&Path>) -> Result<ExitCode> {
+pub fn summary(path: &str, depth: usize, verbose: bool, output: Option<&Path>) -> Result<ExitCode> {
     let report = run_scan(path, false)?;
-    let markdown = crate::summary::render(&report.graph, depth);
+    let markdown = crate::summary::render(&report.graph, depth, verbose);
     // A summary is a view: printed by default, saved only when asked.
     let output = output.unwrap_or(Path::new("-"));
     if let Some(file) = write_output(path, "summary.md", Some(output), &markdown)? {
