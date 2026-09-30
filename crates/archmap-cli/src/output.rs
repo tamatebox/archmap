@@ -10,6 +10,13 @@ pub enum OutputFormat {
     Json,
 }
 
+/// Output of `archmap check`: text for people and CI logs, JSON for tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CheckFormat {
+    Text,
+    Json,
+}
+
 impl OutputFormat {
     /// File extension used when the graph is written to a file.
     pub fn extension(self) -> &'static str {

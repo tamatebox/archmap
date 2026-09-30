@@ -19,6 +19,7 @@ and impact without re-reading the whole repository.
 - **Code Graph != Architecture Graph.** Do not turn every function or call into a node. Compress to components, modules, public symbols and dependencies.
 - **Fact Extraction != Semantic Inference.** Analyzers record what code and manifests literally say. Guesses such as "this module is the Billing component" must live in a separate, clearly labeled layer (not yet built). Never mix the two in one type.
 - **Compression is structural.** Roll-up maps components to their ancestor at a depth through `parent` and merges edges while keeping every piece of evidence. Naming, grouping by meaning and layering belong to declared config (Phase 3) or the inferred layer (Phase 5), never to roll-up or `summary`.
+- **Declared != Observed.** `archmap.toml` is only ever compared with the observed graph by `check`. It never changes what `scan`, `summary`, `query` or `impact` report, and declared names never appear in their output.
 - **Cheap structural scan first, selective semantic scan later.** Do not parse bodies or docstrings by default; design so deeper passes can be added for chosen targets.
 - **Many inputs, one model.** Each language / manifest / schema may be analyzed differently, but everything normalizes into `archmap-core` types.
 - **MCP is an adapter, not the core.** CLI is the first interface; MCP, if added, is a thin layer over the same engine.
@@ -29,9 +30,9 @@ and impact without re-reading the whole repository.
 archmap-cli  ->  archmap-scan  ->  archmap-core
 ```
 
-- `archmap-core`: graph model (`Component`, `Symbol`, `Edge`, `Evidence`, `GraphFragment`, `ArchitectureGraph`), merge/normalize, roll-up, query and impact primitives. No I/O, no language knowledge, no dependency on other workspace crates.
+- `archmap-core`: graph model (`Component`, `Symbol`, `Edge`, `Evidence`, `GraphFragment`, `ArchitectureGraph`), merge/normalize, roll-up, cycles, query and impact primitives, and declared rules (`rules`). No I/O, no language knowledge, no dependency on other workspace crates.
 - `archmap-scan`: repo walking, project detection, the `Analyzer` trait and concrete analyzers (`rust/`, `python/`). Emits `GraphFragment`s; `scan()` merges them.
-- `archmap-cli`: `clap` commands and output rendering (JSON, Markdown summary) only. No analysis logic.
+- `archmap-cli`: `clap` commands, reading `archmap.toml`, and output rendering (JSON, Markdown summary, check report) only. No analysis logic.
 
 Never add a dependency that points against the arrow. Never make `archmap-core` aware of Cargo, `syn`, files or paths beyond plain strings.
 
@@ -57,6 +58,7 @@ Never add a dependency that points against the arrow. Never make `archmap-core` 
 - Symbol ids: `<component>::<module path>::<name>`; methods are `Type::method` (Rust) or `Class.method` (Python).
 - A `Module` component sets `parent` to its enclosing component. Containment is a field, not an edge.
 - `summary`, `query` and `impact` share `DEFAULT_DEPTH` and roll up the same way. Never let them describe different components.
+- A rule selector or declaration that matches no component is a finding, never silently skipped, so a typo cannot disable a rule.
 - External dependency edges point only at declared distributions. An import is not a declaration; undeclared imports belong to rules, not edges. Evidence notes record how an import name was resolved.
 - Paths in evidence are relative to the scanned root with `/` separators.
 - Output must be deterministic: sort collections, no timestamps. Evidence and the summary never contain absolute paths.
@@ -72,6 +74,9 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo check --workspace
+cargo run -q -p archmap-cli -- check
 ```
+
+The last command enforces archmap's own `cli -> scan -> core` direction from `archmap.toml`.
 
 Try the tool on itself as a smoke test without writing files: `cargo run -p archmap-cli -- scan . -o -`

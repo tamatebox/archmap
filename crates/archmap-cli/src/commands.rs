@@ -2,11 +2,12 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
-use archmap_core::{ArchitectureGraph, Component, ComponentId, Edge, Symbol, SymbolId};
+use archmap_core::rules::{Finding, RuleSet};
+use archmap_core::{ArchitectureGraph, Component, ComponentId, Edge, Evidence, Symbol, SymbolId};
 use archmap_scan::{ScanOptions, ScanReport};
 use serde::Serialize;
 
-use crate::output::{render, OutputFormat};
+use crate::output::{render, CheckFormat, OutputFormat};
 
 fn run_scan(path: &str, manifests_only: bool) -> Result<ScanReport> {
     let options = ScanOptions { manifests_only };
@@ -238,7 +239,144 @@ pub fn impact(path: &str, target: &str, depth: usize, format: OutputFormat) -> R
     Ok(ExitCode::SUCCESS)
 }
 
-pub fn check(_path: &str) -> Result<ExitCode> {
-    eprintln!("archmap check: architecture rules are not implemented yet");
-    Ok(ExitCode::from(2))
+/// Rules file read by `archmap check`, relative to the scanned root.
+pub const RULES_FILE: &str = "archmap.toml";
+
+#[derive(Debug, Serialize)]
+struct CheckReport<'a> {
+    rules: String,
+    depth: usize,
+    findings: &'a [Finding],
+}
+
+/// Exit codes: 0 without findings, 1 with findings, 2 when the rules or the
+/// repository cannot be read.
+pub fn check(
+    path: &str,
+    config: Option<&Path>,
+    depth: Option<usize>,
+    format: CheckFormat,
+) -> Result<ExitCode> {
+    let rules_path = config
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| Path::new(path).join(RULES_FILE));
+    let rules = match load_rules(&rules_path) {
+        Ok(rules) => rules,
+        Err(err) => {
+            eprintln!("error: {err:#}");
+            return Ok(ExitCode::from(2));
+        }
+    };
+    let report = match run_scan(path, false) {
+        Ok(report) => report,
+        Err(err) => {
+            eprintln!("error: {err:#}");
+            return Ok(ExitCode::from(2));
+        }
+    };
+    let depth = depth.or(rules.depth).unwrap_or(DEFAULT_DEPTH);
+    let findings = archmap_core::rules::check(&report.graph, &rules, depth);
+
+    let shown = rules_path.display().to_string();
+    match format {
+        CheckFormat::Json => {
+            let report = CheckReport {
+                rules: shown,
+                depth,
+                findings: &findings,
+            };
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+        CheckFormat::Text => print!("{}", check_text(&report.graph, &findings, &shown, depth)),
+    }
+    Ok(if findings.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
+}
+
+fn load_rules(path: &Path) -> Result<RuleSet> {
+    let text = std::fs::read_to_string(path).with_context(|| {
+        format!(
+            "reading {} (write one, or pass `--config <file>`)",
+            path.display()
+        )
+    })?;
+    toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+}
+
+fn check_text(
+    graph: &ArchitectureGraph,
+    findings: &[Finding],
+    rules: &str,
+    depth: usize,
+) -> String {
+    let name = |id: &ComponentId| {
+        graph
+            .component(id)
+            .map_or(id.as_str().to_owned(), |c| c.name.clone())
+    };
+    let location = |e: &Evidence| {
+        let mut s = e.file.clone();
+        if let Some(line) = e.line {
+            s.push_str(&format!(":{line}"));
+        }
+        if let Some(note) = &e.note {
+            s.push_str(&format!("  {note}"));
+        }
+        s
+    };
+
+    let mut out = String::new();
+    let count = match findings.len() {
+        0 => "no findings".to_owned(),
+        1 => "1 finding".to_owned(),
+        n => format!("{n} findings"),
+    };
+    out.push_str(&format!(
+        "archmap check: {count} (rules: {rules}, cycle depth {depth})\n"
+    ));
+    for finding in findings {
+        out.push('\n');
+        match finding {
+            Finding::Forbidden {
+                rule,
+                deny,
+                from,
+                to,
+                edge,
+                evidence,
+            } => {
+                out.push_str(&format!(
+                    "forbidden by deny[{rule}] {} -> {}: {} -> {} ({})\n",
+                    deny.from,
+                    deny.to,
+                    name(from),
+                    name(to),
+                    edge.as_str()
+                ));
+                if let Some(reason) = &deny.reason {
+                    out.push_str(&format!("  reason: {reason}\n"));
+                }
+                for e in evidence {
+                    out.push_str(&format!("  {}\n", location(e)));
+                }
+            }
+            Finding::Cycle { components, edges } => {
+                let names: Vec<String> = components.iter().map(&name).collect();
+                out.push_str(&format!("cycle: {}\n", names.join(", ")));
+                for e in edges {
+                    let at = e.evidence.first().map(&location).unwrap_or_default();
+                    out.push_str(&format!("  {} -> {}  {at}\n", name(&e.from), name(&e.to)));
+                }
+            }
+            Finding::Unmatched { declared, selector } => {
+                out.push_str(&format!(
+                    "unmatched: {declared} `{selector}` matches no component\n"
+                ));
+            }
+        }
+    }
+    out
 }

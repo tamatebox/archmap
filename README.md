@@ -25,6 +25,7 @@ The graph is meant to be consumed by agents as much as by humans:
 - `archmap scan` writes the full graph for tools and drill-down
 - `archmap query` answers "what does component X expose and depend on"
 - `archmap impact` answers "if I touch this file or component, what else might be affected"
+- `archmap check` tells an agent or CI whether a change broke a declared dependency rule
 - every fact points to `file:line` evidence, so an agent can verify and jump to the source
 
 An MCP adapter is planned, but the engine and CLI come first.
@@ -91,7 +92,9 @@ can use a copy of it.
   - source files are scanned structurally line by line, not parsed; bodies are ignored
 - JSON output with evidence on every node and edge, written to `<root>/.archmap/graph.json` by default
 - structural roll-up and a deterministic Markdown summary, written to `<root>/.archmap/summary.md`
-- `query` and `impact` implemented on top of the scanned graph; `check` is a stub
+- `query` and `impact` implemented on top of the scanned graph
+- `check` compares the graph with a declared architecture in `archmap.toml`: forbidden
+  dependencies, cycles, and declarations that match nothing
 
 Known gaps: imports of undeclared packages and the standard library produce
 no edges by design, so an undeclared dependency is invisible until rules
@@ -112,7 +115,8 @@ cargo run -p archmap-cli -- query scan            # by symbol name
 cargo run -p archmap-cli -- impact archmap-core
 cargo run -p archmap-cli -- impact crates/archmap-scan/src/lib.rs
 cargo run -p archmap-cli -- query src.pipeline.components --depth 3 --path ../some-python-repo
-cargo run -p archmap-cli -- check                 # not implemented yet, exits 2
+cargo run -p archmap-cli -- check                 # rules from ./archmap.toml; exit 1 on findings
+cargo run -p archmap-cli -- check --format json --config ci/rules.toml
 
 # any Python project or package directory works the same way
 cargo run -p archmap-cli -- scan ../some-python-repo
@@ -175,6 +179,39 @@ that is folded at that depth answers for the component it is folded into,
 reports `folded_from`, and `query` lists the `children` to ask about with a
 larger `--depth`.
 
+## Rules
+
+`archmap check` compares the observed graph with a declared architecture in
+`archmap.toml` at the repository root:
+
+```toml
+[components]            # declared name = selectors
+domain = ["src/core", "src/models"]
+pipeline = ["src/pipeline"]
+
+[[deny]]
+from = "domain"         # a declared name or a selector
+to = "pipeline"
+reason = "domain code must not know about orchestration"
+
+[cycles]
+forbid = true           # cycles between components at the roll-up depth
+```
+
+A selector is a path prefix, where `src/core` covers everything below it, or
+an external id such as `ext:requests` or `ext:google-*`. When selectors
+overlap, the most specific one owns a component.
+
+`check` reports forbidden dependencies with the evidence behind them,
+dependency cycles at the roll-up depth (`depth` in the file or `--depth`,
+default 2), and declarations or rule sides that match nothing, so a typo
+never silently disables a rule. It exits 0 without findings, 1 with findings,
+and 2 when the rules or the repository cannot be read. archmap checks its own
+`cli -> scan -> core` direction this way; see `archmap.toml`.
+
+The declared architecture never changes what `scan`, `summary`, `query` or
+`impact` report.
+
 ## Roadmap
 
 | Phase | Scope | Status |
@@ -182,7 +219,7 @@ larger `--depth`.
 | 0 Discovery | languages, manifests, packages; report detected languages even without an analyzer | Rust and Python only |
 | 1 Structural Facts | modules, public symbols, imports, dependencies | Rust and Python |
 | 2 Structural Compression | roll-up, summary, and query and impact at the summary's depth | done for Python |
-| 3 Rules & Declared Architecture | declared components and layers, cycles, forbidden dependencies, drift, CI `check` | planned |
+| 3 Rules & Declared Architecture | declared components and layers, cycles, forbidden dependencies, drift, CI `check` | started: deny rules, cycles, stale declarations |
 | 4 Cross-system Graph | OpenAPI, Terraform, databases, HTTP, events | planned |
 | 5 Semantic Enrichment | LLM naming and responsibilities, stored as inferred facts | planned |
 | 6 Agent Interface | MCP adapter over the same engine | planned |
@@ -195,8 +232,11 @@ archmap and with archmap as a whole: the summary up front, plus `query` and
 `impact` on demand. Correctness is compared first, then tokens, tool calls
 and turns.
 
-Rules, cross-system graphs, LLM enrichment and MCP do not change what an
-agent learns about a repository, so they wait for that evaluation. Before
+Cross-system graphs, LLM enrichment and MCP do not change what an agent
+learns about a repository, so they wait for that evaluation. Rules started
+early for the same reason: they never change what `summary`, `query` or
+`impact` report. Still open in Phase 3: undeclared imports as findings,
+ordered layers, and drift beyond declarations that match nothing. Before
 Rust repositories are evaluated, Rust needs module-level components; generic
 discovery for unsupported languages completes Phase 0.
 

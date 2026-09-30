@@ -141,9 +141,16 @@ fn impact_accepts_component_or_file() {
 }
 
 #[test]
-fn check_is_a_stub_with_distinct_exit_code() {
-    let out = archmap().arg("check").output().unwrap();
+fn check_without_a_rules_file_exits_2() {
+    let repo = temp_repo("no-rules");
+    let out = archmap()
+        .args(["check", "--path"])
+        .arg(&repo)
+        .output()
+        .unwrap();
     assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("archmap.toml"));
+    std::fs::remove_dir_all(&repo).unwrap();
 }
 
 fn python_fixture() -> PathBuf {
@@ -312,4 +319,110 @@ fn every_summary_component_is_visible_to_query_and_impact() {
             );
         }
     }
+}
+
+/// Write `rules` to a temporary file and run `archmap check` on `root` with it.
+fn check_with(name: &str, root: &Path, rules: &str, extra: &[&str]) -> std::process::Output {
+    let dir = std::env::temp_dir().join(format!("archmap-rules-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("archmap.toml");
+    std::fs::write(&file, rules).unwrap();
+    let out = archmap()
+        .args(["check", "--path"])
+        .arg(root)
+        .arg("--config")
+        .arg(&file)
+        .args(extra)
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    out
+}
+
+const SHOP_RULES: &str = r#"
+[components]
+scripts = ["scripts"]
+billing = ["src/shop/billing"]
+legacy = ["src/shop/legacy"]
+
+[[deny]]
+from = "scripts"
+to = "billing"
+reason = "scripts go through the public shop API"
+"#;
+
+#[test]
+fn check_reports_forbidden_dependencies_and_stale_declarations() {
+    let out = check_with("shop", &python_fixture(), SHOP_RULES, &[]);
+    assert_eq!(out.status.code(), Some(1));
+    let text = String::from_utf8_lossy(&out.stdout);
+    for expected in [
+        "archmap check: 2 findings",
+        "forbidden by deny[0] scripts -> billing: scripts -> shop.billing (import)",
+        "  reason: scripts go through the public shop API",
+        "  scripts/backfill.py:1  import",
+        "unmatched: components.legacy `src/shop/legacy` matches no component",
+    ] {
+        assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
+    }
+}
+
+#[test]
+fn check_json_lists_the_same_findings() {
+    let out = check_with(
+        "shop-json",
+        &python_fixture(),
+        SHOP_RULES,
+        &["--format", "json"],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["depth"], 2);
+    let kinds: Vec<&str> = report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, vec!["unmatched", "forbidden"]);
+    assert_eq!(
+        report["findings"][1]["evidence"][0]["file"],
+        "scripts/backfill.py"
+    );
+}
+
+#[test]
+fn check_finds_cycles_at_the_chosen_depth() {
+    let repo = temp_repo("cycle");
+    std::fs::create_dir_all(repo.join("other")).unwrap();
+    std::fs::write(repo.join("pkg/__init__.py"), "from other import thing\n").unwrap();
+    std::fs::write(repo.join("other/__init__.py"), "import pkg\n").unwrap();
+    let rules = "[cycles]\nforbid = true\n";
+
+    let out = check_with("cycle", &repo, rules, &[]);
+    assert_eq!(out.status.code(), Some(1));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("cycle: other, pkg"), "{text}");
+    assert!(
+        text.contains("  other -> pkg  other/__init__.py:1  import"),
+        "{text}"
+    );
+
+    // at depth 0 both fold into the project, so there is nothing to report
+    let flat = check_with("cycle-flat", &repo, rules, &["--depth", "0"]);
+    assert_eq!(flat.status.code(), Some(0));
+    std::fs::remove_dir_all(&repo).unwrap();
+}
+
+#[test]
+fn archmap_passes_its_own_rules() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let out = archmap()
+        .args(["check", "--path"])
+        .arg(&root)
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    assert!(text.starts_with("archmap check: no findings"));
 }

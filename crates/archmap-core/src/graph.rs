@@ -195,6 +195,77 @@ impl ArchitectureGraph {
         seen
     }
 
+    /// Groups of components that reach each other through dependency
+    /// cycles, over every edge kind. Each group has at least two members and
+    /// is sorted; groups are sorted too.
+    pub fn cycles(&self) -> Vec<Vec<ComponentId>> {
+        let mut forward: BTreeMap<&ComponentId, BTreeSet<&ComponentId>> = BTreeMap::new();
+        let mut backward: BTreeMap<&ComponentId, BTreeSet<&ComponentId>> = BTreeMap::new();
+        for edge in &self.edges {
+            if edge.from != edge.to {
+                forward.entry(&edge.from).or_default().insert(&edge.to);
+                backward.entry(&edge.to).or_default().insert(&edge.from);
+            }
+        }
+        let forward: BTreeMap<&ComponentId, Vec<&ComponentId>> = forward
+            .into_iter()
+            .map(|(k, v)| (k, v.into_iter().collect()))
+            .collect();
+        let nodes: BTreeSet<&ComponentId> =
+            forward.keys().chain(backward.keys()).copied().collect();
+
+        // Kosaraju, iteratively so that long chains cannot exhaust the stack:
+        // finish order on the graph, then components on the reversed graph.
+        let mut visited: BTreeSet<&ComponentId> = BTreeSet::new();
+        let mut order: Vec<&ComponentId> = Vec::new();
+        for &start in &nodes {
+            if !visited.insert(start) {
+                continue;
+            }
+            let mut stack: Vec<(&ComponentId, usize)> = vec![(start, 0)];
+            while let Some(top) = stack.last_mut() {
+                let node = top.0;
+                let next = forward.get(node).and_then(|succ| succ.get(top.1)).copied();
+                top.1 += 1;
+                match next {
+                    Some(next) => {
+                        if visited.insert(next) {
+                            stack.push((next, 0));
+                        }
+                    }
+                    None => {
+                        order.push(node);
+                        stack.pop();
+                    }
+                }
+            }
+        }
+
+        let mut assigned: BTreeSet<&ComponentId> = BTreeSet::new();
+        let mut groups = Vec::new();
+        for &start in order.iter().rev() {
+            if !assigned.insert(start) {
+                continue;
+            }
+            let mut group = vec![start.clone()];
+            let mut stack = vec![start];
+            while let Some(node) = stack.pop() {
+                for &prev in backward.get(node).into_iter().flatten() {
+                    if assigned.insert(prev) {
+                        group.push(prev.clone());
+                        stack.push(prev);
+                    }
+                }
+            }
+            if group.len() > 1 {
+                group.sort();
+                groups.push(group);
+            }
+        }
+        groups.sort();
+        groups
+    }
+
     /// Components from the containment root down to `id`, following
     /// `parent`. The walk stops at unknown ids and at cycles, so malformed
     /// input cannot loop.
@@ -532,6 +603,48 @@ mod tests {
         let rolled = graph.rollup(1);
         assert_eq!(rolled.symbols_of(&"a".into()).count(), 1);
         assert_eq!(rolled.symbols.len(), 1);
+    }
+
+    fn ids(groups: Vec<Vec<ComponentId>>) -> Vec<Vec<String>> {
+        groups
+            .into_iter()
+            .map(|g| g.into_iter().map(|c| c.0).collect())
+            .collect()
+    }
+
+    #[test]
+    fn cycles_finds_each_strongly_connected_group() {
+        let mut graph = ArchitectureGraph::default();
+        for (from, to) in [
+            ("a", "b"),
+            ("b", "c"),
+            ("c", "a"),
+            ("c", "d"),
+            ("x", "y"),
+            ("y", "x"),
+            ("s", "s"),
+        ] {
+            graph.add_edge(Edge::new(from, to, EdgeKind::Import));
+        }
+        assert_eq!(
+            ids(graph.cycles()),
+            vec![vec!["a", "b", "c"], vec!["x", "y"]]
+        );
+    }
+
+    #[test]
+    fn acyclic_graphs_have_no_cycles_even_when_long() {
+        // edges are pushed directly: `add_edge` deduplicates linearly
+        let mut graph = ArchitectureGraph::default();
+        for i in 0..20_000 {
+            let (from, to) = (format!("m{i}"), format!("m{}", i + 1));
+            graph.edges.push(Edge::new(from, to, EdgeKind::Import));
+        }
+        assert!(graph.cycles().is_empty());
+        graph
+            .edges
+            .push(Edge::new("m20000", "m0", EdgeKind::Dependency));
+        assert_eq!(graph.cycles()[0].len(), 20_001);
     }
 
     #[test]

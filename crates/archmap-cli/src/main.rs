@@ -12,7 +12,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use crate::output::OutputFormat;
+use crate::output::{CheckFormat, OutputFormat};
 
 #[derive(Debug, Parser)]
 #[command(name = "archmap", version, about = "Architecture graph for codebases")]
@@ -87,10 +87,23 @@ enum Command {
         #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
         format: OutputFormat,
     },
-    /// Check the graph against architecture rules (not implemented yet).
+    /// Check the observed graph against the declared rules in `archmap.toml`.
+    ///
+    /// Reports forbidden dependencies, dependency cycles and declarations
+    /// that match nothing. Exits 0 without findings, 1 with findings, and 2
+    /// when the rules or the repository cannot be read.
     Check {
+        /// Repository root to scan.
         #[arg(long, default_value = ".")]
         path: String,
+        /// Rules file; defaults to `<path>/archmap.toml`.
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Roll-up depth for cycle detection; overrides `depth` in the rules.
+        #[arg(long)]
+        depth: Option<usize>,
+        #[arg(long, value_enum, default_value_t = CheckFormat::Text)]
+        format: CheckFormat,
     },
 }
 
@@ -120,7 +133,12 @@ fn main() -> ExitCode {
             depth,
             format,
         } => commands::impact(&path, &target, depth, format),
-        Command::Check { path } => commands::check(&path),
+        Command::Check {
+            path,
+            config,
+            depth,
+            format,
+        } => commands::check(&path, config.as_deref(), depth, format),
     };
 
     match result {

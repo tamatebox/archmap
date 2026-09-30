@@ -5,13 +5,16 @@
 //! [`GraphFragment`]s, and this crate normalizes them into an
 //! [`ArchitectureGraph`] that CLI, MCP or other adapters can consume.
 //!
-//! Everything here is *fact*. Semantic inference (for example "this module
-//! belongs to the Billing component") is deliberately out of scope for now.
+//! Everything in the graph is *fact*. Semantic inference (for example "this
+//! module belongs to the Billing component") is deliberately out of scope.
+//! Declared architecture lives in [`rules`] and is only ever compared with
+//! the graph, never merged into it.
 
 mod evidence;
 mod fragment;
 mod graph;
 mod model;
+pub mod rules;
 
 pub use evidence::Evidence;
 pub use fragment::GraphFragment;

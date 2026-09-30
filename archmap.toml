@@ -1,0 +1,25 @@
+# Declared architecture of archmap itself, enforced by `archmap check`.
+# The dependency direction is cli -> scan -> core (see CLAUDE.md).
+
+[components]
+core = ["crates/archmap-core"]
+scan = ["crates/archmap-scan"]
+cli = ["crates/archmap-cli"]
+
+[[deny]]
+from = "core"
+to = "scan"
+reason = "archmap-core depends on no other workspace crate"
+
+[[deny]]
+from = "core"
+to = "cli"
+reason = "archmap-core depends on no other workspace crate"
+
+[[deny]]
+from = "scan"
+to = "cli"
+reason = "the dependency direction is cli -> scan -> core"
+
+[cycles]
+forbid = true
