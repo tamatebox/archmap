@@ -7,27 +7,33 @@ compatibility: Requires the archmap CLI on PATH.
 
 # archmap
 
-archmap maps a repository into components (packages, modules, external dependencies) and the dependencies observed in manifests and imports. Its commands replace searches: run the command first, then open the `file:line` it gives. The code decides what is true; archmap decides where to look.
+archmap maps a repository into components (packages, modules, external dependencies) and the dependencies observed in manifests and imports. Use archmap to replace structural searches (where code lives, what imports what): run the command, read its output, then open the `file:line` it gives. Fall back to ordinary search for what it does not map, such as error messages, configuration values, dynamic loading and relations beyond imports. The code decides what is true; archmap decides where to look.
 
-## Workflow
+## Rules
+
+1. Run `archmap summary .` by itself and read it before any search. Do not chain it with `grep` or other commands in one call.
+2. When the task names a function, class or file, run `archmap query <name>` before any search for that name (a method as `Class.method` or `Type::method`).
+3. Before searching inside a component or a file, run `archmap query` on it. Open the `file:line` it shows instead of grepping for the same symbol.
+4. Before changing a public symbol, a signature, a dependency, or code used across components, run `archmap impact` on the file or component.
+5. Search normally only when `query` lacks what you need, `Not mapped` or `dynamic imports` cover the code, a command fails, or a result is surprising.
+
+## Commands
 
 Run from the repository root.
 
-1. `archmap --version`. If missing, tell the user and continue without it.
-2. `archmap summary .` once, to see the components. `components: 0 shown`: archmap cannot read these languages; continue without it.
-3. Pick the component the task most likely touches: a name from the summary, or the component of a file the task names. Before searching inside it, run `archmap query <component>`. It replaces the first grep: public symbols with `file:line`, and dependencies both ways with example locations (`file:line -> loaded file`; `(local)`: inside a function). For one file, pass its path or `<component>.<file stem>` (`src/shop/users.py`, `shop.users`): its symbols, `Imports`, and the statements that import it (`Imported by`).
-4. When `query` shows the `file:line` you need, open it directly. Do not grep for that symbol first.
-5. Before changing a public symbol, a signature, a dependency, or code whose effect may cross components, run `archmap impact <component-or-file>`. It replaces searching for importers; for a file, `importers` lists the importing statements. Skip it for an obviously local edit.
-6. Search normally when `query` lacks what you need, `Not mapped` or `dynamic imports` cover the code in question, or a result is surprising.
-7. With an `archmap.toml`, run `archmap check` after a change; exit 1 lists broken rules with evidence. `signal:` lines are observations, never failures.
+- `archmap --version`: if missing, tell the user and continue without archmap.
+- `archmap summary .`: the components, what the map misses (`## Coverage`), and dependencies. `components: 0 shown`: archmap cannot read these languages; continue without it.
+- `archmap query <component|file|symbol>`: public symbols with `file:line`, dependencies both ways with example locations (`file:line -> loaded file`; `(local)`: inside a function), and imports without an edge (`Not mapped`). Give a file by path or as `<component>.<file stem>` (`src/shop/users.py`, `shop.users`); it also lists the statements that import it (`Imported by`).
+- `archmap impact <component|file>`: components that depend on the target, directly or transitively; for a file, `importers` lists the importing statements.
+- `archmap check`: with an `archmap.toml`, after a change; exit 1 lists broken rules with evidence. `signal:` lines are observations, never failures.
 
-Options: lists are capped; `--verbose` shows all, `--format json` all evidence. `--depth N` (default 2; 0 keeps only packages) applies to `summary`, `query` and `impact`; use one value throughout. `query` also takes a symbol name (`Type::method`, `Class.method`). For another root, `summary <root>`, but `query`/`impact` take `--path <root>`. Do not read the full graph (`archmap scan`, `.archmap/graph.json`).
+Options: lists are capped (`--verbose` shows all, `--format json` all evidence). `--depth N` (default 2; 0 keeps only packages) applies to `summary`, `query` and `impact`; use one value throughout. For another root, `summary <root>`, but `query` and `impact` take `--path <root>`. Do not read the full graph (`archmap scan`, `.archmap/graph.json`).
 
 ## Reading the output
 
 - **Observed, not inferred.** Names are package and directory names, not responsibilities; label any role you infer as inference.
-- **A missing edge is not a missing dependency.** `## Coverage` counts what the map misses: files no analyzer read (`not analyzed`), `imports without an edge`, `dynamic imports`; runtime coupling (HTTP, databases, queues, subprocesses) is unseen. `query` lists a component's gaps under `Not mapped` with `file:line`: read them before trusting edges. `importers: none resolved` does not mean unused: Rust paths used without `use` (`serde_json::to_string`) and packages used without an import (pytest plugins, servers run as commands) are missed. Search the code before calling anything unused.
-- **Everything is rolled up to one depth.** Modules deeper than `--depth` are folded into their ancestor (`folded: N`), whose edges and counts include theirs. `imports: N` counts import statements; `declared: yes` means a manifest also declares the dependency. On a folded name, `query` and `impact` answer for its ancestor and say so (`folded from`); go deeper with the children and a larger `--depth`.
-- **Check what a name resolved to.** Names repeat (a package and its top module can both be `shop`), and an exact id beats a name. Read the `id:` line (query) or `target` (impact). If a result is empty or surprising, retry with the id (`shop::shop`) or a file inside it (`src/shop/__init__.py`).
-- **impact is structural reachability, not a verdict.** It lists components that import or declare the target, directly or transitively (`transitive` includes `direct`), at the chosen depth. Python is traced file by file (a file reaches only its importers, not via the implicitly loaded parent `__init__.py`); Rust per crate. Listed components may not use what you change; unlisted ones may still depend on it. Search each for the changed symbol.
-- **Components cover everything under the root.** Check its path before treating it as product code: fixtures, examples and vendored code appear too.
+- **A missing edge is not a missing dependency.** `## Coverage` and `Not mapped` show what the map misses, and runtime coupling (HTTP, databases, queues, subprocesses) is unseen. `importers: none resolved` does not mean unused; search the code before calling anything unused.
+- **Everything is rolled up to one depth.** Deeper modules fold into their ancestor (`folded: N`), and on a folded name `query` and `impact` answer for the ancestor (`folded from`). `imports: N` counts statements; `declared: yes` means a manifest declares the dependency too.
+- **Check what a name resolved to.** Names repeat: read the `id:` line (query) or `target` (impact), and retry with the id or a file inside it when a result is surprising.
+- **impact is reachability, not a verdict.** Python is traced file by file, Rust per crate. Listed components may not use what you change; unlisted ones may still depend on it.
+- **Components cover everything under the root**, fixtures and vendored code included: check the path before treating one as product code.
