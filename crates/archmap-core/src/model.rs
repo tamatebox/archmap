@@ -148,6 +148,24 @@ pub struct Symbol {
     pub evidence: Vec<Evidence>,
 }
 
+/// An import that matches no internal module, no standard-library module
+/// and no declared distribution.
+///
+/// It is an observation, not a dependency: `check` can report it, but it
+/// never becomes an edge, because an import is not a declaration.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct UnresolvedImport {
+    /// The component whose source contains the import.
+    pub from: ComponentId,
+    /// Dotted module path as imported (`google.api_core.exceptions`).
+    pub module: String,
+    /// Installed distributions that provide the module, when a virtualenv
+    /// shows it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provided_by: Vec<String>,
+    pub evidence: Evidence,
+}
+
 /// The nature of a relationship between two components.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

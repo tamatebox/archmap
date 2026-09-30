@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{Component, Edge, Symbol};
+use crate::{Component, Edge, Symbol, UnresolvedImport};
 
 /// A partial graph produced by a single analyzer.
 ///
@@ -15,6 +15,8 @@ pub struct GraphFragment {
     pub symbols: Vec<Symbol>,
     #[serde(default)]
     pub edges: Vec<Edge>,
+    #[serde(default)]
+    pub unresolved_imports: Vec<UnresolvedImport>,
 }
 
 impl GraphFragment {
@@ -23,7 +25,10 @@ impl GraphFragment {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.components.is_empty() && self.symbols.is_empty() && self.edges.is_empty()
+        self.components.is_empty()
+            && self.symbols.is_empty()
+            && self.edges.is_empty()
+            && self.unresolved_imports.is_empty()
     }
 
     pub fn push_component(&mut self, component: Component) {
@@ -38,10 +43,15 @@ impl GraphFragment {
         self.edges.push(edge);
     }
 
+    pub fn push_unresolved_import(&mut self, import: UnresolvedImport) {
+        self.unresolved_imports.push(import);
+    }
+
     /// Append another fragment into this one without normalizing.
     pub fn extend(&mut self, other: GraphFragment) {
         self.components.extend(other.components);
         self.symbols.extend(other.symbols);
         self.edges.extend(other.edges);
+        self.unresolved_imports.extend(other.unresolved_imports);
     }
 }

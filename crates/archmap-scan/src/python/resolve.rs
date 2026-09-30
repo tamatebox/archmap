@@ -146,6 +146,17 @@ impl InstalledIndex {
         index
     }
 
+    /// Distributions that placed files under the longest prefix of `dotted`
+    /// that any installed distribution provides, sorted.
+    pub fn providers_of(&self, dotted: &str) -> Vec<String> {
+        let segments: Vec<&str> = dotted.split('.').collect();
+        (1..=segments.len())
+            .rev()
+            .find_map(|len| self.providers.get(&segments[..len].join(".")))
+            .map(|dists| dists.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
     /// Register one distribution's `RECORD` text.
     pub fn add_record(&mut self, distribution: &str, record: &str, text: &str) {
         for line in text.lines() {
@@ -409,6 +420,11 @@ mod tests {
         );
         // google.api_core belongs to an undeclared distribution: no guessing
         assert_eq!(resolve(&d, &installed, "google.api_core.exceptions"), None);
+        assert_eq!(
+            installed.providers_of("google.api_core.exceptions"),
+            vec!["google-api-core"]
+        );
+        assert!(installed.providers_of("numpy").is_empty());
     }
 
     #[test]

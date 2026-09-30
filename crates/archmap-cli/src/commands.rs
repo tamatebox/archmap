@@ -371,6 +371,23 @@ fn check_text(
                     out.push_str(&format!("  {} -> {}  {at}\n", name(&e.from), name(&e.to)));
                 }
             }
+            Finding::UndeclaredImport {
+                from,
+                module,
+                provided_by,
+                evidence,
+            } => {
+                let provider = if provided_by.is_empty() {
+                    String::new()
+                } else {
+                    format!(", provided by {}", provided_by.join(", "))
+                };
+                out.push_str(&format!(
+                    "undeclared import: {module} in {}{provider}\n  {}\n",
+                    name(from),
+                    location(evidence)
+                ));
+            }
             Finding::Unmatched { declared, selector } => {
                 out.push_str(&format!(
                     "unmatched: {declared} `{selector}` matches no component\n"

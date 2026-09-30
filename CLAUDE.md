@@ -59,7 +59,9 @@ Never add a dependency that points against the arrow. Never make `archmap-core` 
 - A `Module` component sets `parent` to its enclosing component. Containment is a field, not an edge.
 - `summary`, `query` and `impact` share `DEFAULT_DEPTH` and roll up the same way. Never let them describe different components.
 - A rule selector or declaration that matches no component is a finding, never silently skipped, so a typo cannot disable a rule.
-- External dependency edges point only at declared distributions. An import is not a declaration; undeclared imports belong to rules, not edges. Evidence notes record how an import name was resolved.
+- External dependency edges point only at declared distributions. An import is not a declaration: undeclared imports are recorded in `unresolved_imports` for `check`, never as edges. Evidence notes record how an import name was resolved.
+- Prefer missing a finding to raising a false one: rules end up in CI, and a noisy rule gets switched off. The Python analyzer treats any file or directory name in the project as local code because `sys.path` changes at runtime.
+- Bulk-insert edges with `add_edges` / `merge`; `add_edge` is linear per call.
 - Paths in evidence are relative to the scanned root with `/` separators.
 - Output must be deterministic: sort collections, no timestamps. Evidence and the summary never contain absolute paths.
 - `SCHEMA_VERSION` in `archmap-core` is bumped on breaking JSON changes.

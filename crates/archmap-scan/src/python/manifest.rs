@@ -22,6 +22,9 @@ pub struct PyProject {
     /// Directory containing the manifest, relative to the repository root.
     pub dir: PathBuf,
     pub dependencies: Vec<PyDependency>,
+    /// Distributions declared for extras, development or tests. They are
+    /// not dependency edges, but importing them is not undeclared either.
+    pub optional_dependencies: Vec<String>,
 }
 
 /// Normalize a distribution name per PEP 503.
@@ -98,12 +101,76 @@ pub fn parse_pyproject(text: &str, manifest_path: &Path) -> Result<PyProject, to
         }
     }
 
+    let optional_dependencies = optional_declarations(&value, project, poetry);
+
     Ok(PyProject {
         name,
         manifest_path: manifest_path.to_path_buf(),
         dir,
         dependencies,
+        optional_dependencies,
     })
+}
+
+/// Names declared outside the runtime dependencies: PEP 621 extras,
+/// PEP 735 dependency groups, poetry groups and dev-dependencies, and uv
+/// dev-dependencies.
+fn optional_declarations(
+    value: &Value,
+    project: Option<&Value>,
+    poetry: Option<&Value>,
+) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut from_lists = |table: Option<&Value>| {
+        for list in table
+            .and_then(Value::as_table)
+            .into_iter()
+            .flat_map(|t| t.values())
+            .filter_map(Value::as_array)
+        {
+            // PEP 735 also allows `{ include-group = "..." }` entries: skip them
+            names.extend(
+                list.iter()
+                    .filter_map(Value::as_str)
+                    .filter_map(requirement_name),
+            );
+        }
+    };
+    from_lists(project.and_then(|p| p.get("optional-dependencies")));
+    from_lists(value.get("dependency-groups"));
+
+    let poetry_tables = poetry
+        .and_then(|p| p.get("group"))
+        .and_then(Value::as_table)
+        .into_iter()
+        .flat_map(|groups| groups.values())
+        .filter_map(|group| group.get("dependencies"))
+        .chain(poetry.and_then(|p| p.get("dev-dependencies")));
+    for table in poetry_tables.filter_map(Value::as_table) {
+        names.extend(
+            table
+                .keys()
+                .filter(|k| k.as_str() != "python")
+                .map(|k| normalize_dist_name(k)),
+        );
+    }
+
+    if let Some(list) = value
+        .get("tool")
+        .and_then(|t| t.get("uv"))
+        .and_then(|uv| uv.get("dev-dependencies"))
+        .and_then(Value::as_array)
+    {
+        names.extend(
+            list.iter()
+                .filter_map(Value::as_str)
+                .filter_map(requirement_name),
+        );
+    }
+
+    names.sort();
+    names.dedup();
+    names
 }
 
 /// Dependencies from a `requirements.txt`-style file.
@@ -178,6 +245,44 @@ pydantic = "2"
         assert_eq!(p.name.as_deref(), Some("shop"));
         let names: Vec<&str> = p.dependencies.iter().map(|d| d.name.as_str()).collect();
         assert_eq!(names, vec!["requests", "sqlalchemy", "pydantic"]);
+    }
+
+    #[test]
+    fn collects_optional_and_development_declarations() {
+        let text = r#"
+[project]
+name = "app"
+dependencies = ["requests"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-mock"]
+
+[dependency-groups]
+lint = ["ruff", { include-group = "dev" }]
+
+[tool.poetry.group.test.dependencies]
+Hypothesis = "*"
+
+[tool.poetry.dev-dependencies]
+black = "*"
+
+[tool.uv]
+dev-dependencies = ["mypy"]
+"#;
+        let p = parse_pyproject(text, Path::new("pyproject.toml")).unwrap();
+        assert_eq!(
+            p.optional_dependencies,
+            vec![
+                "black",
+                "hypothesis",
+                "mypy",
+                "pytest",
+                "pytest-mock",
+                "ruff"
+            ]
+        );
+        let runtime: Vec<&str> = p.dependencies.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(runtime, vec!["requests"]);
     }
 
     #[test]

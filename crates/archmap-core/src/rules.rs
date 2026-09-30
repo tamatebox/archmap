@@ -1,7 +1,8 @@
 //! Declared architecture and the rules checked against the observed graph.
 //!
 //! The declared side is written by people, in `archmap.toml`: named groups
-//! of components, forbidden dependencies, and whether cycles are allowed. It
+//! of components, forbidden dependencies, whether cycles are allowed, and
+//! whether imports of undeclared packages are allowed. It
 //! never changes the observed graph. [`check`] only compares the two and
 //! reports [`Finding`]s, each with the evidence behind it.
 //!
@@ -14,7 +15,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ArchitectureGraph, Component, ComponentId, ComponentKind, EdgeKind, Evidence};
+use crate::{
+    ArchitectureGraph, Component, ComponentId, ComponentKind, EdgeKind, Evidence, UnresolvedImport,
+};
 
 /// The rules file as written by its authors.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,6 +34,8 @@ pub struct RuleSet {
     pub deny: Vec<DenyRule>,
     #[serde(default)]
     pub cycles: CycleRule,
+    #[serde(default)]
+    pub undeclared_imports: UndeclaredImportRule,
 }
 
 /// A dependency that must not exist.
@@ -51,6 +56,18 @@ pub struct CycleRule {
     /// Report components that depend on each other through a cycle.
     #[serde(default)]
     pub forbid: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UndeclaredImportRule {
+    /// Report imports that resolve to nothing internal, standard or declared.
+    #[serde(default)]
+    pub forbid: bool,
+    /// Dotted module prefixes to accept anyway: `ujson` covers `ujson` and
+    /// `ujson.*`. Useful for optional imports behind `try` / `except`.
+    #[serde(default)]
+    pub ignore: Vec<String>,
 }
 
 /// One dependency inside a cycle.
@@ -80,6 +97,14 @@ pub enum Finding {
     Cycle {
         components: Vec<ComponentId>,
         edges: Vec<CycleEdge>,
+    },
+    /// An import that resolves to nothing internal, standard or declared.
+    UndeclaredImport {
+        from: ComponentId,
+        module: String,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        provided_by: Vec<String>,
+        evidence: Evidence,
     },
     /// A declared selector or rule side that matches no observed component,
     /// usually a typo or code that moved. Reported so that a rule never
@@ -144,6 +169,38 @@ pub fn check(graph: &ArchitectureGraph, rules: &RuleSet, depth: usize) -> Vec<Fi
         }
     }
 
+    if rules.undeclared_imports.forbid {
+        let ignore = &rules.undeclared_imports.ignore;
+        for import in &graph.unresolved_imports {
+            if !ignore.iter().any(|prefix| covers(prefix, &import.module)) {
+                let UnresolvedImport {
+                    from,
+                    module,
+                    provided_by,
+                    evidence,
+                } = import.clone();
+                findings.push(Finding::UndeclaredImport {
+                    from,
+                    module,
+                    provided_by,
+                    evidence,
+                });
+            }
+        }
+        for prefix in ignore {
+            if !graph
+                .unresolved_imports
+                .iter()
+                .any(|i| covers(prefix, &i.module))
+            {
+                findings.push(Finding::Unmatched {
+                    declared: "undeclared_imports.ignore".into(),
+                    selector: prefix.clone(),
+                });
+            }
+        }
+    }
+
     if rules.cycles.forbid {
         let rolled = graph.rollup(depth);
         for components in rolled.cycles() {
@@ -164,6 +221,12 @@ pub fn check(graph: &ArchitectureGraph, rules: &RuleSet, depth: usize) -> Vec<Fi
     }
 
     findings
+}
+
+/// Does the dotted `prefix` cover `module` (`a.b` covers `a.b` and `a.b.c`)?
+fn covers(prefix: &str, module: &str) -> bool {
+    let prefix = prefix.trim();
+    module == prefix || module.starts_with(&format!("{prefix}."))
 }
 
 /// Does `selector` cover `component`?
@@ -381,6 +444,46 @@ mod tests {
         assert!(findings
             .iter()
             .any(|f| matches!(f, Finding::Forbidden { to, .. } if to.as_str() == "ext:requests")));
+    }
+
+    #[test]
+    fn undeclared_imports_are_reported_unless_ignored() {
+        let mut g = graph();
+        for (module, line) in [("scipy.stats", 1), ("ujson", 2)] {
+            g.unresolved_imports.push(UnresolvedImport {
+                from: "scripts".into(),
+                module: module.into(),
+                provided_by: vec![],
+                evidence: Evidence::new("scripts/run.py").at_line(line),
+            });
+        }
+        let mut set = RuleSet::default();
+        // off by default
+        assert!(check(&g, &set, 2).is_empty());
+
+        set.undeclared_imports = UndeclaredImportRule {
+            forbid: true,
+            ignore: vec!["ujson".into(), "orjson".into()],
+        };
+        let findings = check(&g, &set, 2);
+        assert_eq!(
+            findings,
+            vec![
+                Finding::UndeclaredImport {
+                    from: "scripts".into(),
+                    module: "scipy.stats".into(),
+                    provided_by: vec![],
+                    evidence: Evidence::new("scripts/run.py").at_line(1),
+                },
+                // an ignore entry that matches nothing is stale
+                Finding::Unmatched {
+                    declared: "undeclared_imports.ignore".into(),
+                    selector: "orjson".into(),
+                },
+            ]
+        );
+        assert!(covers("google.api_core", "google.api_core.exceptions"));
+        assert!(!covers("google.api", "google.api_core"));
     }
 
     #[test]

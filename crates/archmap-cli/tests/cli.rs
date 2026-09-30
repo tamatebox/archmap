@@ -426,3 +426,26 @@ fn archmap_passes_its_own_rules() {
     assert_eq!(out.status.code(), Some(0), "{text}");
     assert!(text.starts_with("archmap check: no findings"));
 }
+
+#[test]
+fn check_reports_undeclared_imports_unless_ignored() {
+    let rules = "[undeclared_imports]\nforbid = true\n";
+    let out = check_with("undeclared", &python_fixture(), rules, &[]);
+    assert_eq!(out.status.code(), Some(1));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains(
+            "undeclared import: google.api_core.exceptions in shop\n  src/shop/analytics.py:3  import"
+        ),
+        "{text}"
+    );
+
+    let ignoring = "[undeclared_imports]\nforbid = true\nignore = [\"google.api_core\"]\n";
+    let out = check_with("undeclared-ignored", &python_fixture(), ignoring, &[]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}

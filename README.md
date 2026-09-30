@@ -22,7 +22,8 @@ queryable by a machine.
 The graph is meant to be consumed by agents as much as by humans:
 
 - `archmap summary` gives an agent a few kilobytes of structure to read before exploring
-- `archmap scan` writes the full graph for tools and drill-down
+- `archmap scan` writes the full graph for tools, export and debugging; agents never need to read it,
+  because `summary`, `query` and `impact` return the parts they need
 - `archmap query` answers "what does component X expose and depend on"
 - `archmap impact` answers "if I touch this file or component, what else might be affected"
 - `archmap check` tells an agent or CI whether a change broke a declared dependency rule
@@ -143,8 +144,13 @@ Example edge from the output:
 ArchitectureGraph
 ├── components: { id -> Component { kind: package | module | external, language, path, parent?, evidence } }
 ├── symbols:    { id -> Symbol { kind: function | struct | enum | trait | ..., component, signature, evidence } }
-└── edges:      [ Edge { from, to, kind: import | dependency | call | http | database | event | unknown, evidence } ]
+├── edges:      [ Edge { from, to, kind: import | dependency | call | http | database | event | unknown, evidence } ]
+└── unresolved_imports: [ UnresolvedImport { from, module, provided_by?, evidence } ]
 ```
+
+An unresolved import is an import that matches no internal module, no
+standard-library module, no declared distribution and no file or directory
+name in the project. It is an observation for `check`, never an edge.
 
 Each analyzer produces a `GraphFragment`; the graph merges fragments,
 collapses edges that describe the same relationship, and keeps all of their
@@ -196,6 +202,10 @@ reason = "domain code must not know about orchestration"
 
 [cycles]
 forbid = true           # cycles between components at the roll-up depth
+
+[undeclared_imports]
+forbid = true           # imports of packages no manifest declares
+ignore = ["ujson"]      # dotted prefixes to accept, e.g. optional imports
 ```
 
 A selector is a path prefix, where `src/core` covers everything below it, or
@@ -204,8 +214,15 @@ overlap, the most specific one owns a component.
 
 `check` reports forbidden dependencies with the evidence behind them,
 dependency cycles at the roll-up depth (`depth` in the file or `--depth`,
-default 2), and declarations or rule sides that match nothing, so a typo
-never silently disables a rule. It exits 0 without findings, 1 with findings,
+default 2), undeclared imports, and declarations, rule sides or `ignore`
+entries that match nothing, so a typo never silently disables a rule.
+
+For Python, an import counts as declared when a runtime dependency, an extra,
+a dependency group or a dev dependency declares its distribution. Without a
+`.venv`, archmap cannot match every import name to its distribution; add
+such names to `ignore`. With a `.venv`, the finding also names the installed
+distribution that provides the module, which is usually a transitive
+dependency. It exits 0 without findings, 1 with findings,
 and 2 when the rules or the repository cannot be read. archmap checks its own
 `cli -> scan -> core` direction this way; see `archmap.toml`.
 
@@ -219,7 +236,7 @@ The declared architecture never changes what `scan`, `summary`, `query` or
 | 0 Discovery | languages, manifests, packages; report detected languages even without an analyzer | Rust and Python only |
 | 1 Structural Facts | modules, public symbols, imports, dependencies | Rust and Python |
 | 2 Structural Compression | roll-up, summary, and query and impact at the summary's depth | done for Python |
-| 3 Rules & Declared Architecture | declared components and layers, cycles, forbidden dependencies, drift, CI `check` | started: deny rules, cycles, stale declarations |
+| 3 Rules & Declared Architecture | declared components and layers, cycles, forbidden dependencies, drift, CI `check` | deny rules, cycles, undeclared imports, stale declarations; layers and wider drift open |
 | 4 Cross-system Graph | OpenAPI, Terraform, databases, HTTP, events | planned |
 | 5 Semantic Enrichment | LLM naming and responsibilities, stored as inferred facts | planned |
 | 6 Agent Interface | MCP adapter over the same engine | planned |
@@ -235,8 +252,8 @@ and turns.
 Cross-system graphs, LLM enrichment and MCP do not change what an agent
 learns about a repository, so they wait for that evaluation. Rules started
 early for the same reason: they never change what `summary`, `query` or
-`impact` report. Still open in Phase 3: undeclared imports as findings,
-ordered layers, and drift beyond declarations that match nothing. Before
+`impact` report. Still open in Phase 3: ordered layers, and drift beyond
+declarations that match nothing. Before
 Rust repositories are evaluated, Rust needs module-level components; generic
 discovery for unsupported languages completes Phase 0.
 

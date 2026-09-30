@@ -21,6 +21,7 @@ pub use fragment::GraphFragment;
 pub use graph::{ArchitectureGraph, GraphMeta};
 pub use model::{
     Component, ComponentId, ComponentKind, Edge, EdgeKind, Symbol, SymbolId, SymbolKind,
+    UnresolvedImport,
 };
 
 /// Version of the JSON schema emitted by [`ArchitectureGraph`].

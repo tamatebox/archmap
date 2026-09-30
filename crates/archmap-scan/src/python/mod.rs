@@ -17,6 +17,12 @@
 //!   modules, or to a declared external dependency (see [`resolve`] for how
 //!   import names are matched to distributions; undeclared imports are not
 //!   edges)
+//! - an absolute import that matches no internal module, no standard-library
+//!   module, no declared distribution (runtime, extra, group or dev) and no
+//!   file or directory name anywhere in the project is recorded as an
+//!   [`UnresolvedImport`] for `check`, never as an edge. Any local name
+//!   counts because tests and scripts often extend `sys.path` at runtime,
+//!   which a static scan cannot see
 //! - public top-level `def` / `class` / `CONSTANT` and public methods become
 //!   symbols for files inside a regular package tree (a namespace directory
 //!   nested in a regular package still counts); test files and namespace
@@ -29,12 +35,14 @@
 mod manifest;
 mod resolve;
 mod source;
+mod stdlib;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use archmap_core::{
     Component, ComponentId, ComponentKind, Edge, EdgeKind, Evidence, Symbol, SymbolId,
+    UnresolvedImport,
 };
 
 use crate::analyzer::AnalyzerOutput;
@@ -59,6 +67,8 @@ struct Project {
     /// Normalized distribution name -> external component id.
     dependencies: BTreeMap<String, ComponentId>,
     dependency_evidence: Vec<(ComponentId, Evidence)>,
+    /// Extras, groups and dev dependencies: declared, but not edges.
+    optional: BTreeSet<String>,
 }
 
 struct Module {
@@ -110,10 +120,23 @@ impl Analyzer for PythonAnalyzer {
             .map(|p| p.dependencies.keys().cloned().collect())
             .collect();
         let installed = load_installed(ctx, &projects);
+        let names = local_names(&py_files);
+        let local_names: Vec<BTreeSet<String>> = projects
+            .iter()
+            .map(|p| {
+                names
+                    .iter()
+                    .filter(|(dir, _)| dir.starts_with(&p.dir))
+                    .flat_map(|(_, n)| n.iter().cloned())
+                    .collect()
+            })
+            .collect();
 
+        let modules_by_dir: BTreeMap<&Path, &Module> =
+            modules.iter().map(|m| (m.dir.as_path(), m)).collect();
         for file in py_files {
             let (owner, project_idx, base_dotted, in_package_tree) =
-                match owning_module(&modules, file) {
+                match owning_module(&modules_by_dir, file) {
                     Some(m) => (
                         m.id.clone(),
                         m.project,
@@ -146,18 +169,26 @@ impl Analyzer for PythonAnalyzer {
                     &mut output,
                 );
             }
-            let resolver = resolve::Resolver {
-                declared: &declared[project_idx],
+            let scope = ImportScope {
+                project: &projects[project_idx],
+                declared: resolve::Resolver {
+                    declared: &declared[project_idx],
+                    installed: &installed[project_idx],
+                },
+                optional: resolve::Resolver {
+                    declared: &projects[project_idx].optional,
+                    installed: &installed[project_idx],
+                },
                 installed: &installed[project_idx],
+                local_names: &local_names[project_idx],
             };
             emit_imports(
                 &owner,
                 base_dotted,
-                &projects[project_idx],
-                &resolver,
+                &scope,
                 &modules,
                 &by_dotted,
-                &file_display,
+                file,
                 &scanned,
                 &mut output,
             );
@@ -191,6 +222,7 @@ fn discover_projects(
                     Evidence::new(display_path(rel)).with_note("pyproject.toml"),
                 );
                 add_dependencies(&mut project, &parsed.dependencies, &display_path(rel));
+                project.optional = parsed.optional_dependencies.iter().cloned().collect();
                 projects.push(project);
             }
             Err(err) => warnings.push(format!(
@@ -259,6 +291,7 @@ fn new_project(name: String, dir: PathBuf, evidence: Evidence) -> Project {
         evidence: vec![evidence],
         dependencies: BTreeMap::new(),
         dependency_evidence: Vec::new(),
+        optional: BTreeSet::new(),
     }
 }
 
@@ -451,12 +484,11 @@ fn owning_project<'a>(projects: &'a [Project], path: &Path) -> Option<(usize, &'
         .max_by_key(|(_, p)| p.dir.components().count())
 }
 
-fn owning_module<'a>(modules: &'a [Module], file: &Path) -> Option<&'a Module> {
-    let dir = file.parent()?;
-    modules
-        .iter()
-        .filter(|m| dir.starts_with(&m.dir))
-        .max_by_key(|m| m.dir.components().count())
+/// The innermost module whose directory contains `file`.
+fn owning_module<'a>(by_dir: &BTreeMap<&Path, &'a Module>, file: &Path) -> Option<&'a Module> {
+    file.parent()?
+        .ancestors()
+        .find_map(|dir| by_dir.get(dir).copied())
 }
 
 // ---------------------------------------------------------------------------
@@ -547,18 +579,28 @@ fn emit_symbols(
     }
 }
 
+/// What an import of one file can resolve against.
+struct ImportScope<'a> {
+    project: &'a Project,
+    declared: resolve::Resolver<'a>,
+    optional: resolve::Resolver<'a>,
+    installed: &'a resolve::InstalledIndex,
+    /// Every file stem and directory name with Python code in the project.
+    local_names: &'a BTreeSet<String>,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_imports(
     owner: &ComponentId,
     base_dotted: Option<&str>,
-    project: &Project,
-    resolver: &resolve::Resolver,
+    scope: &ImportScope,
     modules: &[Module],
     by_dotted: &BTreeMap<&str, usize>,
-    file: &str,
+    file: &Path,
     scanned: &PyFile,
     output: &mut AnalyzerOutput,
 ) {
+    let file_display = display_path(file);
     for import in &scanned.imports {
         let full = match resolve_base(base_dotted, import) {
             Some(full) => full,
@@ -596,14 +638,31 @@ fn emit_imports(
 
         if targets.is_empty() && import.level == 0 {
             for candidate in &candidates {
-                let Some(resolved) = resolver.resolve(candidate) else {
+                let Some(resolved) = scope.declared.resolve(candidate) else {
                     continue;
                 };
-                if let Some(external) = project.dependencies.get(&resolved.distribution) {
+                if let Some(external) = scope.project.dependencies.get(&resolved.distribution) {
                     targets
                         .entry(external.clone())
                         .or_insert_with(|| resolved.note());
                 }
+            }
+        }
+
+        if targets.is_empty() && import.level == 0 && !full.is_empty() {
+            let top = full.split('.').next().unwrap_or_default();
+            let declared_elsewhere = candidates
+                .iter()
+                .any(|c| scope.optional.resolve(c).is_some());
+            if !stdlib::is_stdlib(top) && !declared_elsewhere && !scope.local_names.contains(top) {
+                output.fragment.push_unresolved_import(UnresolvedImport {
+                    from: owner.clone(),
+                    module: full.clone(),
+                    provided_by: scope.installed.providers_of(&full),
+                    evidence: Evidence::new(&file_display)
+                        .at_line(import.line)
+                        .with_note("import"),
+                });
             }
         }
 
@@ -612,11 +671,44 @@ fn emit_imports(
                 continue;
             }
             output.fragment.push_edge(
-                Edge::new(owner.clone(), target, EdgeKind::Import)
-                    .with_evidence(Evidence::new(file).at_line(import.line).with_note(note)),
+                Edge::new(owner.clone(), target, EdgeKind::Import).with_evidence(
+                    Evidence::new(&file_display)
+                        .at_line(import.line)
+                        .with_note(note),
+                ),
             );
         }
     }
+}
+
+/// Directory -> the names importable from it: `.py` file stems and
+/// subdirectories that hold Python files at any depth.
+fn local_names(py_files: &[&Path]) -> BTreeMap<PathBuf, BTreeSet<String>> {
+    let mut names: BTreeMap<PathBuf, BTreeSet<String>> = BTreeMap::new();
+    for file in py_files {
+        let Some(dir) = file.parent() else {
+            continue;
+        };
+        if let Some(stem) = file.file_stem().and_then(|s| s.to_str()) {
+            if stem != "__init__" {
+                names
+                    .entry(dir.to_path_buf())
+                    .or_default()
+                    .insert(stem.to_owned());
+            }
+        }
+        let mut child = dir;
+        while let Some(parent) = child.parent() {
+            if let Some(name) = child.file_name().and_then(|n| n.to_str()) {
+                names
+                    .entry(parent.to_path_buf())
+                    .or_default()
+                    .insert(name.to_owned());
+            }
+            child = parent;
+        }
+    }
+    names
 }
 
 /// Installed metadata for each project: the `.venv` in the project

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Component, ComponentId, Edge, EdgeKind, Evidence, GraphFragment, Symbol, SymbolId,
-    SCHEMA_VERSION,
+    UnresolvedImport, SCHEMA_VERSION,
 };
 
 /// Information about how a graph was produced.
@@ -37,6 +37,10 @@ pub struct ArchitectureGraph {
     pub symbols: BTreeMap<SymbolId, Symbol>,
     #[serde(default)]
     pub edges: Vec<Edge>,
+    /// Imports that resolve to nothing internal, standard or declared.
+    /// Observations for `check`, never edges.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unresolved_imports: Vec<UnresolvedImport>,
 }
 
 impl Default for ArchitectureGraph {
@@ -47,6 +51,7 @@ impl Default for ArchitectureGraph {
             components: BTreeMap::new(),
             symbols: BTreeMap::new(),
             edges: Vec::new(),
+            unresolved_imports: Vec::new(),
         }
     }
 }
@@ -97,12 +102,39 @@ impl ArchitectureGraph {
 
     /// Insert an edge, collapsing it into an existing edge of the same
     /// relationship when there is one.
+    ///
+    /// This is linear in the number of edges. Use [`Self::add_edges`] (or
+    /// [`Self::merge`]) to insert many edges.
     pub fn add_edge(&mut self, edge: Edge) {
         if let Some(existing) = self.edges.iter_mut().find(|e| e.same_relationship(&edge)) {
             merge_evidence(&mut existing.evidence, edge.evidence);
         } else {
             self.edges.push(edge);
         }
+    }
+
+    /// Insert many edges at once. Each relationship collapses into one edge
+    /// holding the union of its evidence, as with repeated
+    /// [`Self::add_edge`], but in O(n log n) rather than O(n²). Edges and
+    /// their evidence come out in normalized order.
+    pub fn add_edges(&mut self, edges: impl IntoIterator<Item = Edge>) {
+        let mut merged: BTreeMap<(ComponentId, ComponentId, EdgeKind), BTreeSet<Evidence>> =
+            BTreeMap::new();
+        for edge in std::mem::take(&mut self.edges).into_iter().chain(edges) {
+            merged
+                .entry((edge.from, edge.to, edge.kind))
+                .or_default()
+                .extend(edge.evidence);
+        }
+        self.edges = merged
+            .into_iter()
+            .map(|((from, to, kind), evidence)| Edge {
+                from,
+                to,
+                kind,
+                evidence: evidence.into_iter().collect(),
+            })
+            .collect();
     }
 
     /// Merge an analyzer fragment into the graph.
@@ -113,9 +145,8 @@ impl ArchitectureGraph {
         for symbol in fragment.symbols {
             self.add_symbol(symbol);
         }
-        for edge in fragment.edges {
-            self.add_edge(edge);
-        }
+        self.add_edges(fragment.edges);
+        self.unresolved_imports.extend(fragment.unresolved_imports);
     }
 
     /// Sort edges so that serialized output is stable regardless of the
@@ -126,6 +157,8 @@ impl ArchitectureGraph {
         for edge in &mut self.edges {
             edge.evidence.sort();
         }
+        self.unresolved_imports.sort();
+        self.unresolved_imports.dedup();
     }
 
     pub fn component(&self, id: &ComponentId) -> Option<&Component> {
@@ -322,27 +355,24 @@ impl ArchitectureGraph {
             out.add_symbol(symbol);
         }
 
-        let mut merged: BTreeMap<(ComponentId, ComponentId, EdgeKind), BTreeSet<Evidence>> =
-            BTreeMap::new();
-        for edge in &self.edges {
-            let (from, to) = (folded(&edge.from), folded(&edge.to));
-            if from != to {
-                merged
-                    .entry((from, to, edge.kind))
-                    .or_default()
-                    .extend(edge.evidence.iter().cloned());
-            }
-        }
-        out.edges = merged
-            .into_iter()
-            .map(|((from, to, kind), evidence)| Edge {
-                from,
-                to,
-                kind,
-                evidence: evidence.into_iter().collect(),
+        out.unresolved_imports = self
+            .unresolved_imports
+            .iter()
+            .map(|import| UnresolvedImport {
+                from: folded(&import.from),
+                ..import.clone()
             })
             .collect();
-        out.normalize();
+        out.unresolved_imports.sort();
+        out.add_edges(self.edges.iter().filter_map(|edge| {
+            let (from, to) = (folded(&edge.from), folded(&edge.to));
+            (from != to).then(|| Edge {
+                from,
+                to,
+                kind: edge.kind,
+                evidence: edge.evidence.clone(),
+            })
+        }));
         out
     }
 
@@ -645,6 +675,59 @@ mod tests {
             .edges
             .push(Edge::new("m20000", "m0", EdgeKind::Dependency));
         assert_eq!(graph.cycles()[0].len(), 20_001);
+    }
+
+    #[test]
+    fn add_edges_agrees_with_repeated_add_edge() {
+        let edges = vec![
+            edge("b", "c", "x.py", 2),
+            edge("a", "b", "x.py", 1),
+            edge("a", "b", "y.py", 5),
+            edge("a", "b", "x.py", 1),
+            Edge::new("a", "b", EdgeKind::Dependency),
+            edge("b", "c", "x.py", 1),
+        ];
+        let mut one_by_one = ArchitectureGraph::default();
+        for e in edges.clone() {
+            one_by_one.add_edge(e);
+        }
+        one_by_one.normalize();
+
+        let mut bulk = ArchitectureGraph::default();
+        bulk.add_edge(edges[0].clone());
+        bulk.add_edges(edges[1..].to_vec());
+        assert_eq!(bulk, one_by_one);
+    }
+
+    #[test]
+    fn merging_a_large_fragment_is_not_quadratic() {
+        // 100k distinct edges: quadratic insertion would take minutes here
+        let mut fragment = GraphFragment::new();
+        for i in 0..100_000 {
+            let (from, to) = (format!("m{}", i % 1000), format!("m{}", i / 1000 + 1000));
+            fragment.push_edge(Edge::new(from, to, EdgeKind::Import));
+        }
+        let mut graph = ArchitectureGraph::default();
+        graph.merge(fragment);
+        assert_eq!(graph.edges.len(), 100_000);
+    }
+
+    #[test]
+    fn rollup_keeps_unresolved_imports_on_the_folded_component() {
+        let mut graph = tree();
+        graph.unresolved_imports.push(UnresolvedImport {
+            from: "a.b.c".into(),
+            module: "scipy".into(),
+            provided_by: vec![],
+            evidence: Evidence::new("a/b/c.py").at_line(1),
+        });
+        let rolled = graph.rollup(1);
+        assert_eq!(rolled.unresolved_imports.len(), 1);
+        assert_eq!(rolled.unresolved_imports[0].from, "a".into());
+        assert!(
+            rolled.edges.is_empty(),
+            "an unresolved import is never an edge"
+        );
     }
 
     #[test]

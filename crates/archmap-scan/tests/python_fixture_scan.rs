@@ -325,6 +325,38 @@ fn scanning_a_package_directory_uses_its_name_as_top_level() {
 }
 
 #[test]
+fn undeclared_imports_are_observations_not_edges() {
+    let graph = scan_fixture();
+    let unresolved: Vec<(&str, &str, &str, Option<u32>)> = graph
+        .unresolved_imports
+        .iter()
+        .map(|u| {
+            (
+                u.from.as_str(),
+                u.module.as_str(),
+                u.evidence.file.as_str(),
+                u.evidence.line,
+            )
+        })
+        .collect();
+    // scripts/report.py also imports json (standard library), pytest (a dev
+    // extra) and helpers / backfill (files in the project): none of those
+    assert_eq!(
+        unresolved,
+        vec![(
+            "shop::shop",
+            "google.api_core.exceptions",
+            "src/shop/analytics.py",
+            Some(3)
+        )]
+    );
+    assert!(graph
+        .edges
+        .iter()
+        .all(|e| !e.to.as_str().contains("api-core")));
+}
+
+#[test]
 fn installed_record_files_resolve_import_names() {
     let dir = std::env::temp_dir().join(format!("archmap-venv-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -341,9 +373,12 @@ fn installed_record_files_resolve_import_names() {
         "fancylib/__init__.py,sha256=x,10\nfancy_lib-1.0.dist-info/RECORD,,\n",
     )
     .unwrap();
+    let transitive = dir.join(".venv/lib/python3.12/site-packages/transitive_dep-2.0.dist-info");
+    std::fs::create_dir_all(&transitive).unwrap();
+    std::fs::write(transitive.join("RECORD"), "transitive/__init__.py,,\n").unwrap();
     std::fs::write(
         dir.join("app/__init__.py"),
-        "import fancylib\nimport otherlib\n",
+        "import fancylib\nimport otherlib\nimport transitive.core\n",
     )
     .unwrap();
 
@@ -367,6 +402,20 @@ fn installed_record_files_resolve_import_names() {
         .edges
         .iter()
         .any(|e| e.to == id("ext:other-lib") && e.kind == EdgeKind::Import));
+    // both remain unresolved; installed metadata names the provider of the
+    // undeclared one
+    let unresolved: Vec<(&str, Vec<String>)> = graph
+        .unresolved_imports
+        .iter()
+        .map(|u| (u.module.as_str(), u.provided_by.clone()))
+        .collect();
+    assert_eq!(
+        unresolved,
+        vec![
+            ("otherlib", vec![]),
+            ("transitive.core", vec!["transitive-dep".to_owned()])
+        ]
+    );
     // the virtualenv itself is never scanned as source
     assert!(graph
         .components
