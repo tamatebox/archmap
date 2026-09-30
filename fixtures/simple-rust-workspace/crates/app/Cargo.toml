@@ -1,0 +1,10 @@
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+lib_core = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = "2"

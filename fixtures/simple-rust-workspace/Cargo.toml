@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.dependencies]
+lib_core = { path = "crates/lib_core" }
+serde = { version = "1", features = ["derive"] }

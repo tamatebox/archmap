@@ -1,0 +1,90 @@
+//! `archmap` command line interface.
+//!
+//! This crate is a thin adapter: it parses arguments, calls `archmap-scan`
+//! and `archmap-core`, and renders the result. No analysis logic lives here.
+
+mod commands;
+mod output;
+
+use std::process::ExitCode;
+
+use clap::{Parser, Subcommand};
+
+use crate::output::OutputFormat;
+
+#[derive(Debug, Parser)]
+#[command(name = "archmap", version, about = "Architecture graph for codebases")]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Scan a repository and emit its architecture graph.
+    Scan {
+        /// Repository root (defaults to the current directory).
+        #[arg(default_value = ".")]
+        path: String,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
+        format: OutputFormat,
+        /// Only read manifests; skip source parsing.
+        #[arg(long)]
+        manifests_only: bool,
+    },
+    /// Show a component or symbol with its relationships.
+    Query {
+        /// Component id (e.g. `archmap-core`) or symbol name (e.g. `scan`).
+        target: String,
+        /// Repository root to scan.
+        #[arg(long, default_value = ".")]
+        path: String,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
+        format: OutputFormat,
+    },
+    /// List components that may be affected when a component or file changes.
+    Impact {
+        /// Component id or a file path relative to the repository root.
+        target: String,
+        /// Repository root to scan.
+        #[arg(long, default_value = ".")]
+        path: String,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
+        format: OutputFormat,
+    },
+    /// Check the graph against architecture rules (not implemented yet).
+    Check {
+        #[arg(long, default_value = ".")]
+        path: String,
+    },
+}
+
+fn main() -> ExitCode {
+    let cli = Cli::parse();
+    let result = match cli.command {
+        Command::Scan {
+            path,
+            format,
+            manifests_only,
+        } => commands::scan(&path, format, manifests_only),
+        Command::Query {
+            target,
+            path,
+            format,
+        } => commands::query(&path, &target, format),
+        Command::Impact {
+            target,
+            path,
+            format,
+        } => commands::impact(&path, &target, format),
+        Command::Check { path } => commands::check(&path),
+    };
+
+    match result {
+        Ok(code) => code,
+        Err(err) => {
+            eprintln!("error: {err:#}");
+            ExitCode::FAILURE
+        }
+    }
+}

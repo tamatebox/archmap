@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+exclude = ["fixtures"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/ryota-ido/archmap"
+
+[workspace.dependencies]
+archmap-core = { path = "crates/archmap-core", version = "0.1.0" }
+archmap-scan = { path = "crates/archmap-scan", version = "0.1.0" }
+
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+ignore = "0.4"
+proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+syn = { version = "2", features = ["full", "extra-traits"] }
+thiserror = "2"
+toml = "0.8"
+
+[workspace.lints.clippy]
+all = "warn"

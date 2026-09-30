@@ -1,0 +1,20 @@
+[package]
+name = "archmap-scan"
+description = "Repository walking, project detection and fact extraction for archmap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+archmap-core = { workspace = true }
+ignore = { workspace = true }
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
+serde = { workspace = true }
+syn = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+
+[lints]
+workspace = true
