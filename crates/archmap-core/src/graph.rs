@@ -579,7 +579,7 @@ pub struct FileFacts<'a> {
     /// Import statements elsewhere that load the file, with their edge.
     pub importers: Vec<(&'a Edge, &'a Evidence)>,
     /// Whether evidence names imported files for the file's language at all.
-    /// Without it, `importers` is unknown rather than empty (Rust today).
+    /// Without it, `importers` is unknown rather than empty.
     pub importers_recorded: bool,
     pub unmapped_imports: Vec<&'a UnmappedImport>,
     pub dynamic_imports: Vec<&'a DynamicImport>,

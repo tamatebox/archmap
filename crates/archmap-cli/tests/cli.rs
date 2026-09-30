@@ -111,7 +111,8 @@ fn query_component_lists_symbols_and_edges() {
     let view: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(view["component"]["id"], "lib_core");
     assert!(!view["symbols"].as_array().unwrap().is_empty());
-    assert_eq!(view["incoming"].as_array().unwrap().len(), 2); // import + dependency from app
+    // app's import and dependency, and imports from three modules
+    assert_eq!(view["incoming"].as_array().unwrap().len(), 5);
 }
 
 #[test]
@@ -127,7 +128,24 @@ fn query_unknown_target_fails() {
 
 #[test]
 fn impact_accepts_component_or_file() {
-    for target in ["lib_core", "crates/lib_core/src/billing.rs"] {
+    let expected = [
+        (
+            "lib_core",
+            "lib_core",
+            serde_json::json!(["app", "app::config"]),
+        ),
+        (
+            "crates/lib_core/src/billing.rs",
+            "lib_core::billing",
+            serde_json::json!([
+                "app",
+                "app::config",
+                "lib_core::billing::invoice",
+                "lib_core::store"
+            ]),
+        ),
+    ];
+    for (target, component, transitive) in expected {
         let out = archmap()
             .args(["impact", target, "--path"])
             .arg(fixture_root())
@@ -135,8 +153,8 @@ fn impact_accepts_component_or_file() {
             .unwrap();
         assert!(out.status.success(), "target {target}");
         let result: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-        assert_eq!(result["target"], "lib_core");
-        assert_eq!(result["transitive"], serde_json::json!(["app"]));
+        assert_eq!(result["target"], component);
+        assert_eq!(result["transitive"], transitive);
     }
 }
 
@@ -531,7 +549,7 @@ fn query_text_is_a_compact_drill_down() {
     let symbols = query_text(&fixture_root(), &["greet"]);
     assert_eq!(
         symbols,
-        "Symbols matching `greet`: 1\n  pub fn greet(user: &User) -> String  crates/lib_core/src/lib.rs:21  in lib_core\n"
+        "Symbols matching `greet`: 1\n  pub fn greet(user: &User) -> String  crates/lib_core/src/lib.rs:28  in lib_core\n"
     );
 }
 
@@ -764,10 +782,17 @@ fn query_locations_name_the_imported_file_and_mark_local_imports() {
         a.contains("\n  app.b  1 import: app/b/__init__.py:2 -> app/a/__init__.py (local)\n"),
         "{a}"
     );
-    // manifests and Rust name no file: locations stay as they were
+    // a Rust `use` names the file too, and a manifest names none
+    let store = query_text(&fixture_root(), &["lib_core::store"]);
+    for expected in [
+        "\n  lib_core::billing        1 import: crates/lib_core/src/store/mod.rs:3 -> crates/lib_core/src/billing.rs\n",
+        "\n  lib_core::store::memory  1 import: crates/lib_core/src/store/mod.rs:10 -> crates/lib_core/src/store/memory.rs (local)\n",
+    ] {
+        assert!(store.contains(expected), "missing `{expected}` in:\n{store}");
+    }
     let lib_core = query_text(&fixture_root(), &["lib_core"]);
     assert!(
-        lib_core.contains("\n  app  3 imports: crates/app/src/config.rs:1, crates/app/src/main.rs:1, crates/app/src/main.rs:2; declared in crates/app/Cargo.toml\n"),
+        lib_core.contains("  1 import: crates/app/src/main.rs:2 -> crates/lib_core/src/lib.rs; declared in crates/app/Cargo.toml\n"),
         "{lib_core}"
     );
 }
@@ -826,10 +851,23 @@ fn query_a_file_shows_its_symbols_imports_and_importers() {
 }
 
 #[test]
-fn query_a_rust_file_says_importers_are_not_recorded() {
+fn query_a_rust_file_lists_the_statements_that_import_it() {
     let text = query_text(&fixture_root(), &["crates/lib_core/src/lib.rs"]);
-    assert!(text.contains("\nPublic symbols: "), "{text}");
-    assert!(text.contains("\nImported by: unknown"), "{text}");
+    for expected in [
+        "crates/lib_core/src/lib.rs (file) in lib_core (package, rust), depth 2\n",
+        "\nImports: 1\n  ext:serde  1 import: crates/lib_core/src/lib.rs:2\n",
+        "\nImported by: 4\n",
+        "\n  app::config                 1 import: crates/app/src/config.rs:1\n",
+        "\n  lib_core::billing::invoice  1 import: crates/lib_core/src/billing/invoice.rs:3\n",
+    ] {
+        assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
+    }
+    // an import through a re-export counts for the file that defines the item
+    let invoice = query_text(&fixture_root(), &["crates/lib_core/src/billing/invoice.rs"]);
+    assert!(
+        invoice.contains("\nImported by: 1\n  app::config  1 import: crates/app/src/config.rs:1\n"),
+        "{invoice}"
+    );
 }
 
 #[test]

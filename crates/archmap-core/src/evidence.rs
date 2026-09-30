@@ -28,13 +28,14 @@ pub struct Evidence {
     pub scope: Option<Scope>,
 }
 
-/// Where an import statement sits.
+/// Where an import statement sits in its file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Scope {
-    /// Runs when the file itself is loaded.
+    /// Outside any function body. In Python it runs when the file is loaded.
     Module,
-    /// Inside a function body: runs only when the function is called.
+    /// Inside a function body. In Python it runs only when the function is
+    /// called.
     Local,
 }
 

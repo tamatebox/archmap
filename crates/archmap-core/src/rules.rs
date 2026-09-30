@@ -119,7 +119,7 @@ pub struct UndeclaredImportRule {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum FileLevel {
-    /// No evidence names the imported files, as for Rust today.
+    /// No evidence behind the cycle names the imported files.
     Unknown,
     /// Different files form each direction; only the components form a
     /// cycle.
@@ -1026,12 +1026,12 @@ mod tests {
         );
 
         // without file targets nothing can be said
-        let mut rust = modules(&[("a", "a"), ("b", "b")]);
-        rust.add_edges([
+        let mut untargeted = modules(&[("a", "a"), ("b", "b")]);
+        untargeted.add_edges([
             crate::Edge::new("a", "b", EdgeKind::Import).with_evidence(Evidence::new("a/lib.rs")),
             crate::Edge::new("b", "a", EdgeKind::Import).with_evidence(Evidence::new("b/lib.rs")),
         ]);
-        assert_eq!(file_level_of(&rust), FileLevel::Unknown);
+        assert_eq!(file_level_of(&untargeted), FileLevel::Unknown);
     }
 
     #[test]

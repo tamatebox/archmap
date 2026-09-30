@@ -59,12 +59,13 @@ Never add a dependency that points against the arrow. Never make `archmap-core` 
 
 ## Conventions
 
-- Component ids: internal packages use the package name; sub-units (Python packages) use `<package>::<dotted.path>`; external dependencies use the `ext:` prefix. `Component.name` is the short, human-typed form (`shop.billing`) and `query` / `impact` accept it when unique.
+- Component ids: internal packages use the package name; sub-units use `<package>::<path>`, the dotted path of a Python package or the module path of a Rust module file (`archmap-core::graph`); external dependencies use the `ext:` prefix. `Component.name` is the short, human-typed form, the path an import writes (`shop.billing`, `archmap_core::graph`), and `query` / `impact` accept it when unique.
 - Symbol ids: `<component>::<module path>::<name>`; methods are `Type::method` (Rust) or `Class.method` (Python).
 - A `Module` component sets `parent` to its enclosing component. Containment is a field, not an edge.
 - `summary`, `query` and `impact` share `DEFAULT_DEPTH` and roll up the same way. Never let them describe different components.
 - A rule selector or declaration that matches no component is a finding, never silently skipped, so a typo cannot disable a rule.
 - `deny` sides accept declared names or selectors; `layers` and `allow` accept declared names only. Membership goes to the most specific matching selector.
+- A Rust re-export from the subtree of its file's module (`pub use child::Item`) shapes what the module offers; it is a relation other than an import. Resolution follows it to the file that defines the item, and it never becomes an edge. Likewise `#[cfg(test)]` code is no dependency of its package on itself.
 - External dependency edges point only at required dependencies. An import is not a declaration: an import that maps to no component goes to `unmapped_imports` with its reason, never to an edge, and `check` reports the undeclared ones. Evidence notes record how an import name was resolved.
 - Prefer missing a finding to raising a false one: rules end up in CI, and a noisy rule gets switched off. The Python analyzer treats any file or directory name in the project as local code because `sys.path` changes at runtime.
 - Bulk-insert edges with `add_edges` / `merge`; `add_edge` is linear per call.
@@ -80,9 +81,9 @@ Never add a dependency that points against the arrow. Never make `archmap-core` 
 Use archmap on itself, the way the plugin skill teaches, running the current source with `cargo run -q -p archmap-cli --`:
 
 - `summary .` first; fixtures appear as components too, so check paths.
-- Before searching inside a crate or file, `query <crate|file>` and open the `file:line` it gives.
+- Before searching inside a crate, module or file, `query <crate|module|file>` and open the `file:line` it gives.
 - Before changing a public item, `impact <file>`.
-- Rust evidence does not name imported files yet: for a Rust file `Imported by` is unknown and `impact` answers per crate, so search for uses inside a crate as before.
+- Only `use` declarations are imports in Rust. A path written without one (`rust::RustAnalyzer`, `crate::summary::render(..)`) is missing from `Imported by` and `impact`, so also search for callers of what you change.
 
 ## Commands to run after every change
 

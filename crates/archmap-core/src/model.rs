@@ -5,8 +5,9 @@ use crate::Evidence;
 /// Stable identifier for a [`Component`].
 ///
 /// Analyzers choose the string. Convention so far: internal packages use the
-/// package name (`archmap-core`), external dependencies are prefixed with
-/// `ext:` (`ext:serde`).
+/// package name (`archmap-core`), their modules `<package>::<path>`
+/// (`archmap-core::graph`, `shop::shop.billing`), and external dependencies
+/// are prefixed with `ext:` (`ext:serde`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ComponentId(pub String);

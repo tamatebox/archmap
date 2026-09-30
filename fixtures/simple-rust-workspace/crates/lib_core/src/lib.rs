@@ -2,6 +2,13 @@
 use serde::Serialize;
 
 pub mod billing;
+mod store;
+
+pub use billing::invoice::Invoice;
+
+pub mod api {
+    pub mod v1;
+}
 
 #[derive(Serialize)]
 pub struct User {
@@ -26,4 +33,8 @@ fn private_helper() {}
 
 mod internal {
     pub fn hidden() {}
+}
+
+pub mod prelude {
+    pub use crate::billing::invoice::issue;
 }

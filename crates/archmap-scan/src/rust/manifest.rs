@@ -46,11 +46,24 @@ impl CargoDependency {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CargoPackage {
     pub name: String,
+    /// `[lib] name`, when the library target is named differently from the
+    /// package.
+    pub lib_name: Option<String>,
     /// `Cargo.toml` path relative to the repository root.
     pub manifest_path: PathBuf,
     /// Directory containing the manifest, relative to the repository root.
     pub dir: PathBuf,
     pub dependencies: Vec<CargoDependency>,
+}
+
+impl CargoPackage {
+    /// Name of the library crate in source (`archmap-core` -> `archmap_core`,
+    /// or the `[lib] name`): what other crates write in `use`.
+    pub fn crate_name(&self) -> String {
+        self.lib_name
+            .clone()
+            .unwrap_or_else(|| self.name.replace('-', "_"))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +83,7 @@ pub struct ParsedManifest {
 #[derive(Deserialize)]
 struct RawManifest {
     package: Option<RawPackage>,
+    lib: Option<RawLib>,
     workspace: Option<RawWorkspace>,
     #[serde(default)]
     dependencies: BTreeMap<String, RawDependency>,
@@ -82,6 +96,11 @@ struct RawManifest {
 #[derive(Deserialize)]
 struct RawPackage {
     name: String,
+}
+
+#[derive(Deserialize)]
+struct RawLib {
+    name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -143,6 +162,7 @@ pub fn parse_manifest(text: &str, manifest_path: &Path) -> Result<ParsedManifest
         dependencies.extend(convert(&raw.dev_dependencies, DependencyKind::Dev));
         CargoPackage {
             name: p.name,
+            lib_name: raw.lib.and_then(|lib| lib.name),
             manifest_path: manifest_path.to_path_buf(),
             dir: dir.clone(),
             dependencies,
@@ -217,6 +237,24 @@ assert_cmd = "2"
         assert!(find("shared").workspace);
         assert_eq!(find("assert_cmd").kind, DependencyKind::Dev);
         assert!(parsed.workspace.is_none());
+        assert_eq!(pkg.crate_name(), "app");
+    }
+
+    #[test]
+    fn the_crate_name_follows_the_library_target() {
+        let parse = |text: &str| {
+            parse_manifest(text, Path::new("Cargo.toml"))
+                .unwrap()
+                .package
+                .unwrap()
+        };
+        assert_eq!(
+            parse("[package]\nname = \"archmap-core\"\n").crate_name(),
+            "archmap_core"
+        );
+        let renamed = parse("[package]\nname = \"foo-cli\"\n\n[lib]\nname = \"foo\"\n");
+        assert_eq!(renamed.lib_name.as_deref(), Some("foo"));
+        assert_eq!(renamed.crate_name(), "foo");
     }
 
     #[test]
