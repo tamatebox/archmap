@@ -55,8 +55,9 @@ can use a copy of it.
 
 1. **Code Graph is not Architecture Graph.** Nodes are components and public
    symbols, not every function.
-2. **Cheap structural scan first.** File layout, manifests, public items and
-   imports are extracted first; deeper semantic passes are opt-in and later.
+2. **Coarse globally, precise locally.** File layout, manifests, public items
+   and imports are extracted for the whole repository; deeper passes (calls,
+   types, data flow) come later and run only for the part an agent chooses.
 3. **Facts, not inference.** The MVP records only what the code and
    manifests literally say. Semantic labels ("this is the Billing service")
    are a separate future layer.
@@ -370,20 +371,28 @@ only where a threshold for it is declared, and none can be declared yet.
 
 ## Roadmap
 
-Phases describe capability layers, not a strict order of work. Phase 6
+Phases describe capability layers, not a strict order of work. Phase 7
 already ships a plugin and skill because they only wrap the CLI, while
-Phases 4 and 5 have not started.
+Phases 4 to 6 have not started.
 
 | Phase | Scope | Status |
 |---|---|---|
-| 0 Discovery | languages, manifests, packages; report detected languages even without an analyzer | Rust and Python only |
-| 1 Structural Facts | modules, public symbols, imports, dependencies | Rust and Python |
+| 0 Discovery | languages, manifests, packages; report detected languages even without an analyzer | Rust and Python; other languages are counted in `summary`, not analyzed |
+| 1 Structural Facts | modules, public symbols, imports with their target file and scope, dependencies | Rust and Python; target files and scope for Python |
 | 2 Structural Compression & Agent Context | roll-up; `summary`, `query` and `impact` small enough for an agent and at one granularity; full detail with `--format json` | done for Python; `impact` follows files; `summary` and `query` say what the graph does not map |
 | 3 Rules & Declared Architecture | declared components and layers, cycles, forbidden dependencies, drift, CI `check` | done: deny rules, layers, allow lists, coverage, cycles with a file-level reading, undeclared imports, stale declarations; structural signals |
-| 4 Cross-system Graph | OpenAPI, Terraform, databases, HTTP, events | planned |
-| 5 Semantic Enrichment | LLM naming and responsibilities, stored as inferred facts | planned |
-| 6 Agent Interface | plugin and skill for agents, MCP adapter over the same engine | plugin and skill exist; MCP planned |
-| 7 Incremental / Runtime | diff scans, cache, runtime traces | planned |
+| 4 Deep Static Analysis | precise symbol resolution, call and reference graph, type relationships, selective data flow, test-to-code links; on demand for one component | planned |
+| 5 Cross-system Graph | OpenAPI, Terraform, databases, HTTP, events | planned |
+| 6 Semantic Enrichment | LLM naming and responsibilities, stored as inferred facts | planned |
+| 7 Agent Interface | plugin and skill for agents, MCP adapter over the same engine | plugin and skill exist; MCP planned |
+| 8 Incremental / Runtime | diff scans, cache, runtime traces | planned |
+
+Phase 4 never runs over the whole repository by default. The cheap scan maps
+everything; the deep pass runs for the component an agent picked from
+`summary` or `query`, so the map stays coarse globally and precise locally.
+Its results are facts with evidence, such as calls, references and types,
+never inferred roles, and they answer questions about one part at a time
+instead of turning the repository into a code graph.
 
 Phase 2 is done when every agent-facing output is small and consistent:
 about 10 KB for `summary`, a few KB to a few tens of KB for `query`, a few KB
@@ -401,9 +410,13 @@ tokens, tool calls and turns.
 Cross-system graphs, LLM enrichment and MCP do not change what an agent
 learns about a repository, so they wait for that evaluation. Rules came
 first for the same reason: they never change what `summary`, `query` or
-`impact` report. Before Rust repositories are evaluated, Rust needs
-module-level components and target files in its evidence; generic discovery
-for unsupported languages completes Phase 0.
+`impact` report. Deep static analysis waits for the evaluation for the
+opposite reason: it does change what an agent learns, and the evaluation's
+tool-call logs show which searches agents still make after `query`, such as
+callers, types or tests, and so which to answer first. Before Rust
+repositories are evaluated, Rust needs module-level components and target
+files in its evidence; discovering the packages and manifests of other
+languages completes Phase 0.
 
 ## Development
 
