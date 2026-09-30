@@ -41,11 +41,10 @@ enum Command {
         #[arg(long)]
         manifests_only: bool,
     },
-    /// Write a compact, deterministic Markdown summary for agents and humans.
+    /// Print a compact, deterministic summary for agents and humans.
     ///
     /// Modules are rolled up to `--depth` levels below their package. The
-    /// summary is written to `<path>/.archmap/summary.md` unless `--output`
-    /// says otherwise.
+    /// summary goes to stdout; `--output <file>` saves it instead.
     Summary {
         /// Repository root (defaults to the current directory).
         #[arg(default_value = ".")]
@@ -53,7 +52,7 @@ enum Command {
         /// Containment depth to roll modules up to; 0 keeps only packages.
         #[arg(long, default_value_t = commands::DEFAULT_DEPTH)]
         depth: usize,
-        /// File to write the summary to; `-` writes to stdout.
+        /// File to save the summary to instead of printing it.
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
@@ -94,9 +93,10 @@ enum Command {
     },
     /// Check the observed graph against the declared rules in `archmap.toml`.
     ///
-    /// Reports forbidden dependencies, dependency cycles and declarations
-    /// that match nothing. Exits 0 without findings, 1 with findings, and 2
-    /// when the rules or the repository cannot be read.
+    /// Reports rule findings and structural signals. Exits 0 without
+    /// findings, 1 with findings, and 2 when the rules or the repository
+    /// cannot be read. Signals never change the exit code; without a rules
+    /// file only signals are reported.
     Check {
         /// Repository root to scan.
         #[arg(long, default_value = ".")]

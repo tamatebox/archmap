@@ -15,10 +15,11 @@ mod fragment;
 mod graph;
 mod model;
 pub mod rules;
+pub mod signals;
 
-pub use evidence::Evidence;
+pub use evidence::{Evidence, Scope};
 pub use fragment::GraphFragment;
-pub use graph::{ArchitectureGraph, GraphMeta};
+pub use graph::{ArchitectureGraph, ChangeSeed, GraphMeta, Reach};
 pub use model::{
     Component, ComponentId, ComponentKind, Edge, EdgeKind, Symbol, SymbolId, SymbolKind,
     UnresolvedImport,

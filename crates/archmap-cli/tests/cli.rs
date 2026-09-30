@@ -141,15 +141,24 @@ fn impact_accepts_component_or_file() {
 }
 
 #[test]
-fn check_without_a_rules_file_exits_2() {
+fn check_without_a_rules_file_reports_signals_only() {
     let repo = temp_repo("no-rules");
     let out = archmap()
         .args(["check", "--path"])
         .arg(&repo)
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("archmap.toml"));
+    assert_eq!(out.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("(rules: none, signals only,"));
+
+    // a rules file that was asked for but is missing is an error
+    let missing = archmap()
+        .args(["check", "--config", "missing.toml", "--path"])
+        .arg(&repo)
+        .output()
+        .unwrap();
+    assert_eq!(missing.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("missing.toml"));
     std::fs::remove_dir_all(&repo).unwrap();
 }
 
@@ -178,23 +187,21 @@ fn summary_is_deterministic_markdown() {
     let first = summary_stdout(&[]);
     assert_eq!(first, summary_stdout(&[]), "same scan, same summary");
 
-    assert!(first.starts_with("# Architecture summary: simple-python-project\n"));
+    assert!(first.starts_with("# archmap summary\nroot: simple-python-project\ndepth: 2\n"));
     for expected in [
-        "## Components",
-        "  - shop: `src/shop`, 3 public symbols",
-        "    - shop.billing: `src/shop/billing`, 4 public symbols",
-        "## Internal dependencies",
-        "- shop.billing -> shop (2)",
-        "## External dependencies",
-        "- requests: declared in `pyproject.toml`, `requirements.txt`; \
-         imported by 1 component: shop.billing (1)",
-        "- pyyaml: declared in `requirements.txt`; imported by 1 component: shop.billing (1)",
-        "## Most depended-on",
+        "components: 7 shown, 8 in the full graph\n",
+        "## Components\n",
+        "\n  shop  path: src/shop  symbols: 3\n",
+        "\n    shop.billing  path: src/shop/billing  symbols: 4\n",
+        "## Internal dependencies\n",
+        "\nshop.billing -> shop  imports: 2\n",
+        "## External dependencies\n",
+        "\nrequests  declared: pyproject.toml, requirements.txt  importers: 1  top: shop.billing 1\n",
+        "\npyyaml  declared: requirements.txt  importers: 1  top: shop.billing 1\n",
+        "## Most depended on\n",
+        "\nshop  dependents: 4  dependencies: 1  rank: 1/7\n",
     ] {
-        assert!(
-            first.contains(expected),
-            "missing `{expected}` in:\n{first}"
-        );
+        assert!(first.contains(expected), "missing `{expected}` in:\n{first}");
     }
     // machine-specific paths never leak into the summary
     let root = python_fixture().canonicalize().unwrap();
@@ -205,20 +212,29 @@ fn summary_is_deterministic_markdown() {
 fn summary_depth_controls_the_roll_up() {
     let shallow = summary_stdout(&["--depth", "1"]);
     assert!(
-        !shallow.contains("shop.billing:"),
+        !shallow.contains("shop.billing  "),
         "billing is folded:\n{shallow}"
     );
-    assert!(shallow.contains("  - shop: `src/shop`, 9 public symbols, 3 submodules folded"));
-    assert!(shallow.contains("- tests -> shop (3)"));
+    assert!(
+        shallow.contains("\n  shop  path: src/shop  symbols: 9  folded: 3\n"),
+        "{shallow}"
+    );
+    assert!(
+        shallow.contains("\ntests -> shop  imports: 3\n"),
+        "{shallow}"
+    );
 
     let packages_only = summary_stdout(&["--depth", "0"]);
-    assert!(packages_only
-        .contains("- shop: python package, `.`, 9 public symbols, 7 submodules folded"));
-    assert!(packages_only.contains("No internal dependencies."));
+    assert!(
+        packages_only
+            .contains("\nshop  package  language: python  path: .  symbols: 9  folded: 7\n"),
+        "{packages_only}"
+    );
+    assert!(packages_only.contains("## Internal dependencies\nnone\n"));
 }
 
 #[test]
-fn summary_writes_under_dot_archmap_by_default() {
+fn summary_prints_by_default_and_saves_only_when_asked() {
     let repo = temp_repo("summary");
     let out = archmap().arg("summary").arg(&repo).output().unwrap();
     assert!(
@@ -226,9 +242,24 @@ fn summary_writes_under_dot_archmap_by_default() {
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(out.stdout.is_empty());
-    let written = std::fs::read_to_string(repo.join(".archmap/summary.md")).unwrap();
-    assert!(written.starts_with("# Architecture summary: "));
+    assert!(String::from_utf8_lossy(&out.stdout).starts_with("# archmap summary\n"));
+    assert!(
+        !repo.join(".archmap").exists(),
+        "a summary is a view, not a file"
+    );
+
+    let file = repo.join("out/summary.md");
+    let saved = archmap()
+        .arg("summary")
+        .arg(&repo)
+        .arg("-o")
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert!(saved.status.success() && saved.stdout.is_empty());
+    assert!(std::fs::read_to_string(&file)
+        .unwrap()
+        .starts_with("# archmap summary\n"));
     std::fs::remove_dir_all(&repo).unwrap();
 }
 
@@ -284,14 +315,15 @@ fn impact_of_a_file_uses_the_summary_depth() {
     assert_eq!(result["target"], "shop::shop.integrations");
     assert_eq!(result["folded_from"], "shop::shop.integrations.slack");
     assert_eq!(result["direct"], serde_json::json!(["shop::shop"]));
+    // followed file by file: tests.unit imports only shop/users.py, which
+    // does not use slack, so it is not reached
     assert_eq!(
         result["transitive"],
         serde_json::json!([
             "shop::scripts",
             "shop::shop",
             "shop::shop.billing",
-            "shop::tests",
-            "shop::tests.unit"
+            "shop::tests"
         ])
     );
 }
@@ -306,8 +338,8 @@ fn every_summary_component_is_visible_to_query_and_impact() {
         .unwrap();
     let names: std::collections::BTreeSet<&str> = components
         .lines()
-        .filter_map(|l| l.trim_start().strip_prefix("- "))
-        .filter_map(|l| l.split(": ").next())
+        .filter_map(|l| l.trim_start().split("  ").next())
+        .filter(|name| !name.is_empty() && *name != "none")
         .collect();
     assert!(names.contains("shop.billing") && names.contains("tests.unit"));
 
@@ -367,7 +399,7 @@ fn check_reports_forbidden_dependencies_and_stale_declarations() {
         "archmap check: 2 findings",
         "forbidden by deny[0] scripts -> billing: scripts -> shop.billing (import)",
         "  reason: scripts go through the public shop API",
-        "  scripts/backfill.py:1  import",
+        "  scripts/backfill.py:1 -> src/shop/billing/__init__.py  import",
         "unmatched: components.legacy `src/shop/legacy` matches no component",
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
@@ -411,7 +443,13 @@ fn check_finds_cycles_at_the_chosen_depth() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("cycle: other, pkg"), "{text}");
     assert!(
-        text.contains("  other -> pkg  other/__init__.py:1  import"),
+        text.contains(
+            "  file level: cycle through other/__init__.py, pkg/__init__.py; closes at module scope"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("  other -> pkg  other/__init__.py:1 -> pkg/__init__.py  import"),
         "{text}"
     );
 
@@ -526,4 +564,148 @@ fn query_text_caps_long_lists_and_verbose_lifts_the_caps() {
     assert!(full.contains("app/__init__.py:5\n"));
     assert!(!full.contains("more") && !full.contains("Lists are capped"));
     std::fs::remove_dir_all(&repo).unwrap();
+}
+
+const LAYERED_SHOP: &str = r#"
+[components]
+app = ["src/shop"]
+scripts = ["scripts"]
+tests = ["tests"]
+
+[layers]
+order = ["app", "scripts"]   # scripts sits below app, so scripts -> app points up
+
+[[allow]]
+from = "tests"
+to = []                      # tests may depend on nothing declared
+
+[[allow]]
+from = "app"
+to = ["scripts"]             # never observed
+"#;
+
+#[test]
+fn check_enforces_layers_and_allow_lists() {
+    let out = check_with("layers", &python_fixture(), LAYERED_SHOP, &[]);
+    assert_eq!(out.status.code(), Some(1));
+    let text = String::from_utf8_lossy(&out.stdout);
+    for expected in [
+        "layer violation: scripts must not depend on the higher layer app: scripts -> shop.billing (import)\n  scripts/backfill.py:1 -> src/shop/billing/__init__.py  import\n",
+        "unexpected dependency: tests -> app is not in the allow list: tests.unit -> shop (import)\n",
+        "stale allowance: app -> scripts is allowed but not observed\n",
+    ] {
+        assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
+    }
+
+    let json = check_with(
+        "layers-json",
+        &python_fixture(),
+        LAYERED_SHOP,
+        &["--format", "json"],
+    );
+    let report: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let kinds: std::collections::BTreeSet<&str> = report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "layer_violation",
+            "stale_allowance",
+            "unexpected_dependency"
+        ]
+        .into_iter()
+        .collect()
+    );
+}
+
+#[test]
+fn check_reports_components_missing_from_the_declarations() {
+    let rules = r#"
+[components]
+app = ["src/shop"]
+
+[coverage]
+require = ["src", "tests"]
+"#;
+    let out = check_with("coverage", &python_fixture(), rules, &[]);
+    assert_eq!(out.status.code(), Some(1));
+    let text = String::from_utf8_lossy(&out.stdout);
+    // tests.unit is a leaf at depth 2 and declared nowhere; `tests` itself is
+    // a container, and everything under src/shop is declared as `app`
+    assert!(
+        text.contains("uncovered: tests.unit at tests/unit belongs to no declared component\n"),
+        "{text}"
+    );
+    assert_eq!(text.matches("uncovered:").count(), 1, "{text}");
+}
+
+fn mixed_fixture() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/mixed-utils-project")
+}
+
+#[test]
+fn check_separates_component_cycles_from_file_cycles_and_reports_signals() {
+    let out = check_with("mixed", &mixed_fixture(), "[cycles]\nforbid = true\n", &[]);
+    assert_eq!(out.status.code(), Some(1), "cycles are findings");
+    let text = String::from_utf8_lossy(&out.stdout);
+    for expected in [
+        "archmap check: 2 findings, 1 signal",
+        // utils <-> core and utils <-> models, but through different files
+        "cycle: app.core, app.models, app.utils\n  file level: no cycle; different files form each direction\n",
+        // a -> b at module scope, b -> a only inside a function
+        "cycle: app.a, app.b\n  file level: cycle through app/a/__init__.py, app/b/__init__.py; closes only through local-scope imports\n",
+        "signal: app.utils mixes dependency directions with app.core, app.models\n",
+        "  used by them: app/utils/log.py (2)\n",
+        "  using them: app/utils/registry.py -> app.models; app/utils/store.py -> app.core\n",
+        "Signals are observations; they never change the exit code.",
+    ] {
+        assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
+    }
+
+    // without rules the same signal is reported, and nothing fails
+    let signals_only = archmap()
+        .args(["check", "--path"])
+        .arg(mixed_fixture())
+        .output()
+        .unwrap();
+    assert_eq!(signals_only.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&signals_only.stdout).contains("signal: app.utils mixes"));
+}
+
+#[test]
+fn impact_does_not_travel_through_a_shared_component() {
+    let impact = |target: &str| {
+        let out = archmap()
+            .args(["impact", target, "--path"])
+            .arg(mixed_fixture())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()
+    };
+    // core is used only by utils/store.py, which nothing else imports: the
+    // component graph would claim models too, through utils
+    let core = impact("app/core/__init__.py");
+    assert_eq!(core["transitive"], serde_json::json!(["mixed::app.utils"]));
+    // the logger really is used by core and models
+    let log = impact("app/utils/log.py");
+    assert_eq!(
+        log["direct"],
+        serde_json::json!(["mixed::app.core", "mixed::app.models"])
+    );
+    // a path that exists nowhere is an error, not an empty answer
+    let out = archmap()
+        .args(["impact", "app/nowhere.py", "--path"])
+        .arg(mixed_fixture())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
 }

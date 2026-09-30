@@ -232,71 +232,133 @@ impl ArchitectureGraph {
     /// cycles, over every edge kind. Each group has at least two members and
     /// is sorted; groups are sorted too.
     pub fn cycles(&self) -> Vec<Vec<ComponentId>> {
-        let mut forward: BTreeMap<&ComponentId, BTreeSet<&ComponentId>> = BTreeMap::new();
-        let mut backward: BTreeMap<&ComponentId, BTreeSet<&ComponentId>> = BTreeMap::new();
-        for edge in &self.edges {
-            if edge.from != edge.to {
-                forward.entry(&edge.from).or_default().insert(&edge.to);
-                backward.entry(&edge.to).or_default().insert(&edge.from);
-            }
-        }
-        let forward: BTreeMap<&ComponentId, Vec<&ComponentId>> = forward
+        strongly_connected(self.edges.iter().map(|e| (&e.from, &e.to)))
             .into_iter()
-            .map(|(k, v)| (k, v.into_iter().collect()))
+            .map(|group| group.into_iter().cloned().collect())
+            .collect()
+    }
+
+    /// Components that may be affected by a change, folded to `depth`.
+    ///
+    /// Dependencies whose evidence names the imported file are followed
+    /// file by file, so a component is reached only through files that
+    /// import what changed, not through any file of a shared component.
+    /// Dependencies without that detail (manifests, external packages,
+    /// languages that do not record target files) are followed component
+    /// by component.
+    pub fn change_impact(&self, seed: ChangeSeed, depth: usize) -> Reach {
+        let mut dependents: BTreeMap<Node, BTreeSet<Node>> = BTreeMap::new();
+        let mut files: BTreeSet<&str> = BTreeSet::new();
+        for edge in &self.edges {
+            for e in &edge.evidence {
+                let importer = Node::File(e.file.as_str());
+                files.insert(e.file.as_str());
+                let target = match e.target.as_deref() {
+                    Some(t) => {
+                        files.insert(t);
+                        Node::File(t)
+                    }
+                    None => Node::Component(&edge.to),
+                };
+                if importer != target {
+                    dependents.entry(target).or_default().insert(importer);
+                }
+            }
+            if edge.evidence.is_empty() && edge.from != edge.to {
+                dependents
+                    .entry(Node::Component(&edge.to))
+                    .or_default()
+                    .insert(Node::Component(&edge.from));
+            }
+        }
+        let owners: BTreeMap<&str, &ComponentId> = files
+            .iter()
+            .filter_map(|f| self.component_for_path(f).map(|c| (*f, &c.id)))
             .collect();
-        let nodes: BTreeSet<&ComponentId> =
-            forward.keys().chain(backward.keys()).copied().collect();
+        let owner_of = |f: &str| {
+            owners
+                .get(f)
+                .copied()
+                .or_else(|| self.component_for_path(f).map(|c| &c.id))
+        };
 
-        // Kosaraju, iteratively so that long chains cannot exhaust the stack:
-        // finish order on the graph, then components on the reversed graph.
-        let mut visited: BTreeSet<&ComponentId> = BTreeSet::new();
-        let mut order: Vec<&ComponentId> = Vec::new();
-        for &start in &nodes {
-            if !visited.insert(start) {
-                continue;
+        let mut start: Vec<Node> = Vec::new();
+        let target = match seed {
+            ChangeSeed::File(file) => {
+                start.push(Node::File(file));
+                owner_of(file).map(|c| self.ancestor_at(c, depth))
             }
-            let mut stack: Vec<(&ComponentId, usize)> = vec![(start, 0)];
-            while let Some(top) = stack.last_mut() {
-                let node = top.0;
-                let next = forward.get(node).and_then(|succ| succ.get(top.1)).copied();
-                top.1 += 1;
-                match next {
-                    Some(next) => {
-                        if visited.insert(next) {
-                            stack.push((next, 0));
-                        }
-                    }
-                    None => {
-                        order.push(node);
-                        stack.pop();
+            ChangeSeed::Component(component) => {
+                let subtree: BTreeSet<&ComponentId> = self
+                    .components
+                    .keys()
+                    .filter(|id| self.containment_path(id).contains(component))
+                    .collect();
+                start.extend(subtree.iter().map(|id| Node::Component(id)));
+                start.extend(
+                    owners
+                        .iter()
+                        .filter(|(_, owner)| subtree.contains(*owner))
+                        .map(|(file, _)| Node::File(file)),
+                );
+                Some(self.ancestor_at(component, depth))
+            }
+        };
+
+        // 0-1 BFS: a reached file puts its component in reach at no cost.
+        let mut distance: BTreeMap<Node, usize> = BTreeMap::new();
+        let mut queue: VecDeque<Node> = VecDeque::new();
+        for node in start {
+            if distance.insert(node, 0).is_none() {
+                queue.push_back(node);
+            }
+        }
+        while let Some(node) = queue.pop_front() {
+            let d = distance[&node];
+            let mut next: Vec<(Node, usize)> = Vec::new();
+            if let Node::File(f) = node {
+                if let Some(owner) = owner_of(f) {
+                    next.push((Node::Component(owner), d));
+                }
+            }
+            next.extend(
+                dependents
+                    .get(&node)
+                    .into_iter()
+                    .flatten()
+                    .map(|n| (*n, d + 1)),
+            );
+            for (n, nd) in next {
+                if distance.get(&n).is_none_or(|&old| nd < old) {
+                    distance.insert(n, nd);
+                    if nd == d {
+                        queue.push_front(n);
+                    } else {
+                        queue.push_back(n);
                     }
                 }
             }
         }
 
-        let mut assigned: BTreeSet<&ComponentId> = BTreeSet::new();
-        let mut groups = Vec::new();
-        for &start in order.iter().rev() {
-            if !assigned.insert(start) {
+        let mut reach = Reach::default();
+        for (node, d) in &distance {
+            let component = match node {
+                Node::File(f) => owner_of(f),
+                Node::Component(c) => Some(*c),
+            };
+            let Some(component) = component else {
+                continue;
+            };
+            let folded = self.ancestor_at(component, depth);
+            if *d == 0 || Some(&folded) == target.as_ref() {
                 continue;
             }
-            let mut group = vec![start.clone()];
-            let mut stack = vec![start];
-            while let Some(node) = stack.pop() {
-                for &prev in backward.get(node).into_iter().flatten() {
-                    if assigned.insert(prev) {
-                        group.push(prev.clone());
-                        stack.push(prev);
-                    }
-                }
+            if *d == 1 {
+                reach.direct.insert(folded.clone());
             }
-            if group.len() > 1 {
-                group.sort();
-                groups.push(group);
-            }
+            reach.transitive.insert(folded);
         }
-        groups.sort();
-        groups
+        reach
     }
 
     /// Components from the containment root down to `id`, following
@@ -390,6 +452,99 @@ impl ArchitectureGraph {
             })
             .max_by_key(|c| c.path.as_deref().map(str::len).unwrap_or(0))
     }
+}
+
+/// Where a change starts, for [`ArchitectureGraph::change_impact`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangeSeed<'a> {
+    /// A component and everything it contains.
+    Component(&'a ComponentId),
+    /// One file, relative to the repository root.
+    File(&'a str),
+}
+
+/// Components that may be affected by a change.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Reach {
+    /// Components with a file that depends on the change directly.
+    pub direct: BTreeSet<ComponentId>,
+    /// Every component reached, `direct` included.
+    pub transitive: BTreeSet<ComponentId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Node<'a> {
+    File(&'a str),
+    Component(&'a ComponentId),
+}
+
+/// Strongly connected groups of at least two nodes, each sorted, in sorted
+/// order. Iterative Kosaraju, so long chains cannot exhaust the stack.
+pub(crate) fn strongly_connected<N: Ord + Copy>(
+    pairs: impl IntoIterator<Item = (N, N)>,
+) -> Vec<Vec<N>> {
+    let mut forward: BTreeMap<N, BTreeSet<N>> = BTreeMap::new();
+    let mut backward: BTreeMap<N, BTreeSet<N>> = BTreeMap::new();
+    for (a, b) in pairs {
+        if a != b {
+            forward.entry(a).or_default().insert(b);
+            backward.entry(b).or_default().insert(a);
+        }
+    }
+    let forward: BTreeMap<N, Vec<N>> = forward
+        .into_iter()
+        .map(|(k, v)| (k, v.into_iter().collect()))
+        .collect();
+    let nodes: BTreeSet<N> = forward.keys().chain(backward.keys()).copied().collect();
+
+    let mut visited: BTreeSet<N> = BTreeSet::new();
+    let mut order: Vec<N> = Vec::new();
+    for &start in &nodes {
+        if !visited.insert(start) {
+            continue;
+        }
+        let mut stack: Vec<(N, usize)> = vec![(start, 0)];
+        while let Some(top) = stack.last_mut() {
+            let node = top.0;
+            let next = forward.get(&node).and_then(|succ| succ.get(top.1)).copied();
+            top.1 += 1;
+            match next {
+                Some(next) => {
+                    if visited.insert(next) {
+                        stack.push((next, 0));
+                    }
+                }
+                None => {
+                    order.push(node);
+                    stack.pop();
+                }
+            }
+        }
+    }
+
+    let mut assigned: BTreeSet<N> = BTreeSet::new();
+    let mut groups = Vec::new();
+    for &start in order.iter().rev() {
+        if !assigned.insert(start) {
+            continue;
+        }
+        let mut group = vec![start];
+        let mut stack = vec![start];
+        while let Some(node) = stack.pop() {
+            for &prev in backward.get(&node).into_iter().flatten() {
+                if assigned.insert(prev) {
+                    group.push(prev);
+                    stack.push(prev);
+                }
+            }
+        }
+        if group.len() > 1 {
+            group.sort();
+            groups.push(group);
+        }
+    }
+    groups.sort();
+    groups
 }
 
 fn merge_evidence(into: &mut Vec<Evidence>, from: Vec<Evidence>) {
@@ -728,6 +883,74 @@ mod tests {
             rolled.edges.is_empty(),
             "an unresolved import is never an edge"
         );
+    }
+
+    /// app.py -> util/log.py ; util/store.py -> core/types.py ;
+    /// core/types.py -> util/log.py ; pipeline.py -> util/store.py
+    fn files_graph() -> ArchitectureGraph {
+        let mut graph = ArchitectureGraph::default();
+        for (id, path) in [
+            ("app", "app"),
+            ("util", "util"),
+            ("core", "core"),
+            ("pipeline", "pipeline"),
+        ] {
+            let mut c = Component::new(id, id, ComponentKind::Module);
+            c.path = Some(path.into());
+            graph.add_component(c);
+        }
+        let dep = |from: &str, to: &str, file: &str, target: &str| {
+            Edge::new(from, to, EdgeKind::Import)
+                .with_evidence(Evidence::new(file).at_line(1).pointing_at(target))
+        };
+        graph.add_edges([
+            dep("app", "util", "app/main.py", "util/log.py"),
+            dep("util", "core", "util/store.py", "core/types.py"),
+            dep("core", "util", "core/types.py", "util/log.py"),
+            dep("pipeline", "util", "pipeline/run.py", "util/store.py"),
+        ]);
+        graph
+    }
+
+    #[test]
+    fn change_impact_follows_files_not_whole_components() {
+        let graph = files_graph();
+        // component level: core <-> util makes everything reach everything
+        assert_eq!(graph.transitive_dependents(&"core".into()).len(), 3);
+
+        // a change to core/types.py only reaches util/store.py and what uses it
+        let reach = graph.change_impact(ChangeSeed::File("core/types.py"), 9);
+        let ids = |s: &BTreeSet<ComponentId>| s.iter().map(|c| c.0.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&reach.direct), vec!["util"]);
+        assert_eq!(ids(&reach.transitive), vec!["pipeline", "util"]);
+
+        // util/log.py is used by app and core; core/types.py does not reach app
+        let reach = graph.change_impact(ChangeSeed::File("util/log.py"), 9);
+        assert_eq!(ids(&reach.direct), vec!["app", "core"]);
+        assert_eq!(ids(&reach.transitive), vec!["app", "core", "pipeline"]);
+
+        // a whole component starts from all of its files
+        let reach = graph.change_impact(ChangeSeed::Component(&"core".into()), 9);
+        assert_eq!(ids(&reach.transitive), vec!["pipeline", "util"]);
+    }
+
+    #[test]
+    fn change_impact_falls_back_to_components_without_file_detail() {
+        let mut graph = ArchitectureGraph::default();
+        for id in ["a", "b", "c"] {
+            let mut c = component(id);
+            c.path = Some(id.into());
+            graph.add_component(c);
+        }
+        graph.add_edges([
+            Edge::new("b", "a", EdgeKind::Import)
+                .with_evidence(Evidence::new("b/lib.rs").at_line(1)),
+            Edge::new("c", "b", EdgeKind::Dependency).with_evidence(Evidence::new("c/Cargo.toml")),
+        ]);
+        let reach = graph.change_impact(ChangeSeed::File("a/lib.rs"), 9);
+        let ids: Vec<&str> = reach.transitive.iter().map(|c| c.as_str()).collect();
+        assert_eq!(ids, vec!["b", "c"]);
+        assert_eq!(reach.direct.len(), 1);
     }
 
     #[test]

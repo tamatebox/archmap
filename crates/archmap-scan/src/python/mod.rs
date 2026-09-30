@@ -41,7 +41,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use archmap_core::{
-    Component, ComponentId, ComponentKind, Edge, EdgeKind, Evidence, Symbol, SymbolId,
+    Component, ComponentId, ComponentKind, Edge, EdgeKind, Evidence, Scope, Symbol, SymbolId,
     UnresolvedImport,
 };
 
@@ -134,6 +134,7 @@ impl Analyzer for PythonAnalyzer {
 
         let modules_by_dir: BTreeMap<&Path, &Module> =
             modules.iter().map(|m| (m.dir.as_path(), m)).collect();
+        let known_files: BTreeSet<&Path> = py_files.iter().copied().collect();
         for file in py_files {
             let (owner, project_idx, base_dotted, in_package_tree) =
                 match owning_module(&modules_by_dir, file) {
@@ -181,6 +182,7 @@ impl Analyzer for PythonAnalyzer {
                 },
                 installed: &installed[project_idx],
                 local_names: &local_names[project_idx],
+                known_files: &known_files,
             };
             emit_imports(
                 &owner,
@@ -587,13 +589,15 @@ struct ImportScope<'a> {
     installed: &'a resolve::InstalledIndex,
     /// Every file stem and directory name with Python code in the project.
     local_names: &'a BTreeSet<String>,
+    /// Every Python file in the repository, for resolving import targets.
+    known_files: &'a BTreeSet<&'a Path>,
 }
 
 #[allow(clippy::too_many_arguments)]
 fn emit_imports(
     owner: &ComponentId,
     base_dotted: Option<&str>,
-    scope: &ImportScope,
+    ctx: &ImportScope,
     modules: &[Module],
     by_dotted: &BTreeMap<&str, usize>,
     file: &Path,
@@ -622,63 +626,109 @@ fn emit_imports(
             candidates.push(full.clone());
         }
 
-        // Target -> evidence note. Internal modules win; externals are only
-        // considered when nothing in the repository matches.
-        let mut targets: BTreeMap<ComponentId, String> = BTreeMap::new();
-        let internal_note = if import.level > 0 {
+        let scope = if import.local {
+            Scope::Local
+        } else {
+            Scope::Module
+        };
+        let evidence = || {
+            Evidence::new(&file_display)
+                .at_line(import.line)
+                .in_scope(scope)
+        };
+
+        // Internal module -> the files the statement loads in it. The
+        // trailing `full` candidate only contributes a file when no imported
+        // name resolved into the same module (`from pkg import VERSION`).
+        let mut internal: BTreeMap<ComponentId, BTreeSet<Option<String>>> = BTreeMap::new();
+        for (i, candidate) in candidates.iter().enumerate() {
+            let Some(idx) = longest_known_prefix(candidate, by_dotted) else {
+                continue;
+            };
+            let module = &modules[idx];
+            let is_full = i == import.names.len();
+            let files = internal.entry(module.id.clone()).or_default();
+            if !is_full || files.is_empty() {
+                files.insert(target_file(module, candidate, ctx.known_files));
+            }
+        }
+
+        let note = if import.level > 0 {
             "relative import"
         } else {
             "import"
         };
-        for candidate in &candidates {
-            if let Some(idx) = longest_known_prefix(candidate, by_dotted) {
-                targets.insert(modules[idx].id.clone(), internal_note.to_owned());
-            }
-        }
-
-        if targets.is_empty() && import.level == 0 {
-            for candidate in &candidates {
-                let Some(resolved) = scope.declared.resolve(candidate) else {
+        for (target, files) in &internal {
+            for target_file in files {
+                // Imports between files of one component are kept as a
+                // self-edge: roll-up hides them, but impact needs them to
+                // follow a change through the component.
+                let same_file = target_file.as_deref() == Some(file_display.as_str());
+                if target == owner && (target_file.is_none() || same_file) {
                     continue;
-                };
-                if let Some(external) = scope.project.dependencies.get(&resolved.distribution) {
-                    targets
-                        .entry(external.clone())
-                        .or_insert_with(|| resolved.note());
                 }
+                let mut e = evidence().with_note(note);
+                if let Some(t) = target_file {
+                    e = e.pointing_at(t);
+                }
+                output.fragment.push_edge(
+                    Edge::new(owner.clone(), target.clone(), EdgeKind::Import).with_evidence(e),
+                );
             }
         }
+        if !internal.is_empty() || import.level > 0 {
+            continue;
+        }
 
-        if targets.is_empty() && import.level == 0 && !full.is_empty() {
+        let mut externals: BTreeMap<ComponentId, String> = BTreeMap::new();
+        for candidate in &candidates {
+            let Some(resolved) = ctx.declared.resolve(candidate) else {
+                continue;
+            };
+            if let Some(external) = ctx.project.dependencies.get(&resolved.distribution) {
+                externals
+                    .entry(external.clone())
+                    .or_insert_with(|| resolved.note());
+            }
+        }
+        for (target, note) in &externals {
+            output.fragment.push_edge(
+                Edge::new(owner.clone(), target.clone(), EdgeKind::Import)
+                    .with_evidence(evidence().with_note(note)),
+            );
+        }
+
+        if externals.is_empty() && !full.is_empty() {
             let top = full.split('.').next().unwrap_or_default();
-            let declared_elsewhere = candidates
-                .iter()
-                .any(|c| scope.optional.resolve(c).is_some());
-            if !stdlib::is_stdlib(top) && !declared_elsewhere && !scope.local_names.contains(top) {
+            let declared_elsewhere = candidates.iter().any(|c| ctx.optional.resolve(c).is_some());
+            if !stdlib::is_stdlib(top) && !declared_elsewhere && !ctx.local_names.contains(top) {
                 output.fragment.push_unresolved_import(UnresolvedImport {
                     from: owner.clone(),
                     module: full.clone(),
-                    provided_by: scope.installed.providers_of(&full),
-                    evidence: Evidence::new(&file_display)
-                        .at_line(import.line)
-                        .with_note("import"),
+                    provided_by: ctx.installed.providers_of(&full),
+                    evidence: evidence().with_note("import"),
                 });
             }
         }
+    }
+}
 
-        for (target, note) in targets {
-            if target == *owner {
-                continue;
-            }
-            output.fragment.push_edge(
-                Edge::new(owner.clone(), target, EdgeKind::Import).with_evidence(
-                    Evidence::new(&file_display)
-                        .at_line(import.line)
-                        .with_note(note),
-                ),
-            );
+/// The file a dotted import path loads inside `module`: `pkg/sub.py` for
+/// `pkg.sub` or `pkg.sub.name`, otherwise the package's own `__init__.py`.
+/// `None` for a namespace package, which has no file of its own.
+fn target_file(module: &Module, candidate: &str, known: &BTreeSet<&Path>) -> Option<String> {
+    let rest = candidate
+        .strip_prefix(module.dotted.as_str())
+        .unwrap_or_default()
+        .trim_start_matches('.');
+    if let Some(first) = rest.split('.').next().filter(|s| !s.is_empty()) {
+        let file = module.dir.join(format!("{first}.py"));
+        if known.contains(file.as_path()) {
+            return Some(display_path(&file));
         }
     }
+    let init = module.dir.join("__init__.py");
+    known.contains(init.as_path()).then(|| display_path(&init))
 }
 
 /// Directory -> the names importable from it: `.py` file stems and
@@ -774,6 +824,7 @@ mod tests {
             level,
             names: names.iter().map(|s| s.to_string()).collect(),
             line: 1,
+            local: false,
         }
     }
 

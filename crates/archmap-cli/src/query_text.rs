@@ -143,7 +143,18 @@ fn neighbors<'a>(
     for (id, edge) in edges {
         let n = by_id.entry(id).or_default();
         match edge.kind {
-            EdgeKind::Import => n.imports.extend(edge.evidence.iter()),
+            EdgeKind::Import => {
+                // one entry per statement: a statement can point at several files
+                for e in &edge.evidence {
+                    if !n
+                        .imports
+                        .iter()
+                        .any(|x| x.file == e.file && x.line == e.line)
+                    {
+                        n.imports.push(e);
+                    }
+                }
+            }
             EdgeKind::Dependency => n
                 .declared
                 .extend(edge.evidence.iter().map(|e| e.file.as_str())),

@@ -1,8 +1,10 @@
 //! Declared architecture and the rules checked against the observed graph.
 //!
 //! The declared side is written by people, in `archmap.toml`: named groups
-//! of components, forbidden dependencies, whether cycles are allowed, and
-//! whether imports of undeclared packages are allowed. It
+//! of components, forbidden dependencies, ordered layers, the dependencies
+//! each component is expected to have, which parts of the repository must
+//! be declared at all, whether cycles are allowed, and whether imports of
+//! undeclared packages are allowed. It
 //! never changes the observed graph. [`check`] only compares the two and
 //! reports [`Finding`]s, each with the evidence behind it.
 //!
@@ -15,8 +17,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::graph::strongly_connected;
 use crate::{
-    ArchitectureGraph, Component, ComponentId, ComponentKind, EdgeKind, Evidence, UnresolvedImport,
+    ArchitectureGraph, Component, ComponentId, ComponentKind, EdgeKind, Evidence, Scope,
+    UnresolvedImport,
 };
 
 /// The rules file as written by its authors.
@@ -36,6 +40,40 @@ pub struct RuleSet {
     pub cycles: CycleRule,
     #[serde(default)]
     pub undeclared_imports: UndeclaredImportRule,
+    #[serde(default)]
+    pub layers: LayerRule,
+    #[serde(default)]
+    pub allow: Vec<AllowRule>,
+    #[serde(default)]
+    pub coverage: CoverageRule,
+}
+
+/// Declared components from the top layer down. A layer may depend on the
+/// layers below it, never on one above.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LayerRule {
+    #[serde(default)]
+    pub order: Vec<String>,
+}
+
+/// The declared components that `from` may depend on. Once a component has
+/// an allow entry, any other dependency on a declared component is
+/// unexpected, and an allowed dependency that no longer exists is stale.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AllowRule {
+    pub from: String,
+    #[serde(default)]
+    pub to: Vec<String>,
+}
+
+/// Selectors whose components must all belong to a declared component.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CoverageRule {
+    #[serde(default)]
+    pub require: Vec<String>,
 }
 
 /// A dependency that must not exist.
@@ -56,6 +94,10 @@ pub struct CycleRule {
     /// Report components that depend on each other through a cycle.
     #[serde(default)]
     pub forbid: bool,
+    /// Selectors that limit reporting to cycles with at least one member
+    /// they cover, such as product code but not fixtures. Empty: all.
+    #[serde(default)]
+    pub scope: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,6 +110,27 @@ pub struct UndeclaredImportRule {
     /// `ujson.*`. Useful for optional imports behind `try` / `except`.
     #[serde(default)]
     pub ignore: Vec<String>,
+}
+
+/// What the files behind a component cycle show. A component cycle can be
+/// made of files that never form a cycle themselves: roll-up joins the files
+/// of each component, so different files can close the loop. None of these
+/// states says that a program fails at runtime.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum FileLevel {
+    /// No evidence names the imported files, as for Rust today.
+    Unknown,
+    /// Different files form each direction; only the components form a
+    /// cycle.
+    NoCycle,
+    /// Files of at least two of the components form a cycle.
+    Cycle {
+        files: Vec<String>,
+        /// The cycle also closes when local (function-level) imports are
+        /// left out.
+        at_module_scope: bool,
+    },
 }
 
 /// One dependency inside a cycle.
@@ -97,6 +160,36 @@ pub enum Finding {
     Cycle {
         components: Vec<ComponentId>,
         edges: Vec<CycleEdge>,
+        /// Whether the files behind the component cycle form a cycle too.
+        file_level: FileLevel,
+    },
+    /// A dependency from a layer on a layer above it.
+    LayerViolation {
+        from_layer: String,
+        to_layer: String,
+        from: ComponentId,
+        to: ComponentId,
+        edge: EdgeKind,
+        evidence: Vec<Evidence>,
+    },
+    /// A dependency between declared components that the allow list of
+    /// `declared_from` does not name.
+    UnexpectedDependency {
+        declared_from: String,
+        declared_to: String,
+        from: ComponentId,
+        to: ComponentId,
+        edge: EdgeKind,
+        evidence: Vec<Evidence>,
+    },
+    /// An allowed dependency that the code no longer has.
+    StaleAllowance { from: String, to: String },
+    /// A component that a coverage selector requires to be declared, but
+    /// that belongs to no declared component.
+    Uncovered {
+        component: ComponentId,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
     },
     /// An import that resolves to nothing internal, standard or declared.
     UndeclaredImport {
@@ -169,6 +262,10 @@ pub fn check(graph: &ArchitectureGraph, rules: &RuleSet, depth: usize) -> Vec<Fi
         }
     }
 
+    findings.extend(check_layers(graph, rules, &membership));
+    findings.extend(check_allow(graph, rules, &membership));
+    findings.extend(check_coverage(graph, rules, &membership, depth));
+
     if rules.undeclared_imports.forbid {
         let ignore = &rules.undeclared_imports.ignore;
         for import in &graph.unresolved_imports {
@@ -203,7 +300,29 @@ pub fn check(graph: &ArchitectureGraph, rules: &RuleSet, depth: usize) -> Vec<Fi
 
     if rules.cycles.forbid {
         let rolled = graph.rollup(depth);
+        let scope = &rules.cycles.scope;
+        for (i, selector) in scope.iter().enumerate() {
+            if !graph
+                .components
+                .values()
+                .any(|c| selector_matches(selector, c))
+            {
+                findings.push(Finding::Unmatched {
+                    declared: format!("cycles.scope[{i}]"),
+                    selector: selector.clone(),
+                });
+            }
+        }
         for components in rolled.cycles() {
+            let in_scope = scope.is_empty()
+                || components.iter().any(|id| {
+                    rolled
+                        .component(id)
+                        .is_some_and(|c| scope.iter().any(|s| selector_matches(s, c)))
+                });
+            if !in_scope {
+                continue;
+            }
             let members: BTreeSet<&ComponentId> = components.iter().collect();
             let edges = rolled
                 .edges
@@ -216,11 +335,230 @@ pub fn check(graph: &ArchitectureGraph, rules: &RuleSet, depth: usize) -> Vec<Fi
                     evidence: e.evidence.clone(),
                 })
                 .collect();
-            findings.push(Finding::Cycle { components, edges });
+            let file_level = file_level(graph, &members, depth);
+            findings.push(Finding::Cycle {
+                components,
+                edges,
+                file_level,
+            });
         }
     }
 
     findings
+}
+
+/// Report `names` that are not declared components.
+fn unknown_names<'a>(
+    rules: &RuleSet,
+    names: impl IntoIterator<Item = (String, &'a String)>,
+) -> Vec<Finding> {
+    names
+        .into_iter()
+        .filter(|(_, name)| !rules.components.contains_key(*name))
+        .map(|(declared, name)| Finding::Unmatched {
+            declared,
+            selector: name.clone(),
+        })
+        .collect()
+}
+
+/// Edges whose both ends belong to (different) declared components, with
+/// the names of those components.
+fn declared_edges<'g>(
+    graph: &'g ArchitectureGraph,
+    membership: &'g BTreeMap<ComponentId, &'g str>,
+) -> impl Iterator<Item = (&'g str, &'g str, &'g crate::Edge)> + 'g {
+    graph.edges.iter().filter_map(move |edge| {
+        let (from, to) = (*membership.get(&edge.from)?, *membership.get(&edge.to)?);
+        (from != to).then_some((from, to, edge))
+    })
+}
+
+fn check_layers(
+    graph: &ArchitectureGraph,
+    rules: &RuleSet,
+    membership: &BTreeMap<ComponentId, &str>,
+) -> Vec<Finding> {
+    let order = &rules.layers.order;
+    let mut findings = unknown_names(
+        rules,
+        order
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (format!("layers.order[{i}]"), n)),
+    );
+    let rank: BTreeMap<&str, usize> = order
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.as_str(), i))
+        .collect();
+    for (from, to, edge) in declared_edges(graph, membership) {
+        if let (Some(&upper), Some(&lower)) = (rank.get(from), rank.get(to)) {
+            if lower < upper {
+                findings.push(Finding::LayerViolation {
+                    from_layer: from.to_owned(),
+                    to_layer: to.to_owned(),
+                    from: edge.from.clone(),
+                    to: edge.to.clone(),
+                    edge: edge.kind,
+                    evidence: edge.evidence.clone(),
+                });
+            }
+        }
+    }
+    findings
+}
+
+fn check_allow(
+    graph: &ArchitectureGraph,
+    rules: &RuleSet,
+    membership: &BTreeMap<ComponentId, &str>,
+) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    let mut allowed: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for (i, rule) in rules.allow.iter().enumerate() {
+        let mut names = vec![(format!("allow[{i}].from"), &rule.from)];
+        names.extend(rule.to.iter().map(|to| (format!("allow[{i}].to"), to)));
+        findings.extend(unknown_names(rules, names));
+        allowed
+            .entry(rule.from.as_str())
+            .or_default()
+            .extend(rule.to.iter().map(String::as_str));
+    }
+
+    let mut observed: BTreeSet<(&str, &str)> = BTreeSet::new();
+    for (from, to, edge) in declared_edges(graph, membership) {
+        observed.insert((from, to));
+        if allowed
+            .get(from)
+            .is_some_and(|targets| !targets.contains(to))
+        {
+            findings.push(Finding::UnexpectedDependency {
+                declared_from: from.to_owned(),
+                declared_to: to.to_owned(),
+                from: edge.from.clone(),
+                to: edge.to.clone(),
+                edge: edge.kind,
+                evidence: edge.evidence.clone(),
+            });
+        }
+    }
+    for (from, targets) in &allowed {
+        for to in targets {
+            let known = rules.components.contains_key(*from) && rules.components.contains_key(*to);
+            if known && from != to && !observed.contains(&(*from, *to)) {
+                findings.push(Finding::StaleAllowance {
+                    from: (*from).to_owned(),
+                    to: (*to).to_owned(),
+                });
+            }
+        }
+    }
+    findings
+}
+
+/// Components at the roll-up `depth` that a coverage selector covers must
+/// belong to a declared component. Only leaves count: a container such as
+/// `src` is covered by the declarations of what it contains.
+fn check_coverage(
+    graph: &ArchitectureGraph,
+    rules: &RuleSet,
+    membership: &BTreeMap<ComponentId, &str>,
+    depth: usize,
+) -> Vec<Finding> {
+    let require = &rules.coverage.require;
+    if require.is_empty() {
+        return Vec::new();
+    }
+    let mut findings = Vec::new();
+    for (i, selector) in require.iter().enumerate() {
+        if !graph
+            .components
+            .values()
+            .any(|c| selector_matches(selector, c))
+        {
+            findings.push(Finding::Unmatched {
+                declared: format!("coverage.require[{i}]"),
+                selector: selector.clone(),
+            });
+        }
+    }
+    let rolled = graph.rollup(depth);
+    let parents: BTreeSet<&ComponentId> = rolled
+        .components
+        .values()
+        .filter_map(|c| c.parent.as_ref())
+        .collect();
+    for component in rolled.components.values() {
+        let leaf = component.kind != ComponentKind::External && !parents.contains(&component.id);
+        if leaf
+            && require.iter().any(|s| selector_matches(s, component))
+            && !membership.contains_key(&component.id)
+        {
+            findings.push(Finding::Uncovered {
+                component: component.id.clone(),
+                path: component.path.clone(),
+            });
+        }
+    }
+    findings
+}
+
+/// Look for a file cycle behind a component cycle whose members are
+/// `members` at `depth`: a strongly connected group of files that spans at
+/// least two of the members.
+fn file_level(
+    graph: &ArchitectureGraph,
+    members: &BTreeSet<&ComponentId>,
+    depth: usize,
+) -> FileLevel {
+    let mut owner: BTreeMap<&str, ComponentId> = BTreeMap::new();
+    let mut pairs: Vec<(&str, &str, Option<Scope>)> = Vec::new();
+    for edge in &graph.edges {
+        let (from, to) = (
+            graph.ancestor_at(&edge.from, depth),
+            graph.ancestor_at(&edge.to, depth),
+        );
+        if !members.contains(&from) || !members.contains(&to) {
+            continue;
+        }
+        for e in &edge.evidence {
+            if let Some(target) = e.target.as_deref() {
+                owner.insert(e.file.as_str(), from.clone());
+                owner.insert(target, to.clone());
+                pairs.push((e.file.as_str(), target, e.scope));
+            }
+        }
+    }
+    if pairs.is_empty() {
+        return FileLevel::Unknown;
+    }
+    let spans = |group: &Vec<&str>| {
+        group
+            .iter()
+            .filter_map(|f| owner.get(f))
+            .collect::<BTreeSet<_>>()
+            .len()
+            >= 2
+    };
+    let Some(files) = strongly_connected(pairs.iter().map(|(a, b, _)| (*a, *b)))
+        .into_iter()
+        .find(|group| spans(group))
+    else {
+        return FileLevel::NoCycle;
+    };
+    let at_module_scope = strongly_connected(
+        pairs
+            .iter()
+            .filter(|(_, _, scope)| *scope != Some(Scope::Local))
+            .map(|(a, b, _)| (*a, *b)),
+    )
+    .iter()
+    .any(spans);
+    FileLevel::Cycle {
+        files: files.into_iter().map(str::to_owned).collect(),
+        at_module_scope,
+    }
 }
 
 /// Does the dotted `prefix` cover `module` (`a.b` covers `a.b` and `a.b.c`)?
@@ -486,6 +824,234 @@ mod tests {
         assert!(!covers("google.api", "google.api_core"));
     }
 
+    fn declared(pairs: &[(&str, &str)]) -> BTreeMap<String, Vec<String>> {
+        pairs
+            .iter()
+            .map(|(name, selector)| (name.to_string(), vec![selector.to_string()]))
+            .collect()
+    }
+
+    #[test]
+    fn layers_forbid_depending_on_a_higher_layer() {
+        // src.pipeline -> src.core, and src.core.io -> src.pipeline
+        let set = RuleSet {
+            components: declared(&[("domain", "src/core"), ("pipeline", "src/pipeline")]),
+            layers: LayerRule {
+                order: vec!["pipeline".into(), "domain".into(), "nowhere".into()],
+            },
+            ..RuleSet::default()
+        };
+        let findings = check(&graph(), &set, 2);
+        assert_eq!(findings.len(), 2, "{findings:?}");
+        assert!(findings.contains(&Finding::Unmatched {
+            declared: "layers.order[2]".into(),
+            selector: "nowhere".into()
+        }));
+        let Some(Finding::LayerViolation {
+            from_layer,
+            to_layer,
+            from,
+            ..
+        }) = findings
+            .iter()
+            .find(|f| matches!(f, Finding::LayerViolation { .. }))
+        else {
+            panic!("{findings:?}");
+        };
+        assert_eq!(
+            (from_layer.as_str(), to_layer.as_str(), from.as_str()),
+            ("domain", "pipeline", "src.core.io")
+        );
+    }
+
+    #[test]
+    fn allow_lists_report_unexpected_and_stale_dependencies() {
+        let set = RuleSet {
+            components: declared(&[
+                ("domain", "src/core"),
+                ("pipeline", "src/pipeline"),
+                ("scripts", "scripts"),
+            ]),
+            allow: vec![
+                // domain may depend on nothing declared
+                AllowRule {
+                    from: "domain".into(),
+                    to: vec![],
+                },
+                AllowRule {
+                    from: "pipeline".into(),
+                    to: vec!["domain".into(), "scripts".into()],
+                },
+            ],
+            ..RuleSet::default()
+        };
+        let findings = check(&graph(), &set, 2);
+        assert!(
+            findings.iter().any(|f| matches!(
+                f,
+                Finding::UnexpectedDependency { declared_from, declared_to, .. }
+                    if declared_from == "domain" && declared_to == "pipeline"
+            )),
+            "{findings:?}"
+        );
+        assert!(findings.contains(&Finding::StaleAllowance {
+            from: "pipeline".into(),
+            to: "scripts".into()
+        }));
+        // pipeline -> domain is allowed and observed: not reported
+        assert_eq!(findings.len(), 2, "{findings:?}");
+    }
+
+    #[test]
+    fn coverage_requires_leaf_components_to_be_declared() {
+        let set = RuleSet {
+            components: declared(&[("domain", "src/core")]),
+            coverage: CoverageRule {
+                require: vec!["src".into(), "lib".into()],
+            },
+            ..RuleSet::default()
+        };
+        let findings = check(&graph(), &set, 2);
+        assert!(findings.contains(&Finding::Uncovered {
+            component: "src.pipeline".into(),
+            path: Some("src/pipeline".into())
+        }));
+        assert!(findings.contains(&Finding::Unmatched {
+            declared: "coverage.require[1]".into(),
+            selector: "lib".into()
+        }));
+        // src.core and src.core.io are declared; scripts is not required
+        assert_eq!(findings.len(), 2, "{findings:?}");
+    }
+
+    fn modules(ids: &[(&str, &str)]) -> ArchitectureGraph {
+        let mut g = ArchitectureGraph::default();
+        for (id, path) in ids {
+            g.add_component(module(id, path));
+        }
+        g
+    }
+
+    fn file_dep(from: &str, to: &str, file: &str, target: &str, scope: Scope) -> crate::Edge {
+        crate::Edge::new(from, to, EdgeKind::Import).with_evidence(
+            Evidence::new(file)
+                .at_line(1)
+                .pointing_at(target)
+                .in_scope(scope),
+        )
+    }
+
+    fn file_level_of(g: &ArchitectureGraph) -> FileLevel {
+        let set = RuleSet {
+            cycles: CycleRule {
+                forbid: true,
+                scope: vec![],
+            },
+            ..RuleSet::default()
+        };
+        match check(g, &set, 9).into_iter().next() {
+            Some(Finding::Cycle { file_level, .. }) => file_level,
+            other => panic!("expected a cycle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn component_cycles_are_refined_with_file_evidence() {
+        // core -> util/log.py and util/store.py -> core: different files
+        let mut g = modules(&[("core", "core"), ("util", "util")]);
+        g.add_edges([
+            file_dep("core", "util", "core/a.py", "util/log.py", Scope::Module),
+            file_dep("util", "core", "util/store.py", "core/a.py", Scope::Module),
+        ]);
+        assert_eq!(file_level_of(&g), FileLevel::NoCycle);
+
+        // util/log.py imports core/a.py back, but only inside a function
+        g.add_edges([file_dep(
+            "util",
+            "core",
+            "util/log.py",
+            "core/a.py",
+            Scope::Local,
+        )]);
+        assert_eq!(
+            file_level_of(&g),
+            FileLevel::Cycle {
+                files: vec!["core/a.py".into(), "util/log.py".into()],
+                at_module_scope: false
+            }
+        );
+
+        // without file targets nothing can be said
+        let mut rust = modules(&[("a", "a"), ("b", "b")]);
+        rust.add_edges([
+            crate::Edge::new("a", "b", EdgeKind::Import).with_evidence(Evidence::new("a/lib.rs")),
+            crate::Edge::new("b", "a", EdgeKind::Import).with_evidence(Evidence::new("b/lib.rs")),
+        ]);
+        assert_eq!(file_level_of(&rust), FileLevel::Unknown);
+    }
+
+    #[test]
+    fn cycle_scope_limits_which_cycles_are_reported() {
+        let mut g = modules(&[
+            ("core", "src/core"),
+            ("util", "src/util"),
+            ("fa", "fixtures/a"),
+            ("fb", "fixtures/b"),
+        ]);
+        g.add_edges([
+            file_dep(
+                "core",
+                "util",
+                "src/core/a.py",
+                "src/util/b.py",
+                Scope::Module,
+            ),
+            file_dep(
+                "util",
+                "core",
+                "src/util/b.py",
+                "src/core/a.py",
+                Scope::Module,
+            ),
+            file_dep(
+                "fa",
+                "fb",
+                "fixtures/a/x.py",
+                "fixtures/b/y.py",
+                Scope::Module,
+            ),
+            file_dep(
+                "fb",
+                "fa",
+                "fixtures/b/y.py",
+                "fixtures/a/x.py",
+                Scope::Module,
+            ),
+        ]);
+        let set = RuleSet {
+            cycles: CycleRule {
+                forbid: true,
+                scope: vec!["src".into(), "vendor".into()],
+            },
+            ..RuleSet::default()
+        };
+        let findings = check(&g, &set, 9);
+        let cycles: Vec<Vec<&str>> = findings
+            .iter()
+            .filter_map(|f| match f {
+                Finding::Cycle { components, .. } => {
+                    Some(components.iter().map(|c| c.as_str()).collect())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(cycles, vec![vec!["core", "util"]]);
+        assert!(findings.contains(&Finding::Unmatched {
+            declared: "cycles.scope[1]".into(),
+            selector: "vendor".into()
+        }));
+    }
+
     #[test]
     fn cycles_are_reported_at_the_requested_depth() {
         let mut g = graph();
@@ -499,12 +1065,18 @@ mod tests {
         g.components.insert(io.id.clone(), io);
 
         let set = RuleSet {
-            cycles: CycleRule { forbid: true },
+            cycles: CycleRule {
+                forbid: true,
+                scope: vec![],
+            },
             ..RuleSet::default()
         };
         // at depth 1, src.core.io folds into src.core: core <-> pipeline
         let findings = check(&g, &set, 1);
-        let Some(Finding::Cycle { components, edges }) = findings.first() else {
+        let Some(Finding::Cycle {
+            components, edges, ..
+        }) = findings.first()
+        else {
             panic!("expected a cycle: {findings:?}");
         };
         let members: Vec<&str> = components.iter().map(|c| c.as_str()).collect();

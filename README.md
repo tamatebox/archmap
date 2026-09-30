@@ -26,7 +26,8 @@ The graph is meant to be consumed by agents as much as by humans:
   because `summary`, `query` and `impact` return the parts they need
 - `archmap query` answers "what does component X expose and depend on"
 - `archmap impact` answers "if I touch this file or component, what else might be affected"
-- `archmap check` tells an agent or CI whether a change broke a declared dependency rule
+- `archmap check` tells an agent or CI whether a change broke a declared dependency rule,
+  and points out structural signals that are observations, not failures
 - every fact points to `file:line` evidence, so an agent can verify and jump to the source
 
 An MCP adapter is planned, but the engine and CLI come first.
@@ -84,6 +85,9 @@ can use a copy of it.
     components (PEP 420), so `tests/`, `scripts/` or `experiments/` are components of their own
   - `import` / `from ... import` (including relative imports) become `import` edges between modules,
     or to a declared external dependency
+  - the evidence of each import names the file it loads (`pkg/sub.py`, otherwise `pkg/__init__.py`)
+    and its scope: `local` inside a function body, `module` elsewhere (including under `if`, `try` and
+    `class`); imports between files of one component are kept as self edges, which roll-up hides
   - import names are matched to declared distributions by name (`pandas_gbq`), by dotted name
     (`google.cloud.bigquery`), through installed `RECORD` files in a `.venv`, and finally through a small
     table of well-known names (`sklearn`, `yaml`); the evidence note of each import says which one matched,
@@ -91,23 +95,27 @@ can use a copy of it.
   - public top-level `def` / `class` / `CONSTANT` and public methods of public classes become symbols
     for files inside a regular package tree; test files (pytest conventions) and namespace trees outside
     any regular package contribute imports only
-  - source files are scanned structurally line by line, not parsed; bodies are ignored
+  - source files are scanned structurally line by line, not parsed; function bodies are read only for imports
 - JSON output with evidence on every node and edge, written to `<root>/.archmap/graph.json` by default
-- structural roll-up and a deterministic Markdown summary, written to `<root>/.archmap/summary.md`
-- `query` and `impact` implemented on top of the scanned graph
+- structural roll-up and a deterministic, line-oriented summary printed to stdout
+- `query` on top of the rolled-up graph, and `impact` that follows imports file by file
 - `check` compares the graph with a declared architecture in `archmap.toml`: forbidden
-  dependencies, cycles, undeclared imports, and declarations that match nothing
+  dependencies, layers, allow lists, coverage, cycles, undeclared imports, and declarations
+  that match nothing; it also reports structural signals, with or without `archmap.toml`
 
 Known gaps: the standard library and undeclared packages produce no edges by
 design, though `check` can report undeclared imports; dynamic imports and
-`sys.path` changes made at runtime are not seen; Rust components are
-package-level while Python components are module-level.
+`sys.path` changes made at runtime are not seen; `impact` does not follow the
+parent `__init__.py` that Python loads implicitly before a submodule; Rust
+components are package-level while Python components are module-level, and
+Rust evidence does not name target files yet.
 
 ## Usage
 
 ```bash
-cargo run -p archmap-cli -- summary .                 # writes ./.archmap/summary.md
-cargo run -p archmap-cli -- summary . --depth 1 -o -  # coarser, to stdout
+cargo run -p archmap-cli -- summary .                 # prints to stdout
+cargo run -p archmap-cli -- summary . --depth 1       # coarser
+cargo run -p archmap-cli -- summary . -o summary.md   # saves to a file instead
 cargo run -p archmap-cli -- scan .                    # writes ./.archmap/graph.json
 cargo run -p archmap-cli -- scan . -o graph.json      # explicit file
 cargo run -p archmap-cli -- scan . -o - | jq .edges   # stdout
@@ -121,6 +129,7 @@ cargo run -p archmap-cli -- impact crates/archmap-scan/src/lib.rs
 cargo run -p archmap-cli -- query src.pipeline.components --depth 3 --path ../some-python-repo
 cargo run -p archmap-cli -- check                 # rules from ./archmap.toml; exit 1 on findings
 cargo run -p archmap-cli -- check --format json --config ci/rules.toml
+cargo run -p archmap-cli -- check --path ../some-python-repo   # no archmap.toml: signals only
 
 # any Python project or package directory works the same way
 cargo run -p archmap-cli -- scan ../some-python-repo
@@ -149,7 +158,15 @@ ArchitectureGraph
 ├── symbols:    { id -> Symbol { kind: function | struct | enum | trait | ..., component, signature, evidence } }
 ├── edges:      [ Edge { from, to, kind: import | dependency | call | http | database | event | unknown, evidence } ]
 └── unresolved_imports: [ UnresolvedImport { from, module, provided_by?, evidence } ]
+
+Evidence { file, line?, note?, target?, scope?: module | local }
 ```
+
+`target` is the repository file a dependency points at and `scope` says
+whether the statement runs when its file loads (`module`) or only when a
+function is called (`local`). Roll-up hides which files of a component are
+involved; `impact` and the cycle check read `target` and `scope` to recover
+it. Python records both; Rust records neither yet.
 
 An unresolved import is an import that matches no internal module, no
 standard-library module, no declared distribution and no file or directory
@@ -160,27 +177,34 @@ collapses edges that describe the same relationship, and keeps all of their
 evidence. Output is deterministic (sorted, no timestamps) so graphs can be
 diffed.
 
-`archmap scan` and `archmap summary` write only their own output files. They
-do not add a `.gitignore` or otherwise decide whether the output is
-committed; add `.archmap/` to your repository's ignore rules if you do not
-want it tracked. `summary`, `query` and `impact` re-scan instead of reading
-the saved graph, so they are never stale.
+`archmap scan` writes only its own output file, and `summary` writes a file
+only when `-o` names one. Neither adds a `.gitignore` or otherwise decides
+whether the output is committed; add `.archmap/` to your repository's ignore
+rules if you do not want it tracked. `summary`, `query`, `impact` and
+`check` re-scan instead of reading the saved graph, so they are never stale.
 
 ## Summary
 
-`archmap summary` rolls the graph up and renders it as Markdown. Depth
-counts containment levels below a package: depth 0 keeps only packages,
-depth 2 keeps packages and two levels of modules, and anything deeper is
-folded into its ancestor. The summary lists:
+`archmap summary` rolls the graph up and prints it to stdout, one fact per
+line under a few Markdown headings. Depth counts containment levels below a
+package: depth 0 keeps only packages, depth 2 keeps packages and two levels
+of modules, and anything deeper is folded into its ancestor. The summary
+contains:
 
-- the component tree with paths, public symbol counts and how many
-  submodules were folded
-- internal dependencies with the number of import statements behind each
-- external dependencies with where they are declared and who imports them
-- the components depended on by the most others
+- a header of `key: value` lines: `root`, `depth`, `components: N shown, M in
+  the full graph`, counts, the `source` of the facts and the `next` commands
+- the component tree, indented by containment, with kind, language, path,
+  `symbols: N` and `folded: N` for submodules folded into the component
+- internal dependencies as `a -> b  imports: N`, plus `declared: yes` when a
+  manifest also declares the dependency; N counts distinct `file:line`
+  statements, and imports between files of one component are not listed
+- external dependencies with the manifests that declare them (`declared:`),
+  the number of importing components (`importers:`) and the top importers
+- the components depended on by the most others, with `dependents`,
+  `dependencies` and `rank`
 
-On a 380-file Python repository, depth 2 turns a 650 KB graph into a
-summary of about 10 KB.
+On a 380-file Python repository, depth 2 turns a 760 KB graph into a
+summary of about 11 KB.
 
 `summary`, `query` and `impact` share one default depth, so they always
 describe the same components. Asking `query` or `impact` about a component
@@ -191,9 +215,22 @@ says so, and `query` lists the children to ask about with a larger
 `query` prints compact text by default: public symbols with their location,
 and each neighboring component with its import count and a few example
 locations. Lists are capped at 30 entries and 3 locations, and the rest is
-counted. On the repository above, its busiest component takes 7 KB as text
-and 94 KB as JSON. `--verbose` lifts the caps and `--format json` adds every
+counted. On the repository above, its busiest component takes 8 KB as text
+and 117 KB as JSON. `--verbose` lifts the caps and `--format json` adds every
 piece of evidence.
+
+`impact` follows imports file by file where the evidence names the imported
+file: a component is affected only when one of its files imports what
+changed, directly or through other files, not merely because it imports some
+file of the same component. A file target starts from that file; a component
+target starts from all of its files. Dependencies without a target file
+(manifests, external packages, Rust) are followed component by component,
+and the result is still reported at the roll-up depth. It does not follow the
+parent `__init__.py` that Python runs before a submodule, and a path that
+names no component or file is an error. On the repository above, a cycle
+between its two most shared components made a change to either reach 29
+components; following files, a single changed file in them reaches 8 to 27
+components depending on the file.
 
 ## Rules
 
@@ -212,23 +249,63 @@ reason = "domain code must not know about orchestration"
 
 [cycles]
 forbid = true           # cycles between components at the roll-up depth
+scope = ["src"]         # only cycles with a member under these selectors
 
 [undeclared_imports]
 forbid = true           # imports of packages no manifest declares
 ignore = ["ujson"]      # dotted prefixes to accept, e.g. optional imports
+
+[layers]
+order = ["pipeline", "domain"]   # top to bottom: never depend on a layer above
+
+[[allow]]
+from = "domain"
+to = []                 # the declared components domain may depend on
+
+[coverage]
+require = ["src"]       # everything under src must be declared
 ```
 
 A selector is a path prefix, where `src/core` covers everything below it, or
 an external id such as `ext:requests` or `ext:google-*`. When selectors
-overlap, the most specific one owns a component.
+overlap, the most specific one owns a component. `deny` sides take declared
+names or selectors; `layers` and `allow` take declared names only.
 
-`check` reports forbidden dependencies with the evidence behind them,
-dependency cycles at the roll-up depth (`depth` in the file or `--depth`,
-default 2), undeclared imports, and declarations, rule sides or `ignore`
-entries that match nothing, so a typo never silently disables a rule. It
+Layers go from the top down, and a dependency on a layer above is a
+violation. An allow list turns a declared component's dependencies into a
+closed set: any other dependency on a declared component is unexpected, and
+an allowed dependency the code no longer has is stale. Coverage requires
+every component under its selectors to belong to a declaration, judged at
+the roll-up depth and for leaves only, so a container such as `src` counts
+as covered by what it contains.
+
+`check` reports forbidden, upward and unexpected dependencies with the
+evidence behind them, stale allowances, uncovered components, dependency
+cycles at the roll-up depth (`depth` in the file or `--depth`, default 2),
+undeclared imports, and declarations, rule sides or `ignore` entries that
+match nothing, so a typo never silently disables a rule. Text output shows
+up to 3 locations per finding; `--format json` lists all of them. It
 exits 0 without findings, 1 with findings, and 2 when the rules or the
-repository cannot be read. archmap checks its own `cli -> scan -> core`
-direction this way; see `archmap.toml`.
+repository cannot be read, including a `--config` file that does not exist.
+Without `--config` and without an `archmap.toml`, `check` reports signals
+only and exits 0. archmap checks its own `cli -> scan -> core` direction
+this way; see `archmap.toml`.
+
+`[cycles] scope` limits cycle findings to cycles with at least one member
+under its selectors, such as product code but not fixtures. Every cycle
+finding also says what the files behind it show, because roll-up joins the
+files of each component and different files can close the loop:
+
+- `file level: no cycle; different files form each direction`: only the
+  components form a cycle
+- `file level: cycle through <files>`: files of at least two of the
+  components form a cycle, and the line ends with `closes at module scope`
+  or `closes only through local-scope imports` (it disappears without
+  imports inside function bodies)
+- `file level: unknown, no import targets recorded`: no evidence names the
+  imported files, as for Rust
+
+None of these says whether the program fails at runtime.
 
 For Python, an import counts as declared when a runtime dependency, an extra,
 a dependency group or a dev dependency declares its distribution. Without a
@@ -240,18 +317,40 @@ dependency.
 The declared architecture never changes what `scan`, `summary`, `query` or
 `impact` report.
 
+## Signals
+
+`check` also reports signals: deterministic observations about the shape of
+the code, with the files behind them. A signal is not a violation. It never
+changes the exit code and needs no `archmap.toml`; text output prints it as
+a `signal:` line and JSON lists it under `signals`.
+
+One kind exists today, `mixed_directions`: a component and a partner
+depend on each other, but the files of the component that the partner uses
+are not the files that use the partner.
+
+```text
+signal: app.utils mixes dependency directions with app.core, app.models
+  used by them: app/utils/log.py (2)
+  using them: app/utils/registry.py -> app.models; app/utils/store.py -> app.core
+```
+
+It often explains a component cycle that has no file cycle behind it: one
+directory holds both shared helpers and code built on top of other
+components. Whether that is a problem is a judgement: archmap attaches one
+only where a threshold for it is declared, and none can be declared yet.
+
 ## Roadmap
 
 Phases describe capability layers, not a strict order of work. Phase 6
 already ships a plugin and skill because they only wrap the CLI, while
-Phase 3 is still open.
+Phases 4 and 5 have not started.
 
 | Phase | Scope | Status |
 |---|---|---|
 | 0 Discovery | languages, manifests, packages; report detected languages even without an analyzer | Rust and Python only |
 | 1 Structural Facts | modules, public symbols, imports, dependencies | Rust and Python |
-| 2 Structural Compression & Agent Context | roll-up; `summary`, `query` and `impact` small enough for an agent and at one granularity; full detail with `--format json` | done for Python |
-| 3 Rules & Declared Architecture | declared components and layers, cycles, forbidden dependencies, drift, CI `check` | deny rules, cycles, undeclared imports, stale declarations; layers and wider drift open |
+| 2 Structural Compression & Agent Context | roll-up; `summary`, `query` and `impact` small enough for an agent and at one granularity; full detail with `--format json` | done for Python; `impact` follows files |
+| 3 Rules & Declared Architecture | declared components and layers, cycles, forbidden dependencies, drift, CI `check` | done: deny rules, layers, allow lists, coverage, cycles with a file-level reading, undeclared imports, stale declarations; structural signals |
 | 4 Cross-system Graph | OpenAPI, Terraform, databases, HTTP, events | planned |
 | 5 Semantic Enrichment | LLM naming and responsibilities, stored as inferred facts | planned |
 | 6 Agent Interface | plugin and skill for agents, MCP adapter over the same engine | plugin and skill exist; MCP planned |
@@ -266,16 +365,16 @@ Python is evaluation-ready: import names resolve to declared distributions,
 `query` and `impact` see the same components as `summary`, and the outputs
 meet those sizes. The next step is an evaluation with a coding agent,
 comparing the same tasks without archmap and with archmap as a whole: the
-summary up front, plus `query` and `impact` on demand. Correctness is
-compared first, then tokens, tool calls and turns.
+CLI plus the `plugins/archmap` plugin, whose skill starts from `summary` and
+drills down with `query` and `impact`. Correctness is compared first, then
+tokens, tool calls and turns.
 
 Cross-system graphs, LLM enrichment and MCP do not change what an agent
-learns about a repository, so they wait for that evaluation. Rules started
-early for the same reason: they never change what `summary`, `query` or
-`impact` report. Still open in Phase 3: ordered layers, and drift beyond
-declarations that match nothing. Before Rust repositories are evaluated, Rust
-needs module-level components; generic discovery for unsupported languages
-completes Phase 0.
+learns about a repository, so they wait for that evaluation. Rules came
+first for the same reason: they never change what `summary`, `query` or
+`impact` report. Before Rust repositories are evaluated, Rust needs
+module-level components and target files in its evidence; generic discovery
+for unsupported languages completes Phase 0.
 
 ## Development
 

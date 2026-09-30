@@ -2,24 +2,32 @@
 # The dependency direction is cli -> scan -> core (see CLAUDE.md).
 
 [components]
-core = ["crates/archmap-core"]
-scan = ["crates/archmap-scan"]
 cli = ["crates/archmap-cli"]
+scan = ["crates/archmap-scan"]
+core = ["crates/archmap-core"]
 
-[[deny]]
-from = "core"
-to = "scan"
-reason = "archmap-core depends on no other workspace crate"
+# Top to bottom: a layer may depend on the layers below it, never above.
+[layers]
+order = ["cli", "scan", "core"]
 
-[[deny]]
-from = "core"
-to = "cli"
-reason = "archmap-core depends on no other workspace crate"
+# What each crate is expected to depend on. core depends on no other crate.
+[[allow]]
+from = "cli"
+to = ["scan", "core"]
 
-[[deny]]
+[[allow]]
 from = "scan"
-to = "cli"
-reason = "the dependency direction is cli -> scan -> core"
+to = ["core"]
 
+[[allow]]
+from = "core"
+to = []
+
+# Every crate must be declared above.
+[coverage]
+require = ["crates"]
+
+# Cycles in archmap's own crates; fixtures contain cycles on purpose.
 [cycles]
 forbid = true
+scope = ["crates"]

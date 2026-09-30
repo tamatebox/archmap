@@ -231,4 +231,15 @@ impl Edge {
     pub fn same_relationship(&self, other: &Edge) -> bool {
         self.from == other.from && self.to == other.to && self.kind == other.kind
     }
+
+    /// Distinct source locations behind the edge. One statement can point
+    /// at several files (`from pkg import a, b`), so this can be smaller
+    /// than `evidence.len()`.
+    pub fn statements(&self) -> usize {
+        self.evidence
+            .iter()
+            .map(|e| (&e.file, e.line))
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+    }
 }

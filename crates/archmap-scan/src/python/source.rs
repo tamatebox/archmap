@@ -17,6 +17,8 @@ pub struct PyImport {
     /// Names imported by a `from` statement (may be submodules).
     pub names: Vec<String>,
     pub line: u32,
+    /// Inside a function body, so it runs only when the function is called.
+    pub local: bool,
 }
 
 /// One public definition.
@@ -47,6 +49,8 @@ pub fn scan_source(text: &str) -> PyFile {
     let mut out = PyFile::default();
     let mut class: Option<ClassCtx> = None;
     let mut in_string: Option<&str> = None;
+    // Indentation of the enclosing `def` headers, innermost last.
+    let mut functions: Vec<usize> = Vec::new();
     let mut i = 0;
 
     while i < lines.len() {
@@ -75,6 +79,11 @@ pub fn scan_source(text: &str) -> PyFile {
             continue;
         }
 
+        while functions.last().is_some_and(|&d| indent <= d) {
+            functions.pop();
+        }
+        let local = !functions.is_empty();
+
         // Leaving a class body.
         if let Some(ctx) = &class {
             if indent <= ctx.indent {
@@ -96,6 +105,7 @@ pub fn scan_source(text: &str) -> PyFile {
                         level: 0,
                         names: Vec::new(),
                         line: line_no,
+                        local,
                     });
                 }
             }
@@ -122,6 +132,7 @@ pub fn scan_source(text: &str) -> PyFile {
                     level,
                     names,
                     line: line_no,
+                    local,
                 });
             }
             continue;
@@ -132,6 +143,9 @@ pub fn scan_source(text: &str) -> PyFile {
         if is_def || is_class {
             let (header, consumed) = collect_header(&lines, i - 1);
             i = (i - 1) + consumed;
+            if is_def {
+                functions.push(indent);
+            }
             let Some(name) = def_name(&header) else {
                 continue;
             };
@@ -384,6 +398,30 @@ CURRENCY = "JPY"
         assert_eq!(
             file.defs[3].signature.as_deref(),
             Some("def charge(self, amount: int) -> \"Receipt\"")
+        );
+    }
+
+    #[test]
+    fn imports_inside_functions_are_local() {
+        let text = "import a\nif flag:\n    import b\nclass C:\n    import c\n    def m(self):\n        import d\n    x = 1\ndef f():\n    import e\n    def g():\n        import f2\n    import h\nimport i\n";
+        let file = scan_source(text);
+        let local: Vec<(&str, bool)> = file
+            .imports
+            .iter()
+            .map(|i| (i.module.as_str(), i.local))
+            .collect();
+        assert_eq!(
+            local,
+            vec![
+                ("a", false),
+                ("b", false), // module level, inside `if`: runs on load
+                ("c", false), // class bodies run on load too
+                ("d", true),
+                ("e", true),
+                ("f2", true),
+                ("h", true),
+                ("i", false),
+            ]
         );
     }
 

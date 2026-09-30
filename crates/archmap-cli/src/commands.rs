@@ -2,8 +2,11 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
-use archmap_core::rules::{Finding, RuleSet};
-use archmap_core::{ArchitectureGraph, Component, ComponentId, Edge, Evidence, Symbol, SymbolId};
+use archmap_core::rules::{FileLevel, Finding, RuleSet};
+use archmap_core::signals::Signal;
+use archmap_core::{
+    ArchitectureGraph, ChangeSeed, Component, ComponentId, Edge, Evidence, Symbol, SymbolId,
+};
 use archmap_scan::{ScanOptions, ScanReport};
 use serde::Serialize;
 
@@ -47,7 +50,9 @@ pub fn scan(
 pub fn summary(path: &str, depth: usize, output: Option<&Path>) -> Result<ExitCode> {
     let report = run_scan(path, false)?;
     let markdown = crate::summary::render(&report.graph, depth);
-    if let Some(file) = write_output(path, "summary.md", output, &markdown)? {
+    // A summary is a view: printed by default, saved only when asked.
+    let output = output.unwrap_or(Path::new("-"));
+    if let Some(file) = write_output(path, "summary.md", Some(output), &markdown)? {
         eprintln!(
             "wrote {} (depth {depth}, {} bytes)",
             file.display(),
@@ -232,18 +237,36 @@ pub fn impact(path: &str, target: &str, depth: usize, format: OutputFormat) -> R
     let full = &report.graph;
     let rolled = full.rollup(depth);
 
-    let at = resolve_at_depth(full, &rolled, depth, target)
-        .or_else(|| {
-            full.component_for_path(target)
-                .map(|c| fold(full, depth, &c.id))
-        })
-        .with_context(|| format!("no component or file `{target}` in graph"))?;
+    let component = find_component(&rolled, target)
+        .or_else(|| find_component(full, target))
+        .map(|c| c.id.clone());
+    let relative = target.trim_start_matches("./").trim_end_matches('/');
+    let on_disk = Path::new(path).join(relative);
+    let (at, reach) = if let Some(id) = component {
+        let reach = full.change_impact(ChangeSeed::Component(&id), depth);
+        (fold(full, depth, &id), reach)
+    } else if on_disk.is_file() {
+        let owner = full
+            .component_for_path(relative)
+            .with_context(|| format!("no component contains `{target}`"))?;
+        let reach = full.change_impact(ChangeSeed::File(relative), depth);
+        (fold(full, depth, &owner.id), reach)
+    } else if on_disk.is_dir() {
+        let owner = full
+            .component_for_path(relative)
+            .with_context(|| format!("no component contains `{target}`"))?;
+        let id = owner.id.clone();
+        let reach = full.change_impact(ChangeSeed::Component(&id), depth);
+        (fold(full, depth, &id), reach)
+    } else {
+        bail!("no component or file `{target}` in graph");
+    };
 
     let result = ImpactResult {
         requested: target,
         depth,
-        direct: rolled.dependents_of(&at.id).into_iter().collect(),
-        transitive: rolled.transitive_dependents(&at.id).into_iter().collect(),
+        direct: reach.direct.into_iter().collect(),
+        transitive: reach.transitive.into_iter().collect(),
         target: at.id,
         folded_from: at.folded_from,
     };
@@ -256,24 +279,29 @@ pub const RULES_FILE: &str = "archmap.toml";
 
 #[derive(Debug, Serialize)]
 struct CheckReport<'a> {
-    rules: String,
+    /// The rules file, or `None` when there is none and only signals are
+    /// reported.
+    rules: Option<String>,
     depth: usize,
     findings: &'a [Finding],
+    signals: &'a [Signal],
 }
 
 /// Exit codes: 0 without findings, 1 with findings, 2 when the rules or the
-/// repository cannot be read.
+/// repository cannot be read. Signals never change the exit code. Without a
+/// rules file only signals are reported.
 pub fn check(
     path: &str,
     config: Option<&Path>,
     depth: Option<usize>,
     format: ReportFormat,
 ) -> Result<ExitCode> {
-    let rules_path = config
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| Path::new(path).join(RULES_FILE));
-    let rules = match load_rules(&rules_path) {
-        Ok(rules) => rules,
+    let rules_path = match config {
+        Some(file) => Some(file.to_path_buf()),
+        None => Some(Path::new(path).join(RULES_FILE)).filter(|p| p.exists()),
+    };
+    let rules = match rules_path.as_deref().map(load_rules).transpose() {
+        Ok(rules) => rules.unwrap_or_default(),
         Err(err) => {
             eprintln!("error: {err:#}");
             return Ok(ExitCode::from(2));
@@ -288,18 +316,23 @@ pub fn check(
     };
     let depth = depth.or(rules.depth).unwrap_or(DEFAULT_DEPTH);
     let findings = archmap_core::rules::check(&report.graph, &rules, depth);
+    let signals = archmap_core::signals::signals(&report.graph, depth);
 
-    let shown = rules_path.display().to_string();
+    let shown = rules_path.map(|p| p.display().to_string());
     match format {
         ReportFormat::Json => {
             let report = CheckReport {
                 rules: shown,
                 depth,
                 findings: &findings,
+                signals: &signals,
             };
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
-        ReportFormat::Text => print!("{}", check_text(&report.graph, &findings, &shown, depth)),
+        ReportFormat::Text => print!(
+            "{}",
+            check_text(&report.graph, &findings, &signals, shown.as_deref(), depth)
+        ),
     }
     Ok(if findings.is_empty() {
         ExitCode::SUCCESS
@@ -318,10 +351,16 @@ fn load_rules(path: &Path) -> Result<RuleSet> {
     toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
 }
 
+/// Evidence lines per finding in text output; JSON has every one.
+const MAX_CHECK_LOCATIONS: usize = 3;
+/// Edges listed per cycle in text output.
+const MAX_CYCLE_EDGES: usize = 10;
+
 fn check_text(
     graph: &ArchitectureGraph,
     findings: &[Finding],
-    rules: &str,
+    signals: &[Signal],
+    rules: Option<&str>,
     depth: usize,
 ) -> String {
     let name = |id: &ComponentId| {
@@ -329,26 +368,20 @@ fn check_text(
             .component(id)
             .map_or(id.as_str().to_owned(), |c| c.name.clone())
     };
-    let location = |e: &Evidence| {
-        let mut s = e.file.clone();
-        if let Some(line) = e.line {
-            s.push_str(&format!(":{line}"));
-        }
-        if let Some(note) = &e.note {
-            s.push_str(&format!("  {note}"));
-        }
-        s
-    };
-
     let mut out = String::new();
-    let count = match findings.len() {
-        0 => "no findings".to_owned(),
-        1 => "1 finding".to_owned(),
-        n => format!("{n} findings"),
+    let count = |n: usize, noun: &str| match n {
+        0 => format!("no {noun}s"),
+        1 => format!("1 {noun}"),
+        n => format!("{n} {noun}s"),
     };
+    let rules = rules.unwrap_or("none, signals only");
     out.push_str(&format!(
-        "archmap check: {count} (rules: {rules}, cycle depth {depth})\n"
+        "archmap check: {}, {} (rules: {rules}, roll-up depth {depth})\n",
+        count(findings.len(), "finding"),
+        count(signals.len(), "signal")
     ));
+
+    let mut truncated = false;
     for finding in findings {
         out.push('\n');
         match finding {
@@ -371,16 +404,92 @@ fn check_text(
                 if let Some(reason) = &deny.reason {
                     out.push_str(&format!("  reason: {reason}\n"));
                 }
-                for e in evidence {
-                    out.push_str(&format!("  {}\n", location(e)));
-                }
+                truncated |= evidence_lines(&mut out, evidence);
             }
-            Finding::Cycle { components, edges } => {
+            Finding::LayerViolation {
+                from_layer,
+                to_layer,
+                from,
+                to,
+                edge,
+                evidence,
+            } => {
+                out.push_str(&format!(
+                    "layer violation: {from_layer} must not depend on the higher layer {to_layer}: {} -> {} ({})\n",
+                    name(from),
+                    name(to),
+                    edge.as_str()
+                ));
+                truncated |= evidence_lines(&mut out, evidence);
+            }
+            Finding::UnexpectedDependency {
+                declared_from,
+                declared_to,
+                from,
+                to,
+                edge,
+                evidence,
+            } => {
+                out.push_str(&format!(
+                    "unexpected dependency: {declared_from} -> {declared_to} is not in the allow list: {} -> {} ({})\n",
+                    name(from),
+                    name(to),
+                    edge.as_str()
+                ));
+                truncated |= evidence_lines(&mut out, evidence);
+            }
+            Finding::StaleAllowance { from, to } => {
+                out.push_str(&format!(
+                    "stale allowance: {from} -> {to} is allowed but not observed\n"
+                ));
+            }
+            Finding::Uncovered { component, path } => {
+                let at = path
+                    .as_deref()
+                    .map(|p| format!(" at {p}"))
+                    .unwrap_or_default();
+                out.push_str(&format!(
+                    "uncovered: {}{at} belongs to no declared component\n",
+                    name(component)
+                ));
+            }
+            Finding::Cycle {
+                components,
+                edges,
+                file_level,
+            } => {
                 let names: Vec<String> = components.iter().map(&name).collect();
                 out.push_str(&format!("cycle: {}\n", names.join(", ")));
-                for e in edges {
-                    let at = e.evidence.first().map(&location).unwrap_or_default();
+                out.push_str(&match file_level {
+                    FileLevel::Unknown => {
+                        "  file level: unknown, no import targets recorded\n".to_owned()
+                    }
+                    FileLevel::NoCycle => {
+                        "  file level: no cycle; different files form each direction\n".to_owned()
+                    }
+                    FileLevel::Cycle {
+                        files,
+                        at_module_scope,
+                    } => format!(
+                        "  file level: cycle through {}; {}\n",
+                        files.join(", "),
+                        if *at_module_scope {
+                            "closes at module scope"
+                        } else {
+                            "closes only through local-scope imports"
+                        }
+                    ),
+                });
+                for e in edges.iter().take(MAX_CYCLE_EDGES) {
+                    let at = e.evidence.first().map(location).unwrap_or_default();
                     out.push_str(&format!("  {} -> {}  {at}\n", name(&e.from), name(&e.to)));
+                }
+                if edges.len() > MAX_CYCLE_EDGES {
+                    out.push_str(&format!(
+                        "  +{} more edges\n",
+                        edges.len() - MAX_CYCLE_EDGES
+                    ));
+                    truncated = true;
                 }
             }
             Finding::UndeclaredImport {
@@ -407,5 +516,84 @@ fn check_text(
             }
         }
     }
+    for signal in signals {
+        out.push('\n');
+        match signal {
+            Signal::MixedDirections {
+                component,
+                partners,
+                used_by_partners,
+                depending_on_partners,
+            } => {
+                let partner_names: Vec<String> = partners.iter().map(&name).collect();
+                out.push_str(&format!(
+                    "signal: {} mixes dependency directions with {}\n",
+                    name(component),
+                    partner_names.join(", ")
+                ));
+                let used: Vec<String> = used_by_partners
+                    .iter()
+                    .map(|u| format!("{} ({})", u.file, u.partners))
+                    .collect();
+                let using: Vec<String> = depending_on_partners
+                    .iter()
+                    .map(|d| {
+                        let on: Vec<String> = d.partners.iter().map(&name).collect();
+                        format!("{} -> {}", d.file, on.join(", "))
+                    })
+                    .collect();
+                truncated |= capped_list(&mut out, "used by them", &used);
+                truncated |= capped_list(&mut out, "using them", &using);
+            }
+        }
+    }
+    if !signals.is_empty() {
+        out.push_str("\nSignals are observations; they never change the exit code.\n");
+    }
+    if truncated {
+        out.push_str("\nSome entries are left out; --format json lists every one.\n");
+    }
     out
+}
+
+/// `  label: a, b, c, +N more`; returns whether entries were left out.
+fn capped_list(out: &mut String, label: &str, entries: &[String]) -> bool {
+    let shown: Vec<&str> = entries
+        .iter()
+        .take(MAX_CHECK_LOCATIONS + 2)
+        .map(String::as_str)
+        .collect();
+    let more = entries.len().saturating_sub(shown.len());
+    out.push_str(&format!("  {label}: {}", shown.join("; ")));
+    if more > 0 {
+        out.push_str(&format!("; +{more} more"));
+    }
+    out.push('\n');
+    more > 0
+}
+
+fn location(e: &Evidence) -> String {
+    let mut s = e.file.clone();
+    if let Some(line) = e.line {
+        s.push_str(&format!(":{line}"));
+    }
+    if let Some(target) = &e.target {
+        s.push_str(&format!(" -> {target}"));
+    }
+    if let Some(note) = &e.note {
+        s.push_str(&format!("  {note}"));
+    }
+    s
+}
+
+/// Up to `MAX_CHECK_LOCATIONS` evidence lines; returns whether some were cut.
+fn evidence_lines(out: &mut String, evidence: &[Evidence]) -> bool {
+    for e in evidence.iter().take(MAX_CHECK_LOCATIONS) {
+        out.push_str(&format!("  {}\n", location(e)));
+    }
+    let more = evidence.len().saturating_sub(MAX_CHECK_LOCATIONS);
+    if more > 0 {
+        out.push_str(&format!("  +{more} more\n"));
+    }
+    more > 0
 }

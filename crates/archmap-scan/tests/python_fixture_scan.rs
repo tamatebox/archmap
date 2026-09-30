@@ -121,8 +121,26 @@ fn imports_resolve_between_modules_and_to_declared_externals() {
         .components
         .keys()
         .all(|k| !k.as_str().contains("api-core")));
-    // stdlib and self-imports are not edges
-    assert!(graph.edges.iter().all(|e| e.from != e.to));
+    // imports between files of one component are self-edges that always
+    // point at another file; stdlib imports are not edges at all
+    for edge in graph.edges.iter().filter(|e| e.from == e.to) {
+        for e in &edge.evidence {
+            let target = e
+                .target
+                .as_deref()
+                .expect("intra-component imports name a file");
+            assert_ne!(target, e.file);
+        }
+    }
+    let intra = graph
+        .edges
+        .iter()
+        .find(|e| e.from == id("shop::shop.billing") && e.to == e.from)
+        .expect("billing/__init__.py imports billing/charge.py");
+    assert_eq!(
+        intra.evidence[0].target.as_deref(),
+        Some("src/shop/billing/charge.py")
+    );
     assert!(graph.components.keys().all(|k| !k.as_str().contains("os")));
 
     // tests/ has no __init__.py: its files belong to the `tests` namespace

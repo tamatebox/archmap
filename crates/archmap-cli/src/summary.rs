@@ -1,9 +1,10 @@
-//! Deterministic Markdown summary of a rolled-up architecture graph.
+//! Deterministic summary of a rolled-up architecture graph.
 //!
-//! Every line is computed from the graph. There is no generated prose, so
-//! the same scan always yields the same summary. The summary is meant to be
-//! read by coding agents before they explore a repository: short lines,
-//! exact component names they can pass to `query` and `impact`.
+//! The summary is the first map an agent reads, so it is a small text IR
+//! rather than a report: one fact per line, `key: value` fields, dependency
+//! direction spelled `a -> b`, measured values instead of judgments, and no
+//! prose. Every line is computed from the graph, so the same scan always
+//! yields the same text.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
@@ -11,58 +12,89 @@ use std::path::Path;
 
 use archmap_core::{ArchitectureGraph, Component, ComponentId, ComponentKind, EdgeKind};
 
-/// How many components the "most depended-on" section lists.
+/// How many components the "most depended on" section lists.
 const TOP_DEPENDED_ON: usize = 10;
 
-/// How many importers an external dependency lists before summarizing the
-/// rest as a count. Widely used libraries would otherwise dominate the
-/// summary without telling an agent where to look.
+/// How many importers an external dependency names before counting the
+/// rest. Widely used libraries would otherwise dominate the summary without
+/// telling an agent where to look.
 const MAX_IMPORTERS: usize = 5;
+
+/// One internal dependency at the summary's depth.
+#[derive(Default)]
+struct Dependency {
+    imports: usize,
+    declared: bool,
+    other: BTreeMap<&'static str, usize>,
+}
 
 pub fn render(graph: &ArchitectureGraph, depth: usize) -> String {
     let rolled = graph.rollup(depth);
-    let mut out = String::new();
-    header(&mut out, graph, depth);
-    components(&mut out, graph, &rolled, depth);
-    internal_dependencies(&mut out, &rolled);
-    external_dependencies(&mut out, &rolled);
-    most_depended_on(&mut out, &rolled);
-    out
-}
+    let internal: Vec<&Component> = rolled
+        .components
+        .values()
+        .filter(|c| is_internal(c))
+        .collect();
 
-fn header(out: &mut String, graph: &ArchitectureGraph, depth: usize) {
+    let mut dependencies: BTreeMap<(&ComponentId, &ComponentId), Dependency> = BTreeMap::new();
+    for edge in &rolled.edges {
+        if !internal_id(&rolled, &edge.from) || !internal_id(&rolled, &edge.to) {
+            continue;
+        }
+        let dep = dependencies.entry((&edge.from, &edge.to)).or_default();
+        match edge.kind {
+            EdgeKind::Import => dep.imports += edge.statements(),
+            EdgeKind::Dependency => dep.declared = true,
+            other => *dep.other.entry(other.as_str()).or_default() += edge.statements().max(1),
+        }
+    }
+    let externals: Vec<&Component> = rolled
+        .components
+        .values()
+        .filter(|c| c.kind == ComponentKind::External)
+        .collect();
+
+    let mut out = String::new();
     let name = Path::new(&graph.meta.root)
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| graph.meta.root.clone());
-    let version = graph.meta.tool_version.as_deref().unwrap_or("unknown");
-    let _ = writeln!(out, "# Architecture summary: {name}\n");
+    let full_internal = graph.components.values().filter(|c| is_internal(c)).count();
+    let _ = writeln!(out, "# archmap summary");
+    let _ = writeln!(out, "root: {name}");
+    let _ = writeln!(out, "depth: {depth}");
     let _ = writeln!(
         out,
-        "Structural summary by archmap {version}, rolled up to depth {depth}. \
-         Every line is derived from manifests and import statements; nothing is inferred."
+        "components: {} shown, {full_internal} in the full graph",
+        internal.len()
+    );
+    let _ = writeln!(out, "public symbols: {}", graph.symbols.len());
+    let _ = writeln!(out, "internal dependencies: {}", dependencies.len());
+    let _ = writeln!(out, "external dependencies: {}", externals.len());
+    let _ = writeln!(
+        out,
+        "source: manifests and import statements; nothing is inferred"
     );
     let _ = writeln!(
         out,
-        "Full graph: {}, {}, {}.",
-        plural(graph.components.len(), "component"),
-        plural(graph.symbols.len(), "public symbol"),
-        plural(graph.edges.len(), "edge"),
+        "next: archmap query <component> --depth {depth}; archmap impact <component-or-file> --depth {depth}"
     );
-    let _ = writeln!(
-        out,
-        "Drill down with `archmap query <component> --depth {depth}` and \
-         `archmap impact <component-or-file> --depth {depth}`; they list the same components as this summary.\n"
-    );
+
+    components(&mut out, graph, &rolled, &internal, depth);
+    internal_dependencies(&mut out, &rolled, &dependencies);
+    external_dependencies(&mut out, &rolled, &externals);
+    most_depended_on(&mut out, &rolled, &internal, &dependencies);
+    out
 }
 
 fn components(
     out: &mut String,
     graph: &ArchitectureGraph,
     rolled: &ArchitectureGraph,
+    internal: &[&Component],
     depth: usize,
 ) {
-    let _ = writeln!(out, "## Components\n");
+    let _ = writeln!(out, "\n## Components");
 
     // How many original components each kept component absorbed.
     let mut folded: BTreeMap<ComponentId, usize> = BTreeMap::new();
@@ -72,15 +104,9 @@ fn components(
             *folded.entry(ancestor).or_default() += 1;
         }
     }
-
-    let internal: Vec<&Component> = rolled
-        .components
-        .values()
-        .filter(|c| is_internal(c))
-        .collect();
     let mut children: BTreeMap<&ComponentId, Vec<&Component>> = BTreeMap::new();
     let mut roots = Vec::new();
-    for c in &internal {
+    for c in internal {
         match c
             .parent
             .as_ref()
@@ -99,117 +125,77 @@ fn components(
         children: &BTreeMap<&ComponentId, Vec<&Component>>,
         folded: &BTreeMap<ComponentId, usize>,
     ) {
-        let mut details = Vec::new();
+        let mut line = format!("{}{}", "  ".repeat(level), c.name);
         if c.kind == ComponentKind::Package {
-            details.push(match &c.language {
-                Some(lang) => format!("{lang} package"),
-                None => "package".to_owned(),
-            });
+            line.push_str("  package");
+            if let Some(language) = &c.language {
+                let _ = write!(line, "  language: {language}");
+            }
         }
         if let Some(path) = &c.path {
-            details.push(format!("`{path}`"));
+            let _ = write!(line, "  path: {path}");
         }
         let symbols = rolled.symbols_of(&c.id).count();
         if symbols > 0 {
-            details.push(plural(symbols, "public symbol"));
+            let _ = write!(line, "  symbols: {symbols}");
         }
         if let Some(n) = folded.get(&c.id) {
-            details.push(format!("{} folded", plural(*n, "submodule")));
+            let _ = write!(line, "  folded: {n}");
         }
-        let _ = writeln!(
-            out,
-            "{}- {}: {}",
-            "  ".repeat(level),
-            c.name,
-            details.join(", ")
-        );
+        let _ = writeln!(out, "{line}");
         for child in children.get(&c.id).into_iter().flatten() {
             walk(out, child, level + 1, rolled, children, folded);
         }
     }
 
+    if roots.is_empty() {
+        let _ = writeln!(out, "none");
+    }
     for root in roots {
         walk(out, root, 0, rolled, &children, &folded);
     }
-    out.push('\n');
 }
 
-fn internal_dependencies(out: &mut String, rolled: &ArchitectureGraph) {
-    let _ = writeln!(out, "## Internal dependencies\n");
-    let _ = writeln!(
-        out,
-        "Numbers count the import statements behind an edge. \
-         `declared` means a manifest also declares the dependency.\n"
-    );
-
-    #[derive(Default)]
-    struct Target {
-        imports: usize,
-        declared: bool,
-        other: BTreeSet<&'static str>,
-    }
-    let mut by_source: BTreeMap<&ComponentId, BTreeMap<&ComponentId, Target>> = BTreeMap::new();
-    for edge in &rolled.edges {
-        if !internal_id(rolled, &edge.from) || !internal_id(rolled, &edge.to) {
-            continue;
-        }
-        let target = by_source
-            .entry(&edge.from)
-            .or_default()
-            .entry(&edge.to)
-            .or_default();
-        match edge.kind {
-            EdgeKind::Import => target.imports += edge.evidence.len(),
-            EdgeKind::Dependency => target.declared = true,
-            other => {
-                target.other.insert(other.as_str());
-            }
-        }
-    }
-
-    if by_source.is_empty() {
-        let _ = writeln!(out, "No internal dependencies.\n");
+fn internal_dependencies(
+    out: &mut String,
+    rolled: &ArchitectureGraph,
+    dependencies: &BTreeMap<(&ComponentId, &ComponentId), Dependency>,
+) {
+    let _ = writeln!(out, "\n## Internal dependencies");
+    if dependencies.is_empty() {
+        let _ = writeln!(out, "none");
         return;
     }
-    for (source, targets) in by_source {
-        let mut targets: Vec<(&ComponentId, Target)> = targets.into_iter().collect();
-        targets.sort_by(|a, b| b.1.imports.cmp(&a.1.imports).then_with(|| a.0.cmp(b.0)));
-        let rendered: Vec<String> = targets
-            .iter()
-            .map(|(id, t)| {
-                let mut notes = Vec::new();
-                if t.imports > 0 {
-                    notes.push(t.imports.to_string());
-                }
-                if t.declared {
-                    notes.push("declared".to_owned());
-                }
-                notes.extend(t.other.iter().map(|k| k.to_string()));
-                format!("{} ({})", name_of(rolled, id), notes.join(", "))
-            })
-            .collect();
-        let _ = writeln!(
-            out,
-            "- {} -> {}",
-            name_of(rolled, source),
-            rendered.join(", ")
-        );
-    }
-    out.push('\n');
-}
-
-fn external_dependencies(out: &mut String, rolled: &ArchitectureGraph) {
-    let _ = writeln!(out, "## External dependencies\n");
-    let externals: Vec<&Component> = rolled
-        .components
-        .values()
-        .filter(|c| c.kind == ComponentKind::External)
+    let mut lines: Vec<(&str, usize, &str, &Dependency)> = dependencies
+        .iter()
+        .map(|((from, to), dep)| (name_of(rolled, from), dep.imports, name_of(rolled, to), dep))
         .collect();
+    lines.sort_by(|a, b| {
+        a.0.cmp(b.0)
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| a.2.cmp(b.2))
+    });
+    for (from, imports, to, dep) in lines {
+        let mut line = format!("{from} -> {to}");
+        if imports > 0 {
+            let _ = write!(line, "  imports: {imports}");
+        }
+        if dep.declared {
+            line.push_str("  declared: yes");
+        }
+        for (kind, n) in &dep.other {
+            let _ = write!(line, "  {kind}: {n}");
+        }
+        let _ = writeln!(out, "{line}");
+    }
+}
+
+fn external_dependencies(out: &mut String, rolled: &ArchitectureGraph, externals: &[&Component]) {
+    let _ = writeln!(out, "\n## External dependencies");
     if externals.is_empty() {
-        let _ = writeln!(out, "No external dependencies.\n");
+        let _ = writeln!(out, "none");
         return;
     }
-
     for ext in externals {
         let mut declared_in: BTreeSet<&str> = BTreeSet::new();
         let mut importers: Vec<(&ComponentId, usize)> = Vec::new();
@@ -218,74 +204,73 @@ fn external_dependencies(out: &mut String, rolled: &ArchitectureGraph) {
                 EdgeKind::Dependency => {
                     declared_in.extend(edge.evidence.iter().map(|e| e.file.as_str()));
                 }
-                EdgeKind::Import => importers.push((&edge.from, edge.evidence.len())),
+                EdgeKind::Import => importers.push((&edge.from, edge.statements())),
                 _ => {}
             }
         }
         importers.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
 
-        let mut parts = Vec::new();
+        let mut line = ext.name.clone();
         if !declared_in.is_empty() {
-            let files: Vec<String> = declared_in.iter().map(|f| format!("`{f}`")).collect();
-            parts.push(format!("declared in {}", files.join(", ")));
+            let files: Vec<&str> = declared_in.into_iter().collect();
+            let _ = write!(line, "  declared: {}", files.join(", "));
         }
         if importers.is_empty() {
-            parts.push("no resolved imports".to_owned());
+            line.push_str("  importers: none resolved");
         } else {
-            let mut list: Vec<String> = importers
+            let mut top: Vec<String> = importers
                 .iter()
                 .take(MAX_IMPORTERS)
-                .map(|(id, n)| format!("{} ({n})", name_of(rolled, id)))
+                .map(|(id, n)| format!("{} {n}", name_of(rolled, id)))
                 .collect();
             if importers.len() > MAX_IMPORTERS {
-                list.push(format!("and {} more", importers.len() - MAX_IMPORTERS));
+                top.push(format!("+{} more", importers.len() - MAX_IMPORTERS));
             }
-            parts.push(format!(
-                "imported by {}: {}",
-                plural(importers.len(), "component"),
-                list.join(", ")
-            ));
+            let _ = write!(
+                line,
+                "  importers: {}  top: {}",
+                importers.len(),
+                top.join(", ")
+            );
         }
-        let _ = writeln!(out, "- {}: {}", ext.name, parts.join("; "));
+        let _ = writeln!(out, "{line}");
     }
-    out.push('\n');
 }
 
-fn most_depended_on(out: &mut String, rolled: &ArchitectureGraph) {
-    let _ = writeln!(out, "## Most depended-on\n");
-    let mut incoming: BTreeMap<&ComponentId, BTreeSet<&ComponentId>> = BTreeMap::new();
-    let mut outgoing: BTreeMap<&ComponentId, BTreeSet<&ComponentId>> = BTreeMap::new();
-    for edge in &rolled.edges {
-        if internal_id(rolled, &edge.from) && internal_id(rolled, &edge.to) {
-            incoming.entry(&edge.to).or_default().insert(&edge.from);
-            outgoing.entry(&edge.from).or_default().insert(&edge.to);
-        }
+fn most_depended_on(
+    out: &mut String,
+    rolled: &ArchitectureGraph,
+    internal: &[&Component],
+    dependencies: &BTreeMap<(&ComponentId, &ComponentId), Dependency>,
+) {
+    let _ = writeln!(out, "\n## Most depended on");
+    let mut dependents: BTreeMap<&ComponentId, usize> = BTreeMap::new();
+    let mut uses: BTreeMap<&ComponentId, usize> = BTreeMap::new();
+    for (from, to) in dependencies.keys() {
+        *dependents.entry(to).or_default() += 1;
+        *uses.entry(from).or_default() += 1;
     }
-    let mut ranked: Vec<(&ComponentId, usize, usize)> = incoming
+    let mut ranked: Vec<(&ComponentId, usize, usize)> = dependents
         .iter()
-        .map(|(id, from)| (*id, from.len(), outgoing.get(id).map_or(0, BTreeSet::len)))
+        .map(|(id, n)| (*id, *n, uses.get(id).copied().unwrap_or(0)))
         .collect();
     ranked.sort_by(|a, b| {
         b.1.cmp(&a.1)
             .then_with(|| b.2.cmp(&a.2))
             .then_with(|| a.0.cmp(b.0))
     });
-
     if ranked.is_empty() {
-        let _ = writeln!(out, "No internal dependencies.");
+        let _ = writeln!(out, "none");
         return;
     }
-    let _ = writeln!(
-        out,
-        "Components depended on by the most other components at this depth.\n"
-    );
-    for (id, n_in, n_out) in ranked.into_iter().take(TOP_DEPENDED_ON) {
+    let total = internal.len();
+    for (id, n_in, n_out) in ranked.iter().take(TOP_DEPENDED_ON) {
+        // Competition ranking: ties share a rank.
+        let rank = 1 + ranked.iter().filter(|(_, other, _)| other > n_in).count();
         let _ = writeln!(
             out,
-            "- {}: used by {}, uses {}",
-            name_of(rolled, id),
-            plural(n_in, "component"),
-            plural(n_out, "internal component")
+            "{}  dependents: {n_in}  dependencies: {n_out}  rank: {rank}/{total}",
+            name_of(rolled, id)
         );
     }
 }
@@ -300,12 +285,4 @@ fn internal_id(graph: &ArchitectureGraph, id: &ComponentId) -> bool {
 
 fn name_of<'a>(graph: &'a ArchitectureGraph, id: &'a ComponentId) -> &'a str {
     graph.component(id).map_or(id.as_str(), |c| c.name.as_str())
-}
-
-fn plural(n: usize, noun: &str) -> String {
-    if n == 1 {
-        format!("1 {noun}")
-    } else {
-        format!("{n} {noun}s")
-    }
 }
