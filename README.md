@@ -391,52 +391,115 @@ only where a threshold for it is declared, and none can be declared yet.
 
 ## Roadmap
 
-Phases describe capability layers, not a strict order of work. Phase 7
-already ships a plugin and skill because they only wrap the CLI, while
-Phases 4 to 6 have not started.
+Phases describe capability layers, not a strict order of work. The agent
+plugin and skill already ship because they only control how the CLI is
+used; deeper knowledge layers can be added independently.
+
+The near-term direction is to broaden the deterministic facts archmap can
+observe while keeping agent-facing context bounded. Semantic inference
+comes later.
 
 | Phase | Scope | Status |
 |---|---|---|
 | 0 Discovery | languages, manifests, packages; report detected languages even without an analyzer | Rust and Python; other languages are counted in `summary`, not analyzed |
 | 1 Structural Facts | modules, public symbols, imports with their target file and scope, dependencies | Rust and Python; target files and scope for Python |
-| 2 Structural Compression & Agent Context | roll-up; `summary`, `query` and `impact` small enough for an agent and at one granularity; full detail with `--format json` | done for Python: `impact` follows files, `query` locations name the imported file, and `summary` and `query` say what the graph does not map |
+| 2 Structural Compression & Agent Context | roll-up; `summary`, `query` and `impact` small enough for an agent and at one granularity; file and module queries whose evidence leads directly to source; full detail with `--format json` | done for Python: `impact` follows files, `query` accepts components, symbols and files, direct importers point to `file:line`, and agent-facing commands say what the graph does not map |
 | 3 Rules & Declared Architecture | declared components and layers, cycles, forbidden dependencies, drift, CI `check` | done: deny rules, layers, allow lists, coverage, cycles with a file-level reading, undeclared imports, stale declarations; structural signals |
-| 4 Deep Static Analysis | precise symbol resolution, call and reference graph, type relationships, selective data flow, test-to-code links; on demand for one component | planned |
-| 5 Cross-system Graph | OpenAPI, Terraform, databases, HTTP, events | planned |
-| 6 Semantic Enrichment | LLM naming and responsibilities, stored as inferred facts | planned |
-| 7 Agent Interface | plugin and skill for agents, MCP adapter over the same engine | plugin and skill exist; MCP planned |
-| 8 Incremental / Runtime | diff scans, cache, runtime traces | planned |
+| 4 Deep Static Analysis | precise symbol resolution, callers and reference graph, type relationships, selective data flow, test-to-code links; on demand for one selected area | planned; agent traces so far point first to callers and references, then selective data flow |
+| 5 Cross-system Graph | OpenAPI, Terraform, databases, HTTP, events, CI/build/deploy relationships | planned |
+| 6 Change & Work Graph | Git history, churn and co-change; Issue → PR → Commit → File; PR overlap and other explicit work links | planned |
+| 7 Semantic Enrichment | LLM naming, responsibilities, intent and other semantic interpretations, stored separately as inferred facts | planned |
+| 8 Agent Interface | plugin and skill for agents; MCP adapter over the same engine | plugin and skill exist; MCP planned |
+| 9 Incremental / Runtime | incremental scans and caches; runtime traces and other observed execution relationships | planned |
 
-Phase 4 never runs over the whole repository by default. The cheap scan maps
-everything; the deep pass runs for the component an agent picked from
-`summary` or `query`, so the map stays coarse globally and precise locally.
-Its results are facts with evidence, such as calls, references and types,
-never inferred roles, and they answer questions about one part at a time
-instead of turning the repository into a code graph.
+Phase 4 never runs over the whole repository by default. The cheap scan
+maps everything; a deeper pass runs only for the file, symbol or component
+an agent is investigating. Its results remain observed facts with
+evidence, such as calls, references, types and data-flow relationships.
+The purpose is local precision, not a repository-wide code graph.
 
-Phase 2 is done when every agent-facing output is small and consistent:
-about 10 KB for `summary`, a few KB to a few tens of KB for `query`, a few KB
-for `impact`, with complete data one `--format json` away. Shrinking
-`graph.json`, caches, databases, LLM enrichment and MCP are not part of it.
+The same principle applies as later phases broaden the graph.
+Cross-system, history and work data add new kinds of observed
+relationships, but not all of those facts need to enter an agent's
+context. `summary`, `query`, `impact` and later task-oriented views keep
+selecting a small relevant subgraph.
 
-Python is evaluation-ready: import names resolve to declared distributions,
-`query` and `impact` see the same components as `summary`, and the outputs
-meet those sizes. The next step is an evaluation with a coding agent,
-comparing the same tasks without archmap and with archmap as a whole: the
-CLI plus the `plugins/archmap` plugin, whose skill starts from `summary` and
-drills down with `query` and `impact`. Correctness is compared first, then
-tokens, tool calls and turns.
+The roadmap therefore grows in three directions:
 
-Cross-system graphs, LLM enrichment and MCP do not change what an agent
-learns about a repository, so they wait for that evaluation. Rules came
-first for the same reason: they never change what `summary`, `query` or
-`impact` report. Deep static analysis waits for the evaluation for the
-opposite reason: it does change what an agent learns, and the evaluation's
-tool-call logs show which searches agents still make after `query`, such as
-callers, types or tests, and so which to answer first. Before Rust
-repositories are evaluated, Rust needs module-level components and target
-files in its evidence; discovering the packages and manifests of other
-languages completes Phase 0.
+- **depth**: Phase 4 adds finer relationships inside selected code;
+- **breadth**: Phase 5 connects code to the surrounding software system;
+- **time and work**: Phase 6 connects the current structure to changes
+  and explicit development activity.
+
+Through Phase 6, the emphasis stays on relationships that can be extracted
+deterministically and attached to evidence. Semantic interpretation begins
+in Phase 7 and remains a separate kind of information, never mixed with
+observed or declared facts.
+
+Phase 2 is complete when the common structural questions an agent asks
+lead directly to source without the full graph: what exists, what a
+component or file exposes, what it imports, what imports it, and what may
+be structurally affected. Each answer stays small (about 10 KB for
+`summary`, a few KB to a few tens of KB for `query`, a few KB for
+`impact`), with complete detail one `--format json` away.
+
+Coding-agent trials are a development feedback loop, not a gate between
+phases. The question is not only whether archmap reduces tool calls
+overall, but what an agent still searches for after using it.
+
+Early trials already changed the interface. With the first skill, agents
+read `summary` and went straight back to ordinary search. Rewriting the
+skill as rules (run `query` before searching inside a component) got
+agents to call `query` on most non-local tasks, and in some runs to open
+the files it listed without searching for them first. One intermediate
+wording lost that again, so which command an agent picks still depends
+heavily on the skill. File-level queries and the statements that import a
+file were added after a remaining search showed that navigation path was
+missing.
+
+The searches that remain set priorities for later phases. Seen so far:
+
+- callers of, or references to, a symbol: Phase 4 call and reference
+  analysis;
+- values such as weights followed through several functions: Phase 4
+  selective data flow.
+
+Later phases are meant to answer searches such as:
+
+- crossing from code into infrastructure, APIs, databases or events:
+  Phase 5;
+- how a suspicious area changed, what tends to change with it, or which
+  issue and PR introduced it: Phase 6.
+
+Ordinary text search still has a place. Error messages, arbitrary
+configuration values, prose and other information with no deterministic
+graph relationship do not need to be absorbed into archmap merely to
+eliminate `grep`.
+
+The development loop is therefore:
+
+```text
+add an observable relationship
+        ↓
+let agents use it on real changes
+        ↓
+inspect the searches they still perform
+        ↓
+decide whether the missing information is
+a deterministic fact archmap should expose
+        ↓
+add the smallest useful layer or query
+```
+
+Semantic expansion waits until the deterministic structure, cross-system
+and change/work layers are broad enough to exercise in real repositories.
+More knowledge should not mean proportionally more agent context: the
+graph may grow, while each task receives only the part it needs.
+
+Before Rust repositories get the same treatment, Rust still needs
+module-level components and target files in its evidence. Extending
+language and manifest discovery completes Phase 0 for additional
+ecosystems.
 
 ## Development
 

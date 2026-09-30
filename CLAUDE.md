@@ -18,7 +18,7 @@ and impact without re-reading the whole repository.
 
 - **Code Graph != Architecture Graph.** Do not turn every function or call into a node. Compress to components, modules, public symbols and dependencies.
 - **Fact Extraction != Semantic Inference.** Analyzers record what code and manifests literally say. Guesses such as "this module is the Billing component" must live in a separate, clearly labeled layer (not yet built). Never mix the two in one type.
-- **Compression is structural.** Roll-up maps components to their ancestor at a depth through `parent` and merges edges while keeping every piece of evidence. Naming, grouping by meaning and layering belong to declared config (Phase 3) or the inferred layer (Phase 6), never to roll-up or `summary`.
+- **Compression is structural.** Roll-up maps components to their ancestor at a depth through `parent` and merges edges while keeping every piece of evidence. Naming, grouping by meaning and layering belong to declared config (Phase 3) or the inferred layer (Phase 7), never to roll-up or `summary`.
 - **Declared != Observed.** `archmap.toml` is only ever compared with the observed graph by `check`. It never changes what `scan`, `summary`, `query` or `impact` report, and declared names never appear in their output.
 - **Roll-up hides detail; evidence keeps it.** Which files a dependency connects stays in `Evidence.target` and `scope`. `impact` and cycle checks read it there instead of adding file nodes.
 - **Signals are measurements, not verdicts.** A signal reports what the graph shows and never fails `check`. A judgement label comes only from a threshold the user declares.
