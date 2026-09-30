@@ -1,0 +1,8 @@
+{
+  "name": "archmap",
+  "description": "Skill for reading archmap output (summary, query, impact) before exploring a repository. Requires the archmap CLI on PATH.",
+  "author": { "name": "ryota-ido" },
+  "repository": "https://github.com/ryota-ido/archmap",
+  "license": "MIT",
+  "keywords": ["architecture", "dependencies", "impact-analysis", "codebase-map"]
+}

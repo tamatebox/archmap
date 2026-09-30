@@ -1,0 +1,8 @@
+{
+  "name": "archmap",
+  "owner": { "name": "ryota-ido" },
+  "description": "Plugins for the archmap CLI.",
+  "plugins": [
+    { "name": "archmap", "source": "./plugins/archmap" }
+  ]
+}
