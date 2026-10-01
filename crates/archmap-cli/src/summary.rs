@@ -23,7 +23,7 @@ use archmap_core::{
 
 use crate::pairs::{Counted, Pairs};
 
-use crate::query_text::reason_label;
+use crate::query_text::{display, reason_label};
 
 /// How many components the "most depended on" section lists.
 const TOP_DEPENDED_ON: usize = 10;
@@ -628,9 +628,9 @@ fn internal_dependencies(
         .iter()
         .map(|(from, to, dep)| {
             (
-                name_of(rolled, from),
+                display(rolled, from),
                 dep.imports,
-                name_of(rolled, to),
+                display(rolled, to),
                 *dep,
             )
         })
@@ -812,7 +812,7 @@ fn most_depended_on(
         let _ = writeln!(
             out,
             "{}  dependents: {n_in}  dependencies: {n_out}  rank: {rank}/{total}",
-            name_of(rolled, id)
+            display(rolled, id)
         );
     }
 }
@@ -829,7 +829,7 @@ fn top_counts<'a>(
     let mut top: Vec<String> = counts
         .iter()
         .take(max)
-        .map(|(id, n)| format!("{} {n}", name_of(rolled, id)))
+        .map(|(id, n)| format!("{} {n}", display(rolled, id)))
         .collect();
     if counts.len() > max {
         top.push(format!("+{} more", counts.len() - max));
@@ -857,15 +857,6 @@ fn is_internal(c: &Component) -> bool {
 
 fn internal_id(graph: &ArchitectureGraph, id: &ComponentId) -> bool {
     graph.component(id).is_some_and(is_internal)
-}
-
-/// The name a list shows for `id`: its name, or its id when several
-/// components share the name (`types.ts` in each package of a monorepo).
-fn name_of<'a>(graph: &'a ArchitectureGraph, id: &'a ComponentId) -> &'a str {
-    match graph.component(id) {
-        Some(c) if graph.components_named(&c.name).nth(1).is_none() => c.name.as_str(),
-        _ => id.as_str(),
-    }
 }
 
 #[cfg(test)]

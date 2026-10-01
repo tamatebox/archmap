@@ -590,7 +590,7 @@ fn query_text_is_a_compact_drill_down() {
         "Depends on: none\n",
         // the package's `__init__.py` holds its subpackage rather than
         // depends on it, as summary counts it
-        "Used by: 1\n  shop  1 of its entry file: src/shop/__init__.py:3 -> src/shop/integrations/slack/__init__.py\n",
+        "Used by: 1\n  shop::shop  1 of its entry file: src/shop/__init__.py:3 -> src/shop/integrations/slack/__init__.py\n",
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
     }
@@ -1946,6 +1946,28 @@ fn summary_and_query_count_a_pair_alike() {
     let query = ts_stdout(&["query", "ts-shop", "--depth", "1"]);
     assert!(
         query.contains("1 import, 6 of its entry file: next.config.ts:1 -> src/lib/limits.ts, "),
+        "{query}"
+    );
+}
+
+#[test]
+fn summary_and_query_name_a_shared_name_alike() {
+    // the project and its package are both named `shop`: both commands
+    // list the package by its id, so a name copied from either is one
+    // that query takes
+    let summary = summary_stdout(&[]);
+    assert!(
+        summary.contains("\ntests -> shop::shop  tests: 1\n"),
+        "{summary}"
+    );
+    let query = query_text(&python_fixture(), &["tests"]);
+    assert!(
+        query.contains("\n  shop::shop    1 import in tests: tests/test_billing.py:2 "),
+        "{query}"
+    );
+    let query = query_text(&python_fixture(), &["shop"]);
+    assert!(
+        query.contains("\n  scripts, shop::shop, tests\n"),
         "{query}"
     );
 }

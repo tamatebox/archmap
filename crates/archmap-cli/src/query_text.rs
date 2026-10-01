@@ -129,7 +129,7 @@ fn component(
         } else {
             String::new()
         };
-        let names: Vec<String> = view
+        let names: Vec<&str> = view
             .children
             .iter()
             .take(shown)
@@ -311,7 +311,7 @@ fn neighbors<'a>(
     let mut truncated = shown < total;
     let _ = writeln!(out, "\n{title}: {}", count(total, shown));
 
-    let names: Vec<String> = list
+    let names: Vec<&str> = list
         .iter()
         .take(shown)
         .map(|(id, _)| display(rolled, id))
@@ -673,11 +673,19 @@ fn symbol_line(symbol: &Symbol) -> String {
     }
 }
 
-/// Internal components by name, external ones by id (`ext:pypi:requests`).
-fn display(graph: &ArchitectureGraph, id: &ComponentId) -> String {
+/// How a list names a component, in `query` and `summary` alike: an
+/// internal one by its name, or by its id when several components share the
+/// name (`types.ts` in each package of a monorepo); an external one by its
+/// id (`ext:pypi:requests`).
+pub(crate) fn display<'a>(graph: &'a ArchitectureGraph, id: &'a ComponentId) -> &'a str {
     match graph.component(id) {
-        Some(c) if c.kind != ComponentKind::External => c.name.clone(),
-        _ => id.as_str().to_owned(),
+        Some(c)
+            if c.kind != ComponentKind::External
+                && graph.components_named(&c.name).nth(1).is_none() =>
+        {
+            c.name.as_str()
+        }
+        _ => id.as_str(),
     }
 }
 
