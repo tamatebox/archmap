@@ -600,7 +600,7 @@ fn query_text_is_a_compact_drill_down() {
     assert_eq!(
         symbols,
         "Symbols matching `greet`: 1\n  pub fn greet(user: &User) -> String  crates/lib_core/src/lib.rs:28  in lib_core\n\
-         \nImported by: 2\n  crates/app/src/main.rs:2\n  crates/app/src/config.rs:12 (local)\n"
+         \nImported by: 2\n  crates/app/src/config.rs:12 (local)\n  crates/app/src/main.rs:2\n"
     );
 }
 
@@ -1536,7 +1536,7 @@ fn a_symbol_query_lists_the_statements_that_import_it() {
         // a namespace re-export and an `import()` take the file whole;
         // checkout.ts:1, which also does through the re-export, is listed by
         // name already
-        "May use: 2 (imports the whole module; 1 re-export)\n  src/index.ts:4 (export)\n  scripts/report.cjs:8 (local)\n",
+        "May use: 2 (imports the whole module; 1 re-export)\n  scripts/report.cjs:8 (local)\n  src/index.ts:4 (export)\n",
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
     }
@@ -2020,4 +2020,27 @@ fn a_path_target_is_read_as_the_root_sees_it() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(stderr.contains("is outside the scanned root"), "{stderr}");
     }
+}
+
+#[test]
+fn a_symbol_query_lists_production_importers_first() {
+    // in edge order, the test file comes first
+    let repo = temp_repo("symbol-order");
+    std::fs::create_dir_all(repo.join("web/src/__tests__")).unwrap();
+    std::fs::write(repo.join("web/package.json"), "{ \"name\": \"web\" }").unwrap();
+    std::fs::write(repo.join("web/src/f.ts"), "export function shout() {}\n").unwrap();
+    std::fs::write(
+        repo.join("web/src/__tests__/f.test.ts"),
+        "import { shout } from '../f';\n",
+    )
+    .unwrap();
+    std::fs::write(repo.join("web/src/b.ts"), "import { shout } from './f';\n").unwrap();
+    let text = query_text(&repo, &["shout"]);
+    std::fs::remove_dir_all(&repo).unwrap();
+    assert!(
+        text.contains(
+            "\nImported by: 2\n  web/src/b.ts:1\n  web/src/__tests__/f.test.ts:1 (test)\n"
+        ),
+        "{text}"
+    );
 }

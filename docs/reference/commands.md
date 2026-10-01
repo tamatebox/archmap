@@ -169,8 +169,9 @@ symbol's name from the file that defines it; a method goes by its type's
 name, and a Rust method whose type another file defines, by that file. `May
 use` lists, apart from those, the statements that take that file whole (a
 namespace import, a glob, `import pkg.sub`). Statements that only load the
-file take no name and are in neither list. Both lists show 5 statements and
-count the rest, and their heading counts the re-export statements among them
+file take no name and are in neither list. Both lists show 5 statements,
+production code first, then by place, and count the rest, and their heading
+counts the re-export statements among them
 (`Imported by: 4 (2 re-exports)`); nothing found reads `none resolved`, with
 a reminder that only import statements are read, so it does not mean
 unused: an entry point that a framework or runtime loads by name or path,

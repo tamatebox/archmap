@@ -324,17 +324,20 @@ pub fn query(
     Ok(ExitCode::SUCCESS)
 }
 
-/// A symbol with the statements that import it, read in the full graph.
+/// A symbol with the statements that import it, read in the full graph,
+/// production code first, as `impact` lists them.
 fn symbol_view<'a>(full: &'a ArchitectureGraph, symbol: &'a Symbol) -> SymbolView<'a> {
     let importers = full.symbol_importers(symbol).filter(|i| i.recorded);
     let list = |pairs: Vec<(&'a Edge, &'a Evidence)>| {
-        pairs
+        let mut list: Vec<Importer> = pairs
             .into_iter()
             .map(|(edge, evidence)| Importer {
                 from: &edge.from,
                 evidence,
             })
-            .collect()
+            .collect();
+        list.sort_by_key(|i| (i.evidence.test, &i.evidence.file, i.evidence.line));
+        list
     };
     match importers {
         Some(found) => SymbolView {
