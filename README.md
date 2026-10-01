@@ -51,7 +51,7 @@ From the root of a repository:
 ```bash
 archmap summary .
 archmap query <component|directory|file|symbol>
-archmap impact <component|directory|file>
+archmap impact <component|directory|file|symbol>
 archmap check
 ```
 

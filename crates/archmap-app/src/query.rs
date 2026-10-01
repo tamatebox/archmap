@@ -1,18 +1,15 @@
 //! `query`: one target in detail, as a component, a file, symbols or an
 //! import name without a component.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use archmap_core::{
-    ArchitectureGraph, ComponentId, ComponentKind, Edge, EdgeKind, Evidence, Symbol, SymbolId,
-    UnmappedImport,
+    ArchitectureGraph, ComponentId, ComponentKind, Edge, EdgeKind, Evidence, Symbol,
 };
 
-use crate::target::{
-    component_file, directory_target, file_target, find_component, fold, namesakes,
-    reject_ambiguous, reject_outside, AtDepth,
-};
+use crate::resolve::{resolve, unquote, Resolved};
+use crate::target::{component_file, fold, namesakes, reject_outside, AtDepth};
 use crate::views::{ComponentView, FileView, Importer, QueryResult, SymbolView, UnmappedView};
-use crate::{Format, QueryRequest, Workspace};
+use crate::{Answer, Format, Found, QueryRequest, Workspace};
 
 /// Group a file's import evidence by the component at `depth` on the other side.
 fn edges_at_depth(
@@ -90,75 +87,66 @@ fn file_view<'a>(
 }
 
 impl Workspace {
-    /// `query` as text or JSON.
-    pub fn query(&self, request: &QueryRequest) -> Result<String> {
+    /// `query` as text or JSON, or the candidates when the target names
+    /// several things.
+    pub fn query(&self, request: &QueryRequest) -> Result<Answer> {
         query(self, request)
     }
 }
 
-fn query(ws: &Workspace, request: &QueryRequest) -> Result<String> {
+fn query(ws: &Workspace, request: &QueryRequest) -> Result<Answer> {
     let QueryRequest {
         target,
         depth,
         format,
         verbose,
     } = *request;
+    let target = unquote(target);
     let root = ws.root();
     reject_outside(root, target)?;
     let full = ws.graph();
     let rolled = full.rollup(depth);
-    reject_ambiguous(full, target)?;
 
-    let named =
-        find_component(&rolled, full, target).or_else(|| find_component(full, full, target));
-    let result = if let Some(component) = named {
-        match component_file(full, root, component) {
+    let result = match resolve(full, &rolled, root, target)? {
+        Resolved::Candidates(candidates) => {
+            return Ok(Answer {
+                output: candidates.render(full, target, format)?,
+                found: Found::Candidates,
+            })
+        }
+        Resolved::Component(component) => match component_file(full, root, component) {
             Some(file) => QueryResult::File(file_view(full, depth, target, &file)),
             None => {
                 let at = fold(full, depth, &component.id);
-                component_view(full, &rolled, depth, target, at)?
+                component_view(full, &rolled, depth, target, at, None)?
             }
+        },
+        Resolved::Package { component, subpath } => {
+            let at = fold(full, depth, &component.id);
+            component_view(full, &rolled, depth, target, at, Some(subpath))?
         }
-    } else if let Some(file) = file_target(root, target) {
-        QueryResult::File(file_view(full, depth, target, &file))
-    } else {
-        let symbols: Vec<&Symbol> = rolled
-            .symbol(&SymbolId::new(target))
-            .into_iter()
-            .chain(rolled.symbols_named(target))
-            .collect();
-        if !symbols.is_empty() {
-            QueryResult::Symbols(
-                symbols
-                    .into_iter()
-                    .map(|symbol| symbol_view(full, symbol))
-                    .collect(),
-            )
-        } else if let Some(file) = full.file_for_dotted_name(target) {
-            QueryResult::File(file_view(full, depth, target, file))
-        } else if let Some(owner) = directory_target(full, root, target).transpose()? {
-            // Late: every directory has an owner, the root at worst, so a
-            // bare word naming one must not shadow a symbol.
-            let at = fold(full, depth, &owner.id);
-            component_view(full, &rolled, depth, target, at)?
-        } else {
-            // An import name that no component carries, such as an extra.
-            let not_mapped: Vec<&UnmappedImport> = full.unmapped_imports_of(target).collect();
-            if not_mapped.is_empty() {
-                bail!("no component, file, symbol or import named `{target}`");
-            }
-            QueryResult::NotMapped(UnmappedView {
-                requested: target,
-                module: target,
-                depth,
-                not_mapped,
-            })
+        Resolved::File(file) => QueryResult::File(file_view(full, depth, target, &file)),
+        Resolved::Symbol(symbol) => {
+            // as the rolled-up graph holds it, in its folded component
+            let symbol = rolled.symbol(&symbol.id).unwrap_or(symbol);
+            QueryResult::Symbols(vec![symbol_view(full, symbol)])
         }
+        // an import name that no component carries, such as an extra
+        Resolved::ImportName(_) => QueryResult::NotMapped(UnmappedView {
+            requested: target,
+            module: target,
+            depth,
+            not_mapped: full.unmapped_imports_of(target).collect(),
+        }),
     };
 
-    Ok(match format {
+    let output = match format {
         Format::Json => crate::json(&result)?,
         Format::Text => crate::query_text::render(&result, target, full, &rolled, verbose),
+    };
+    Ok(Answer {
+        output,
+        found: Found::One,
     })
 }
 
@@ -198,6 +186,7 @@ fn component_view<'a>(
     depth: usize,
     requested: &'a str,
     at: AtDepth,
+    subpath: Option<String>,
 ) -> Result<QueryResult<'a>> {
     let component = rolled
         .component(&at.id)
@@ -207,6 +196,7 @@ fn component_view<'a>(
         requested,
         depth,
         folded_from: at.folded_from,
+        subpath,
         component,
         also_named,
         also_at_path,

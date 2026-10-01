@@ -99,6 +99,9 @@ fn component(
     if let Some(from) = &view.folded_from {
         let _ = writeln!(out, "folded from: {}", display(full, from));
     }
+    if let Some(subpath) = &view.subpath {
+        let _ = writeln!(out, "subpath: {subpath}");
+    }
     let mut truncated = namesakes(out, &view.also_named, &view.also_at_path, caps);
 
     if !view.children.is_empty() {
@@ -779,7 +782,7 @@ fn plural(n: usize, noun: &str) -> String {
     }
 }
 
-fn component_kind(kind: ComponentKind) -> &'static str {
+pub(crate) fn component_kind(kind: ComponentKind) -> &'static str {
     match kind {
         ComponentKind::Package => "package",
         ComponentKind::Module => "module",

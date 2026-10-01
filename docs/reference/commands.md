@@ -119,11 +119,14 @@ archmap query lib/money.ts --path fixtures/simple-ts-project               # the
 
 `query` works on top of the rolled-up graph, for a component, a symbol or a
 single file, including the imports no edge shows. It also takes a directory
-for the component that owns it, and an import name that no component
-carries (`torch` declared as an extra) for the imports of it that no edge
-shows. A component that is one file (a TS/JS file, a Rust module without
-submodules) answers as that file, with the statements that import it, even
-where it folds into an ancestor.
+for the component that owns it, a package subpath for its package
+(`react-dom/client`), and an import name that no component carries (`torch`
+declared as an extra) for the imports of it that no edge shows. A component
+that is one file (a TS/JS file, a Rust module without submodules) answers as
+that file, with the statements that import it, even where it folds into an
+ancestor. How a target is looked up, and what happens when it names several
+things, is the same for `query` and `impact`: see
+[How a target is found](#how-a-target-is-found).
 
 `query` prints compact text by default: public symbols with their location
 in source order (by file, then line; JSON keeps them by id),
@@ -176,8 +179,8 @@ counts the re-export statements among them
 a reminder that only import statements are read, so it does not mean
 unused: an entry point that a framework or runtime loads by name or path,
 such as a route or a handler, shows the same. When several symbols match,
-each line counts its importers instead (`imported by 3, may use 1`), and
-querying one by its id lists them. A
+they are candidates, each counting its importers (`imported by 3, may use
+1`), and querying one by its id lists them. A
 Rust module (`pub mod invoice;`) is also a symbol of the file that declares
 it, but its imports name its own file, so `query` points at its component
 instead, and `impact` answers for that component. What the lists miss:
@@ -208,8 +211,9 @@ file: a component is affected only when one of its files imports what
 changed, directly or through other files, not merely because it imports some
 file of the same component. A file target starts from that file; a component
 target starts from all of its files. Like `query`, it takes a file as
-`<component>.<file stem>` too and a directory for the component that owns
-it, and a component that is one file answers as that file. Dependencies without a target file
+`<component>.<file stem>` too, a directory for the component that owns
+it and a package subpath for its package, and a component that is one file
+answers as that file. Dependencies without a target file
 (manifests, external packages) are followed component by component, and the
 result is still reported at the roll-up depth. It does not follow the parent
 `__init__.py` that Python runs before a submodule, nor Rust code inside macro
@@ -231,9 +235,10 @@ other, so following components a change anywhere in `app.utils` reaches
 `app.core` and `app.models`; following files, `app/utils/log.py` reaches
 both and `app/utils/registry.py` reaches neither.
 
-`impact` also takes a symbol, looked up after components and files and
-before directories, by name or by id; a name that several symbols share is
-an error that lists their ids. Its first step goes only through the
+`impact` also takes a symbol, by name or by id, and an import name that no
+component carries, which starts from the files that import it: `direct`
+names their components, `importers` lists the statements, and `module`
+stands in for `target`. For a symbol, the first step goes only through the
 statements that `query` lists for the symbol: those that take its name
 (`importers`) and those that take its file whole (`may_use`); every later
 step is file by file as above, and dependencies without a target file on
@@ -253,16 +258,49 @@ the same file is not affected. Two things widen or narrow it:
 `importers` and `may_use` show 5 statements with their total, as for a file;
 `query <symbol> --format json` lists them all.
 
-## Names that several components share
+## How a target is found
 
-A name that several components share stops `query` and `impact` with their
-ids and paths (the first 10), and an id or `./<path>` picks one, unless they
-all sit at one path (a directory that two analyzers map), which answers for
-the one with evidence there. When an id or a path answers for one component
-while others share its name (`dup` and `dup+typescript` after an id
-collision) or its path, `query` names them on `also named:` and `also at
-this path:` lines (for a file, those of the component it is), and `impact`
-in `also_named` and `also_at_path`.
+`query` and `impact` look a target up the same way, and the first kind that
+matches decides:
+
+1. a path written as one (`./x`, `../x`, absolute): the file, or the
+   component that owns the directory; a path outside the root is an error
+2. a component id, or a symbol id
+3. a component name
+4. a file by its path from the root (`manage.py`, `src/lib/money.ts`)
+5. a symbol name (`Class.method`, `Type::method`)
+6. a file as `<component>.<file stem>` (`shop.users`)
+7. a directory, for the component that owns it
+8. a package subpath of an npm or TS/JS package (`react-dom/client`,
+   `@acme/ui/button`), for that package
+9. an import name that no component carries
+10. a file name or stem anywhere under the root (`users.py`, `users`)
+
+One pair of matching quotes around a target is dropped, so an id copied
+from a shell-quoted list works where no shell removes them. Components that
+share a name and sit at one path (a directory that two analyzers map) answer
+for the one with evidence there.
+
+When the deciding kind has several matches, the answer lists every match of
+every kind as candidates instead: components with their path and kind,
+symbols with their location and importer counts, files, and directories as
+`./<path>`. A component id that is also the id of a symbol other than the
+module itself, and a name with `/` that is also another path under the root,
+give candidates too. Text shows the first 10 and counts the rest; JSON
+(`query --format json`, and `impact`, which prints JSON) has every one as
+`{"requested", "total", "candidates": [{"kind", "id" or "path", ...}]}`.
+Retry with one of the ids, or with the path as `./<path>`.
+
+Both commands exit 0 with an answer, 1 with candidates, and 2 when they
+cannot answer (nothing has that name, a path is outside the root, the
+repository cannot be read), as `check` exits 1 with findings and 2 when it
+cannot run.
+
+When an id or a path answers for one component while others share its name
+(`dup` and `dup+typescript` after an id collision) or its path, `query`
+names them on `also named:` and `also at this path:` lines (for a file,
+those of the component it is), and `impact` in `also_named` and
+`also_at_path`.
 
 ## check
 

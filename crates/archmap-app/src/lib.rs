@@ -14,6 +14,7 @@ mod impact;
 mod pairs;
 mod query;
 mod query_text;
+mod resolve;
 mod summary;
 mod target;
 mod views;
@@ -57,6 +58,22 @@ pub struct QueryRequest<'a> {
     pub format: Format,
     /// Every entry instead of capped lists (text only; JSON has them all).
     pub verbose: bool,
+}
+
+/// What `query` and `impact` answer: their text or JSON, or the
+/// candidates when the target names several things.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Answer {
+    pub output: String,
+    pub found: Found,
+}
+
+/// Whether an answer is about one target or lists candidates to choose
+/// from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Found {
+    One,
+    Candidates,
 }
 
 /// What `impact` is asked.

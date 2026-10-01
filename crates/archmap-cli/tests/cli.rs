@@ -561,6 +561,24 @@ fn check_reports_undeclared_imports_unless_ignored() {
     );
 }
 
+/// The stdout of a command that answers with candidates: exit code 1.
+fn candidates(args: &[&str], root: &Path) -> String {
+    let out = archmap()
+        .args(args)
+        .arg("--path")
+        .arg(root)
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{args:?}: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap()
+}
+
 fn query_text(root: &Path, args: &[&str]) -> String {
     let out = archmap()
         .arg("query")
@@ -1159,35 +1177,26 @@ fn two_projects_with_tests(name: &str) -> PathBuf {
 #[test]
 fn query_lists_components_that_share_a_name() {
     let repo = two_projects_with_tests("ambiguous-query");
-    let out = archmap()
-        .args(["query", "tests", "--path"])
-        .arg(&repo)
-        .output()
-        .unwrap();
+    let stdout = candidates(&["query", "tests"], &repo);
     std::fs::remove_dir_all(&repo).unwrap();
-    assert!(!out.status.success());
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains(
-            "`tests` names 2 components; give an id, or a path as ./<path>:\n  a::tests  a/tests\n  b::tests  b/tests"
-        ),
-        "stderr: {stderr}"
+    assert_eq!(
+        stdout,
+        "`tests` names 2 components; query one of them by id or path:\n  \
+         a::tests  a/tests  module\n  b::tests  b/tests  module\n"
     );
 }
 
 #[test]
 fn impact_lists_components_that_share_a_name() {
     let repo = two_projects_with_tests("ambiguous-impact");
-    let out = archmap()
-        .args(["impact", "tests", "--path"])
-        .arg(&repo)
-        .output()
-        .unwrap();
+    let stdout = candidates(&["impact", "tests"], &repo);
     std::fs::remove_dir_all(&repo).unwrap();
-    assert!(!out.status.success());
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("a::tests  a/tests"), "stderr: {stderr}");
-    assert!(stderr.contains("b::tests  b/tests"), "stderr: {stderr}");
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(json["requested"], "tests");
+    assert_eq!(json["total"], 2);
+    assert_eq!(json["candidates"][0]["id"], "a::tests");
+    assert_eq!(json["candidates"][0]["path"], "a/tests");
+    assert_eq!(json["candidates"][1]["id"], "b::tests");
 }
 
 #[test]
@@ -1207,26 +1216,19 @@ fn a_shared_name_is_reported_even_when_roll_up_hides_one_component() {
     )
     .unwrap();
     std::fs::write(dir.join("p/requests/__init__.py"), "def get():\n    pass\n").unwrap();
-    let out = archmap()
-        .args(["query", "requests", "--depth", "0", "--path"])
-        .arg(&dir)
-        .output()
-        .unwrap();
+    let stdout = candidates(&["query", "requests", "--depth", "0"], &dir);
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(
-        !out.status.success(),
-        "stdout: {}",
-        String::from_utf8_lossy(&out.stdout)
+        stdout.starts_with("`requests` names 2 components; query one of them by id or path:\n"),
+        "{stdout}"
     );
-    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("`requests` names 2 components; give an id, or a path as ./<path>:"),
-        "stderr: {stderr}"
+        stdout.contains("\n  ext:pypi:requests  -  external\n"),
+        "{stdout}"
     );
-    assert!(stderr.contains("ext:pypi:requests  -"), "stderr: {stderr}");
     assert!(
-        stderr.contains("p::requests  p/requests"),
-        "stderr: {stderr}"
+        stdout.contains("\n  p::requests  p/requests  module\n"),
+        "{stdout}"
     );
 }
 
@@ -1235,21 +1237,16 @@ fn the_components_that_share_a_name_are_capped() {
     let projects: Vec<String> = (0..12).map(|i| format!("p{i:02}")).collect();
     let names: Vec<&str> = projects.iter().map(String::as_str).collect();
     let repo = projects_with_tests("ambiguous-capped", &names);
-    let out = archmap()
-        .args(["query", "tests", "--path"])
-        .arg(&repo)
-        .output()
-        .unwrap();
+    let stdout = candidates(&["query", "tests"], &repo);
+    let json = candidates(&["query", "tests", "--format", "json"], &repo);
     std::fs::remove_dir_all(&repo).unwrap();
-    assert!(!out.status.success());
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("`tests` names 12 components"),
-        "stderr: {stderr}"
-    );
-    let listed = stderr.lines().filter(|l| l.contains("::tests  ")).count();
-    assert_eq!(listed, 10, "stderr: {stderr}");
-    assert!(stderr.contains("\n  +2 more"), "stderr: {stderr}");
+    assert!(stdout.contains("`tests` names 12 components"), "{stdout}");
+    let listed = stdout.lines().filter(|l| l.contains("::tests  ")).count();
+    assert_eq!(listed, 10, "{stdout}");
+    assert!(stdout.ends_with("\n  +2 more\n"), "{stdout}");
+    // JSON lists every one
+    let json: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(json["candidates"].as_array().unwrap().len(), 12);
 }
 
 #[test]
@@ -1615,16 +1612,14 @@ fn two_helpers(name: &str) -> PathBuf {
 #[test]
 fn several_symbols_of_one_name_count_their_importers() {
     let dir = two_helpers("helpers");
-    let text = query_text(&dir, &["helper"]);
+    let text = candidates(&["query", "helper"], &dir);
     std::fs::remove_dir_all(&dir).unwrap();
-    for expected in [
-        "Symbols matching `helper`: 2\n",
-        "src/a.ts:1  in a.ts  imported by 1, may use 0\n",
-        "src/b.ts:1  in b.ts  imported by 0, may use 0\n",
-        "Query one by its id, such as `two::src/a.ts::helper`, for the statements that import it.",
-    ] {
-        assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
-    }
+    assert_eq!(
+        text,
+        "`helper` names 2 symbols; query one of them by id or path:\n  \
+         two::src/a.ts::helper  src/a.ts:1  imported by 1, may use 0\n  \
+         two::src/b.ts::helper  src/b.ts:1  imported by 0, may use 0\n"
+    );
 }
 
 #[test]
@@ -1657,24 +1652,13 @@ fn impact_of_a_symbol_starts_at_the_statements_that_take_it() {
 #[test]
 fn impact_of_a_name_several_symbols_share_lists_their_ids() {
     let dir = two_helpers("impact-helpers");
-    let out = archmap()
-        .args(["impact", "helper", "--path"])
-        .arg(&dir)
-        .output()
-        .unwrap();
+    let stdout = candidates(&["impact", "helper"], &dir);
     std::fs::remove_dir_all(&dir).unwrap();
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success());
-    for expected in [
-        "`helper` names 2 symbols",
-        "two::src/a.ts::helper",
-        "two::src/b.ts::helper",
-    ] {
-        assert!(
-            stderr.contains(expected),
-            "missing {expected} in:\n{stderr}"
-        );
-    }
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(json["candidates"][0]["kind"], "symbol");
+    assert_eq!(json["candidates"][0]["id"], "two::src/a.ts::helper");
+    assert_eq!(json["candidates"][0]["imported_by"], 1);
+    assert_eq!(json["candidates"][1]["id"], "two::src/b.ts::helper");
 }
 
 #[test]
@@ -1756,22 +1740,23 @@ fn helpers_beside_a_directory(name: &str) -> PathBuf {
 #[test]
 fn ids_that_the_shell_would_expand_are_quoted() {
     let dir = helpers_beside_a_directory("quoted");
-    let query = query_text(&dir, &["helper"]);
-    let out = archmap()
-        .args(["impact", "helper", "--path"])
-        .arg(&dir)
-        .output()
-        .unwrap();
+    let query = candidates(&["query", "helper"], &dir);
+    let impact = candidates(&["impact", "helper"], &dir);
+    // the quoted id, pasted back as it is shown, picks that symbol
+    let picked = query_text(&dir, &["'two::src/(group)/a.ts::helper'"]);
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(
-        query.contains("such as `'two::src/(group)/a.ts::helper'`"),
+        query.contains("\n  'two::src/(group)/a.ts::helper'  src/(group)/a.ts:1\n"),
         "{query}"
     );
-    // a directory named like several symbols answers before the names fail
+    // the directory named like the symbols is one more candidate, never the
+    // answer for the package that owns it
+    assert!(query.contains("\n  ./helper  directory\n"), "{query}");
+    let impact: serde_json::Value = serde_json::from_str(&impact).unwrap();
+    assert_eq!(impact["candidates"][2]["kind"], "directory");
     assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
+        picked.starts_with("Symbols matching `two::src/(group)/a.ts::helper`: 1\n"),
+        "{picked}"
     );
 }
 
@@ -2088,6 +2073,7 @@ fn the_cli_prints_what_the_shared_layer_answers() {
             verbose: false,
         })
         .unwrap()
+        .output
     };
     let rules = load_rules(&root, None).unwrap();
     let check = ws
@@ -2118,7 +2104,8 @@ fn the_cli_prints_what_the_shared_layer_answers() {
                 depth: DEFAULT_DEPTH,
                 verbose: false,
             })
-            .unwrap(),
+            .unwrap()
+            .output,
         ),
         (vec!["check", "--path", root_arg], check),
     ];
@@ -2131,4 +2118,34 @@ fn the_cli_prints_what_the_shared_layer_answers() {
             args.join(" ")
         );
     }
+}
+
+#[test]
+fn query_and_impact_exit_0_for_an_answer_1_for_candidates_and_2_for_errors() {
+    let repo = two_projects_with_tests("exit-codes");
+    let code = |args: &[&str]| {
+        archmap()
+            .args(args)
+            .arg("--path")
+            .arg(&repo)
+            .output()
+            .unwrap()
+            .status
+            .code()
+    };
+    for command in ["query", "impact"] {
+        assert_eq!(code(&[command, "a::tests"]), Some(0), "{command}");
+        assert_eq!(code(&[command, "tests"]), Some(1), "{command}");
+        assert_eq!(
+            code(&[command, "nothing-is-named-so"]),
+            Some(2),
+            "{command}"
+        );
+    }
+    std::fs::remove_dir_all(&repo).unwrap();
+    let missing = archmap()
+        .args(["summary", "no-such-root"])
+        .output()
+        .unwrap();
+    assert_eq!(missing.status.code(), Some(2));
 }

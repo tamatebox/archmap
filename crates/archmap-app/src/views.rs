@@ -14,6 +14,10 @@ pub struct ComponentView<'a> {
     /// depth.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub folded_from: Option<ComponentId>,
+    /// For a package subpath (`react-dom/client`): the part after the
+    /// package name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subpath: Option<String>,
     pub component: &'a Component,
     /// Other components with the component's name: its id answered, and
     /// theirs pick them.

@@ -1,11 +1,10 @@
 //! Finding what a target names: a file or directory under the scanned root,
 //! a component, a symbol. `query` and `impact` share these lookups.
 
-use std::fmt::Write as _;
 use std::path::{Component as PathPart, Path};
 
 use anyhow::{bail, Context, Result};
-use archmap_core::{ArchitectureGraph, Component, ComponentId, Symbol, SymbolId};
+use archmap_core::{ArchitectureGraph, Component, ComponentId};
 
 /// `target` as a file under the scanned root, relative with `/` separators.
 pub(crate) fn file_target(root: &Path, target: &str) -> Option<String> {
@@ -133,7 +132,7 @@ pub(crate) fn find_component<'a>(
 
 /// The component of `full` that owns the path all of `named` share, if
 /// they share one.
-fn owner_of_shared_path<'a>(
+pub(crate) fn owner_of_shared_path<'a>(
     full: &'a ArchitectureGraph,
     named: &[&Component],
 ) -> Option<&'a Component> {
@@ -143,38 +142,6 @@ fn owner_of_shared_path<'a>(
     }
     full.component_for_path(path)
         .filter(|owner| named.iter().any(|c| c.id == owner.id))
-}
-
-/// Components listed when a name is shared; the rest are counted.
-const MAX_CANDIDATES: usize = 10;
-
-/// Stop when `target` is no component id but the name of several
-/// components, listing their ids and paths. It runs on the full graph
-/// before any lookup, since roll-up can leave only one of them visible.
-pub(crate) fn reject_ambiguous(full: &ArchitectureGraph, target: &str) -> Result<()> {
-    if full.component(&ComponentId::new(target)).is_some() {
-        return Ok(());
-    }
-    let named: Vec<&Component> = full.components_named(target).collect();
-    if named.len() < 2 || owner_of_shared_path(full, &named).is_some() {
-        return Ok(());
-    }
-    let mut message = format!(
-        "`{target}` names {} components; give an id, or a path as ./<path>:",
-        named.len()
-    );
-    for component in named.iter().take(MAX_CANDIDATES) {
-        let _ = write!(
-            message,
-            "\n  {}  {}",
-            crate::query_text::shell_word(component.id.as_str()),
-            component.path.as_deref().unwrap_or("-")
-        );
-    }
-    if named.len() > MAX_CANDIDATES {
-        let _ = write!(message, "\n  +{} more", named.len() - MAX_CANDIDATES);
-    }
-    bail!(message)
 }
 
 /// Other components that share `component`'s name, and those that share
@@ -196,34 +163,4 @@ pub(crate) fn namesakes<'a>(
         .map(|c| &c.id)
         .collect();
     (named, at_path)
-}
-
-/// The one symbol `target` names, by id or by name; an error that lists the
-/// candidates when several share the name.
-pub(crate) fn symbols_for<'a>(full: &'a ArchitectureGraph, target: &str) -> Vec<&'a Symbol> {
-    match full.symbol(&SymbolId::new(target)) {
-        Some(symbol) => vec![symbol],
-        None => full.symbols_named(target).collect(),
-    }
-}
-
-/// The error for a name that several symbols share: their ids, quoted for
-/// the shell where needed, and where they are.
-pub(crate) fn ambiguous_symbols(target: &str, symbols: &[&Symbol]) -> String {
-    let mut message = format!("`{target}` names {} symbols; give an id:", symbols.len());
-    for symbol in symbols.iter().take(MAX_CANDIDATES) {
-        let at = symbol
-            .location()
-            .map(|e| format!("{}:{}", e.file, e.line.unwrap_or(0)))
-            .unwrap_or_default();
-        let _ = write!(
-            message,
-            "\n  {}  {at}",
-            crate::query_text::shell_word(symbol.id.as_str())
-        );
-    }
-    if symbols.len() > MAX_CANDIDATES {
-        let _ = write!(message, "\n  +{} more", symbols.len() - MAX_CANDIDATES);
-    }
-    message
 }

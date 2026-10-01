@@ -64,9 +64,11 @@ enum Command {
     /// Components are rolled up to `--depth` like in `summary`; a deeper
     /// component resolves to the component it is folded into.
     Query {
-        /// Component id or name (e.g. `archmap-core`), a file or directory
-        /// path relative to the repository root, a symbol name (e.g.
-        /// `scan`), or an import name no component carries (e.g. `torch`).
+        /// A file or directory path (relative to the root or absolute), a
+        /// component name or id (`archmap-core`), a symbol name or id
+        /// (`scan`), `<component>.<file stem>`, a package subpath, an import
+        /// name no component carries (`torch`) or a file name. Several
+        /// matches are listed as candidates, with exit code 1.
         target: String,
         /// Repository root to scan.
         #[arg(long, default_value = ".")]
@@ -85,8 +87,8 @@ enum Command {
     ///
     /// Components are rolled up to `--depth` like in `summary`.
     Impact {
-        /// Component id or name, or a file or directory path relative to
-        /// the repository root.
+        /// Anything `query` takes; several matches are listed as candidates,
+        /// with exit code 1.
         target: String,
         /// Repository root to scan.
         #[arg(long, default_value = ".")]
@@ -160,9 +162,10 @@ fn main() -> ExitCode {
 
     match result {
         Ok(code) => code,
+        // 1 is a result to act on (findings, candidates); 2 is a failure
         Err(err) => {
             eprintln!("error: {err:#}");
-            ExitCode::FAILURE
+            ExitCode::from(2)
         }
     }
 }

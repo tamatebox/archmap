@@ -49,7 +49,8 @@ fn query_answers_a_file_by_its_dotted_name() {
             format: Format::Text,
             verbose: false,
         })
-        .unwrap();
+        .unwrap()
+        .output;
     assert!(
         text.starts_with("src/shop/users.py (file) in shop (module, python), depth 2\n"),
         "{text}"
@@ -64,7 +65,8 @@ fn impact_answers_in_json_for_the_component_that_holds_a_file() {
             depth: DEFAULT_DEPTH,
             verbose: false,
         })
-        .unwrap();
+        .unwrap()
+        .output;
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["target"], "shop::shop", "{json}");
     assert!(json.ends_with("}\n"), "{json}");

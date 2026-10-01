@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result};
-use archmap_app::{CheckRequest, ImpactRequest, QueryRequest, ScanMode, Workspace};
+use archmap_app::{Answer, CheckRequest, Found, ImpactRequest, QueryRequest, ScanMode, Workspace};
 
 use crate::output::{render, OutputFormat, ReportFormat};
 
@@ -106,8 +106,7 @@ pub fn query(
         format: format.into(),
         verbose,
     })?;
-    print!("{answer}");
-    Ok(ExitCode::SUCCESS)
+    Ok(print_answer(answer))
 }
 
 pub fn impact(
@@ -126,8 +125,7 @@ pub fn impact(
         depth,
         verbose,
     })?;
-    print!("{answer}");
-    Ok(ExitCode::SUCCESS)
+    Ok(print_answer(answer))
 }
 
 /// Exit codes: 0 without findings, 1 with findings, 2 when the rules or the
@@ -166,4 +164,14 @@ pub fn check(
     } else {
         ExitCode::from(1)
     })
+}
+
+/// Print an answer of `query` or `impact`: exit 0 for one target, 1 when it
+/// lists candidates to choose from.
+fn print_answer(answer: Answer) -> ExitCode {
+    print!("{}", answer.output);
+    match answer.found {
+        Found::One => ExitCode::SUCCESS,
+        Found::Candidates => ExitCode::from(1),
+    }
 }
