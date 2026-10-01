@@ -1733,3 +1733,31 @@ fn imports_of_types_only_are_marked_in_query() {
     assert!(money.contains("src/app/page.tsx:1"), "{money}");
     assert!(!money.contains("src/app/page.tsx:1 (type)"), "{money}");
 }
+
+#[test]
+fn rule_violations_say_when_they_import_types_only() {
+    let rules = r#"
+[components]
+types = ["src/lib/types.ts"]
+money = ["src/lib/money.ts"]
+page = ["src/app/page.tsx"]
+
+[[deny]]
+from = "types"
+to = "money"
+
+[[deny]]
+from = "page"
+to = "money"
+"#;
+    let out = check_with("types-only", &ts_fixture(), rules, &[]);
+    assert_eq!(out.status.code(), Some(1));
+    let text = String::from_utf8_lossy(&out.stdout);
+    for expected in [
+        "forbidden by deny[0] types -> money: lib/types.ts -> lib/money.ts (import, types only)\n",
+        // page.tsx:1 takes a value too
+        "forbidden by deny[1] page -> money: app/page.tsx -> lib/money.ts (import)\n",
+    ] {
+        assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
+    }
+}

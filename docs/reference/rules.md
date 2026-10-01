@@ -61,7 +61,8 @@ cycles at the roll-up depth (`depth` in the file or `--depth`, default 2),
 undeclared imports, and declarations, rule sides or `ignore` entries that
 match nothing, so a typo never silently disables a rule. Text output shows
 up to 3 locations per finding, marked `(type)` and `(local)` as `query`
-marks them; `--format json` lists all of them. It
+marks them, and a rule finding whose imports all take types only says so
+(`(import, types only)`); `--format json` lists all of them. It
 exits 0 without findings, 1 with findings, and 2 when the rules or the
 repository cannot be read, including a `--config` file that does not exist.
 Without `--config` and without an `archmap.toml`, `check` reports signals

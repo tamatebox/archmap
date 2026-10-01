@@ -722,7 +722,7 @@ fn check_text(
                     deny.to,
                     name(from),
                     name(to),
-                    edge.as_str()
+                    edge_label(*edge, evidence)
                 ));
                 if let Some(reason) = &deny.reason {
                     out.push_str(&format!("  reason: {reason}\n"));
@@ -741,7 +741,7 @@ fn check_text(
                     "layer violation: {from_layer} must not depend on the higher layer {to_layer}: {} -> {} ({})\n",
                     name(from),
                     name(to),
-                    edge.as_str()
+                    edge_label(*edge, evidence)
                 ));
                 truncated |= evidence_lines(&mut out, evidence);
             }
@@ -757,7 +757,7 @@ fn check_text(
                     "unexpected dependency: {declared_from} -> {declared_to} is not in the allow list: {} -> {} ({})\n",
                     name(from),
                     name(to),
-                    edge.as_str()
+                    edge_label(*edge, evidence)
                 ));
                 truncated |= evidence_lines(&mut out, evidence);
             }
@@ -898,6 +898,16 @@ fn capped_list(out: &mut String, label: &str, entries: &[String]) -> bool {
     }
     out.push('\n');
     more > 0
+}
+
+/// The kind of a dependency a rule finding names, and whether all of its
+/// imports take types only, which never run.
+fn edge_label(edge: EdgeKind, evidence: &[Evidence]) -> String {
+    if !evidence.is_empty() && evidence.iter().all(|e| e.type_only) {
+        format!("{}, types only", edge.as_str())
+    } else {
+        edge.as_str().to_owned()
+    }
 }
 
 fn location(e: &Evidence) -> String {
