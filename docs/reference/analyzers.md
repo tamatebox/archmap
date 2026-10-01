@@ -225,10 +225,11 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   arguments of a call in `extends` read `…` (`extends Base(…)`) and decorators are left out, line included:
   functions and arrow functions, classes and their
   public methods as `Class.method`, interfaces, type aliases (with their right-hand side), enums, namespaces
-  and constants, a named default by its declared name; a constant without a declared type shows the
+  and constants, a named default by its declared name, and the declaration `export = Engine` names, as the
+  default export; a constant without a declared type shows the
   shape of its value, never the value, which may be a secret (`: string` for a literal,
   `: number` for arithmetic of numbers, `= z.object(…)` for a call, `= [… 3 items] as const`, `= {…}`); test, story and mock files (`*.test.*`, `*.spec.*`,
-  `*.stories.*`, `__mocks__/`) give imports only, while helpers in `tests/` keep their symbols
+  `*.test-d.*`, `*.spec-d.*`, `*.stories.*`, `__mocks__/`) give imports only, while helpers in `tests/` keep their symbols
 - CommonJS exports at the top level of a JavaScript file become symbols too: `exports.pad = ..` and
   `module.exports.pad = ..` as `pad`, each property of `module.exports = { .. }`, and the function,
   class or local declaration that `module.exports` or `exports.default` is, also as the default
@@ -243,7 +244,7 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   `package.json` where the tsconfig's `module` is `node16`, `node18`, `node20` or `nodenext`, or a
   tsconfig with `"moduleDetection": "force"` (declaration files stay scripts then)
 - the imports of test code carry `test` in their evidence (see [graph.md](graph.md)): `*.test.*` and
-  `*.spec.*` files and any file below a `test`, `tests`, `__tests__` or `__mocks__` directory, helpers
+  `*.spec.*` files (`*.test-d.*` and `*.spec-d.*` too) and any file below a `test`, `tests`, `__tests__` or `__mocks__` directory, helpers
   included; stories are not test code
 
 ### TypeScript and JavaScript known gaps
@@ -275,8 +276,12 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   `@acme/tsconfig/react` for `react.json`), not through `exports` that map it elsewhere; a config of
   any other package is not in the scan.
 - Declarations inside `declare global { .. }`, triple-slash directives (`/// <reference types="vite/client" />`),
-  spreads in `module.exports = { ...require('./a') }` and `Object.defineProperty(exports, 'a', ..)`
+  spreads in `module.exports = { ...require('./a') }`, `Object.defineProperty(exports, 'a', ..)` and the
+  re-exports compilers write into CommonJS output (`__exportStar(require('./a'), exports)`) are not read.
+- Files loaded by a pattern (Vite's `import.meta.glob('./pages/*.ts')`, webpack's `require.context`)
   are not read.
+- Vue, Svelte and Astro components and GraphQL documents are not code to the analyzer: an import of
+  one is an import of a file, as for a stylesheet, and the imports inside them are not read.
 - The links are one map for the whole scan: two independent workspace roots that each name a
   package of one name link it to the first, while each root installs its own. A tsconfig's
   `customConditions` count for every file, not only those its config covers.

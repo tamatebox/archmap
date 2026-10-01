@@ -36,8 +36,9 @@ it points at and re-export it goes through, with all of its names. Every
 analyzer records `names`.
 
 `test` marks a statement in test code, which runs only for tests: for
-Python and TS/JS a file named `*.test.*`, `*.spec.*`, `test_*.py`,
-`*_test.py` or `conftest.py`, or any file below a directory named `test`,
+Python and TS/JS a file named `*.test.*`, `*.spec.*` (Vitest's type tests
+`*.test-d.*` and `*.spec-d.*` too), `test_*.py`, `*_test.py` or
+`conftest.py`, or any file below a directory named `test`,
 `tests`, `__tests__` or `__mocks__`; for Rust, code under `#[cfg(test)]` or
 `#[test]`, never a path. It is on the evidence of edges, imports without an
 edge and dynamic imports. Rules (`deny`, `layers`, `allow`), cycles and

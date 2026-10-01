@@ -4,13 +4,15 @@
 
 use std::path::Path;
 
-/// A file named like a test (`*.test.*`, `*.spec.*`, `test_*.py`,
-/// `*_test.py`, `conftest.py`), or a file below a directory named `test`,
-/// `tests`, `__tests__` or `__mocks__`.
+/// A file named like a test (`*.test.*`, `*.spec.*`, Vitest's type tests
+/// `*.test-d.*` and `*.spec-d.*`, `test_*.py`, `*_test.py`, `conftest.py`),
+/// or a file below a directory named `test`, `tests`, `__tests__` or
+/// `__mocks__`.
 pub(crate) fn is_test_code(path: &Path) -> bool {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    let named = name.contains(".test.")
-        || name.contains(".spec.")
+    let named = [".test.", ".spec.", ".test-d.", ".spec-d."]
+        .iter()
+        .any(|marker| name.contains(marker))
         || (name.ends_with(".py")
             && (name.starts_with("test_") || name.ends_with("_test.py") || name == "conftest.py"));
     let below = path.parent().is_some_and(|dir| {
@@ -41,6 +43,9 @@ mod tests {
             "test/run.js",
             "src/__tests__/setup.ts",
             "src/lib/__mocks__/money.ts",
+            // Vitest's type tests
+            "src/lib/money.test-d.ts",
+            "src/lib/money.spec-d.ts",
         ] {
             assert!(is_test_code(Path::new(path)), "{path}");
         }

@@ -402,7 +402,7 @@ fn is_index(file: &Path) -> bool {
 /// symbols.
 pub(crate) fn is_test_file(file: &Path) -> bool {
     let name = file_name(file);
-    [".test.", ".spec.", ".stories."]
+    [".test.", ".spec.", ".test-d.", ".spec-d.", ".stories."]
         .iter()
         .any(|marker| name.contains(marker))
         || file.components().any(|c| c.as_os_str() == "__mocks__")
@@ -757,6 +757,7 @@ mod tests {
         assert!(is_test_file(Path::new("src/button.stories.tsx")));
         assert!(is_test_file(Path::new("tests/e2e/login.spec.ts")));
         assert!(is_test_file(Path::new("src/lib/__mocks__/money.ts")));
+        assert!(is_test_file(Path::new("src/money.test-d.ts")));
         assert!(!is_test_file(Path::new("tests/e2e/helpers.ts")));
         assert!(!is_test_file(Path::new("src/__tests__/fixtures.ts")));
         assert!(!is_test_file(Path::new("src/testing.ts")));

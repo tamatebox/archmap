@@ -367,6 +367,16 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
             Statement::ExpressionStatement(e) if javascript => {
                 commonjs_exports(&source, &e.expression, &locals, &mut file);
             }
+            // `export = Engine`: the module is the declaration, which an
+            // import takes as its default
+            Statement::TSExportAssignment(a) => {
+                if let Expression::Identifier(id) = &a.expression {
+                    let local = id.name.to_string();
+                    file.symbols
+                        .extend(locals.get(&local).cloned().unwrap_or_default());
+                    exported.push((local, "default".to_owned(), line, false));
+                }
+            }
             _ => {}
         }
     }
@@ -1777,6 +1787,24 @@ export default local;
         assert!(jsx("const a = <div />;"));
         assert!(jsx("function f() { return <></>; }"));
         assert!(!jsx("const a = 1 < 2;"));
+    }
+
+    #[test]
+    fn export_assignment_exports_its_declaration_as_the_default() {
+        // a declaration file in the CommonJS style
+        let file = parse(
+            Path::new("engine.d.ts"),
+            "declare class Engine {\n  start(): void;\n}\ndeclare namespace Engine {\n  const x: number;\n}\n\
+             export = Engine;\n",
+        )
+        .unwrap();
+        let symbols: Vec<(&str, u32)> = file
+            .symbols
+            .iter()
+            .map(|s| (s.name.as_str(), s.line))
+            .collect();
+        assert_eq!(symbols, [("Engine", 1), ("Engine.start", 2)]);
+        assert_eq!(file.exports.default_name.as_deref(), Some("Engine"));
     }
 
     #[test]

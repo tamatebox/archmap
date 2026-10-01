@@ -1,9 +1,11 @@
-//! TypeScript / JavaScript analyzer: `package.json` packages, directory and
-//! file modules, ES module imports and exports.
+//! TypeScript / JavaScript analyzer: `package.json` packages and the
+//! workspaces that link them, directory and file modules, ES module and
+//! CommonJS imports and exports, and scripts.
 //!
 //! Facts extracted:
 //! - a `package.json` with a `name` whose directory holds TS/JS files of its
-//!   own, or that declares `workspaces`, becomes a `Package` component; TS/JS
+//!   own, that declares `workspaces`, or that is a workspace member or a
+//!   path dependency, becomes a `Package` component; TS/JS
 //!   files that no package owns go to one root component named after the
 //!   directory; a `package.json` without a name is no package (see
 //!   [`layout`]), but it declares dependencies all the same
@@ -17,9 +19,11 @@
 //!   are declared but give no edge
 //! - `import` (`import x = require('m')` too) and `export ... from`
 //!   statements become `Import` edges, resolved by `oxc_resolver` through
-//!   each file's tsconfig over the scanned files only (see [`fs`]); an
-//!   import of a stylesheet, image or JSON file is an edge of the importer
-//!   to itself whose evidence names the file
+//!   each file's tsconfig over the scanned files only, in which workspace
+//!   members and path dependencies are linked by name (see [`fs`] and
+//!   [`workspace`]); an import of a stylesheet, image or JSON file is an
+//!   edge of the importer to itself, or to the package that holds the file,
+//!   whose evidence names the file
 //! - so do calls with a written-out specifier anywhere in a file
 //!   (`require`, `import()`, `vi.mock` and the other module calls of Vitest
 //!   and Jest; `local` inside a function body) and `import()` types (types
@@ -30,17 +34,17 @@
 //!   the first re-export on the way (`import via src/index.ts:2`; see
 //!   [`exports`])
 //! - a bare specifier that resolves to no file is matched by package name to
-//!   the closest `package.json` above the importing file that declares it
-//!   (`@types/x` covers `x`): a required declaration gives an edge, another
+//!   the closest `package.json` above the importing file that declares it,
+//!   or else its `@types` package: a required declaration gives an edge, another
 //!   an [`UnmappedImport`] saying where it is declared, and none an
 //!   undeclared one, unless a tsconfig or jsconfig declares it as an alias
 //!   (`unresolved`) or it is the package's own name or one of its own
 //!   directories or files (`local_name`); a path or alias that matches no
 //!   file is `unresolved`; Node built-ins are left out
-//! - exported declarations become symbols (see [`source`]), except in test,
-//!   story and mock files
-//!
-//! Not read yet: CommonJS exports, scripts and workspaces.
+//! - exported declarations and CommonJS exports become symbols (see
+//!   [`source`]), except in test, story and mock files; a file TypeScript
+//!   reads as a script gives its global declarations, and its component is
+//!   a `Script`
 
 mod exports;
 mod fs;
