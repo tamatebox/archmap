@@ -7,7 +7,7 @@ exclude = ["fixtures"]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/ryota-ido/archmap"
+repository = "https://github.com/tamatebox/archmap"
 
 [workspace.dependencies]
 archmap-core = { path = "crates/archmap-core", version = "0.1.0" }

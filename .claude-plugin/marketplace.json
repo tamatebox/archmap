@@ -1,6 +1,6 @@
 {
   "name": "archmap",
-  "owner": { "name": "ryota-ido" },
+  "owner": { "name": "tamatebox" },
   "description": "Plugins for the archmap CLI.",
   "plugins": [
     { "name": "archmap", "source": "./plugins/archmap" }
