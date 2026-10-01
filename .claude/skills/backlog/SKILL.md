@@ -9,7 +9,7 @@ Planned work lives in GitHub issues on tamatebox/archmap. The repository is publ
 
 ## Pick the next task
 
-1. Read the pinned `Plan:` issue (now #26). It is the only place that records the order; the first unchecked item is next. Items without an issue number (a review round, a milestone) are steps the user runs: ask.
+1. Read the pinned `Plan:` issue (now #61). It is the only place that records the order; the first unchecked item is next. Items without an issue number (a review round, a milestone) are steps the user runs: ask.
 2. Check whether the item is already in progress: uncommitted changes in the working tree that belong to it, or a plan for it under `docs/superpowers/plans/`, mean another session may be on it. Ask the user before starting.
 3. Issues that share a milestone are decided together at that step, not one by one.
 4. An issue labeled `needs-decision` is not started, and not skipped when later items build on it: bring its open questions and options to the user. Once decided, comment the decision on the issue in a few lines and remove the label; the decision itself lands in CLAUDE.md, README or `docs/reference/` with the change that implements it.
