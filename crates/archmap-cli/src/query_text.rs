@@ -60,7 +60,9 @@ pub fn render(
     let truncated = match result {
         QueryResult::Component(view) => component(&mut out, view, full, rolled, &caps),
         QueryResult::File(view) => file(&mut out, view, rolled, &caps),
-        QueryResult::Symbols(symbols) => symbol_list(&mut out, symbols, target, rolled, &caps),
+        QueryResult::Symbols(symbols) => {
+            symbol_list(&mut out, symbols, target, full, rolled, &caps)
+        }
         QueryResult::NotMapped(view) => unmapped_name(&mut out, view, full, rolled, &caps),
     };
     if truncated {
@@ -437,6 +439,7 @@ fn symbol_list(
     out: &mut String,
     symbols: &[SymbolView],
     target: &str,
+    full: &ArchitectureGraph,
     rolled: &ArchitectureGraph,
     caps: &Caps,
 ) -> bool {
@@ -463,7 +466,7 @@ fn symbol_list(
     }
     let mut truncated = shown < total;
     match symbols {
-        [one] => truncated |= importers(out, one, rolled, caps),
+        [one] => truncated |= importers(out, one, full, rolled, caps),
         [] => {}
         [first, ..] => {
             let _ = writeln!(
@@ -478,7 +481,24 @@ fn symbol_list(
 
 /// The statements that import one symbol: those that take its name, then
 /// those that take its file whole.
-fn importers(out: &mut String, view: &SymbolView, rolled: &ArchitectureGraph, caps: &Caps) -> bool {
+fn importers(
+    out: &mut String,
+    view: &SymbolView,
+    full: &ArchitectureGraph,
+    rolled: &ArchitectureGraph,
+    caps: &Caps,
+) -> bool {
+    // a Rust module is a symbol of the file that declares it and a
+    // component of its own; imports name its own file
+    let id = ComponentId::new(view.symbol.id.as_str());
+    if full.component(&id).is_some() {
+        let _ = writeln!(
+            out,
+            "\n`{}` is a module: `query {id}` lists what imports it",
+            view.symbol.name
+        );
+        return false;
+    }
     let (Some(by_name), Some(may_use)) = (&view.imported_by, &view.may_use) else {
         let language = rolled
             .component(&view.symbol.component)

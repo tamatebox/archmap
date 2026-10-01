@@ -143,8 +143,10 @@ namespace import, a glob, `import pkg.sub`). Statements that only load the
 file take no name and are in neither list. Both lists show 5 statements and
 count the rest; nothing found reads `none resolved`, which does not mean
 unused. When several symbols match, each line counts its importers instead
-(`imported by 3, may use 1`), and querying one by its id lists them. What
-the lists miss:
+(`imported by 3, may use 1`), and querying one by its id lists them. A
+Rust module (`pub mod invoice;`) is also a symbol of the file that declares
+it, but its imports name its own file, so `query` points at its component
+instead, and `impact` answers for that component. What the lists miss:
 
 - Python does not follow re-exports: `from pkg import pay`, where
   `pkg/__init__.py` re-exports `pay`, is listed for `__init__.py`, not for

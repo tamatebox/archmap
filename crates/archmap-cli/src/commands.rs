@@ -546,6 +546,13 @@ pub fn impact(path: &str, target: &str, depth: usize, format: OutputFormat) -> R
         let reach = full.change_impact(ChangeSeed::File(&file), depth);
         importers = Some(import_sites(full, depth, &file));
         (fold(full, depth, &owner.id), reach)
+    } else if let Some(module) = single_symbol(full, target)?
+        .and_then(|symbol| full.component(&ComponentId::new(symbol.id.as_str())))
+    {
+        // a Rust module's symbol stands for its component
+        let reach = full.change_impact(ChangeSeed::Component(&module.id), depth);
+        importers = component_file(full, path, module).map(|file| import_sites(full, depth, &file));
+        (fold(full, depth, &module.id), reach)
     } else if let Some(symbol) = single_symbol(full, target)? {
         let reach = full.change_impact(ChangeSeed::Symbol(symbol), depth);
         if let Some(found) = full.symbol_importers(symbol) {

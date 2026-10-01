@@ -1619,3 +1619,28 @@ fn impact_of_a_name_several_symbols_share_lists_their_ids() {
         );
     }
 }
+
+#[test]
+fn a_rust_module_symbol_points_at_its_component() {
+    // `pub mod invoice;` is a symbol of billing.rs, but imports name the
+    // module's own file: the component answers for it
+    let text = query_text(&fixture_root(), &["invoice"]);
+    assert!(
+        text.contains(
+            "`invoice` is a module: `query lib_core::billing::invoice` lists what imports it\n"
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("Imported by"), "{text}");
+    let out = archmap()
+        .args(["impact", "invoice", "--path"])
+        .arg(fixture_root())
+        .output()
+        .unwrap();
+    let json = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        json.contains("\"target\": \"lib_core::billing::invoice\""),
+        "{json}"
+    );
+    assert!(!json.contains("\"symbol\""), "{json}");
+}

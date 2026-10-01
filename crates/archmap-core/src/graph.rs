@@ -531,8 +531,16 @@ impl ArchitectureGraph {
     /// The statements that import `symbol`: those that take its name from
     /// the file it is reached through, and, apart from them, those that take
     /// that file whole. One entry per statement, the first in edge order.
-    /// `None` for a symbol without a location.
+    /// `None` for a symbol without a location, and for one that is itself a
+    /// component (a Rust module, whose imports name its own file): the
+    /// component answers for it.
     pub fn symbol_importers(&self, symbol: &Symbol) -> Option<SymbolImporters<'_>> {
+        if self
+            .component(&ComponentId::new(symbol.id.as_str()))
+            .is_some()
+        {
+            return None;
+        }
         let reached = symbol
             .evidence
             .iter()
