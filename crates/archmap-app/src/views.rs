@@ -1,5 +1,5 @@
-//! What `archmap query` returns: built by [`crate::commands`], rendered as
-//! JSON there or as text by [`crate::query_text`].
+//! What `query` returns: built by [`crate::query`], rendered as JSON there
+//! or as text by [`crate::query_text`].
 
 use archmap_core::{Component, ComponentId, DynamicImport, Edge, Evidence, Symbol, UnmappedImport};
 use serde::Serialize;

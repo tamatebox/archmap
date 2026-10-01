@@ -28,19 +28,20 @@ and impact without re-reading the whole repository.
 - **Full graph != agent context.** Agent-facing defaults (`summary`, text `query`, `impact`) stay small however large the repository is: cap lists and count the rest. Complete detail lives behind `--format json`. Commands never read `graph.json`; it is an export.
 - **Cheap structural scan first, deep analysis only for chosen targets.** Do not parse bodies or docstrings by default. Deeper passes (calls, types, data flow; Phase 4) run on demand for a component, never over the whole repository by default.
 - **Many inputs, one model.** Each language / manifest / schema may be analyzed differently, but everything normalizes into `archmap-core` types.
-- **MCP is an adapter, not the core.** CLI is the first interface; MCP, if added, is a thin layer over the same engine.
+- **Interfaces share one layer.** `archmap-core`, `archmap-scan` and `archmap-app` know no interface. The CLI is one interface and an MCP server (planned) another; each is first-class and offers the same capabilities, getting scanning, target lookup, the commands and their capped output from `archmap-app`, and holds no analysis or rendering of its own.
 
 ## Crates and dependency direction
 
 ```
-archmap-cli  ->  archmap-scan  ->  archmap-core
+archmap-cli  ->  archmap-app  ->  archmap-scan  ->  archmap-core
 ```
 
 - `archmap-core`: graph model (`Component`, `Symbol`, `Edge`, `Evidence`, `GraphFragment`, `ArchitectureGraph`), merge/normalize, roll-up, cycles, query and impact primitives, and declared rules (`rules`). No I/O, no language knowledge, no dependency on other workspace crates.
 - `archmap-scan`: repo walking, project detection, the `Analyzer` trait and concrete analyzers (`rust/`, `python/`, `typescript/`). Emits `GraphFragment`s; `scan()` merges them.
-- `archmap-cli`: `clap` commands, reading `archmap.toml`, and output rendering (JSON, Markdown summary, check report) only. No analysis logic.
+- `archmap-app`: what every interface shares: scanning into a `Workspace`, path targets and target lookup, reading `archmap.toml`, and `summary`, `query`, `impact` and `check` with their capped text and JSON, returned as finished strings. It never prints, exits or parses arguments.
+- `archmap-cli`: `clap` commands, stdout and stderr, exit codes and `scan`'s file output only. No analysis, lookup or rendering.
 
-Never add a dependency that points against the arrow. Never make `archmap-core` aware of Cargo, `syn`, files or paths beyond plain strings.
+Never add a dependency that points against the arrow. Never make `archmap-core` aware of Cargo, `syn`, files or paths beyond plain strings. An interface depends on `archmap-app` alone: never re-export items of `archmap-scan` or `archmap-core` to it, since archmap's Rust analyzer follows a `pub use` to the defining crate and `check` sees the edge; give `archmap-app` its own type instead.
 
 ## Adding an analyzer
 
@@ -106,6 +107,6 @@ cargo check --workspace
 cargo run -q -p archmap-cli -- check
 ```
 
-The last command enforces archmap's own `cli -> scan -> core` direction from `archmap.toml`.
+The last command enforces archmap's own `cli -> app -> scan -> core` direction from `archmap.toml`.
 
 Try the tool on itself as a smoke test without writing files: `cargo run -p archmap-cli -- scan . -o -`

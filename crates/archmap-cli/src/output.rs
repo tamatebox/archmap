@@ -1,5 +1,6 @@
-//! Rendering of results. Only JSON for now; YAML / Markdown / Mermaid /
-//! Graphviz are intended to be added here as further variants.
+//! Output formats the CLI's flags name. Only JSON for the graph for now;
+//! YAML / Markdown / Mermaid / Graphviz are intended to be added here as
+//! further variants.
 
 use anyhow::Result;
 use clap::ValueEnum;
@@ -16,6 +17,15 @@ pub enum OutputFormat {
 pub enum ReportFormat {
     Text,
     Json,
+}
+
+impl From<ReportFormat> for archmap_app::Format {
+    fn from(format: ReportFormat) -> Self {
+        match format {
+            ReportFormat::Text => archmap_app::Format::Text,
+            ReportFormat::Json => archmap_app::Format::Json,
+        }
+    }
 }
 
 impl OutputFormat {

@@ -12,6 +12,7 @@ repository = "https://github.com/tamatebox/archmap"
 [workspace.dependencies]
 archmap-core = { path = "crates/archmap-core", version = "0.1.0" }
 archmap-scan = { path = "crates/archmap-scan", version = "0.1.0" }
+archmap-app = { path = "crates/archmap-app", version = "0.1.0" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

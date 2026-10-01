@@ -1,14 +1,11 @@
 //! `archmap` command line interface.
 //!
-//! This crate is a thin adapter: it parses arguments, calls `archmap-scan`
-//! and `archmap-core`, and renders the result. No analysis logic lives here.
+//! One of archmap's interfaces: it parses arguments, asks `archmap-app` for
+//! the answer, prints it and picks the exit code. Analysis, lookups and
+//! rendering live in `archmap-app`, shared with the MCP server.
 
 mod commands;
 mod output;
-mod pairs;
-mod query_text;
-mod summary;
-mod views;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -53,7 +50,7 @@ enum Command {
         #[arg(default_value = ".")]
         path: String,
         /// Containment depth to roll modules up to; 0 keeps only packages.
-        #[arg(long, default_value_t = commands::DEFAULT_DEPTH)]
+        #[arg(long, default_value_t = archmap_app::DEFAULT_DEPTH)]
         depth: usize,
         /// File to save the summary to instead of printing it.
         #[arg(short, long)]
@@ -75,7 +72,7 @@ enum Command {
         #[arg(long, default_value = ".")]
         path: String,
         /// Containment depth to roll modules up to, as in `summary`.
-        #[arg(long, default_value_t = commands::DEFAULT_DEPTH)]
+        #[arg(long, default_value_t = archmap_app::DEFAULT_DEPTH)]
         depth: usize,
         /// Compact text with capped lists, or complete JSON.
         #[arg(long, value_enum, default_value_t = ReportFormat::Text)]
@@ -95,7 +92,7 @@ enum Command {
         #[arg(long, default_value = ".")]
         path: String,
         /// Containment depth to roll modules up to, as in `summary`.
-        #[arg(long, default_value_t = commands::DEFAULT_DEPTH)]
+        #[arg(long, default_value_t = archmap_app::DEFAULT_DEPTH)]
         depth: usize,
         #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
         format: OutputFormat,

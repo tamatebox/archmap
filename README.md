@@ -78,7 +78,8 @@ aims at about 8 KiB, lists are capped at 30 entries, and a capped list ends
 in an `omitted:` line that names the query showing the rest. `--verbose`
 lifts the caps and `--format json` adds every piece of evidence.
 
-An MCP adapter is planned, but the engine and CLI come first.
+An MCP server is planned, offering the same commands through the layer the CLI
+uses (`archmap-app`).
 
 Details: [commands](docs/reference/commands.md), [rules and signals](docs/reference/rules.md),
 [graph model and JSON](docs/reference/graph.md).
@@ -164,7 +165,9 @@ lists every known gap.
    never renames, groups by meaning, or adds prose.
 5. **Many inputs, one model.** Rust, TypeScript, Python, OpenAPI... are
    analyzed differently but normalized into one graph.
-6. **MCP is an adapter.** The core is the graph engine and the CLI.
+6. **Interfaces share one engine.** Every interface offers the same
+   capabilities through one shared layer; the CLI is the first, and an MCP
+   server is planned.
 
 ## Roadmap
 
@@ -231,8 +234,9 @@ eliminate `grep`.
 
 ## Development
 
-The Cargo workspace has three crates: `archmap-core` (model), `archmap-scan`
-(extraction) and `archmap-cli`. While developing, run
+The Cargo workspace has four crates: `archmap-core` (model), `archmap-scan`
+(extraction), `archmap-app` (the commands and their output, shared by every
+interface) and `archmap-cli`. While developing, run
 `cargo run -p archmap-cli -- <command>` instead of the installed `archmap`;
 it always builds the current tree.
 
@@ -244,6 +248,6 @@ cargo check --workspace
 cargo run -q -p archmap-cli -- check
 ```
 
-The last command checks archmap's own `cli -> scan -> core` direction
+The last command checks archmap's own `cli -> app -> scan -> core` direction
 against `archmap.toml`. Behavior is documented in `docs/reference/`; see
 `CLAUDE.md` for design principles and contribution rules.
