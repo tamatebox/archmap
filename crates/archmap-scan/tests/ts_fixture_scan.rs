@@ -1798,3 +1798,39 @@ fn an_index_is_the_file_an_import_of_its_directory_loads() {
         )
     );
 }
+
+#[test]
+fn a_self_import_walks_no_re_export() {
+    let root = temp_repo(
+        "self-import",
+        &[
+            ("package.json", "{ \"name\": \"selfie\" }"),
+            (
+                "src/self.ts",
+                "export { v } from './v';\nimport { v as w } from './self';\nexport const x = w;\n",
+            ),
+            ("src/v.ts", "export const v = 1;\n"),
+        ],
+    );
+    let report = scan(&root, &ScanOptions::default()).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    let walked: Vec<(&str, Option<u32>, &str)> = report
+        .graph
+        .edges
+        .iter()
+        .flat_map(|e| &e.evidence)
+        .filter(|e| {
+            e.note
+                .as_deref()
+                .is_some_and(|n| n.starts_with("import via"))
+        })
+        .map(|e| {
+            (
+                e.file.as_str(),
+                e.line,
+                e.note.as_deref().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(walked, []);
+}

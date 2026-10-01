@@ -817,6 +817,11 @@ impl Imports<'_> {
         definitions: &mut exports::Definitions,
         output: &mut AnalyzerOutput,
     ) {
+        // a file that imports itself depends on nothing it re-exports, as
+        // it gets no edge to itself
+        if loaded == self.file {
+            return;
+        }
         // by defining file, first re-export and whether only types travel
         let mut found: BTreeMap<(PathBuf, (PathBuf, u32), bool), BTreeSet<String>> =
             BTreeMap::new();
