@@ -78,7 +78,7 @@ can use a copy of it.
 - Cargo workspace: `archmap-core` (model), `archmap-scan` (extraction), `archmap-cli`
 - Rust analyzer:
   - every `Cargo.toml` package becomes a `package` component; `[dependencies]` become `dependency` edges
-  - path / workspace dependencies resolve to internal packages, others become `ext:*` components
+  - path / workspace dependencies resolve to internal packages, others become `ext:cargo:*` components
   - following `mod` declarations from `src/lib.rs` and `src/main.rs` (`mod a;` loads `a.rs` or
     `a/mod.rs`), every module file becomes a `module` component named by its path as a `use` writes
     it (`archmap_core::graph`, starting with the `[lib] name` when there is one; a binary's modules
@@ -110,7 +110,7 @@ can use a copy of it.
   - `pyproject.toml` (PEP 621 or poetry), `setup.py` / `setup.cfg` directories become `package` components;
     a tree of `.py` files without any manifest gets one root component named after the directory
   - `[project] dependencies`, `[tool.poetry.dependencies]` and `requirements*.txt` (or `*-requirements.txt`)
-    become `dependency` edges to `ext:*` components (names normalized per PEP 503); a requirements file
+    become `dependency` edges to `ext:pypi:*` components (names normalized per PEP 503); a requirements file
     whose name has the word `dev`, `test`, `tests`, `testing`, `lint` or `docs` (`requirements-dev.txt`,
     `test_requirements.txt`, `requirements/lint.txt`), or whose directory is named by one of them
     (`docs/requirements.txt`), declares dev dependencies instead, like the extras, dependency groups and
@@ -153,7 +153,8 @@ can use a copy of it.
 - `query` on top of the rolled-up graph, for a component, a symbol or a single file, including the
   imports no edge shows, and `impact` that follows imports file by file; both take a directory for
   the component that owns it, and `query` takes an import name that no component carries (`torch`
-  declared as an extra) for the imports of it that no edge shows
+  declared as an extra) for the imports of it that no edge shows; a name that several components
+  share stops both commands with their ids and paths (the first 10), and an id or `./<path>` picks one
 - `check` compares the graph with a declared architecture in `archmap.toml`: forbidden
   dependencies, layers, allow lists, coverage, cycles, undeclared imports, and declarations
   that match nothing; it also reports structural signals, with or without `archmap.toml`
@@ -252,12 +253,19 @@ they mark where a dependency may exist that no edge shows. `query` lists them
 and `check` reports the undeclared ones. `meta.coverage` counts the files of
 each recognized source language and how many an analyzer read; a language
 without `read` has no analyzer. Configuration, data and documentation files
-are not counted. The JSON carries `schema_version: 2`.
+are not counted. The JSON carries `schema_version: 3`.
 
 Each analyzer produces a `GraphFragment`; the graph merges fragments,
 collapses edges that describe the same relationship, and keeps all of their
-evidence. Output is deterministic (sorted, no timestamps) so graphs can be
-diffed.
+evidence. External ids carry their ecosystem (`ext:cargo:serde`,
+`ext:pypi:requests`), so a Cargo crate and a PyPI distribution of the same
+name stay apart. When an analyzer gives a component an id that an earlier
+analyzer already gave a component at another path (a Python project named
+like a Cargo package elsewhere in the repository), the later component and
+every id that starts with `<id>::` are renamed `<id>+<analyzer>`
+(`dup+python`), and the scan warns; equal ids at the same path, such as a
+`Cargo.toml` and a `pyproject.toml` side by side, stay one component.
+Output is deterministic (sorted, no timestamps) so graphs can be diffed.
 
 `archmap scan` writes only its own output file, and `summary` writes a file
 only when `-o` names one. Neither adds a `.gitignore` or otherwise decides
@@ -391,7 +399,9 @@ require = ["src"]       # everything under src must be declared
 ```
 
 A selector is a path prefix, where `src/core` covers everything below it, or
-an external id such as `ext:requests` or `ext:google-*`. When selectors
+an external id such as `ext:pypi:requests` or `ext:pypi:google-*`. An
+external selector without an ecosystem (`ext:requests`, as written before
+external ids carried one) matches nothing and is reported. When selectors
 overlap, the most specific one owns a component. `deny` sides take declared
 names or selectors; `layers` and `allow` take declared names only.
 

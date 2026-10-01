@@ -1061,7 +1061,7 @@ mod tests {
     #[test]
     fn resolution_follows_reexports_and_globs_to_the_defining_file() {
         let packages = [
-            package("a", "a", &[("b", "b"), ("serde", "ext:serde")]),
+            package("a", "a", &[("b", "b"), ("serde", "ext:cargo:serde")]),
             package("b", "b", &[]),
         ];
         let files = files(
@@ -1113,12 +1113,12 @@ pub use self::Loop2 as Loop;
                 row("b::Twice", "b/src/lib.rs"),
                 // a cycle of `use` declarations ends
                 row("b::Loop", "b/src/lib.rs via b/src/lib.rs:7"),
-                row("serde::Serialize", "ext:serde"),
+                row("serde::Serialize", "ext:cargo:serde"),
                 row("std::fmt", "nothing"),
                 // an unknown name: the deepest module reached
                 row("b::nope::Gone", "b/src/lib.rs"),
                 // a declaration does not resolve through itself
-                row("serde", "ext:serde"),
+                row("serde", "ext:cargo:serde"),
             ]
         );
         // a private `use` in the parent is visible to its children
@@ -1304,7 +1304,7 @@ use self::r#type::Kind;
 
     #[test]
     fn a_module_path_counts_only_when_it_names_the_module_itself() {
-        let packages = [package("p", "", &[("serde", "ext:serde")])];
+        let packages = [package("p", "", &[("serde", "ext:cargo:serde")])];
         let files = files(
             &[
                 (
@@ -1346,7 +1346,7 @@ pub fn h(_: crate::Thing) {}
                 // and so is a name a glob brought in
                 row("helper::x", "nothing"),
                 row("child::go", "src/a/child.rs"),
-                row("serde::de::Error::custom", "ext:serde"),
+                row("serde::de::Error::custom", "ext:cargo:serde"),
                 row("std::mem::drop", "nothing"),
                 row("self::g", "src/a.rs"),
                 // a re-export on the way is followed, as for `use`

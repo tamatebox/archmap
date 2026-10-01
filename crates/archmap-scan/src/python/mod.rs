@@ -5,7 +5,7 @@
 //!   `Package` component; a repository with `.py` files but no manifest gets
 //!   one root component named after the directory
 //! - declared dependencies (`[project] dependencies`, poetry, requirements
-//!   files) become `Dependency` edges to `ext:*` components. A declaration
+//!   files) become `Dependency` edges to `ext:pypi:*` components. A declaration
 //!   covers the files below its manifest: `pyproject.toml` the whole
 //!   project, a requirements file the closest directory at or above it with
 //!   Python code (`functions/notify/`, but the project for
@@ -69,7 +69,10 @@ pub use manifest::{PyDependency, PyProject};
 pub use source::{PyDef, PyFile, PyImport};
 
 pub const LANGUAGE: &str = "python";
-pub const EXTERNAL_PREFIX: &str = "ext:";
+/// Prefix of the component ids of distributions outside the repository.
+/// The ecosystem keeps a PyPI distribution apart from a Cargo or npm package
+/// of the same name.
+pub const EXTERNAL_PREFIX: &str = "ext:pypi:";
 
 #[derive(Debug, Default, Clone)]
 pub struct PythonAnalyzer;

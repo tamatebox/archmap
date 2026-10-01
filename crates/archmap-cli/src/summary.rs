@@ -657,7 +657,7 @@ fn external_dependencies(rolled: &ArchitectureGraph, ranked: &[External], cap: u
         let hidden: Vec<&str> = omitted.iter().map(|e| e.component.name.as_str()).collect();
         let _ = writeln!(
             text,
-            "omitted: {}  names: {}  next: archmap query ext:<name>",
+            "omitted: {}  names: {}  next: archmap query <name>",
             count(
                 omitted.len(),
                 "external dependency",
@@ -768,7 +768,7 @@ mod tests {
     }
 
     fn external(name: &str) -> Component {
-        Component::new(format!("ext:{name}"), name, ComponentKind::External)
+        Component::new(format!("ext:cargo:{name}"), name, ComponentKind::External)
     }
 
     /// An import edge backed by `statements` distinct statements.
@@ -954,14 +954,14 @@ mod tests {
                 external("x5"),
             ],
             vec![
-                import("p::a", "ext:x1", 1),
-                import("p::b", "ext:x1", 1),
-                import("p::c", "ext:x1", 1),
-                import("p::a", "ext:x2", 2),
-                import("p::b", "ext:x2", 1),
-                import("p::a", "ext:x3", 5),
-                import("p::b", "ext:x5", 1),
-                Edge::new("p", "ext:x4", EdgeKind::Dependency)
+                import("p::a", "ext:cargo:x1", 1),
+                import("p::b", "ext:cargo:x1", 1),
+                import("p::c", "ext:cargo:x1", 1),
+                import("p::a", "ext:cargo:x2", 2),
+                import("p::b", "ext:cargo:x2", 1),
+                import("p::a", "ext:cargo:x3", 5),
+                import("p::b", "ext:cargo:x5", 1),
+                Edge::new("p", "ext:cargo:x4", EdgeKind::Dependency)
                     .with_evidence(Evidence::new("Cargo.toml").at_line(3)),
             ],
         );
@@ -970,7 +970,7 @@ mod tests {
             section(&out, "External dependencies"),
             "x1  importers: 3  top: p::a 1, p::b 1, p::c 1\n\
              x2  importers: 2  top: p::a 2, p::b 1\n\
-             omitted: 3 external dependencies  names: x3, x5, x4  next: archmap query ext:<name>\n"
+             omitted: 3 external dependencies  names: x3, x5, x4  next: archmap query <name>\n"
         );
     }
 
@@ -1044,7 +1044,7 @@ mod tests {
                 components.push(module(&name(p, m), &format!("pkg{p}")));
                 edges.push(import(&name(p, m), &name(p, (m + 1) % 49), 1));
                 edges.push(import(&name(p, m), &name((p + 1) % 10, m), 2));
-                edges.push(import(&name(p, m), &format!("ext:lib{}", m % 25), 1));
+                edges.push(import(&name(p, m), &format!("ext:cargo:lib{}", m % 25), 1));
             }
         }
         let out = render_with(&graph(components, edges), 2, Limits::new(false));

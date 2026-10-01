@@ -1,8 +1,9 @@
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
-use archmap_core::rules::{FileLevel, Finding, RuleSet};
+use archmap_core::rules::{external_selector_lacks_ecosystem, FileLevel, Finding, RuleSet};
 use archmap_core::signals::Signal;
 use archmap_core::{
     ArchitectureGraph, ChangeSeed, Component, ComponentId, Edge, EdgeKind, Evidence, Symbol,
@@ -199,6 +200,7 @@ pub fn query(
     let report = run_scan(path, false)?;
     let full = &report.graph;
     let rolled = full.rollup(depth);
+    reject_ambiguous(full, target)?;
 
     let result = if let Some(at) = resolve_at_depth(full, &rolled, depth, target) {
         component_view(full, &rolled, depth, target, at)?
@@ -325,6 +327,38 @@ fn find_component<'a>(graph: &'a ArchitectureGraph, target: &str) -> Option<&'a 
     })
 }
 
+/// Components listed when a name is shared; the rest are counted.
+const MAX_CANDIDATES: usize = 10;
+
+/// Stop when `target` is no component id but the name of several
+/// components, listing their ids and paths. It runs on the full graph
+/// before any lookup, since roll-up can leave only one of them visible.
+fn reject_ambiguous(full: &ArchitectureGraph, target: &str) -> Result<()> {
+    if full.component(&ComponentId::new(target)).is_some() {
+        return Ok(());
+    }
+    let named: Vec<&Component> = full.components_named(target).collect();
+    if named.len() < 2 {
+        return Ok(());
+    }
+    let mut message = format!(
+        "`{target}` names {} components; give an id, or a path as ./<path>:",
+        named.len()
+    );
+    for component in named.iter().take(MAX_CANDIDATES) {
+        let _ = write!(
+            message,
+            "\n  {}  {}",
+            component.id,
+            component.path.as_deref().unwrap_or("-")
+        );
+    }
+    if named.len() > MAX_CANDIDATES {
+        let _ = write!(message, "\n  +{} more", named.len() - MAX_CANDIDATES);
+    }
+    bail!(message)
+}
+
 #[derive(Debug, Serialize)]
 pub struct ImpactResult<'a> {
     /// The target as given on the command line.
@@ -391,6 +425,7 @@ pub fn impact(path: &str, target: &str, depth: usize, format: OutputFormat) -> R
     let report = run_scan(path, false)?;
     let full = &report.graph;
     let rolled = full.rollup(depth);
+    reject_ambiguous(full, target)?;
 
     let component = find_component(&rolled, target)
         .or_else(|| find_component(full, target))
@@ -662,8 +697,13 @@ fn check_text(
                 ));
             }
             Finding::Unmatched { declared, selector } => {
+                let hint = if external_selector_lacks_ecosystem(selector) {
+                    "; external ids name their ecosystem (`ext:cargo:serde`, `ext:pypi:requests`)"
+                } else {
+                    ""
+                };
                 out.push_str(&format!(
-                    "unmatched: {declared} `{selector}` matches no component\n"
+                    "unmatched: {declared} `{selector}` matches no component{hint}\n"
                 ));
             }
         }

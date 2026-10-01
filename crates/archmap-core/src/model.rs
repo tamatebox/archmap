@@ -7,7 +7,7 @@ use crate::Evidence;
 /// Analyzers choose the string. Convention so far: internal packages use the
 /// package name (`archmap-core`), their modules `<package>::<path>`
 /// (`archmap-core::graph`, `shop::shop.billing`), and external dependencies
-/// are prefixed with `ext:` (`ext:serde`).
+/// are `ext:<ecosystem>:<name>` (`ext:cargo:serde`, `ext:pypi:requests`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ComponentId(pub String);

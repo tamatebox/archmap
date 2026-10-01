@@ -461,7 +461,7 @@ fn symbol_line(symbol: &Symbol) -> String {
     }
 }
 
-/// Internal components by name, external ones by id (`ext:requests`).
+/// Internal components by name, external ones by id (`ext:pypi:requests`).
 fn display(graph: &ArchitectureGraph, id: &ComponentId) -> String {
     match graph.component(id) {
         Some(c) if c.kind != ComponentKind::External => c.name.clone(),

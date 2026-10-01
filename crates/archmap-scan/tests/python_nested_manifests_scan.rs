@@ -43,14 +43,14 @@ fn a_nested_requirements_file_declares_for_its_own_directory() {
     // the declaration belongs to the directory it sits in, and code there
     // resolves against it
     assert_eq!(
-        sources(&graph, EdgeKind::Dependency, "ext:slack-sdk"),
+        sources(&graph, EdgeKind::Dependency, "ext:pypi:slack-sdk"),
         vec![(
             "jobs::functions.notify",
             vec!["functions/notify/requirements.txt"]
         )]
     );
     assert_eq!(
-        sources(&graph, EdgeKind::Import, "ext:slack-sdk"),
+        sources(&graph, EdgeKind::Import, "ext:pypi:slack-sdk"),
         vec![("jobs::functions.notify", vec!["functions/notify/main.py"])]
     );
     // code outside that directory does not: its import is undeclared, and
@@ -102,10 +102,10 @@ fn requirements_without_python_code_nearby_declare_for_the_project() {
     // only the `tool` project), so they declare for the whole project like
     // the root file
     for (external, file) in [
-        ("ext:pandas", "requirements.txt"),
-        ("ext:rich", "requirements/prod.txt"),
-        ("ext:pyyaml", "docker/requirements.txt"),
-        ("ext:click", "libs/requirements.txt"),
+        ("ext:pypi:pandas", "requirements.txt"),
+        ("ext:pypi:rich", "requirements/prod.txt"),
+        ("ext:pypi:pyyaml", "docker/requirements.txt"),
+        ("ext:pypi:click", "libs/requirements.txt"),
     ] {
         assert_eq!(
             sources(&graph, EdgeKind::Dependency, external),
@@ -114,19 +114,19 @@ fn requirements_without_python_code_nearby_declare_for_the_project() {
         );
     }
     assert_eq!(
-        sources(&graph, EdgeKind::Import, "ext:rich"),
+        sources(&graph, EdgeKind::Import, "ext:pypi:rich"),
         vec![("jobs::jobs", vec!["jobs/report.py"])]
     );
     assert_eq!(
-        sources(&graph, EdgeKind::Import, "ext:pyyaml"),
+        sources(&graph, EdgeKind::Import, "ext:pypi:pyyaml"),
         vec![("jobs::jobs", vec!["jobs/report.py"])]
     );
     assert_eq!(
-        sources(&graph, EdgeKind::Import, "ext:click"),
+        sources(&graph, EdgeKind::Import, "ext:pypi:click"),
         vec![("jobs::jobs", vec!["jobs/report.py"])]
     );
     // a nested directory still sees what its ancestors declare
-    for external in ["ext:pandas", "ext:requests"] {
+    for external in ["ext:pypi:pandas", "ext:pypi:requests"] {
         assert_eq!(
             sources(&graph, EdgeKind::Import, external),
             vec![
@@ -143,7 +143,10 @@ fn requirements_files_named_for_development_declare_dev_dependencies() {
     let graph = scan_fixture();
     // requirements-dev.txt makes pytest a dev dependency: no edge, like a
     // dev extra, and the note says why
-    assert!(graph.components.keys().all(|k| k.as_str() != "ext:pytest"));
+    assert!(graph
+        .components
+        .keys()
+        .all(|k| k.as_str() != "ext:pypi:pytest"));
     let pytest: Vec<(&str, UnmappedReason, Option<&str>)> = graph
         .unmapped_imports
         .iter()

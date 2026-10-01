@@ -44,11 +44,13 @@ fn detects_packages_and_external_dependencies() {
     assert_eq!(app.language.as_deref(), Some("rust"));
     assert_eq!(app.path.as_deref(), Some("crates/app"));
 
-    let serde = graph.component(&id("ext:serde")).expect("serde external");
+    let serde = graph
+        .component(&id("ext:cargo:serde"))
+        .expect("serde external");
     assert_eq!(serde.kind, ComponentKind::External);
 
     // dev-dependencies are not architecture facts for now
-    assert!(graph.component(&id("ext:assert_cmd")).is_none());
+    assert!(graph.component(&id("ext:cargo:assert_cmd")).is_none());
     assert_eq!(graph.meta.analyzers, vec!["rust".to_owned()]);
 }
 
@@ -241,7 +243,7 @@ fn every_use_and_module_path_names_the_file_it_imports() {
             // an external crate names no file
             row(
                 "lib_core",
-                "ext:serde",
+                "ext:cargo:serde",
                 "crates/lib_core/src/lib.rs:2",
                 &None,
                 "use",
@@ -269,7 +271,7 @@ fn every_use_and_module_path_names_the_file_it_imports() {
             // a path in `#[derive(..)]`; the one in test code is left out
             row(
                 "lib_core::billing",
-                "ext:serde",
+                "ext:cargo:serde",
                 "crates/lib_core/src/billing.rs:19",
                 &None,
                 "path",
@@ -337,7 +339,7 @@ fn a_reexport_from_the_modules_own_subtree_is_not_an_import() {
     // offers; it is followed when resolving, but it is no dependency
     assert!(graph
         .outgoing(&id("lib_core"))
-        .all(|e| e.to == id("ext:serde")));
+        .all(|e| e.to == id("ext:cargo:serde")));
     // so the crate root and its modules form no cycle
     assert!(graph.cycles().is_empty(), "{:?}", graph.cycles());
 }
@@ -546,5 +548,5 @@ fn a_dev_dependency_used_under_src_is_an_import_without_an_edge() {
                 .in_scope(Scope::Module),
         }]
     );
-    assert!(graph.component(&id("ext:assert_cmd")).is_none());
+    assert!(graph.component(&id("ext:cargo:assert_cmd")).is_none());
 }

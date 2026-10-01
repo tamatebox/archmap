@@ -49,8 +49,10 @@ pub use manifest::{CargoDependency, CargoPackage, CargoWorkspace, DependencyKind
 
 pub const LANGUAGE: &str = "rust";
 
-/// Prefix used for component ids of dependencies outside the repository.
-pub const EXTERNAL_PREFIX: &str = "ext:";
+/// Prefix of the component ids of crates outside the repository. The
+/// ecosystem keeps a Cargo package apart from a PyPI or npm package of the
+/// same name.
+pub const EXTERNAL_PREFIX: &str = "ext:cargo:";
 
 #[derive(Debug, Default, Clone)]
 pub struct RustAnalyzer;

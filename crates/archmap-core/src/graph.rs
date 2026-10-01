@@ -837,12 +837,12 @@ mod tests {
         assert_eq!(g1, g2);
     }
 
-    /// pkg <- a <- a.b <- {a.b.c, a.b.d} ; pkg <- x <- x.y <- x.y.z ; ext:serde
+    /// pkg <- a <- a.b <- {a.b.c, a.b.d} ; pkg <- x <- x.y <- x.y.z ; ext:cargo:serde
     fn tree() -> ArchitectureGraph {
         let mut graph = ArchitectureGraph::default();
         graph.add_component(component("pkg"));
         graph.add_component(Component::new(
-            "ext:serde",
+            "ext:cargo:serde",
             "serde",
             ComponentKind::External,
         ));
@@ -895,18 +895,21 @@ mod tests {
         graph.add_edge(edge("a.b.c", "x.y.z", "a/b/c.py", 1));
         graph.add_edge(edge("a.b.d", "x.y", "a/b/d.py", 2));
         graph.add_edge(edge("a.b.c", "a.b.d", "a/b/c.py", 3)); // becomes internal
-        graph.add_edge(edge("a.b.c", "ext:serde", "a/b/c.py", 4));
+        graph.add_edge(edge("a.b.c", "ext:cargo:serde", "a/b/c.py", 4));
 
         let rolled = graph.rollup(2);
         let ids: Vec<&str> = rolled.components.keys().map(|c| c.as_str()).collect();
-        assert_eq!(ids, vec!["a", "a.b", "ext:serde", "pkg", "x", "x.y"]);
+        assert_eq!(ids, vec!["a", "a.b", "ext:cargo:serde", "pkg", "x", "x.y"]);
 
         let pairs: Vec<(&str, &str, usize)> = rolled
             .edges
             .iter()
             .map(|e| (e.from.as_str(), e.to.as_str(), e.evidence.len()))
             .collect();
-        assert_eq!(pairs, vec![("a.b", "ext:serde", 1), ("a.b", "x.y", 2)]);
+        assert_eq!(
+            pairs,
+            vec![("a.b", "ext:cargo:serde", 1), ("a.b", "x.y", 2)]
+        );
 
         // every original import statement is still there
         let lines: Vec<Option<u32>> = rolled.edges[1].evidence.iter().map(|e| e.line).collect();
@@ -917,10 +920,10 @@ mod tests {
     fn rollup_to_depth_zero_keeps_only_roots() {
         let mut graph = tree();
         graph.add_edge(edge("a.b.c", "x.y.z", "a/b/c.py", 1));
-        graph.add_edge(edge("a.b.c", "ext:serde", "a/b/c.py", 4));
+        graph.add_edge(edge("a.b.c", "ext:cargo:serde", "a/b/c.py", 4));
         let rolled = graph.rollup(0);
         let ids: Vec<&str> = rolled.components.keys().map(|c| c.as_str()).collect();
-        assert_eq!(ids, vec!["ext:serde", "pkg"]);
+        assert_eq!(ids, vec!["ext:cargo:serde", "pkg"]);
         assert_eq!(rolled.edges.len(), 1);
         assert_eq!(rolled.edges[0].from, "pkg".into());
     }
@@ -1231,12 +1234,12 @@ mod tests {
             signature: Some("pub fn run()".into()),
             evidence: vec![Evidence::new("src/lib.rs").at_line(3)],
         });
-        graph.add_edge(edge("a", "ext:serde", "src/lib.rs", 1));
+        graph.add_edge(edge("a", "ext:cargo:serde", "src/lib.rs", 1));
 
         let json = serde_json::to_string(&graph).unwrap();
         let back: ArchitectureGraph = serde_json::from_str(&json).unwrap();
         assert_eq!(graph, back);
-        assert!(json.contains("\"schema_version\":2"));
+        assert!(json.contains("\"schema_version\":3"));
         assert!(json.contains("\"kind\":\"import\""));
     }
 }

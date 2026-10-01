@@ -35,7 +35,7 @@ fn scan_writes_graph_under_dot_archmap_by_default() {
     let graph: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(repo.join(".archmap/graph.json")).unwrap())
             .unwrap();
-    assert_eq!(graph["schema_version"], 2);
+    assert_eq!(graph["schema_version"], 3);
     // only the graph is written; whether to ignore it is the repository's call
     let written: Vec<String> = std::fs::read_dir(repo.join(".archmap"))
         .unwrap()
@@ -90,7 +90,7 @@ fn scan_emits_json_graph_to_stdout_with_dash() {
     );
 
     let graph: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid json");
-    assert_eq!(graph["schema_version"], 2);
+    assert_eq!(graph["schema_version"], 3);
     assert_eq!(graph["components"]["app"]["kind"], "package");
     assert!(graph["symbols"]["lib_core::greet"].is_object());
     assert!(graph["edges"]
@@ -919,7 +919,7 @@ fn query_a_rust_file_lists_the_statements_that_import_it() {
     let text = query_text(&fixture_root(), &["crates/lib_core/src/lib.rs"]);
     for expected in [
         "crates/lib_core/src/lib.rs (file) in lib_core (package, rust), depth 2\n",
-        "\nImports: 1\n  ext:serde  1 import: crates/lib_core/src/lib.rs:2\n",
+        "\nImports: 1\n  ext:cargo:serde  1 import: crates/lib_core/src/lib.rs:2\n",
         "\nImported by: 4\n",
         // a `use` and a module path in a function body
         "\n  app::config                 2 imports: crates/app/src/config.rs:1, crates/app/src/config.rs:12 (local)\n",
@@ -1112,4 +1112,157 @@ fn query_an_unknown_dotted_module_fails() {
         .unwrap();
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("app.utils.nope"));
+}
+
+/// Python projects that each have a `tests` directory, so each project
+/// adds a component named `tests`.
+fn projects_with_tests(name: &str, projects: &[&str]) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("archmap-cli-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for project in projects {
+        std::fs::create_dir_all(dir.join(project).join("tests")).unwrap();
+        std::fs::write(
+            dir.join(project).join("pyproject.toml"),
+            format!("[project]\nname = \"{project}\"\nversion = \"0.1.0\"\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(project).join("tests/test_it.py"),
+            "def test_it():\n    pass\n",
+        )
+        .unwrap();
+    }
+    dir
+}
+
+fn two_projects_with_tests(name: &str) -> PathBuf {
+    projects_with_tests(name, &["a", "b"])
+}
+
+#[test]
+fn query_lists_components_that_share_a_name() {
+    let repo = two_projects_with_tests("ambiguous-query");
+    let out = archmap()
+        .args(["query", "tests", "--path"])
+        .arg(&repo)
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(&repo).unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(
+            "`tests` names 2 components; give an id, or a path as ./<path>:\n  a::tests  a/tests\n  b::tests  b/tests"
+        ),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn impact_lists_components_that_share_a_name() {
+    let repo = two_projects_with_tests("ambiguous-impact");
+    let out = archmap()
+        .args(["impact", "tests", "--path"])
+        .arg(&repo)
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(&repo).unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("a::tests  a/tests"), "stderr: {stderr}");
+    assert!(stderr.contains("b::tests  b/tests"), "stderr: {stderr}");
+}
+
+#[test]
+fn a_shared_name_is_reported_even_when_roll_up_hides_one_component() {
+    // A local package `requests` beside the declared distribution of that
+    // name: at depth 0 the local module folds into its project and only the
+    // external one stays visible, but the name is still ambiguous.
+    let dir = std::env::temp_dir().join(format!(
+        "archmap-cli-ambiguous-folded-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("p/requests")).unwrap();
+    std::fs::write(
+        dir.join("p/pyproject.toml"),
+        "[project]\nname = \"p\"\nversion = \"0.1.0\"\ndependencies = [\"requests\"]\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("p/requests/__init__.py"), "def get():\n    pass\n").unwrap();
+    let out = archmap()
+        .args(["query", "requests", "--depth", "0", "--path"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(
+        !out.status.success(),
+        "stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("`requests` names 2 components; give an id, or a path as ./<path>:"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("ext:pypi:requests  -"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("p::requests  p/requests"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn the_components_that_share_a_name_are_capped() {
+    let projects: Vec<String> = (0..12).map(|i| format!("p{i:02}")).collect();
+    let names: Vec<&str> = projects.iter().map(String::as_str).collect();
+    let repo = projects_with_tests("ambiguous-capped", &names);
+    let out = archmap()
+        .args(["query", "tests", "--path"])
+        .arg(&repo)
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(&repo).unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("`tests` names 12 components"),
+        "stderr: {stderr}"
+    );
+    let listed = stderr.lines().filter(|l| l.contains("::tests  ")).count();
+    assert_eq!(listed, 10, "stderr: {stderr}");
+    assert!(stderr.contains("\n  +2 more"), "stderr: {stderr}");
+}
+
+#[test]
+fn a_dot_slash_path_reaches_one_of_the_components_that_share_a_name() {
+    let repo = two_projects_with_tests("ambiguous-path");
+    let out = archmap()
+        .args(["query", "./a/tests", "--path"])
+        .arg(&repo)
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(&repo).unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("id: a::tests"));
+}
+
+#[test]
+fn check_explains_external_selectors_without_an_ecosystem() {
+    let rules = "[[deny]]\nfrom = \"scripts\"\nto = \"ext:requests\"\n";
+    let out = check_with("ext-hint", &python_fixture(), rules, &[]);
+    assert_eq!(out.status.code(), Some(1));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains(
+            "unmatched: deny[0].to `ext:requests` matches no component; \
+             external ids name their ecosystem (`ext:cargo:serde`, `ext:pypi:requests`)"
+        ),
+        "stdout: {text}"
+    );
 }

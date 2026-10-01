@@ -12,6 +12,7 @@
 mod analyzer;
 mod context;
 mod error;
+mod ids;
 mod languages;
 pub mod python;
 pub mod rust;
@@ -72,12 +73,14 @@ pub fn scan_with(
     });
     let mut warnings = Vec::new();
     let mut read: BTreeMap<String, usize> = BTreeMap::new();
+    let mut contributed = ids::ContributedIds::default();
 
     for analyzer in analyzers {
         if !analyzer.detect(&ctx) {
             continue;
         }
-        let output = analyzer.analyze(&ctx)?;
+        let mut output = analyzer.analyze(&ctx)?;
+        warnings.extend(contributed.separate(analyzer.name(), &mut output.fragment));
         graph.meta.analyzers.push(analyzer.name().to_owned());
         graph.merge(output.fragment);
         warnings.extend(output.warnings);

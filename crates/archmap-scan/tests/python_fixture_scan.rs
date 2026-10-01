@@ -63,20 +63,22 @@ fn declared_dependencies_from_pyproject_and_requirements() {
         .edges
         .iter()
         .find(|e| {
-            e.from == id("shop") && e.to == id("ext:requests") && e.kind == EdgeKind::Dependency
+            e.from == id("shop")
+                && e.to == id("ext:pypi:requests")
+                && e.kind == EdgeKind::Dependency
         })
         .expect("requests dependency");
     let files: Vec<&str> = requests.evidence.iter().map(|e| e.file.as_str()).collect();
     assert_eq!(files, vec!["pyproject.toml", "requirements.txt"]);
 
     // PEP 503 normalization: SQLAlchemy[asyncio] -> sqlalchemy, PyYAML -> pyyaml
-    assert!(graph.component(&id("ext:sqlalchemy")).is_some());
+    assert!(graph.component(&id("ext:pypi:sqlalchemy")).is_some());
     assert_eq!(
-        graph.component(&id("ext:pyyaml")).unwrap().kind,
+        graph.component(&id("ext:pypi:pyyaml")).unwrap().kind,
         ComponentKind::External
     );
     // optional-dependencies are not recorded
-    assert!(graph.component(&id("ext:pytest")).is_none());
+    assert!(graph.component(&id("ext:pypi:pytest")).is_none());
 }
 
 #[test]
@@ -100,23 +102,23 @@ fn imports_resolve_between_modules_and_to_declared_externals() {
         vec![(Some(5), "relative import"), (Some(6), "import")]
     );
 
-    assert!(find("shop::shop.billing", "ext:requests").is_some());
-    assert!(find("shop::shop.billing", "ext:sqlalchemy").is_some());
+    assert!(find("shop::shop.billing", "ext:pypi:requests").is_some());
+    assert!(find("shop::shop.billing", "ext:pypi:sqlalchemy").is_some());
     // import names that differ from distribution names still resolve, and
     // the evidence says how
     let note = |from: &str, to: &str| {
         find(from, to).map(|e| e.evidence[0].note.clone().unwrap_or_default())
     };
     assert_eq!(
-        note("shop::shop.billing", "ext:pyyaml").as_deref(),
+        note("shop::shop.billing", "ext:pypi:pyyaml").as_deref(),
         Some("import yaml, matched by known import name")
     );
     assert_eq!(
-        note("shop::shop", "ext:google-cloud-bigquery").as_deref(),
+        note("shop::shop", "ext:pypi:google-cloud-bigquery").as_deref(),
         Some("import google.cloud.bigquery, matched by dotted name")
     );
     assert_eq!(
-        note("shop::shop", "ext:scikit-learn").as_deref(),
+        note("shop::shop", "ext:pypi:scikit-learn").as_deref(),
         Some("import sklearn, matched by known import name")
     );
     // google.api_core is imported but not declared: not a dependency edge
@@ -411,7 +413,7 @@ fn installed_record_files_resolve_import_names() {
     let edge = graph
         .edges
         .iter()
-        .find(|e| e.from == id("demo::app") && e.to == id("ext:fancy-lib"))
+        .find(|e| e.from == id("demo::app") && e.to == id("ext:pypi:fancy-lib"))
         .expect("resolved through the installed RECORD");
     assert_eq!(
         edge.evidence[0].note.as_deref(),
@@ -424,7 +426,7 @@ fn installed_record_files_resolve_import_names() {
     assert!(!graph
         .edges
         .iter()
-        .any(|e| e.to == id("ext:other-lib") && e.kind == EdgeKind::Import));
+        .any(|e| e.to == id("ext:pypi:other-lib") && e.kind == EdgeKind::Import));
     // both remain unresolved; installed metadata names the provider of the
     // undeclared one
     let unresolved: Vec<(&str, Vec<String>)> = graph
@@ -549,7 +551,7 @@ fn a_declared_name_does_not_hide_an_undeclared_one_beside_it() {
     std::fs::remove_dir_all(&dir).unwrap();
 
     assert!(graph.edges.iter().any(|e| e.from == id("demo::app")
-        && e.to == id("ext:google-cloud-bigquery")
+        && e.to == id("ext:pypi:google-cloud-bigquery")
         && e.kind == EdgeKind::Import));
     let unmapped: Vec<(&str, UnmappedReason)> = graph
         .unmapped_imports

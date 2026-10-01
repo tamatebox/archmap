@@ -10,8 +10,9 @@
 //!
 //! A selector is either a path prefix relative to the repository root
 //! (`src/core` covers `src/core` and everything below it; `.` covers
-//! everything) or an external component id (`ext:requests`, with a trailing
-//! `*` for a prefix such as `ext:google-*`).
+//! everything) or an external component id (`ext:pypi:requests`, with a
+//! trailing `*` for a prefix such as `ext:pypi:google-*`). An external
+//! selector without an ecosystem (`ext:requests`) matches nothing.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -563,10 +564,25 @@ fn file_level(
     }
 }
 
+/// Whether `selector` is an external selector written without an ecosystem
+/// (`ext:requests`, `ext:py*`), as before external ids carried one. It
+/// matches nothing, so the check reports it instead of reading `ext:py*` as
+/// every PyPI package. The bare `ext:*` still covers every external
+/// dependency.
+pub fn external_selector_lacks_ecosystem(selector: &str) -> bool {
+    selector
+        .trim()
+        .strip_prefix("ext:")
+        .is_some_and(|rest| rest != "*" && !rest.contains(':'))
+}
+
 /// Does `selector` cover `component`?
 pub fn selector_matches(selector: &str, component: &Component) -> bool {
     let selector = selector.trim();
     if selector.starts_with("ext:") {
+        if external_selector_lacks_ecosystem(selector) {
+            return false;
+        }
         let id = component.id.as_str();
         return match selector.strip_suffix('*') {
             Some(prefix) => id.starts_with(prefix),
@@ -647,7 +663,7 @@ mod tests {
         c
     }
 
-    /// src.core, src.core.io, src.pipeline, scripts, ext:requests
+    /// src.core, src.core.io, src.pipeline, scripts, ext:pypi:requests
     fn graph() -> ArchitectureGraph {
         let mut graph = ArchitectureGraph::default();
         let mut root = Component::new("app", "app", ComponentKind::Package);
@@ -662,7 +678,7 @@ mod tests {
             graph.add_component(module(id, path));
         }
         graph.add_component(Component::new(
-            "ext:requests",
+            "ext:pypi:requests",
             "requests",
             ComponentKind::External,
         ));
@@ -671,7 +687,7 @@ mod tests {
                 .with_evidence(Evidence::new("src/core/io/read.py").at_line(3)),
         );
         graph.add_edge(Edge::new("src.pipeline", "src.core", EdgeKind::Import));
-        graph.add_edge(Edge::new("scripts", "ext:requests", EdgeKind::Import));
+        graph.add_edge(Edge::new("scripts", "ext:pypi:requests", EdgeKind::Import));
         graph
     }
 
@@ -683,10 +699,13 @@ mod tests {
         assert!(selector_matches("./src/core/", c("src.core")));
         assert!(!selector_matches("src/co", c("src.core")));
         assert!(selector_matches(".", c("scripts")));
-        assert!(!selector_matches(".", c("ext:requests")));
-        assert!(selector_matches("ext:requests", c("ext:requests")));
-        assert!(selector_matches("ext:req*", c("ext:requests")));
-        assert!(!selector_matches("requests", c("ext:requests")));
+        assert!(!selector_matches(".", c("ext:pypi:requests")));
+        assert!(selector_matches(
+            "ext:pypi:requests",
+            c("ext:pypi:requests")
+        ));
+        assert!(selector_matches("ext:pypi:req*", c("ext:pypi:requests")));
+        assert!(!selector_matches("requests", c("ext:pypi:requests")));
     }
 
     #[test]
@@ -754,7 +773,7 @@ mod tests {
             deny: vec![
                 DenyRule {
                     from: "scripts".into(),
-                    to: "ext:requests".into(),
+                    to: "ext:pypi:requests".into(),
                     reason: None,
                 },
                 DenyRule {
@@ -775,9 +794,54 @@ mod tests {
             declared: "deny[1].from".into(),
             selector: "domian".into()
         }));
-        assert!(findings
-            .iter()
-            .any(|f| matches!(f, Finding::Forbidden { to, .. } if to.as_str() == "ext:requests")));
+        assert!(findings.iter().any(
+            |f| matches!(f, Finding::Forbidden { to, .. } if to.as_str() == "ext:pypi:requests")
+        ));
+    }
+
+    #[test]
+    fn external_selectors_name_the_ecosystem() {
+        // An `archmap.toml` written before external ids carried their
+        // ecosystem says `ext:requests`. It matches nothing now, and the
+        // check says so instead of passing silently.
+        let set = RuleSet {
+            deny: vec![DenyRule {
+                from: "scripts".into(),
+                to: "ext:requests".into(),
+                reason: None,
+            }],
+            ..RuleSet::default()
+        };
+        let findings = check(&graph(), &set, 2);
+        assert!(findings.contains(&Finding::Unmatched {
+            declared: "deny[0].to".into(),
+            selector: "ext:requests".into()
+        }));
+    }
+
+    #[test]
+    fn external_selectors_without_an_ecosystem_match_nothing() {
+        // `ext:py*` was written for names such as `ext:pyyaml`. Read against
+        // ids that name their ecosystem, it would cover every PyPI package
+        // and quietly change what a rule means.
+        let g = graph();
+        let c = |id: &str| g.component(&id.into()).unwrap();
+        assert!(!selector_matches("ext:py*", c("ext:pypi:requests")));
+        assert!(!selector_matches("ext:req*", c("ext:pypi:requests")));
+        assert!(selector_matches("ext:*", c("ext:pypi:requests")));
+        assert!(selector_matches("ext:pypi:*", c("ext:pypi:requests")));
+        let set = RuleSet {
+            deny: vec![DenyRule {
+                from: "scripts".into(),
+                to: "ext:py*".into(),
+                reason: None,
+            }],
+            ..RuleSet::default()
+        };
+        assert!(check(&g, &set, 2).contains(&Finding::Unmatched {
+            declared: "deny[0].to".into(),
+            selector: "ext:py*".into()
+        }));
     }
 
     #[test]

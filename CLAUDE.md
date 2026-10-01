@@ -59,7 +59,7 @@ Never add a dependency that points against the arrow. Never make `archmap-core` 
 
 ## Conventions
 
-- Component ids: internal packages use the package name; sub-units use `<package>::<path>`, the dotted path of a Python package or the module path of a Rust module file (`archmap-core::graph`); external dependencies use the `ext:` prefix. `Component.name` is the short, human-typed form, the path an import writes (`shop.billing`, `archmap_core::graph`), and `query` / `impact` accept it when unique.
+- Component ids: internal packages use the package name; sub-units use `<package>::<path>`, the dotted path of a Python package or the module path of a Rust module file (`archmap-core::graph`); external dependencies use `ext:<ecosystem>:<name>` (`ext:cargo:serde`, `ext:pypi:requests`). An id that an earlier analyzer already gave a component at another path is renamed `<id>+<analyzer>`, together with every id that starts with `<id>::`, and the scan warns; equal ids at the same path merge. `Component.name` is the short, human-typed form, the path an import writes (`shop.billing`, `archmap_core::graph`), and `query` / `impact` accept it when unique and otherwise list the candidates' ids.
 - Symbol ids: `<component>::<module path>::<name>`; methods are `Type::method` (Rust) or `Class.method` (Python).
 - A `Module` component sets `parent` to its enclosing component. Containment is a field, not an edge.
 - `summary`, `query` and `impact` share `DEFAULT_DEPTH` and roll up the same way. Never let them describe different components.
