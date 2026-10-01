@@ -411,16 +411,17 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
     file.module_syntax |= calls.module_syntax;
     file.has_jsx = calls.has_jsx;
     if !file.module_syntax {
-        let mut seen = BTreeSet::new();
         for statement in &parsed.program.body {
             if let Some(declaration) = statement.as_declaration() {
                 for symbols in source.declared(declaration, statement.span().start) {
-                    if seen.insert(symbols[0].name.clone()) {
-                        file.globals.extend(symbols);
-                    }
+                    file.globals.extend(symbols);
                 }
             }
         }
+        // a name declared twice (overloads, a method's included) is its
+        // first declaration, as in a module
+        let mut seen = BTreeSet::new();
+        file.globals.retain(|s| seen.insert(s.name.clone()));
     }
     Ok(file)
 }
@@ -896,8 +897,11 @@ impl Source<'_> {
         locals: &BTreeMap<String, Vec<ExportedSymbol>>,
     ) -> Vec<ExportedSymbol> {
         let start = property.span.start;
+        // a name that a top-level declaration gives keeps that declaration
+        let declared = matches!(&property.value,
+            Expression::Identifier(id) if locals.contains_key(id.name.as_str()));
         match value_kind(&property.value) {
-            (SymbolKind::Constant, _) if !matches!(property.value, Expression::Identifier(_)) => {
+            (SymbolKind::Constant, _) if !declared => {
                 vec![ExportedSymbol {
                     name: name.to_owned(),
                     kind: SymbolKind::Constant,
@@ -1776,6 +1780,35 @@ export default local;
     }
 
     #[test]
+    fn overloads_keep_their_first_signature_in_scripts_too() {
+        let file = parse(
+            Path::new("legacy.ts"),
+            "function g(a: string): void;\nfunction g(a: any) {}\n\
+             class L {\n  m(a: string): void;\n  m(a: any) {}\n}\n",
+        )
+        .unwrap();
+        let globals: Vec<(&str, u32, &str)> = file
+            .globals
+            .iter()
+            .map(|s| {
+                (
+                    s.name.as_str(),
+                    s.line,
+                    s.signature.as_deref().unwrap_or_default(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            globals,
+            [
+                ("g", 1, "function g(a: string): void"),
+                ("L", 3, "class L"),
+                ("L.m", 4, "m(a: string): void"),
+            ]
+        );
+    }
+
+    #[test]
     fn every_top_level_declaration_is_a_global() {
         let file = parse(
             Path::new("global.d.ts"),
@@ -1839,6 +1872,25 @@ export default local;
                 row("size", SymbolKind::Constant, 10, "module.exports.size"),
                 row("run", SymbolKind::Function, 11, "run()"),
                 row("go", SymbolKind::Function, 12, "go: function ()"),
+            ]
+        );
+        // a name that no top-level declaration gives, such as one taken
+        // from another module, reads as a property
+        assert_eq!(
+            symbols(
+                "i.js",
+                "const { pad } = require('./format');\nconst run = require('./fn').default;\n\
+                 module.exports = { pad, run, other: pad };\n",
+            ),
+            [
+                row("pad", SymbolKind::Constant, 3, "module.exports.pad"),
+                row(
+                    "run",
+                    SymbolKind::Constant,
+                    2,
+                    "const run = require(…).default"
+                ),
+                row("other", SymbolKind::Constant, 3, "module.exports.other"),
             ]
         );
         // the module itself: its declared name, as a default export
