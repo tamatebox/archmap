@@ -6,7 +6,7 @@ use archmap_core::{
     ArchitectureGraph, ComponentId, ComponentKind, Edge, EdgeKind, Evidence, Symbol,
 };
 
-use crate::not_traced::{component_name, file_name, not_traced, Own, Subject};
+use crate::not_traced::{not_traced, Own, Place, Subject};
 use crate::resolve::{resolve, unquote, Resolved};
 use crate::target::{component_file, fold, namesakes, reject_outside, AtDepth};
 use crate::views::{ComponentView, FileView, Importer, QueryResult, SymbolView, UnmappedView};
@@ -76,7 +76,7 @@ fn file_view<'a>(
         full,
         &Subject {
             language: own.and_then(|c| c.language.as_deref()),
-            name: Some(file_name(&facts.file)),
+            place: Some(Place::File(&facts.file)),
             own: Own::File(&facts.file),
             script,
             unreached: importers.as_ref().is_some_and(Vec::is_empty),
@@ -192,7 +192,7 @@ fn symbol_view<'a>(full: &'a ArchitectureGraph, symbol: &'a Symbol) -> SymbolVie
         full,
         &Subject {
             language: declared.and_then(|c| c.language.as_deref()),
-            name: None,
+            place: None,
             own: Own::File(location),
             script: declared.is_some_and(|c| c.kind == ComponentKind::Script),
             unreached: imported_by.as_ref().is_some_and(Vec::is_empty)
@@ -225,7 +225,7 @@ fn component_view<'a>(
         full,
         &Subject {
             language: component.language.as_deref(),
-            name: Some(component_name(&component.name)),
+            place: component.path.as_deref().map(Place::Directory),
             own: Own::Component(&component.id, depth),
             script: component.kind == ComponentKind::Script,
             unreached: false,

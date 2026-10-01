@@ -9,7 +9,7 @@ use archmap_core::{
 };
 use serde::Serialize;
 
-use crate::not_traced::{component_name, file_name, not_traced, NotTraced, Own, Subject};
+use crate::not_traced::{not_traced, NotTraced, Own, Place, Subject};
 use crate::resolve::{resolve, unquote, Resolved};
 use crate::target::{component_file, fold, namesakes, reject_outside};
 use crate::{Answer, Format, Found, ImpactRequest, Workspace};
@@ -255,14 +255,14 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
     let subject = match &traced {
         Traced::Component(component) => Subject {
             language: component.language.as_deref(),
-            name: Some(component_name(&component.name)),
+            place: component.path.as_deref().map(Place::Directory),
             own: Own::Component(&at.id, depth),
             script: component.kind == ComponentKind::Script,
             unreached: false,
         },
         Traced::File(file, owner) => Subject {
             language: owner.and_then(|c| c.language.as_deref()),
-            name: Some(file_name(file)),
+            place: Some(Place::File(file)),
             own: Own::File(file),
             script: owner.is_some_and(|c| c.kind == ComponentKind::Script),
             unreached: none_found(&importers),
@@ -271,7 +271,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
             let declared = full.component(&symbol.component);
             Subject {
                 language: declared.and_then(|c| c.language.as_deref()),
-                name: None,
+                place: None,
                 own: Own::File(symbol.location().map_or("", |e| e.file.as_str())),
                 script: declared.is_some_and(|c| c.kind == ComponentKind::Script),
                 unreached: none_found(&importers) && none_found(&may_use),

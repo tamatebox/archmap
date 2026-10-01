@@ -69,14 +69,17 @@ pub fn render(
         }
         QueryResult::NotMapped(view) => unmapped_name(&mut out, view, full, rolled, &caps),
     };
-    let not_traced = match result {
-        QueryResult::Component(view) => view.not_traced.as_ref(),
-        QueryResult::File(view) => view.not_traced.as_ref(),
-        QueryResult::Symbols(symbols) => symbols.first().and_then(|v| v.not_traced.as_ref()),
-        QueryResult::NotMapped(_) => None,
+    // a file's text says "Imported by: none" without why; a symbol's says it
+    let (not_traced, no_importers) = match result {
+        QueryResult::Component(view) => (view.not_traced.as_ref(), false),
+        QueryResult::File(view) => (view.not_traced.as_ref(), true),
+        QueryResult::Symbols(symbols) => {
+            (symbols.first().and_then(|v| v.not_traced.as_ref()), false)
+        }
+        QueryResult::NotMapped(_) => (None, false),
     };
     if let Some(not_traced) = not_traced {
-        truncated |= self::not_traced(&mut out, not_traced, caps.locations);
+        truncated |= self::not_traced(&mut out, not_traced, caps.locations, no_importers);
     }
     if truncated {
         let _ = writeln!(
@@ -814,11 +817,20 @@ pub(crate) fn symbol_kind(kind: SymbolKind) -> &'static str {
     }
 }
 
-/// The `Not traced` section at the end of `query`. A script and a file
-/// nothing imports are said where the text shows importers, so not again
-/// here. Shows `cap` locations per kind; returns whether some were left out.
-pub(crate) fn not_traced(out: &mut String, found: &NotTraced, cap: usize) -> bool {
+/// The `Not traced` section at the end of `query`. A script is said where
+/// the text shows importers, and so is a symbol nothing imports, so not
+/// again here; `no_importers` says a file nothing imports when asked to.
+/// Shows `cap` locations per kind; returns whether some were left out.
+pub(crate) fn not_traced(
+    out: &mut String,
+    found: &NotTraced,
+    cap: usize,
+    no_importers: bool,
+) -> bool {
     let mut lines = Vec::new();
+    if let Some(why) = found.no_importers.filter(|_| no_importers) {
+        lines.push(format!("  no importers: {why}"));
+    }
     let mut truncated = false;
     if let Some(d) = &found.dynamic {
         let what = if d.total == 1 {
@@ -830,7 +842,14 @@ pub(crate) fn not_traced(out: &mut String, found: &NotTraced, cap: usize) -> boo
             .shown
             .iter()
             .take(cap)
-            .map(|c| place(&c.file, c.line))
+            .map(|c| {
+                let at = place(&c.file, c.line);
+                if c.test {
+                    format!("{at} (test)")
+                } else {
+                    at
+                }
+            })
             .collect();
         truncated |= places.len() < d.total;
         lines.push(format!(
@@ -857,12 +876,16 @@ pub(crate) fn not_traced(out: &mut String, found: &NotTraced, cap: usize) -> boo
         ));
     }
     if let Some(r) = &found.not_read {
-        lines.push(format!(
+        let mut line = format!(
             "  not read: {} of {} {} files",
             r.files - r.read,
             r.files,
-            r.language
-        ));
+            r.languages.join(" and ")
+        );
+        if let Some(note) = r.note {
+            let _ = write!(line, ": {note}");
+        }
+        lines.push(line);
     }
     if !lines.is_empty() {
         let _ = writeln!(out, "\nNot traced:");

@@ -97,26 +97,71 @@ fn the_dynamic_imports_of_the_target_itself_stay_under_not_mapped() {
 fn a_rust_target_counts_the_files_its_analyzer_did_not_read() {
     let ws = scan(&fixture("simple-rust-workspace"));
     let text = query(&ws, "crates/app/src/config.rs", Format::Text);
+    // the Rust analyzer reads src/ only, by design: say which files these are
     assert!(
-        text.ends_with("\nNot traced:\n  not read: 1 of 9 rust files\n"),
+        text.ends_with(
+            "\nNot traced:\n  not read: 1 of 9 rust files: the Rust analyzer reads only src/, so \
+             tests/, benches/, examples/ and build.rs are among them, as is any file that failed \
+             to parse\n"
+        ),
         "{text}"
     );
     let json = impact(&ws, "crates/app/src/config.rs");
+    let not_read = &json["not_traced"]["not_read"];
+    assert_eq!(not_read["languages"], serde_json::json!(["rust"]));
     assert_eq!(
-        json["not_traced"]["not_read"],
-        serde_json::json!({"language": "rust", "files": 9, "read": 8})
+        (&not_read["files"], &not_read["read"]),
+        (&9.into(), &8.into())
     );
+    assert!(not_read["note"]
+        .as_str()
+        .is_some_and(|n| n.contains("only src/")));
 }
 
+const NO_IMPORTERS: &str = "no import of it was found: only import statements are read, \
+     so a file that a framework, a test runner or a command loads by name or path has none";
+
 #[test]
-fn impact_says_when_no_import_can_show_who_uses_a_file() {
+fn impact_says_in_words_why_no_import_shows_who_uses_a_file() {
     let ws = scan(&fixture("simple-ts-project"));
     // a script's globals: no import names them
-    assert_eq!(impact(&ws, "src/global.d.ts")["not_traced"]["script"], true);
+    let script = impact(&ws, "src/global.d.ts");
+    assert!(
+        script["not_traced"]["script"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("a script: its declarations are global")),
+        "{script}"
+    );
     // an entry file that a framework loads by name: nothing imports it
     let page = impact(&ws, "src/app/page.tsx");
     assert_eq!(page["importers"]["total"], 0, "{page}");
-    assert_eq!(page["not_traced"]["unreached"], true, "{page}");
+    assert_eq!(page["not_traced"]["no_importers"], NO_IMPORTERS, "{page}");
+}
+
+#[test]
+fn a_file_nothing_imports_says_so_in_query_text_too() {
+    let ws = scan(&fixture("simple-ts-project"));
+    let text = query(&ws, "src/app/page.tsx", Format::Text);
+    assert!(
+        text.contains(&format!("\nNot traced:\n  no importers: {NO_IMPORTERS}\n")),
+        "{text}"
+    );
+    // the script's text says it where it lists importers
+    let script = query(&ws, "src/global.d.ts", Format::Text);
+    assert!(!script.contains("no importers:"), "{script}");
+}
+
+#[test]
+fn a_test_file_has_no_importers_by_design_and_says_nothing_of_it() {
+    // a test runner loads test files; that nothing imports them is no news
+    let ws = scan(&fixture("simple-ts-project"));
+    let impact = impact(&ws, "tests/money.test.ts");
+    assert!(
+        impact["not_traced"].get("no_importers").is_none(),
+        "{impact}"
+    );
+    let text = query(&ws, "tests/money.test.ts", Format::Text);
+    assert!(!text.contains("no importers:"), "{text}");
 }
 
 #[test]
@@ -134,4 +179,139 @@ fn nothing_to_report_adds_nothing() {
     assert!(!text.contains("Not traced"), "{text}");
     assert!(!json.contains("not_traced"), "{json}");
     assert!(impact.get("not_traced").is_none(), "{impact}");
+}
+
+/// A throwaway Python repository, removed when the guard drops.
+struct Repo(PathBuf);
+
+impl Repo {
+    fn new(name: &str, files: &[(&str, &str)]) -> Repo {
+        let dir = std::env::temp_dir().join(format!("archmap-nt-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for (file, text) in files {
+            let path = dir.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        Repo(dir)
+    }
+}
+
+impl Drop for Repo {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn dynamic_imports_in_test_code_come_last_and_say_so() {
+    let repo = Repo::new(
+        "dynamic-tests",
+        &[
+            (
+                "tests/test_x.py",
+                "import importlib\ndef test_x(n):\n    importlib.import_module(n)\n",
+            ),
+            // by path the test file would come first: production code goes first
+            ("zz/__init__.py", ""),
+            (
+                "zz/a.py",
+                "import importlib\ndef load(name):\n    return importlib.import_module(name)\n",
+            ),
+            ("pkg/__init__.py", ""),
+            ("pkg/b.py", "def f():\n    pass\n"),
+        ],
+    );
+    let ws = scan(&repo.0);
+    let text = query(&ws, "pkg/b.py", Format::Text);
+    assert!(
+        text.contains(
+            "\n  dynamic: 2 calls load modules by computed names, which may be this: \
+             zz/a.py:3, tests/test_x.py:3 (test)\n"
+        ),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_relative_import_is_named_like_only_the_file_it_points_at() {
+    let repo = Repo::new(
+        "named-relative",
+        &[
+            ("package.json", "{\"name\": \"web\"}\n"),
+            ("src/lib/utils.ts", "export const u = 1;\n"),
+            // `./utils` points at src/app/utils, which is not there; the
+            // wrong extension points at the target
+            (
+                "src/app/x.ts",
+                "import { u } from './utils';\nimport { m } from '../lib/utils.mjs';\nexport const x = u + m;\n",
+            ),
+        ],
+    );
+    let ws = scan(&repo.0);
+    let text = query(&ws, "src/lib/utils.ts", Format::Text);
+    assert!(
+        text.contains(
+            "\n  named like it: 1 import of `utils` maps to no file: src/app/x.ts:2 (unresolved)\n"
+        ),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_dotted_import_is_named_like_the_files_its_path_ends_in() {
+    let repo = Repo::new(
+        "named-dotted",
+        &[
+            (
+                "pyproject.toml",
+                "[project]\nname = \"p\"\nversion = \"0.1.0\"\n",
+            ),
+            ("scripts/lib/helpers.py", "X = 1\n"),
+            ("scripts/helpers.py", "Y = 1\n"),
+            // run with scripts/ on sys.path
+            ("scripts/run.py", "from lib.helpers import X\n"),
+        ],
+    );
+    let ws = scan(&repo.0);
+    let lib = query(&ws, "scripts/lib/helpers.py", Format::Text);
+    assert!(
+        lib.contains("\n  named like it: 1 import of `helpers` maps to no file: scripts/run.py:1 (local name)\n"),
+        "{lib}"
+    );
+    // only the last name matches here: lib.helpers is not scripts/helpers.py
+    let other = query(&ws, "scripts/helpers.py", Format::Text);
+    assert!(!other.contains("named like it"), "{other}");
+}
+
+#[test]
+fn an_alias_is_named_like_files_of_its_own_package_only() {
+    let repo = Repo::new(
+        "named-alias",
+        &[
+            (
+                "package.json",
+                "{\"name\": \"root\", \"private\": true, \"workspaces\": [\"packages/*\"]}\n",
+            ),
+            ("packages/a/package.json", "{\"name\": \"a\"}\n"),
+            ("packages/a/src/lib/utils.ts", "export const u = 1;\n"),
+            (
+                "packages/a/src/y.ts",
+                "import { u } from '@/lib/utils';\nexport const y = u;\n",
+            ),
+            ("packages/b/package.json", "{\"name\": \"b\"}\n"),
+            (
+                "packages/b/src/x.ts",
+                "import { u } from '@/lib/utils';\nexport const x = u;\n",
+            ),
+        ],
+    );
+    let ws = scan(&repo.0);
+    let text = query(&ws, "packages/a/src/lib/utils.ts", Format::Text);
+    assert!(
+        text.contains(
+            "\n  named like it: 1 import of `utils` maps to no file: packages/a/src/y.ts:1 (unresolved)\n"
+        ),
+        "{text}"
+    );
 }

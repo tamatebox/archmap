@@ -3,7 +3,7 @@
 //! applies. A target's own imports without an edge stay under `Not mapped`;
 //! this is what could reach the target unseen.
 
-use archmap_core::{ArchitectureGraph, ComponentId, UnmappedReason};
+use archmap_core::{ArchitectureGraph, ComponentId, ComponentKind, UnmappedImport, UnmappedReason};
 use serde::Serialize;
 
 /// What could not be traced to a target.
@@ -21,15 +21,21 @@ pub struct NotTraced {
     /// Files of the target's language that its analyzer did not read.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) not_read: Option<NotRead>,
-    /// The target is a script: no import names its globals.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub(crate) script: bool,
-    /// Importers of the target are recorded, and none exists: only import
-    /// statements are read, so code that a framework or runtime loads by
-    /// name or path is not seen.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub(crate) unreached: bool,
+    /// The target is a script, whose globals no import names; the value
+    /// says so in words.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) script: Option<&'static str>,
+    /// Importers of the target are recorded and none exists; the value says
+    /// why that is no proof of no use. Never for a test file, which its
+    /// runner loads.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) no_importers: Option<&'static str>,
 }
+
+pub(crate) const SCRIPT: &str =
+    "a script: its declarations are global, so no import names what uses them";
+pub(crate) const NO_IMPORTERS: &str = "no import of it was found: only import statements are \
+     read, so a file that a framework, a test runner or a command loads by name or path has none";
 
 #[derive(Debug, Serialize)]
 pub(crate) struct Dynamic {
@@ -43,6 +49,9 @@ pub(crate) struct DynamicCall {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) line: Option<u32>,
     pub(crate) call: String,
+    /// The call is test code.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) test: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -63,22 +72,32 @@ pub(crate) struct NamedImport {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct NotRead {
-    pub(crate) language: String,
+    /// The languages counted: the target's, with TypeScript and JavaScript
+    /// together.
+    pub(crate) languages: Vec<String>,
     pub(crate) files: usize,
     pub(crate) read: usize,
+    /// Which files those are, where the analyzer skips some by design.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) note: Option<&'static str>,
 }
+
+/// What the Rust analyzer leaves unread.
+pub(crate) const RUST_NOT_READ: &str = "the Rust analyzer reads only src/, so tests/, benches/, \
+     examples/ and build.rs are among them, as is any file that failed to parse";
 
 /// The target as far as what could reach it unseen is concerned.
 pub(crate) struct Subject<'a> {
     /// The language of the target's analyzer.
     pub(crate) language: Option<&'a str>,
-    /// The name an import that missed the target would carry: a file's
-    /// stem, a module's last segment. `None` for a symbol.
-    pub(crate) name: Option<String>,
+    /// Where the target is, for imports without an edge that may name it.
+    /// `None` for a symbol.
+    pub(crate) place: Option<Place<'a>>,
     /// What belongs to the target itself, whose own calls `Not mapped`
     /// already lists.
     pub(crate) own: Own<'a>,
     pub(crate) script: bool,
+    /// Importers are recorded and none exists.
     pub(crate) unreached: bool,
 }
 
@@ -86,6 +105,12 @@ pub(crate) enum Own<'a> {
     File(&'a str),
     /// A component as folded at `depth`.
     Component(&'a ComponentId, usize),
+}
+
+/// A target's place: a file, or a component's directory.
+pub(crate) enum Place<'a> {
+    File(&'a str),
+    Directory(&'a str),
 }
 
 /// What could not be traced to `subject`, with at most `cap` locations per
@@ -117,15 +142,24 @@ pub(crate) fn not_traced(
             file: d.evidence.file.clone(),
             line: d.evidence.line,
             call: d.call.clone(),
+            test: d.evidence.test || is_test_file(&d.evidence.file),
         })
         .collect();
-    calls.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+    // production code first
+    calls.sort_by(|a, b| (a.test, &a.file, a.line).cmp(&(b.test, &b.file, b.line)));
     let dynamic = (!calls.is_empty()).then(|| Dynamic {
         total: calls.len(),
         shown: calls.into_iter().take(cap).collect(),
     });
 
-    let named_like = subject.name.as_deref().and_then(|name| {
+    let named_like = subject.place.as_ref().and_then(|place| {
+        let target = segments_of(place);
+        let name = target.last()?.clone();
+        let package = match place {
+            Place::File(file) => full.component_for_path(file).map(|c| &c.id),
+            Place::Directory(dir) => full.component_for_path(dir).map(|c| &c.id),
+        }
+        .and_then(|c| package_of(full, c));
         let mut imports: Vec<NamedImport> = full
             .unmapped_imports
             .iter()
@@ -134,7 +168,7 @@ pub(crate) fn not_traced(
                     i.reason,
                     UnmappedReason::LocalName | UnmappedReason::Unresolved
                 ) && in_family(&i.from)
-                    && last_name(&i.module) == name
+                    && may_be(full, i, &target, package)
             })
             .map(|i| NamedImport {
                 file: i.evidence.file.clone(),
@@ -145,35 +179,54 @@ pub(crate) fn not_traced(
             .collect();
         imports.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
         (!imports.is_empty()).then(|| NamedLike {
-            name: name.to_owned(),
+            name,
             total: imports.len(),
             shown: imports.into_iter().take(cap).collect(),
         })
     });
 
-    let not_read = subject.language.and_then(|language| {
-        let coverage = full.meta.coverage.get(language)?;
-        let read = coverage.read?;
-        (read < coverage.files).then(|| NotRead {
-            language: language.to_owned(),
-            files: coverage.files,
+    let not_read = family.and_then(|family| {
+        let counted: Vec<(&String, usize, usize)> = full
+            .meta
+            .coverage
+            .iter()
+            .filter(|(language, _)| self::family(language) == family)
+            .filter_map(|(language, c)| Some((language, c.files, c.read?)))
+            .collect();
+        let files: usize = counted.iter().map(|c| c.1).sum();
+        let read: usize = counted.iter().map(|c| c.2).sum();
+        (read < files).then(|| NotRead {
+            languages: counted.iter().map(|c| c.0.clone()).collect(),
+            files,
             read,
+            note: (family == "rust").then_some(RUST_NOT_READ),
         })
     });
 
+    // a test runner loads a test file: that nothing imports it is no news
+    let test_file = match subject.own {
+        Own::File(file) => is_test_file(file),
+        Own::Component(..) => false,
+    };
     let found = NotTraced {
         dynamic,
         named_like,
         not_read,
-        script: subject.script,
-        unreached: subject.unreached,
+        script: subject.script.then_some(SCRIPT),
+        // a script's own note already says why nothing imports it
+        no_importers: (subject.unreached && !test_file && !subject.script).then_some(NO_IMPORTERS),
     };
     let empty = found.dynamic.is_none()
         && found.named_like.is_none()
         && found.not_read.is_none()
-        && !found.script
-        && !found.unreached;
+        && found.script.is_none()
+        && found.no_importers.is_none();
     (!empty).then_some(found)
+}
+
+/// Test code by the shared path rule of the analyzers.
+fn is_test_file(file: &str) -> bool {
+    archmap_scan::is_test_code(std::path::Path::new(file))
 }
 
 /// One analyzer reads TypeScript and JavaScript, and either can load the
@@ -185,35 +238,89 @@ fn family(language: &str) -> &str {
     }
 }
 
-/// The name an import ends in: `helpers` for `helpers` and `scripts.helpers`,
-/// `button` for `components/button` and `./button.js`.
-fn last_name(module: &str) -> &str {
-    match module.rsplit_once('/') {
-        Some((_, last)) => last.split('.').next().unwrap_or(last),
-        None => module.rsplit('.').next().unwrap_or(module),
-    }
+/// Entry files that an import names by their directory.
+const ENTRIES: &[&str] = &["index", "__init__", "mod"];
+
+/// A target's path as an import would name it: segments without the
+/// extension, an entry file by its directory (`src/lib/utils.ts` ->
+/// `src lib utils`, `shop/billing/__init__.py` -> `shop billing`).
+fn segments_of(place: &Place) -> Vec<String> {
+    let path = match place {
+        Place::File(file) | Place::Directory(file) => file,
+    };
+    tail(path.split('/').filter(|s| !s.is_empty()).collect())
 }
 
-/// The name an import would give `file`: its stem, or its directory's name
-/// for an entry file (`__init__.py`, `index.ts`, `mod.rs`).
-pub(crate) fn file_name(file: &str) -> String {
-    let (dir, name) = file.rsplit_once('/').unwrap_or(("", file));
-    let stem = name.split('.').next().unwrap_or(name);
-    match stem {
-        "__init__" | "index" | "mod" if !dir.is_empty() => {
-            dir.rsplit('/').next().unwrap_or(dir).to_owned()
+/// Parts of a path or import, without the last part's extension and
+/// without an entry file's name at the end.
+fn tail(mut parts: Vec<&str>) -> Vec<String> {
+    if let Some(last) = parts.last_mut() {
+        *last = last.split('.').next().unwrap_or(last);
+    }
+    if parts.len() > 1 && parts.last().is_some_and(|last| ENTRIES.contains(last)) {
+        parts.pop();
+    }
+    parts.into_iter().map(str::to_owned).collect()
+}
+
+/// Whether an import without an edge may be the `target` it failed to
+/// resolve to: a relative specifier that, resolved against the importer's
+/// directory, lands on the target; an alias or path that the target's path
+/// ends in (an alias only within the target's own package); a dotted name
+/// the same way; a bare name that is the target's name.
+fn may_be(
+    full: &ArchitectureGraph,
+    import: &UnmappedImport,
+    target: &[String],
+    package: Option<&ComponentId>,
+) -> bool {
+    let module = import.module.as_str();
+    if module == "." || module == ".." || module.starts_with("./") || module.starts_with("../") {
+        let dir = import.evidence.file.rsplit_once('/').map_or("", |(d, _)| d);
+        let mut parts: Vec<&str> = dir.split('/').filter(|s| !s.is_empty()).collect();
+        for part in module.split('/') {
+            match part {
+                "" | "." => {}
+                ".." => {
+                    if parts.pop().is_none() {
+                        return false;
+                    }
+                }
+                part => parts.push(part),
+            }
         }
-        _ => stem.to_owned(),
+        return tail(parts) == target;
     }
+    if module.contains('/') {
+        let mut parts: Vec<&str> = module.split('/').filter(|s| !s.is_empty()).collect();
+        // `@/x`, `~/x`, `#/x`: relative to the importer's own package
+        let aliased = matches!(parts.first(), Some(&("@" | "~" | "#" | "$")));
+        if aliased {
+            parts.remove(0);
+        } else if let Some(first) = parts.first_mut() {
+            *first = first.trim_start_matches(['@', '~', '#']);
+        }
+        let parts = tail(parts);
+        if parts.is_empty() || !target.ends_with(&parts) {
+            return false;
+        }
+        return !aliased || package.is_some_and(|p| package_of(full, &import.from) == Some(p));
+    }
+    if module.contains('.') {
+        let parts: Vec<String> = module.split('.').map(str::to_owned).collect();
+        return target.ends_with(&parts);
+    }
+    target.last().map(String::as_str) == Some(module)
 }
 
-/// The last segment of a component name (`billing` for `shop.billing`,
-/// `graph` for `archmap_core::graph`).
-pub(crate) fn component_name(name: &str) -> String {
-    name.rsplit(['.', '/', ':'])
-        .find(|s| !s.is_empty())
-        .unwrap_or(name)
-        .to_owned()
+/// The nearest package that holds `component`.
+fn package_of<'g>(full: &'g ArchitectureGraph, component: &ComponentId) -> Option<&'g ComponentId> {
+    full.containment_path(component)
+        .iter()
+        .rev()
+        .filter_map(|id| full.component(id))
+        .find(|c| c.kind == ComponentKind::Package)
+        .map(|c| &c.id)
 }
 
 #[cfg(test)]
@@ -221,21 +328,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_import_ends_in_the_name_of_what_it_loads() {
-        assert_eq!(last_name("helpers"), "helpers");
-        assert_eq!(last_name("scripts.helpers"), "helpers");
-        assert_eq!(last_name("components/button"), "button");
-        assert_eq!(last_name("./button.js"), "button");
-        assert_eq!(last_name("@/lib/missing"), "missing");
-    }
-
-    #[test]
-    fn an_entry_file_goes_by_its_directory() {
-        assert_eq!(file_name("scripts/helpers.py"), "helpers");
-        assert_eq!(file_name("src/shop/billing/__init__.py"), "billing");
-        assert_eq!(file_name("src/components/index.ts"), "components");
-        assert_eq!(file_name("src/global.d.ts"), "global");
-        assert_eq!(component_name("shop.billing"), "billing");
-        assert_eq!(component_name("archmap_core::graph"), "graph");
+    fn a_target_goes_by_its_path_without_extension_and_entry_name() {
+        assert_eq!(
+            segments_of(&Place::File("src/lib/utils.ts")),
+            ["src", "lib", "utils"]
+        );
+        assert_eq!(
+            segments_of(&Place::File("src/shop/billing/__init__.py")),
+            ["src", "shop", "billing"]
+        );
+        assert_eq!(
+            segments_of(&Place::File("src/components/index.ts")),
+            ["src", "components"]
+        );
+        assert_eq!(
+            segments_of(&Place::File("src/global.d.ts")),
+            ["src", "global"]
+        );
+        assert_eq!(
+            segments_of(&Place::Directory("src/shop/billing")),
+            ["src", "shop", "billing"]
+        );
     }
 }

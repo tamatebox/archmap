@@ -314,18 +314,26 @@ both. The target's own imports without an edge stay under `Not mapped`.
 - `dynamic`: calls elsewhere in the target's language (TypeScript and
   JavaScript count as one) that load modules by computed names
   (`importlib.import_module(name)`, `require(path)`); any of them may load
-  the target.
-- `named_like`: imports without an edge (`local name`, `unresolved`) whose
-  last name is the target's (a file's stem, a directory's name, the last
-  segment of a component's name), so they may be the target unresolved. It
-  is a name match, not an import of the target.
-- `not_read`: files of the target's language that its analyzer did not
-  read, counted from Coverage (Rust files outside `src/`, say).
-- `script`, in JSON: the target is a script, whose globals no import names.
-- `unreached`, in JSON: the target's importers are recorded and none exists.
-  Only import statements are read, so code that a framework or runtime
-  loads by name or path is not seen; `query`'s text says so under
-  `Imported by`.
+  the target. Production code comes first, and test code is marked
+  `(test)`.
+- `named_like`: imports without an edge (`local name`, `unresolved`) that
+  may be the target unresolved: a relative specifier that, resolved against
+  the importer's directory, lands on the target's path (extension aside,
+  an entry file by its directory); a path or dotted name that the target's
+  path ends in, an alias such as `@/lib/utils` only within the target's own
+  package; a bare name that is the target's name. It is a name match, not an
+  import of the target.
+- `not_read`: files of the target's language (TypeScript and JavaScript
+  together) that no analyzer read, counted from Coverage. For Rust the
+  answer says why: the analyzer reads only `src/`, so `tests/`, `benches/`,
+  `examples/` and `build.rs` are among them.
+- `script`, in JSON: the target is a script, whose globals no import names;
+  the value says so.
+- `no_importers`: the target's importers are recorded and none exists; the
+  value says why that is no proof of no use (only import statements are
+  read, so a file that a framework, a test runner or a command loads by
+  name or path has none). `query`'s text shows it for a file. It is left
+  out for a test file, which its runner loads, and for a script.
 
 Gaps that no analyzer records yet are not counted: module paths inside Rust
 macro calls, imports in a Rust crate's own unit tests.

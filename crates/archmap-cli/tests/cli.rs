@@ -619,7 +619,9 @@ fn query_text_is_a_compact_drill_down() {
         symbols,
         "Symbols matching `greet`: 1\n  pub fn greet(user: &User) -> String  crates/lib_core/src/lib.rs:28  in lib_core\n\
          \nImported by: 2\n  crates/app/src/config.rs:12 (local)\n  crates/app/src/main.rs:2\n\
-         \nNot traced:\n  not read: 1 of 9 rust files\n"
+         \nNot traced:\n  not read: 1 of 9 rust files: the Rust analyzer reads only src/, so \
+         tests/, benches/, examples/ and build.rs are among them, as is any file that failed to \
+         parse\n"
     );
 }
 
