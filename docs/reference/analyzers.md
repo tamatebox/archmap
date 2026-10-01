@@ -196,7 +196,7 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   of a workspace (`workspaces` in a `package.json`, an array or `{ "packages": [..] }`, and
   `pnpm-workspace.yaml`; `!` patterns leave members out) and the directories of `file:`, `link:` and `portal:`
   dependencies inside the scanned root, never another package of the same name; a bare import of one resolves to its files through its
-  `exports` or `main`, matching the conditions the scanned tsconfigs turn on with `customConditions`,
+  `exports`, or its `main`, `types` or `typings` in that order, matching the conditions the scanned tsconfigs turn on with `customConditions`,
   themselves or through a config they extend (when a
   `types` condition leads outside the scan, the next condition answers, as it does for a package's own
   `imports` (`#util`) and name; a declaration file the scan holds is what the import points at, as tsc

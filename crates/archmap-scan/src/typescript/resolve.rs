@@ -183,6 +183,9 @@ fn options(tsconfig: Option<TsconfigDiscovery>, types: bool, custom: &[String]) 
             }))
             .collect(),
         builtin_modules: true,
+        // A package whose `main` is built (`dist/`) often points `types`
+        // at its source, which the scan holds.
+        main_fields: strings(&["main", "types", "typings"]),
         // NODE_PATH would make the graph depend on the environment.
         node_path: false,
         // The links of the view lead to the files of workspace members.
@@ -595,6 +598,51 @@ mod tests {
         assert_eq!(
             aliases.matching("@shared/gone", Path::new("web/src/a.ts")),
             Some(("@shared/*", "config/tsconfig.paths.json"))
+        );
+    }
+
+    #[test]
+    fn a_member_whose_main_is_built_resolves_through_its_types() {
+        let root = repo(
+            "types-field",
+            &[
+                (
+                    "packages/core/package.json",
+                    r#"{ "name": "@acme/core", "main": "./dist/index.js", "types": "./src/index.ts" }"#,
+                ),
+                ("packages/core/src/index.ts", "export const c = 1;\n"),
+                (
+                    "packages/old/package.json",
+                    r#"{ "name": "@acme/old", "main": "./dist/index.js", "typings": "./src/index.ts" }"#,
+                ),
+                ("packages/old/src/index.ts", "export const o = 1;\n"),
+                ("apps/web/src/a.ts", "import { c } from '@acme/core';\n"),
+            ],
+        );
+        let ctx = RepoContext::load(&root, ScanOptions::default()).unwrap();
+        let links = BTreeMap::from([
+            ("@acme/core".to_owned(), PathBuf::from("packages/core")),
+            ("@acme/old".to_owned(), PathBuf::from("packages/old")),
+        ]);
+        let view = ViewFs::new_linked(&ctx, &links, &mut Vec::new());
+        let resolver = ImportResolver::new(ctx.root(), view, &[]);
+        let mut problems = BTreeSet::new();
+        let mut file = |specifier: &str| {
+            resolver.resolve(
+                Path::new("apps/web/src/a.ts"),
+                specifier,
+                None,
+                &mut problems,
+            )
+        };
+        let found = [file("@acme/core"), file("@acme/old")];
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            found,
+            [
+                Resolved::File(PathBuf::from("packages/core/src/index.ts")),
+                Resolved::File(PathBuf::from("packages/old/src/index.ts"))
+            ]
         );
     }
 
