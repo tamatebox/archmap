@@ -95,19 +95,20 @@ impl<'a> Definitions<'a> {
         if let Some(known) = self.walked.get(&key) {
             return known.clone();
         }
-        let found = self
-            .index
-            .walk(file, name, 0, &mut BTreeSet::new())
-            .and_then(|f| {
-                let via = f.via?;
-                let name = self.index.declared(&f.file, f.name);
-                Some(Definition {
-                    file: f.file,
-                    via,
-                    name,
-                    type_only: f.type_only,
-                })
-            });
+        let found = match self.index.walk(file, name, 0, &mut BTreeMap::new()) {
+            Walk::Found(found) => Some(found),
+            Walk::Missing | Walk::Unknown => None,
+        }
+        .and_then(|f| {
+            let via = f.via?;
+            let name = self.index.declared(&f.file, f.name);
+            Some(Definition {
+                file: f.file,
+                via,
+                name,
+                type_only: f.type_only,
+            })
+        });
         self.walked.insert(key, found.clone());
         found
     }
@@ -122,8 +123,23 @@ impl<'a> Definitions<'a> {
     }
 }
 
+/// What a walk for a name ends with.
+#[derive(Clone)]
+enum Walk {
+    Found(Found),
+    /// The file exports no such name, or the name leads back to where the
+    /// walk is.
+    Missing,
+    /// The file exports the name, but where it is defined is not known:
+    /// `export *` sources disagree, the name leads outside the scan, or the
+    /// walk gives up past [`MAX_HOPS`]. A sibling `export *` then answers
+    /// nothing either.
+    Unknown,
+}
+
 /// A name found: the file that declares it, the first re-export on the
 /// way, if any, and the name in that file.
+#[derive(Clone)]
 struct Found {
     file: PathBuf,
     via: Option<(PathBuf, u32)>,
@@ -176,24 +192,47 @@ impl<'a> Index<'a> {
             .unwrap_or(name)
     }
 
+    /// Where `name`, as `file` exports it, is defined. `walked` holds what
+    /// each file and name led to, `None` while the walk is inside it, so a
+    /// walk visits each once and a cycle ends.
     fn walk<'x>(
         &'x self,
         file: &'x Path,
         name: &'x str,
         hops: usize,
-        seen: &mut BTreeSet<(&'x Path, &'x str)>,
-    ) -> Option<Found> {
-        // The pairs borrow from the modules and the caller, so a visit does
-        // not allocate.
-        if hops > MAX_HOPS || !seen.insert((file, name)) {
-            return None;
+        walked: &mut BTreeMap<(&'x Path, &'x str), Option<Walk>>,
+    ) -> Walk {
+        if hops > MAX_HOPS {
+            return Walk::Unknown;
         }
-        let module = self.modules.get(file)?;
+        // The keys borrow from the modules and the caller, so a visit does
+        // not allocate.
+        match walked.get(&(file, name)) {
+            Some(Some(known)) => return known.clone(),
+            Some(None) => return Walk::Missing,
+            None => {}
+        }
+        walked.insert((file, name), None);
+        let result = self.visit(file, name, hops, walked);
+        walked.insert((file, name), Some(result.clone()));
+        result
+    }
+
+    fn visit<'x>(
+        &'x self,
+        file: &'x Path,
+        name: &'x str,
+        hops: usize,
+        walked: &mut BTreeMap<(&'x Path, &'x str), Option<Walk>>,
+    ) -> Walk {
+        let Some(module) = self.modules.get(file) else {
+            return Walk::Missing;
+        };
         let loaded = |import: usize| module.loads.get(import).and_then(Option::as_deref);
         let via = |line: u32| Some((file.to_path_buf(), line));
         match module.exports.names.get(name) {
             Some(Export::Local) => {
-                return Some(Found {
+                return Walk::Found(Found {
                     file: file.to_path_buf(),
                     via: None,
                     name: name.to_owned(),
@@ -206,22 +245,29 @@ impl<'a> Index<'a> {
                 line,
                 type_only,
             }) => {
-                let next = loaded(*import)?;
-                let found = self.walk(next, inner, hops + 1, seen)?;
-                return Some(Found {
-                    file: found.file,
-                    via: via(*line),
-                    name: found.name,
-                    type_only: *type_only || found.type_only,
-                });
+                let Some(next) = loaded(*import) else {
+                    return Walk::Unknown;
+                };
+                return match self.walk(next, inner, hops + 1, walked) {
+                    Walk::Found(found) => Walk::Found(Found {
+                        file: found.file,
+                        via: via(*line),
+                        name: found.name,
+                        type_only: *type_only || found.type_only,
+                    }),
+                    // the file says it exports the name all the same
+                    Walk::Missing | Walk::Unknown => Walk::Unknown,
+                };
             }
             Some(Export::Namespace {
                 import,
                 line,
                 type_only,
             }) => {
-                let next = loaded(*import)?;
-                return Some(Found {
+                let Some(next) = loaded(*import) else {
+                    return Walk::Unknown;
+                };
+                return Walk::Found(Found {
                     file: next.to_path_buf(),
                     via: via(*line),
                     name: WHOLE_MODULE.to_owned(),
@@ -232,7 +278,7 @@ impl<'a> Index<'a> {
         }
         // `export *` never re-exports a default export.
         if name == "default" {
-            return None;
+            return Walk::Missing;
         }
         let candidates = self.providers.get(file).and_then(|by| by.get(name));
         let mut found: Option<Found> = None;
@@ -241,8 +287,10 @@ impl<'a> Index<'a> {
             let Some(next) = loaded(import) else {
                 continue;
             };
-            let Some(this) = self.walk(next, name, hops + 1, seen) else {
-                continue;
+            let this = match self.walk(next, name, hops + 1, walked) {
+                Walk::Found(this) => this,
+                Walk::Missing => continue,
+                Walk::Unknown => return Walk::Unknown,
             };
             match &found {
                 None => {
@@ -255,10 +303,10 @@ impl<'a> Index<'a> {
                 }
                 Some(first) if first.file == this.file => {}
                 // The sources disagree: the name is ambiguous.
-                Some(_) => return None,
+                Some(_) => return Walk::Unknown,
             }
         }
-        found
+        found.map_or(Walk::Missing, Walk::Found)
     }
 }
 
@@ -604,6 +652,34 @@ mod tests {
             found("limits.ts", "index.ts", 3)
         );
         assert_eq!(definition(&modules, "index.ts", "default"), None);
+    }
+
+    #[test]
+    fn a_star_source_that_cannot_answer_stops_the_walk() {
+        let modules = modules([
+            (
+                "index.ts",
+                module(&[], &[(0, 1), (1, 2)], &[Some("a.ts"), Some("f.ts")]),
+            ),
+            // `X` is ambiguous in a.ts, and `Y` leads outside the scan
+            (
+                "a.ts",
+                module(
+                    &[("Y", reexport(2, "Y", 3))],
+                    &[(0, 1), (1, 2)],
+                    &[Some("d.ts"), Some("e.ts"), None],
+                ),
+            ),
+            ("d.ts", module(&[("X", Export::Local)], &[], &[])),
+            ("e.ts", module(&[("X", Export::Local)], &[], &[])),
+            (
+                "f.ts",
+                module(&[("X", Export::Local), ("Y", Export::Local)], &[], &[]),
+            ),
+        ]);
+        // f.ts is no answer while a.ts may export the name too
+        assert_eq!(definition(&modules, "index.ts", "X"), None);
+        assert_eq!(definition(&modules, "index.ts", "Y"), None);
     }
 
     #[test]

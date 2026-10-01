@@ -175,7 +175,7 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
 - a named or default import that reaches a name through re-exports (`export { a } from`, `export *`,
   `export * as ns`, `import { a } from 'm'; export { a }`) also has evidence for the file that defines the
   name, noted `import via <file>:<line>` with the first re-export on the way, so `query` and `impact` on the
-  defining file list importers that go through barrels; a name not found, `export *` sources that disagree,
+  defining file list importers that go through barrels; a name not found, `export *` sources that disagree at any depth, a name that leads outside the scan,
   a cycle or more than 32 hops leave only the loaded file, and namespace and side-effect imports never walk
 - every import and re-export statement records the names it takes from the file it loads (see
   [graph.md](graph.md)): the exported name for a named import (`a` for `import { a as b }`) and for
