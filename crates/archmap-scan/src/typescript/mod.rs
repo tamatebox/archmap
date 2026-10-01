@@ -188,15 +188,34 @@ impl Analyzer for TypeScriptAnalyzer {
                 test: is_test_code(read.file),
             };
             for (import, resolved) in read.imports.iter().zip(&read.resolved) {
-                let names: BTreeSet<String> = match resolved {
-                    Resolved::File(loaded) => import
-                        .names
-                        .iter()
-                        .map(|name| definitions.recorded(loaded, name))
-                        .collect(),
-                    _ => BTreeSet::new(),
-                };
-                imports.emit(import, resolved, &names, &mut output);
+                match resolved {
+                    // the values a statement takes, and apart from them the
+                    // types, which never run
+                    Resolved::File(loaded) => {
+                        let (types, values): (Vec<&String>, Vec<&String>) = import
+                            .names
+                            .iter()
+                            .partition(|name| import.types.contains(*name));
+                        let recorded = |names: Vec<&String>| -> BTreeSet<String> {
+                            names
+                                .into_iter()
+                                .map(|name| definitions.recorded(loaded, name))
+                                .collect()
+                        };
+                        let (types, values) = (recorded(types), recorded(values));
+                        if !values.is_empty() || types.is_empty() {
+                            imports.emit(import, resolved, &values, false, &mut output);
+                        }
+                        if !types.is_empty() {
+                            imports.emit(import, resolved, &types, true, &mut output);
+                        }
+                    }
+                    _ => {
+                        let all_types = !import.names.is_empty()
+                            && import.names.iter().all(|n| import.types.contains(n));
+                        imports.emit(import, resolved, &BTreeSet::new(), all_types, &mut output);
+                    }
+                }
                 // a re-export passes names on without using them
                 if let (Resolved::File(loaded), "import") = (resolved, import.note) {
                     imports.emit_definitions(import, loaded, &mut definitions, &mut output);
@@ -384,6 +403,7 @@ impl Imports<'_> {
     fn unmapped(
         &self,
         import: &ImportStatement,
+        type_only: bool,
         reason: UnmappedReason,
         note: String,
     ) -> UnmappedImport {
@@ -392,7 +412,7 @@ impl Imports<'_> {
             module: import.specifier.clone(),
             reason,
             provided_by: Vec::new(),
-            evidence: self.evidence(import).with_note(note),
+            evidence: self.evidence(import).type_only(type_only).with_note(note),
         }
     }
 
@@ -436,6 +456,7 @@ impl Imports<'_> {
         import: &ImportStatement,
         resolved: &Resolved,
         names: &BTreeSet<String>,
+        type_only: bool,
         output: &mut AnalyzerOutput,
     ) {
         let from = &self.owner.component;
@@ -459,6 +480,7 @@ impl Imports<'_> {
                 output.fragment.push_edge(
                     Edge::new(from.clone(), to, EdgeKind::Import).with_evidence(
                         self.evidence(import)
+                            .type_only(type_only)
                             .with_note(import.note)
                             .pointing_at(display_path(target))
                             .taking(names.iter().cloned()),
@@ -475,6 +497,7 @@ impl Imports<'_> {
                     let note = format!("{} {spec}: {why}", import.note);
                     output.fragment.push_unmapped_import(self.unmapped(
                         import,
+                        type_only,
                         UnmappedReason::Unresolved,
                         note,
                     ));
@@ -490,6 +513,7 @@ impl Imports<'_> {
                     );
                     output.fragment.push_unmapped_import(self.unmapped(
                         import,
+                        type_only,
                         UnmappedReason::LocalName,
                         note,
                     ));
@@ -529,7 +553,9 @@ impl Imports<'_> {
                         }
                         output.fragment.push_edge(
                             Edge::new(from.clone(), external_id(&d.name), EdgeKind::Import)
-                                .with_evidence(self.evidence(import).with_note(note)),
+                                .with_evidence(
+                                    self.evidence(import).type_only(type_only).with_note(note),
+                                ),
                         );
                     }
                     Some((dir, d)) => {
@@ -542,6 +568,7 @@ impl Imports<'_> {
                         );
                         output.fragment.push_unmapped_import(self.unmapped(
                             import,
+                            type_only,
                             UnmappedReason::DeclaredNotRequired,
                             note,
                         ));
@@ -550,7 +577,7 @@ impl Imports<'_> {
                         let (reason, note) = self.undeclared(import, package);
                         output
                             .fragment
-                            .push_unmapped_import(self.unmapped(import, reason, note));
+                            .push_unmapped_import(self.unmapped(import, type_only, reason, note));
                     }
                 }
             }
@@ -569,7 +596,9 @@ impl Imports<'_> {
         definitions: &mut exports::Definitions,
         output: &mut AnalyzerOutput,
     ) {
-        let mut found: BTreeMap<(PathBuf, (PathBuf, u32)), BTreeSet<String>> = BTreeMap::new();
+        // by defining file, first re-export and whether only types travel
+        let mut found: BTreeMap<(PathBuf, (PathBuf, u32), bool), BTreeSet<String>> =
+            BTreeMap::new();
         for name in import.names.iter().filter(|n| *n != WHOLE_MODULE) {
             let Some(definition) = definitions.of(loaded, name) else {
                 continue;
@@ -577,12 +606,13 @@ impl Imports<'_> {
             if definition.file == self.file || definition.file == loaded {
                 continue;
             }
+            let type_only = import.types.contains(name) || definition.type_only;
             found
-                .entry((definition.file, definition.via))
+                .entry((definition.file, definition.via, type_only))
                 .or_default()
                 .insert(definition.name);
         }
-        for ((file, (via, line)), names) in found {
+        for ((file, (via, line), type_only), names) in found {
             let Some(owner) = self.layout.owners.get(&file) else {
                 continue;
             };
@@ -595,6 +625,7 @@ impl Imports<'_> {
                 )
                 .with_evidence(
                     self.evidence(import)
+                        .type_only(type_only)
                         .with_note(note)
                         .pointing_at(display_path(&file))
                         .taking(names),

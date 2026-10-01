@@ -1717,3 +1717,19 @@ fn ids_that_the_shell_would_expand_are_quoted() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+#[test]
+fn imports_of_types_only_are_marked_in_query() {
+    let text = ts_stdout(&["query", "src/lib/types.ts"]);
+    for expected in [
+        "src/app/page.tsx:2 (type)",
+        // a re-export of a type only
+        "src/index.ts:8 (export) (type)",
+    ] {
+        assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
+    }
+    // a statement that takes a value from the same file is no type import
+    let money = ts_stdout(&["query", "src/lib/money.ts"]);
+    assert!(money.contains("src/app/page.tsx:1"), "{money}");
+    assert!(!money.contains("src/app/page.tsx:1 (type)"), "{money}");
+}

@@ -40,6 +40,9 @@ pub(crate) struct ImportStatement {
     /// import, `import x = require()` and `export *`; the specifiers'
     /// local names for `export { .. } from`; empty for a side-effect import.
     pub names: Vec<String>,
+    /// The names among `names` taken as types only (`import type`,
+    /// `{ type A }`, `export type ... from`), which the compiler erases.
+    pub types: BTreeSet<String>,
 }
 
 #[derive(Debug, Default)]
@@ -96,63 +99,87 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
 
     let mut file = ParsedFile::default();
     // Names that import declarations bind (imports are hoisted, so one after
-    // the export still counts): the statement and the export taken, `None`
-    // for a namespace.
-    let mut bindings: BTreeMap<String, (usize, Option<String>)> = BTreeMap::new();
+    // the export still counts): the statement, the export taken (`None` for
+    // a namespace), and whether it is taken as a type only.
+    let mut bindings: BTreeMap<String, (usize, Option<String>, bool)> = BTreeMap::new();
     // `export { a as b }` without a source and `export default a`, read
-    // once every binding is known: (local name, exported name, line).
-    let mut exported: Vec<(String, String, u32)> = Vec::new();
+    // once every binding is known: (local name, exported name, line, type
+    // only).
+    let mut exported: Vec<(String, String, u32, bool)> = Vec::new();
     for statement in &parsed.program.body {
         let start = statement.span().start;
         let line = lines.line(start);
         let index = file.imports.len();
-        let load = |specifier: String, note: &'static str, names: Vec<String>| ImportStatement {
+        let load = |specifier: String,
+                    note: &'static str,
+                    names: Vec<String>,
+                    types: BTreeSet<String>| ImportStatement {
             specifier,
             line,
             note,
             names,
+            types,
+        };
+        let whole = || vec![WHOLE_MODULE.to_owned()];
+        let whole_if = |types: bool| match types {
+            true => BTreeSet::from([WHOLE_MODULE.to_owned()]),
+            false => BTreeSet::new(),
         };
         match statement {
             Statement::ImportDeclaration(d) => {
                 let mut names = Vec::new();
+                let mut types = BTreeSet::new();
                 for specifier in d.specifiers.iter().flatten() {
-                    let (local, taken) = match specifier {
+                    let (local, taken, inline_type) = match specifier {
                         ImportDeclarationSpecifier::ImportSpecifier(s) => (
                             s.local.name.to_string(),
                             Some(s.imported.name().to_string()),
+                            s.import_kind.is_type(),
                         ),
                         ImportDeclarationSpecifier::ImportDefaultSpecifier(s) => {
-                            (s.local.name.to_string(), Some("default".to_owned()))
+                            (s.local.name.to_string(), Some("default".to_owned()), false)
                         }
                         ImportDeclarationSpecifier::ImportNamespaceSpecifier(s) => {
-                            (s.local.name.to_string(), None)
+                            (s.local.name.to_string(), None, false)
                         }
                     };
-                    names.push(taken.clone().unwrap_or_else(|| WHOLE_MODULE.to_owned()));
-                    bindings.insert(local, (index, taken));
+                    let type_only = d.import_kind.is_type() || inline_type;
+                    let name = taken.clone().unwrap_or_else(|| WHOLE_MODULE.to_owned());
+                    if type_only {
+                        types.insert(name.clone());
+                    }
+                    names.push(name);
+                    bindings.insert(local, (index, taken, type_only));
                 }
                 file.imports
-                    .push(load(d.source.value.to_string(), "import", names));
+                    .push(load(d.source.value.to_string(), "import", names, types));
             }
             Statement::ExportFromDeclaration(d) => {
                 let mut names = Vec::new();
+                let mut types = BTreeSet::new();
                 for s in &d.specifiers {
                     let local = s.local.name().to_string();
+                    let type_only = d.export_kind.is_type() || s.export_kind.is_type();
                     let export = Export::Reexport {
                         import: index,
                         name: local.clone(),
                         line,
+                        type_only,
                     };
                     file.exports
                         .names
                         .entry(s.exported.name().to_string())
                         .or_insert(export);
+                    if type_only {
+                        types.insert(local.clone());
+                    }
                     names.push(local);
                 }
                 file.imports
-                    .push(load(d.source.value.to_string(), "export", names));
+                    .push(load(d.source.value.to_string(), "export", names, types));
             }
             Statement::ExportAllDeclaration(d) => {
+                let type_only = d.export_kind.is_type();
                 match &d.exported {
                     Some(exported) => {
                         file.exports
@@ -161,34 +188,39 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
                             .or_insert(Export::Namespace {
                                 import: index,
                                 line,
+                                type_only,
                             });
                     }
-                    None => file.exports.stars.push((index, line)),
+                    None => file.exports.stars.push((index, line, type_only)),
                 }
                 file.imports.push(load(
                     d.source.value.to_string(),
                     "export",
-                    vec![WHOLE_MODULE.to_owned()],
+                    whole(),
+                    whole_if(type_only),
                 ));
             }
             Statement::TSImportEqualsDeclaration(d) => {
                 if let Some(specifier) = required_by(d) {
-                    bindings.insert(d.id.name.to_string(), (index, None));
+                    let type_only = d.import_kind.is_type();
+                    bindings.insert(d.id.name.to_string(), (index, None, type_only));
                     file.imports
-                        .push(load(specifier, "import", vec![WHOLE_MODULE.to_owned()]));
+                        .push(load(specifier, "import", whole(), whole_if(type_only)));
                 }
             }
             Statement::ExportDeclaration(d) => {
                 if let Declaration::TSImportEqualsDeclaration(i) = &d.declaration {
                     if let Some(specifier) = required_by(i) {
+                        let type_only = i.import_kind.is_type();
                         file.exports.names.entry(i.id.name.to_string()).or_insert(
                             Export::Namespace {
                                 import: index,
                                 line,
+                                type_only,
                             },
                         );
                         file.imports
-                            .push(load(specifier, "import", vec![WHOLE_MODULE.to_owned()]));
+                            .push(load(specifier, "import", whole(), whole_if(type_only)));
                     }
                 }
                 for symbols in source.declared(&d.declaration, start) {
@@ -224,7 +256,8 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
                             file.symbols.extend(exported_as(symbols, &name));
                         }
                     }
-                    exported.push((local, name, line));
+                    let type_only = d.export_kind.is_type() || specifier.export_kind.is_type();
+                    exported.push((local, name, line, type_only));
                 }
             }
             Statement::ExportDefaultDeclaration(d) => {
@@ -264,21 +297,23 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
                     }
                     _ => String::new(),
                 };
-                exported.push((local, "default".to_owned(), line));
+                exported.push((local, "default".to_owned(), line, false));
             }
             _ => {}
         }
     }
-    for (local, name, line) in exported {
+    for (local, name, line, export_type) in exported {
         let export = match bindings.get(&local) {
-            Some((import, Some(taken))) => Export::Reexport {
+            Some((import, Some(taken), binding_type)) => Export::Reexport {
                 import: *import,
                 name: taken.clone(),
                 line,
+                type_only: export_type || *binding_type,
             },
-            Some((import, None)) => Export::Namespace {
+            Some((import, None, binding_type)) => Export::Namespace {
                 import: *import,
                 line,
+                type_only: export_type || *binding_type,
             },
             None => Export::Local,
         };
@@ -851,6 +886,7 @@ export default local;
             import,
             name: name.to_owned(),
             line,
+            type_only: false,
         };
         let names: BTreeMap<String, Export> = [
             ("local", Export::Local),
@@ -858,7 +894,14 @@ export default local;
             ("shown", Export::Local),
             ("b", reexport(0, "a", 5)),
             ("d", reexport(1, "default", 6)),
-            ("ns", Export::Namespace { import: 3, line: 8 }),
+            (
+                "ns",
+                Export::Namespace {
+                    import: 3,
+                    line: 8,
+                    type_only: false,
+                },
+            ),
             ("y", reexport(4, "x", 10)),
             ("def", reexport(5, "default", 12)),
             (
@@ -866,6 +909,7 @@ export default local;
                 Export::Namespace {
                     import: 6,
                     line: 14,
+                    type_only: false,
                 },
             ),
             // imports are hoisted: `late` is imported after its export
@@ -876,7 +920,7 @@ export default local;
         .map(|(name, export)| (name.to_owned(), export))
         .collect();
         assert_eq!(file.exports.names, names);
-        assert_eq!(file.exports.stars, [(2, 7)]);
+        assert_eq!(file.exports.stars, [(2, 7, false)]);
         // re-exported bindings are no symbols of this file
         let symbols: Vec<&str> = file.symbols.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(symbols, ["local", "f", "shown"]);
@@ -885,11 +929,76 @@ export default local;
     }
 
     #[test]
+    fn statements_of_types_only_say_which_names_are_types() {
+        let file = parse(
+            Path::new("x.ts"),
+            "import type a from 'm';\nimport type { b } from 'm2';\nimport { c, type d } from 'n';\n\
+             import type * as ns from 'o';\nimport type e = require('e');\n\
+             export type { f } from 'f';\nexport { g, type h } from 'g';\n\
+             export type * from 'i';\nexport type * as j from 'j';\n\
+             import type { k } from 'k';\nexport { k };\nimport { l } from 'l';\nexport type { l };\n",
+        )
+        .unwrap();
+        let types: Vec<(&str, Vec<&str>)> = file
+            .imports
+            .iter()
+            .map(|i| {
+                (
+                    i.specifier.as_str(),
+                    i.types.iter().map(String::as_str).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            types,
+            [
+                ("m", vec!["default"]),
+                ("m2", vec!["b"]),
+                ("n", vec!["d"]),
+                ("o", vec!["*"]),
+                ("e", vec!["*"]),
+                ("f", vec!["f"]),
+                ("g", vec!["h"]),
+                ("i", vec!["*"]),
+                ("j", vec!["*"]),
+                ("k", vec!["k"]),
+                ("l", vec![]),
+            ]
+        );
+        let reexport = |import, name: &str, line, type_only| Export::Reexport {
+            import,
+            name: name.to_owned(),
+            line,
+            type_only,
+        };
+        let table = &file.exports.names;
+        assert_eq!(table.get("f"), Some(&reexport(5, "f", 6, true)));
+        assert_eq!(table.get("g"), Some(&reexport(6, "g", 7, false)));
+        assert_eq!(table.get("h"), Some(&reexport(6, "h", 7, true)));
+        assert_eq!(
+            table.get("j"),
+            Some(&Export::Namespace {
+                import: 8,
+                line: 9,
+                type_only: true
+            })
+        );
+        // a binding imported as a type, or exported as one, passes on a type
+        assert_eq!(table.get("k"), Some(&reexport(9, "k", 11, true)));
+        assert_eq!(table.get("l"), Some(&reexport(10, "l", 13, true)));
+        assert_eq!(file.exports.stars, [(7, 8, true)]);
+    }
+
+    #[test]
     fn an_exported_import_equals_is_a_namespace() {
         let file = parse(Path::new("x.ts"), "export import fs = require('fs');\n").unwrap();
         assert_eq!(
             file.exports.names.get("fs"),
-            Some(&Export::Namespace { import: 0, line: 1 })
+            Some(&Export::Namespace {
+                import: 0,
+                line: 1,
+                type_only: false
+            })
         );
     }
 

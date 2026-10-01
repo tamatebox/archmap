@@ -1,4 +1,4 @@
-import { formatPrice } from '@/lib/money';
+import { formatPrice, type Wallet } from '@/lib/money';
 import type { Money } from '@/lib/types';
 import {
   MAX_UPLOAD,

@@ -141,8 +141,9 @@ The gaps behind the marks:
   each other.
 - TS/JS symbols: CommonJS exports give none.
 - TS/JS imports: `require` and `import()` are not read yet.
-- TS/JS `check`: a type-only import is an ordinary edge, so `cycles.forbid`
-  also reports cycles that only types close.
+- TS/JS `check`: only `type` written in an import marks it as types only,
+  so a type imported without it (`import { Money }` for an interface) can
+  close a cycle that `cycles.forbid` reports.
 
 The commands read one merged graph, so a gap in what an analyzer reads
 shows in all of them: an import that is not read is missing from `query`,

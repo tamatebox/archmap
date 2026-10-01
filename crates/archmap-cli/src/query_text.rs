@@ -241,6 +241,9 @@ fn neighbors<'a>(
                         Some((first, more)) if e.target != first.target => {
                             more.insert(e.target.as_deref());
                         }
+                        // a statement that takes values and types from one
+                        // file shows as what runs
+                        Some((first, _)) if first.type_only && !e.type_only => *first = e,
                         Some(_) => {}
                         None => n.imports.push((e, BTreeSet::new())),
                     }
@@ -605,6 +608,10 @@ fn import_location(evidence: &Evidence, more_files: usize, show_target: bool) ->
     // a re-export statement passes names on: not a use of them
     if evidence.note.as_deref() == Some("export") {
         out.push_str(" (export)");
+    }
+    // types only: erased before the program runs
+    if evidence.type_only {
+        out.push_str(" (type)");
     }
     if evidence.scope == Some(Scope::Local) {
         out.push_str(" (local)");

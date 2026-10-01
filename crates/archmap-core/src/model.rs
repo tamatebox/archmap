@@ -299,6 +299,12 @@ impl Edge {
         self.from == other.from && self.to == other.to && self.kind == other.kind
     }
 
+    /// Whether the dependency is there when the program runs: some of its
+    /// evidence takes more than types, or it has no evidence to say.
+    pub fn at_runtime(&self) -> bool {
+        self.evidence.is_empty() || self.evidence.iter().any(|e| !e.type_only)
+    }
+
     /// Distinct source locations behind the edge. One statement can point
     /// at several files (`from pkg import a, b`), so this can be smaller
     /// than `evidence.len()`.

@@ -6,7 +6,7 @@ use anyhow::{bail, Context, Result};
 use archmap_core::rules::{external_selector_lacks_ecosystem, FileLevel, Finding, RuleSet};
 use archmap_core::signals::Signal;
 use archmap_core::{
-    ArchitectureGraph, ChangeSeed, Component, ComponentId, Edge, EdgeKind, Evidence, Symbol,
+    ArchitectureGraph, ChangeSeed, Component, ComponentId, Edge, EdgeKind, Evidence, Scope, Symbol,
     SymbolId, UnmappedImport,
 };
 use archmap_scan::{ScanOptions, ScanReport};
@@ -910,6 +910,13 @@ fn location(e: &Evidence) -> String {
     }
     if let Some(note) = &e.note {
         s.push_str(&format!("  {note}"));
+    }
+    // as `query` marks them: types only, and inside a function body
+    if e.type_only {
+        s.push_str(" (type)");
+    }
+    if e.scope == Some(Scope::Local) {
+        s.push_str(" (local)");
     }
     s
 }

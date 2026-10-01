@@ -60,7 +60,8 @@ evidence behind them, stale allowances, uncovered components, dependency
 cycles at the roll-up depth (`depth` in the file or `--depth`, default 2),
 undeclared imports, and declarations, rule sides or `ignore` entries that
 match nothing, so a typo never silently disables a rule. Text output shows
-up to 3 locations per finding; `--format json` lists all of them. It
+up to 3 locations per finding, marked `(type)` and `(local)` as `query`
+marks them; `--format json` lists all of them. It
 exits 0 without findings, 1 with findings, and 2 when the rules or the
 repository cannot be read, including a `--config` file that does not exist.
 Without `--config` and without an `archmap.toml`, `check` reports signals
@@ -68,9 +69,12 @@ only and exits 0. archmap checks its own `cli -> scan -> core` direction
 this way; see `archmap.toml`.
 
 `[cycles] scope` limits cycle findings to cycles with at least one member
-under its selectors, such as product code but not fixtures. Every cycle
-finding also says what the files behind it show, because roll-up joins the
-files of each component and different files can close the loop:
+under its selectors, such as product code but not fixtures. Cycles count
+only imports that run: a TS/JS import of types only (`import type`) closes
+none, while `deny`, `layers` and `allow` count it like any other import.
+Every cycle finding also says what the files behind it show, because
+roll-up joins the files of each component and different files can close the
+loop:
 
 - `file level: no cycle; different files form each direction`: only the
   components form a cycle
@@ -105,7 +109,8 @@ a `signal:` line and JSON lists it under `signals`.
 
 One kind exists today, `mixed_directions`: a component and a partner
 depend on each other, but the files of the component that the partner uses
-are not the files that use the partner.
+are not the files that use the partner. Like cycles, it counts only imports
+that run.
 
 ```text
 signal: app.utils mixes dependency directions with app.core, app.models

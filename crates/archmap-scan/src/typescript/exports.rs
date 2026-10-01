@@ -16,8 +16,8 @@ pub(crate) const MAX_HOPS: usize = 32;
 pub(crate) struct ExportTable {
     pub names: BTreeMap<String, Export>,
     /// `export * from 'm'`: the statement's index among the file's import
-    /// statements, and its line.
-    pub stars: Vec<(usize, u32)>,
+    /// statements, its line, and whether it is `export type *`.
+    pub stars: Vec<(usize, u32, bool)>,
     /// The name the file's own default export declares, which its symbol
     /// carries: `limitOf` for `export default function limitOf`. `None` for
     /// an anonymous or a re-exported default, or none at all.
@@ -30,15 +30,21 @@ pub(crate) enum Export {
     /// Declared in the file.
     Local,
     /// The export `name` of the module that import statement `import`
-    /// loads, re-exported at `line`.
+    /// loads, re-exported at `line`, as a type only when `type_only`
+    /// (`export type { a } from`, or a binding imported as a type).
     Reexport {
         import: usize,
         name: String,
         line: u32,
+        type_only: bool,
     },
     /// The whole module that import statement `import` loads, as a
     /// namespace, re-exported at `line`.
-    Namespace { import: usize, line: u32 },
+    Namespace {
+        import: usize,
+        line: u32,
+        type_only: bool,
+    },
 }
 
 /// What a walk sees of one parsed file.
@@ -60,6 +66,8 @@ pub(crate) struct Definition {
     /// gives (`default` without one), [`WHOLE_MODULE`] when a namespace
     /// re-export leads to the whole file.
     pub name: String,
+    /// A re-export on the way passes the name on as a type only.
+    pub type_only: bool,
 }
 
 /// Definitions of names as files export them. A (file, name) asked about
@@ -97,6 +105,7 @@ impl<'a> Definitions<'a> {
                     file: f.file,
                     via,
                     name,
+                    type_only: f.type_only,
                 })
             });
         self.walked.insert(key, found.clone());
@@ -119,6 +128,8 @@ struct Found {
     file: PathBuf,
     via: Option<(PathBuf, u32)>,
     name: String,
+    /// A re-export on the way is a type only.
+    type_only: bool,
 }
 
 /// The modules, and for each one with `export *` the star entries whose
@@ -134,7 +145,7 @@ impl<'a> Index<'a> {
         let exportable = exportable(modules);
         let mut providers: BTreeMap<&Path, BTreeMap<&str, Vec<usize>>> = BTreeMap::new();
         for (file, module) in modules {
-            for (star, (import, _)) in module.exports.stars.iter().enumerate() {
+            for (star, (import, _, _)) in module.exports.stars.iter().enumerate() {
                 let Some(source) = module.loads.get(*import).and_then(Option::as_deref) else {
                     continue;
                 };
@@ -186,12 +197,14 @@ impl<'a> Index<'a> {
                     file: file.to_path_buf(),
                     via: None,
                     name: name.to_owned(),
+                    type_only: false,
                 });
             }
             Some(Export::Reexport {
                 import,
                 name: inner,
                 line,
+                type_only,
             }) => {
                 let next = loaded(*import)?;
                 let found = self.walk(next, inner, hops + 1, seen)?;
@@ -199,14 +212,20 @@ impl<'a> Index<'a> {
                     file: found.file,
                     via: via(*line),
                     name: found.name,
+                    type_only: *type_only || found.type_only,
                 });
             }
-            Some(Export::Namespace { import, line }) => {
+            Some(Export::Namespace {
+                import,
+                line,
+                type_only,
+            }) => {
                 let next = loaded(*import)?;
                 return Some(Found {
                     file: next.to_path_buf(),
                     via: via(*line),
                     name: WHOLE_MODULE.to_owned(),
+                    type_only: *type_only,
                 });
             }
             None => {}
@@ -218,7 +237,7 @@ impl<'a> Index<'a> {
         let candidates = self.providers.get(file).and_then(|by| by.get(name));
         let mut found: Option<Found> = None;
         for &star in candidates.into_iter().flatten() {
-            let (import, line) = module.exports.stars[star];
+            let (import, line, star_type) = module.exports.stars[star];
             let Some(next) = loaded(import) else {
                 continue;
             };
@@ -231,6 +250,7 @@ impl<'a> Index<'a> {
                         file: this.file,
                         via: via(line),
                         name: this.name,
+                        type_only: star_type || this.type_only,
                     })
                 }
                 Some(first) if first.file == this.file => {}
@@ -258,7 +278,7 @@ fn exportable(modules: &BTreeMap<PathBuf, Module>) -> BTreeMap<&Path, BTreeSet<&
     loop {
         let mut changed = false;
         for (file, module) in modules {
-            for (import, _) in &module.exports.stars {
+            for (import, _, _) in &module.exports.stars {
                 let Some(source) = module.loads.get(*import).and_then(Option::as_deref) else {
                     continue;
                 };
@@ -295,7 +315,7 @@ mod tests {
                     .iter()
                     .map(|(name, export)| ((*name).to_owned(), export.clone()))
                     .collect(),
-                stars: stars.to_vec(),
+                stars: stars.iter().map(|&(i, l)| (i, l, false)).collect(),
                 default_name: None,
             },
             loads: loads.iter().map(|l| l.map(PathBuf::from)).collect(),
@@ -315,6 +335,7 @@ mod tests {
             import,
             name: name.to_owned(),
             line,
+            type_only: false,
         }
     }
 
@@ -357,7 +378,14 @@ mod tests {
                         ("b", reexport(0, "a", 3)),
                         ("limitOf", reexport(1, "default", 4)),
                         ("anon", reexport(2, "default", 5)),
-                        ("ns", Export::Namespace { import: 0, line: 6 }),
+                        (
+                            "ns",
+                            Export::Namespace {
+                                import: 0,
+                                line: 6,
+                                type_only: false,
+                            },
+                        ),
                     ],
                     &[],
                     &[Some("mid.ts"), Some("limits.ts"), Some("anon.ts")],
@@ -390,6 +418,67 @@ mod tests {
             defined_name(&modules, "index.ts", "ns").as_deref(),
             Some("*")
         );
+    }
+
+    #[test]
+    fn a_re_export_of_types_only_passes_its_names_on_as_types() {
+        let typed = |import, name: &str, line| Export::Reexport {
+            import,
+            name: name.to_owned(),
+            line,
+            type_only: true,
+        };
+        let mut index = module(
+            &[
+                ("A", typed(0, "A", 2)),
+                ("B", reexport(1, "B", 3)),
+                ("D", reexport(3, "D", 4)),
+                (
+                    "ns",
+                    Export::Namespace {
+                        import: 1,
+                        line: 5,
+                        type_only: true,
+                    },
+                ),
+            ],
+            &[],
+            &[
+                Some("mid.ts"),
+                Some("b.ts"),
+                Some("star.ts"),
+                Some("typed.ts"),
+            ],
+        );
+        // `export type * from './star'`
+        index.exports.stars = vec![(2, 6, true)];
+        let modules = modules([
+            ("index.ts", index),
+            (
+                "mid.ts",
+                module(&[("A", reexport(0, "A", 1))], &[], &[Some("a.ts")]),
+            ),
+            (
+                "typed.ts",
+                module(&[("D", typed(0, "D", 1))], &[], &[Some("d.ts")]),
+            ),
+            ("a.ts", module(&[("A", Export::Local)], &[], &[])),
+            ("b.ts", module(&[("B", Export::Local)], &[], &[])),
+            ("d.ts", module(&[("D", Export::Local)], &[], &[])),
+            ("star.ts", module(&[("C", Export::Local)], &[], &[])),
+        ]);
+        let mut definitions = Definitions::new(&modules);
+        let mut type_only = |name: &str| {
+            definitions
+                .of(Path::new("index.ts"), name)
+                .map(|d| d.type_only)
+        };
+        // a type at the first hop or a later one
+        assert_eq!(type_only("A"), Some(true));
+        assert_eq!(type_only("D"), Some(true));
+        assert_eq!(type_only("ns"), Some(true));
+        assert_eq!(type_only("C"), Some(true));
+        assert_eq!(type_only("B"), Some(false));
     }
 
     #[test]
@@ -444,7 +533,14 @@ mod tests {
             (
                 "ns.ts",
                 module(
-                    &[("default", Export::Namespace { import: 0, line: 2 })],
+                    &[(
+                        "default",
+                        Export::Namespace {
+                            import: 0,
+                            line: 2,
+                            type_only: false,
+                        },
+                    )],
                     &[],
                     &[Some("limits.ts")],
                 ),
@@ -560,7 +656,14 @@ mod tests {
             (
                 "index.ts",
                 module(
-                    &[("money", Export::Namespace { import: 0, line: 4 })],
+                    &[(
+                        "money",
+                        Export::Namespace {
+                            import: 0,
+                            line: 4,
+                            type_only: false,
+                        },
+                    )],
                     &[],
                     &[Some("money.ts")],
                 ),

@@ -1069,13 +1069,14 @@ fn named_imports_reach_the_files_that_define_the_names() {
         assert!(edges.contains(&row), "missing {row:?}");
     }
     // walked: page.tsx:6 (one re-export), checkout.ts:1 through index.ts
-    // lines 1, 2, 3, 4 and 6, checkout.ts:2 through line 7; namespace and
-    // side-effect imports, `Missing` and the re-export statements do not
+    // lines 1, 2, 3, 4 and 6, checkout.ts:2 through line 7, checkout.ts:8
+    // and :9 through line 8; namespace and side-effect imports, `Missing`
+    // and the re-export statements do not
     let walked: Vec<_> = edges
         .iter()
         .filter(|(.., note)| note.contains(" via "))
         .collect();
-    assert_eq!(walked.len(), 7, "{walked:#?}");
+    assert_eq!(walked.len(), 9, "{walked:#?}");
     // the loaded file keeps its own evidence
     assert!(edges.contains(&(
         "ts-shop::src/app/checkout.ts".to_owned(),
@@ -1194,7 +1195,8 @@ fn no_edge_holds_evidence_that_differs_only_in_names() {
     for edge in &graph.edges {
         let mut seen = BTreeSet::new();
         for e in &edge.evidence {
-            let key = (&e.file, e.line, &e.note, &e.target, e.scope);
+            // values and types of one statement are two pieces of evidence
+            let key = (&e.file, e.line, &e.note, &e.target, e.scope, e.type_only);
             assert!(
                 seen.insert(key),
                 "{} -> {}: {key:?} twice",
@@ -1223,4 +1225,67 @@ fn imports_in_test_code_are_marked() {
     assert_eq!(marks("tests/helpers.ts"), BTreeSet::from([true]));
     assert_eq!(marks("src/app/page.tsx"), BTreeSet::from([false]));
     assert_eq!(marks("src/app/checkout.ts"), BTreeSet::from([false]));
+}
+
+#[test]
+fn imports_of_types_only_are_marked() {
+    let graph = scan_fixture();
+    let kinds = |at: &str, target: &str| -> BTreeSet<(Vec<String>, bool)> {
+        graph
+            .edges
+            .iter()
+            .flat_map(|e| &e.evidence)
+            .filter(|e| {
+                format!("{}:{}", e.file, e.line.unwrap_or(0)) == at
+                    && e.target.as_deref() == Some(target)
+            })
+            .map(|e| (e.names.iter().cloned().collect(), e.type_only))
+            .collect()
+    };
+    let rows = |rows: &[(&[&str], bool)]| -> BTreeSet<(Vec<String>, bool)> {
+        rows.iter()
+            .map(|(names, types)| (names.iter().map(|n| (*n).to_owned()).collect(), *types))
+            .collect()
+    };
+    // a value and a type in one statement: two pieces of evidence
+    assert_eq!(
+        kinds("src/app/page.tsx:1", "src/lib/money.ts"),
+        rows(&[(&["formatPrice"], false), (&["Wallet"], true)])
+    );
+    assert_eq!(
+        kinds("src/app/page.tsx:2", "src/lib/types.ts"),
+        rows(&[(&["Money"], true)])
+    );
+    // `export type ... from`, and an `import type` through it
+    assert_eq!(
+        kinds("src/index.ts:8", "src/lib/types.ts"),
+        rows(&[(&["Money"], true)])
+    );
+    assert_eq!(
+        kinds("src/app/checkout.ts:8", "src/index.ts"),
+        rows(&[(&["Money"], true)])
+    );
+    assert_eq!(
+        kinds("src/app/checkout.ts:8", "src/lib/types.ts"),
+        rows(&[(&["Money"], true)])
+    );
+    // imported without `type` from a file that re-exports it as a type: the
+    // loaded file's evidence runs, the defining file's does not
+    assert_eq!(
+        kinds("src/app/checkout.ts:9", "src/index.ts"),
+        rows(&[(&["Money"], false)])
+    );
+    assert_eq!(
+        kinds("src/app/checkout.ts:9", "src/lib/types.ts"),
+        rows(&[(&["Money"], true)])
+    );
+    // money.ts and types.ts import each other for types only: no cycle
+    assert!(
+        !graph
+            .cycles()
+            .iter()
+            .any(|group| group.iter().any(|id| id.as_str().ends_with("types.ts"))),
+        "{:?}",
+        graph.cycles()
+    );
 }

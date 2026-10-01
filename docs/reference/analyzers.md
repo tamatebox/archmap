@@ -170,6 +170,11 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   namespace import, `import x = require()` and
   `export *`, none for a side-effect import; `via` evidence records the names as the defining file
   declares them, one evidence per defining file and re-export, and re-export statements are not walked
+- a statement that takes types only is `type_only` (see [graph.md](graph.md)): `import type`,
+  `export type ... from`, `export type *` and `import type x = require()`, and a statement whose names
+  all carry `type` (`import { type A }`); one that takes values and types (`import { a, type B }`)
+  gives one evidence for the values and one for the types, and `via` evidence is `type_only` when the
+  name is imported as a type or a re-export on the way passes it on as one (`export type { A } from`)
 - a bare specifier that resolves to no file is matched by package name to the closest `package.json` above
   the importing file that declares it, so a monorepo root's dependencies count for its packages (`@types/x`
   covers `x`): a required declaration gives an edge, another an import without an edge
@@ -192,8 +197,11 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
 - A route directory named `test` or `tests` (`app/test/page.tsx` in frameworks whose directories
   are URLs) is test code by the rule above, so its imports carry `test`.
 - Only `import` and `export ... from` statements are read so far: `require`, `import()` and test
-  mocks come next, and until then a type-only import is an ordinary edge, so `cycles.forbid` also
-  reports cycles that only types close.
+  mocks come next.
+- Only `type` written in the statement marks types: the compiler also drops an import whose names
+  are used only as types (`import { Money }` for an interface), which archmap counts as running.
+  Under `verbatimModuleSyntax`, `import { type A } from 'm'` still loads `m`, which archmap counts
+  as types only.
 - CommonJS exports give no symbols.
 - Workspace packages are not linked, and two packages with one name merge.
 - Aliases defined only in a bundler configuration, `jsconfig.json` and Deno import maps are not

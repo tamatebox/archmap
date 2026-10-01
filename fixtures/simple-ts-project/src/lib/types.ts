@@ -8,3 +8,5 @@ export enum Unit {
   Piece,
   Box,
 }
+
+import type { Wallet } from './money';

@@ -116,8 +116,9 @@ pub struct UndeclaredImportRule {
 
 /// What the files behind a component cycle show. A component cycle can be
 /// made of files that never form a cycle themselves: roll-up joins the files
-/// of each component, so different files can close the loop. None of these
-/// states says that a program fails at runtime.
+/// of each component, so different files can close the loop. Like the
+/// cycle, it counts only imports that run, not those of types only. None of
+/// these states says that a program fails at runtime.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum FileLevel {
@@ -328,15 +329,22 @@ pub fn check(graph: &ArchitectureGraph, rules: &RuleSet, depth: usize) -> Vec<Fi
                 continue;
             }
             let members: BTreeSet<&ComponentId> = components.iter().collect();
+            // what runs closes the cycle: imports of types only are left out
             let edges = rolled
                 .edges
                 .iter()
                 .filter(|e| members.contains(&e.from) && members.contains(&e.to))
+                .filter(|e| e.at_runtime())
                 .map(|e| CycleEdge {
                     from: e.from.clone(),
                     to: e.to.clone(),
                     kind: e.kind,
-                    evidence: e.evidence.clone(),
+                    evidence: e
+                        .evidence
+                        .iter()
+                        .filter(|e| !e.type_only)
+                        .cloned()
+                        .collect(),
                 })
                 .collect();
             let file_level = file_level(graph, &members, depth);
@@ -526,7 +534,7 @@ fn file_level(
         if !members.contains(&from) || !members.contains(&to) {
             continue;
         }
-        for e in &edge.evidence {
+        for e in edge.evidence.iter().filter(|e| !e.type_only) {
             if let Some(target) = e.target.as_deref() {
                 owner.insert(e.file.as_str(), from.clone());
                 owner.insert(target, to.clone());
@@ -1151,6 +1159,51 @@ mod tests {
             declared: "cycles.scope[1]".into(),
             selector: "vendor".into()
         }));
+    }
+
+    #[test]
+    fn cycles_leave_out_imports_of_types_only() {
+        let mut g = ArchitectureGraph::default();
+        for id in ["a", "b"] {
+            g.add_component(module(id, id));
+        }
+        let import = |from: &str, to: &str, file: &str, target: &str, types: bool| {
+            Edge::new(from, to, EdgeKind::Import).with_evidence(
+                Evidence::new(file)
+                    .at_line(1)
+                    .pointing_at(target)
+                    .type_only(types),
+            )
+        };
+        g.add_edges([
+            import("a", "b", "a/x.ts", "b/y.ts", false),
+            import("b", "a", "b/y.ts", "a/x.ts", true),
+        ]);
+        let set = RuleSet {
+            cycles: CycleRule {
+                forbid: true,
+                scope: vec![],
+            },
+            ..RuleSet::default()
+        };
+        assert!(check(&g, &set, 9).is_empty(), "only a type closes it");
+        g.add_edges([import("b", "a", "b/z.ts", "a/x.ts", false)]);
+        let findings = check(&g, &set, 9);
+        let Some(Finding::Cycle {
+            edges, file_level, ..
+        }) = findings.first()
+        else {
+            panic!("expected a cycle: {findings:?}");
+        };
+        // the type-only import is left out of what the finding lists
+        let listed: Vec<&str> = edges
+            .iter()
+            .flat_map(|e| &e.evidence)
+            .map(|e| e.file.as_str())
+            .collect();
+        assert_eq!(listed, ["a/x.ts", "b/z.ts"]);
+        // and of the file-level reading: these files form no cycle
+        assert_eq!(*file_level, FileLevel::NoCycle);
     }
 
     #[test]

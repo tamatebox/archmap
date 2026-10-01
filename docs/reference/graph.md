@@ -14,7 +14,7 @@ ArchitectureGraph
 ├── unmapped_imports: [ UnmappedImport { from, module, reason: undeclared | declared_not_required | local_name | unresolved, provided_by?, evidence } ]
 └── dynamic_imports:  [ DynamicImport { from, call, evidence } ]
 
-Evidence { file, line?, note?, target?, scope?: module | local, names?, test? }
+Evidence { file, line?, note?, target?, scope?: module | local, names?, test?, type_only? }
 ```
 
 `target` is the repository file a dependency points at and `scope` says
@@ -42,6 +42,15 @@ Python and TS/JS a file named `*.test.*`, `*.spec.*`, `test_*.py`,
 `#[test]`, never a path. It is on the evidence of edges, imports without an
 edge and dynamic imports. No command reads it yet: `impact` counts test
 code like any other, and so do rules and cycles.
+
+`type_only` marks a statement that takes types only, which the compiler
+erases, so it never runs: TS/JS `import type`, `export type ... from`, and
+a statement whose names all carry `type`. A statement that takes values and
+types gives one piece of evidence for each. An edge is a dependency however
+it is taken, so `deny`, `layers`, `allow`, `query` and `impact` count every
+import, but cycles and signals count only imports that run: an edge whose
+every piece of evidence is `type_only` closes no cycle. Only the TS/JS
+analyzer sets it.
 
 A symbol's evidence with a `target` says how the symbol is reached rather
 than where it is: a Rust method whose type another file defines carries

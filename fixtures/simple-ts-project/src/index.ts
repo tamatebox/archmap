@@ -5,3 +5,4 @@ export * as money from './lib/money';
 import { MAX_UPLOAD } from './lib/limits';
 export { MAX_UPLOAD as LIMIT };
 export { default } from './lib/limits';
+export type { Money } from './lib/types';

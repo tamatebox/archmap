@@ -243,13 +243,19 @@ impl ArchitectureGraph {
     }
 
     /// Groups of components that reach each other through dependency
-    /// cycles, over every edge kind. Each group has at least two members and
-    /// is sorted; groups are sorted too.
+    /// cycles, over every edge kind, counting only dependencies that are there
+    /// when the program runs (not imports of types only). Each group has at
+    /// least two members and is sorted; groups are sorted too.
     pub fn cycles(&self) -> Vec<Vec<ComponentId>> {
-        strongly_connected(self.edges.iter().map(|e| (&e.from, &e.to)))
-            .into_iter()
-            .map(|group| group.into_iter().cloned().collect())
-            .collect()
+        strongly_connected(
+            self.edges
+                .iter()
+                .filter(|e| e.at_runtime())
+                .map(|e| (&e.from, &e.to)),
+        )
+        .into_iter()
+        .map(|group| group.into_iter().cloned().collect())
+        .collect()
     }
 
     /// Components that may be affected by a change, folded to `depth`.
@@ -1323,6 +1329,25 @@ mod tests {
             ids(graph.cycles()),
             vec![vec!["a", "b", "c"], vec!["x", "y"]]
         );
+    }
+
+    #[test]
+    fn cycles_count_only_imports_that_run() {
+        let mut graph = ArchitectureGraph::default();
+        graph.add_edge(
+            Edge::new("a", "b", EdgeKind::Import).with_evidence(Evidence::new("a.ts").at_line(1)),
+        );
+        // b uses a only as a type, which is erased before the program runs
+        graph.add_edge(
+            Edge::new("b", "a", EdgeKind::Import)
+                .with_evidence(Evidence::new("b.ts").at_line(1).type_only(true)),
+        );
+        assert!(graph.cycles().is_empty());
+        // an import that runs beside it closes the cycle
+        graph
+            .add_edges([Edge::new("b", "a", EdgeKind::Import)
+                .with_evidence(Evidence::new("b.ts").at_line(2))]);
+        assert_eq!(ids(graph.cycles()), vec![vec!["a", "b"]]);
     }
 
     #[test]

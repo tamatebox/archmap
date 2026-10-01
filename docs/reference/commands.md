@@ -116,7 +116,9 @@ and each neighboring component with its import count and a few example
 locations. A location names the file the statement loads when archmap knows
 it, as in `src/shop/billing/charge.py:5 -> src/shop/users.py`, and ends in
 `(local)` when the import sits inside a function body and so runs only when
-the function is called; the others run when their file loads. A `Not mapped`
+the function is called; the others run when their file loads. `(type)` marks
+a TS/JS statement that takes types only (`import type`), which the compiler
+erases, so it never runs. A `Not mapped`
 section then lists the imports of the component that no edge shows, one line
 per module with the reason (`local name`, `extra or dev dependency`,
 `undeclared`, or `dynamic` for a call that loads modules by name) and where
@@ -147,8 +149,9 @@ count the rest, and their heading counts the re-export statements among them
 (`Imported by: 4 (2 re-exports)`); nothing found reads `none resolved`, with
 a reminder that only import statements are read, so it does not mean
 unused: an entry point that a framework or runtime loads by name or path,
-such as a route or a handler, shows the same. When several symbols match, each line counts its importers instead
-(`imported by 3, may use 1`), and querying one by its id lists them. A
+such as a route or a handler, shows the same. When several symbols match,
+each line counts its importers instead (`imported by 3, may use 1`), and
+querying one by its id lists them. A
 Rust module (`pub mod invoice;`) is also a symbol of the file that declares
 it, but its imports name its own file, so `query` points at its component
 instead, and `impact` answers for that component. What the lists miss:

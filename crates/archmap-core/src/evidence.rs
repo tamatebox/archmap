@@ -43,13 +43,18 @@ pub struct Evidence {
     /// The statement is test code: it runs only for tests.
     #[serde(default, skip_serializing_if = "is_false")]
     pub test: bool,
+    /// The statement takes types only, which the compiler erases: it never
+    /// runs (`import type`, `export type ... from`).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub type_only: bool,
 }
 
 fn is_false(value: &bool) -> bool {
     !*value
 }
 
-/// Where an import statement sits in its file.
+/// Where an import statement sits in its file. Both scopes run, so both
+/// close cycles; a statement that never runs is `Evidence::type_only`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Scope {
@@ -70,6 +75,7 @@ impl Evidence {
             scope: None,
             names: BTreeSet::new(),
             test: false,
+            type_only: false,
         }
     }
 
@@ -95,6 +101,11 @@ impl Evidence {
 
     pub fn in_test(mut self, test: bool) -> Self {
         self.test = test;
+        self
+    }
+
+    pub fn type_only(mut self, type_only: bool) -> Self {
+        self.type_only = type_only;
         self
     }
 
@@ -128,6 +139,16 @@ mod tests {
         // evidence written before names existed still reads
         let old: Evidence = serde_json::from_str(r#"{"file":"a.ts","target":"b.ts"}"#).unwrap();
         assert!(old.names.is_empty());
+    }
+
+    #[test]
+    fn imports_of_types_only_are_marked_only_when_they_are() {
+        let marked = serde_json::to_string(&Evidence::new("a.ts").type_only(true)).unwrap();
+        assert!(marked.ends_with(r#""type_only":true}"#), "{marked}");
+        let plain = serde_json::to_string(&Evidence::new("a.ts").type_only(false)).unwrap();
+        assert_eq!(plain, r#"{"file":"a.ts"}"#);
+        let old: Evidence = serde_json::from_str(r#"{"file":"a.ts"}"#).unwrap();
+        assert!(!old.type_only);
     }
 
     #[test]
