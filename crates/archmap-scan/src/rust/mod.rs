@@ -140,6 +140,8 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
     let mut paths: BTreeMap<(usize, PathTarget), PathHit> = BTreeMap::new();
     // the names all paths from a file to a file take
     let mut path_names: BTreeMap<(usize, PathTarget), BTreeSet<String>> = BTreeMap::new();
+    // whether every path from a file to a target is test code
+    let mut path_tests: BTreeMap<(usize, PathTarget), bool> = BTreeMap::new();
     for (n, node) in forest.nodes.iter().enumerate() {
         let package = &packages[node.package];
         let file = display_path(&files[node.file].rel);
@@ -185,9 +187,14 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
 
         // the leaves of a declaration that reach one file (`use a::{X, Y}`)
         // share one piece of evidence, with the names they take together
-        let mut taken: BTreeMap<(u32, Scope, String, usize), BTreeSet<String>> = BTreeMap::new();
+        let mut taken: BTreeMap<(u32, Scope, String, bool, usize), BTreeSet<String>> =
+            BTreeMap::new();
         for decl in &facts.uses {
-            let evidence = Evidence::new(&file).at_line(decl.line).in_scope(decl.scope);
+            let in_test = node.test || decl.test;
+            let evidence = Evidence::new(&file)
+                .at_line(decl.line)
+                .in_scope(decl.scope)
+                .in_test(in_test);
             let note = |via| note(decl.note, via, &files);
             match resolver.resolve(n, decl) {
                 Resolved::Module {
@@ -208,7 +215,7 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
                         continue;
                     }
                     taken
-                        .entry((decl.line, decl.scope, note(via), target_file))
+                        .entry((decl.line, decl.scope, note(via), in_test, target_file))
                         .or_default()
                         .insert(name.unwrap_or_else(|| WHOLE_MODULE.to_owned()));
                 }
@@ -234,7 +241,7 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
                 Resolved::Nothing => {}
             }
         }
-        for ((line, scope, note, target_file), names) in taken {
+        for ((line, scope, note, in_test, target_file), names) in taken {
             output.fragment.push_edge(
                 Edge::new(
                     owner.clone(),
@@ -245,6 +252,7 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
                     Evidence::new(&file)
                         .at_line(line)
                         .in_scope(scope)
+                        .in_test(in_test)
                         .with_note(note)
                         .pointing_at(display_path(&files[target_file].rel))
                         .taking(names),
@@ -279,8 +287,14 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
                     .or_default()
                     .insert(name.unwrap_or_else(|| WHOLE_MODULE.to_owned()));
             }
+            let in_test = node.test || path.test;
+            // test code only when every path is
+            path_tests
+                .entry((node.file, target.clone()))
+                .and_modify(|all| *all &= in_test)
+                .or_insert(in_test);
             let hit = PathHit {
-                rank: (path.scope != Scope::Module, path.line),
+                rank: (in_test, path.scope != Scope::Module, path.line),
                 scope: path.scope,
                 via,
             };
@@ -302,10 +316,14 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
         let names = path_names
             .remove(&(file, target.clone()))
             .unwrap_or_default();
+        let in_test = path_tests
+            .remove(&(file, target.clone()))
+            .unwrap_or_default();
         let owner = forest.owners[file].clone();
         let evidence = Evidence::new(display_path(&files[file].rel))
-            .at_line(hit.rank.1)
-            .in_scope(hit.scope);
+            .at_line(hit.rank.2)
+            .in_scope(hit.scope)
+            .in_test(in_test);
         match target {
             PathTarget::File(target_file) => output.fragment.push_edge(
                 Edge::new(owner, forest.owners[target_file].clone(), EdgeKind::Import)
@@ -346,8 +364,8 @@ enum PathTarget {
 /// first at module scope, else the first, so that a cycle check still sees
 /// a dependency at module scope.
 struct PathHit {
-    /// Local scope after module scope, then by line.
-    rank: (bool, u32),
+    /// Test code last, local scope after module scope, then by line.
+    rank: (bool, bool, u32),
     scope: Scope,
     via: Option<tree::Via>,
 }

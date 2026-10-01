@@ -63,6 +63,7 @@ use archmap_core::{
 
 use crate::analyzer::AnalyzerOutput;
 use crate::context::display_path;
+use crate::test_code::is_test_code;
 use crate::{Analyzer, RepoContext, ScanError};
 
 pub use manifest::{PyDependency, PyProject};
@@ -735,6 +736,7 @@ fn emit_imports(
     output: &mut AnalyzerOutput,
 ) {
     let file_display = display_path(file);
+    let test = is_test_code(file);
     for import in &scanned.imports {
         let full = match resolve_base(base_dotted, import) {
             Some(full) => full,
@@ -768,6 +770,7 @@ fn emit_imports(
             Evidence::new(&file_display)
                 .at_line(import.line)
                 .in_scope(scope)
+                .in_test(test)
         };
 
         // Internal module -> the files the statement loads in it, with the
@@ -935,7 +938,8 @@ fn emit_imports(
             call: dynamic.call.to_owned(),
             evidence: Evidence::new(&file_display)
                 .at_line(dynamic.line)
-                .in_scope(scope),
+                .in_scope(scope)
+                .in_test(test),
         });
     }
 }

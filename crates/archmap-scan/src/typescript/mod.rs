@@ -56,6 +56,7 @@ use archmap_core::{
 
 use crate::analyzer::AnalyzerOutput;
 use crate::context::display_path;
+use crate::test_code::is_test_code;
 use crate::{Analyzer, RepoContext, ScanError};
 use layout::{Layout, Owner, Package};
 use package::{Declaration, PackageJson};
@@ -184,6 +185,7 @@ impl Analyzer for TypeScriptAnalyzer {
                     .collect(),
                 aliases: &aliases,
                 file: read.file,
+                test: is_test_code(read.file),
             };
             for (import, resolved) in read.imports.iter().zip(&read.resolved) {
                 let names: BTreeSet<String> = match resolved {
@@ -367,6 +369,8 @@ struct Imports<'a> {
     manifests: Vec<(&'a Path, &'a PackageJson)>,
     aliases: &'a resolve::Aliases,
     file: &'a Path,
+    /// The file is test code.
+    test: bool,
 }
 
 impl Imports<'_> {
@@ -374,6 +378,7 @@ impl Imports<'_> {
         Evidence::new(display_path(self.file))
             .at_line(import.line)
             .in_scope(Scope::Module)
+            .in_test(self.test)
     }
 
     fn unmapped(

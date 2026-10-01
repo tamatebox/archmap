@@ -232,6 +232,15 @@ fn every_use_and_module_path_names_the_file_it_imports() {
                 "path",
                 Scope::Local
             ),
+            // a `#[cfg(test)]` import of another crate is still a dependency
+            row(
+                "app::config",
+                "lib_core",
+                "crates/app/src/config.rs:17",
+                &lib,
+                "use",
+                module
+            ),
             // through the `pub use` in lib.rs, to the file that defines it
             row(
                 "app::config",
@@ -561,10 +570,12 @@ fn a_dev_dependency_used_under_src_is_an_import_without_an_edge() {
             module: "assert_cmd".into(),
             reason: UnmappedReason::DeclaredNotRequired,
             provided_by: vec![],
+            // written in a `#[cfg(test)]` module: test code
             evidence: Evidence::new("crates/app/src/main.rs")
                 .at_line(14)
                 .with_note("use")
-                .in_scope(Scope::Module),
+                .in_scope(Scope::Module)
+                .in_test(true),
         }]
     );
     assert!(graph.component(&id("ext:cargo:assert_cmd")).is_none());
@@ -694,4 +705,26 @@ fn a_method_whose_type_is_in_another_file_says_where_the_type_is() {
     // a method beside its type needs none
     let new = graph.symbol(&"lib_core::User::new".into()).unwrap();
     assert!(new.evidence.iter().all(|e| e.target.is_none()));
+}
+
+#[test]
+fn imports_in_test_code_are_marked() {
+    let graph = scan_fixture();
+    let evidence: Vec<&Evidence> = graph
+        .edges
+        .iter()
+        .flat_map(|e| &e.evidence)
+        .chain(graph.unmapped_imports.iter().map(|u| &u.evidence))
+        .collect();
+    let mark = |at: &str| -> Vec<bool> {
+        evidence
+            .iter()
+            .filter(|e| format!("{}:{}", e.file, e.line.unwrap_or(0)) == at)
+            .map(|e| e.test)
+            .collect()
+    };
+    // a `#[cfg(test)]` import of another crate, and a dev-dependency in one
+    assert_eq!(mark("crates/app/src/config.rs:17"), [true]);
+    assert_eq!(mark("crates/app/src/main.rs:14"), [true]);
+    assert_eq!(mark("crates/app/src/main.rs:1"), [false]);
 }

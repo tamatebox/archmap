@@ -1204,3 +1204,23 @@ fn no_edge_holds_evidence_that_differs_only_in_names() {
         }
     }
 }
+
+#[test]
+fn imports_in_test_code_are_marked() {
+    let graph = scan_fixture();
+    let marks = |file: &str| -> BTreeSet<bool> {
+        graph
+            .edges
+            .iter()
+            .flat_map(|e| &e.evidence)
+            .chain(graph.unmapped_imports.iter().map(|u| &u.evidence))
+            .filter(|e| e.file == file)
+            .map(|e| e.test)
+            .collect()
+    };
+    assert_eq!(marks("tests/money.test.ts"), BTreeSet::from([true]));
+    // a helper in a test directory keeps its symbols but is test code
+    assert_eq!(marks("tests/helpers.ts"), BTreeSet::from([true]));
+    assert_eq!(marks("src/app/page.tsx"), BTreeSet::from([false]));
+    assert_eq!(marks("src/app/checkout.ts"), BTreeSet::from([false]));
+}

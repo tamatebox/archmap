@@ -11,3 +11,8 @@ pub fn last_invoice() -> Option<Invoice> {
 pub fn greeting() -> String {
     lib_core::greet(&User::new(0))
 }
+
+#[cfg(test)]
+mod tests {
+    use lib_core::User;
+}

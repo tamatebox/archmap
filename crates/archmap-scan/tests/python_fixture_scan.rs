@@ -813,3 +813,27 @@ fn dynamic_imports_are_recorded_where_they_are_called() {
         }]
     );
 }
+
+#[test]
+fn imports_in_test_code_are_marked() {
+    let graph = scan_fixture();
+    let marks = |file: &str| -> BTreeSet<bool> {
+        graph
+            .edges
+            .iter()
+            .flat_map(|e| &e.evidence)
+            .chain(graph.unmapped_imports.iter().map(|u| &u.evidence))
+            .filter(|e| e.file == file)
+            .map(|e| e.test)
+            .collect()
+    };
+    assert_eq!(marks("tests/test_billing.py"), BTreeSet::from([true]));
+    // a helper below a test directory is test code too
+    assert_eq!(marks("tests/unit/factories.py"), BTreeSet::from([true]));
+    assert_eq!(marks("src/shop/billing/charge.py"), BTreeSet::from([false]));
+    // an import without an edge from a test file carries the mark as well
+    assert!(graph
+        .unmapped_imports
+        .iter()
+        .any(|u| u.evidence.file == "tests/test_billing.py" && u.evidence.test));
+}

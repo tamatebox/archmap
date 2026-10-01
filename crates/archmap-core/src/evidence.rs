@@ -40,6 +40,13 @@ pub struct Evidence {
     /// statement loads the file without taking a name.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub names: BTreeSet<String>,
+    /// The statement is test code: it runs only for tests.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub test: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Where an import statement sits in its file.
@@ -62,6 +69,7 @@ impl Evidence {
             target: None,
             scope: None,
             names: BTreeSet::new(),
+            test: false,
         }
     }
 
@@ -82,6 +90,11 @@ impl Evidence {
 
     pub fn in_scope(mut self, scope: Scope) -> Self {
         self.scope = Some(scope);
+        self
+    }
+
+    pub fn in_test(mut self, test: bool) -> Self {
+        self.test = test;
         self
     }
 
@@ -115,5 +128,15 @@ mod tests {
         // evidence written before names existed still reads
         let old: Evidence = serde_json::from_str(r#"{"file":"a.ts","target":"b.ts"}"#).unwrap();
         assert!(old.names.is_empty());
+    }
+
+    #[test]
+    fn test_code_is_marked_only_when_it_is() {
+        let marked = serde_json::to_string(&Evidence::new("tests/a.py").in_test(true)).unwrap();
+        assert!(marked.ends_with(r#""test":true}"#), "{marked}");
+        let plain = serde_json::to_string(&Evidence::new("src/a.py").in_test(false)).unwrap();
+        assert_eq!(plain, r#"{"file":"src/a.py"}"#);
+        let old: Evidence = serde_json::from_str(r#"{"file":"a.py"}"#).unwrap();
+        assert!(!old.test);
     }
 }

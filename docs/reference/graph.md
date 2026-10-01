@@ -14,7 +14,7 @@ ArchitectureGraph
 ├── unmapped_imports: [ UnmappedImport { from, module, reason: undeclared | declared_not_required | local_name | unresolved, provided_by?, evidence } ]
 └── dynamic_imports:  [ DynamicImport { from, call, evidence } ]
 
-Evidence { file, line?, note?, target?, scope?: module | local, names? }
+Evidence { file, line?, note?, target?, scope?: module | local, names?, test? }
 ```
 
 `target` is the repository file a dependency points at and `scope` says
@@ -34,6 +34,14 @@ Through re-exports, evidence noted `via <file>:<line>` names what the
 defining file declares. A statement gives one piece of evidence per file
 it points at and re-export it goes through, with all of its names. Every
 analyzer records `names`.
+
+`test` marks a statement in test code, which runs only for tests: for
+Python and TS/JS a file named `*.test.*`, `*.spec.*`, `test_*.py`,
+`*_test.py` or `conftest.py`, or any file below a directory named `test`,
+`tests`, `__tests__` or `__mocks__`; for Rust, code under `#[cfg(test)]` or
+`#[test]`, never a path. It is on the evidence of edges, imports without an
+edge and dynamic imports. No command reads it yet: `impact` counts test
+code like any other, and so do rules and cycles.
 
 A symbol's evidence with a `target` says how the symbol is reached rather
 than where it is: a Rust method whose type another file defines carries

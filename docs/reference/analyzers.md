@@ -51,6 +51,9 @@ into the model in [graph.md](graph.md); how the commands present it is in
 - `use` declarations and paths in `#[cfg(test)]` and `#[test]` code are not dependencies of their
   package on itself, so unit tests add no edges or cycles between the modules of a crate
 - a `use` of a `[dev-dependencies]` crate (in a test module) is an import without an edge
+- imports and paths in `#[cfg(test)]` and `#[test]` code carry `test` in their evidence (see
+  [graph.md](graph.md)): those of other crates, and dev-dependencies; path evidence carries it only
+  when every path it stands for is test code
 - only files under `src/` are read, so `tests/`, `benches/`, `examples/` and `build.rs` are not
 
 ### Rust known gaps
@@ -115,6 +118,8 @@ into the model in [graph.md](graph.md); how the commands present it is in
   through a `sys.path` entry added at runtime); a name imported from a package that an installed
   distribution provides as a module of its own (`from google.cloud import bigquery`) is recorded as
   that module, each name on its own
+- the imports and dynamic imports of test files (pytest names, `conftest.py`, and any file below a
+  `test` or `tests` directory) carry `test` in their evidence (see [graph.md](graph.md))
 - calls to `import_module`, `__import__` and `spec_from_file_location` are recorded as dynamic imports,
   which no edge can follow
 - public top-level `def` / `class` / `CONSTANT` and public methods of public classes become symbols
@@ -178,9 +183,14 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   public methods as `Class.method`, interfaces, type aliases (with their right-hand side), enums, namespaces
   and constants, a named default by its declared name; test, story and mock files (`*.test.*`, `*.spec.*`,
   `*.stories.*`, `__mocks__/`) give imports only, while helpers in `tests/` keep their symbols
+- the imports of test code carry `test` in their evidence (see [graph.md](graph.md)): `*.test.*` and
+  `*.spec.*` files and any file below a `test`, `tests`, `__tests__` or `__mocks__` directory, helpers
+  included; stories are not test code
 
 ### TypeScript and JavaScript known gaps
 
+- A route directory named `test` or `tests` (`app/test/page.tsx` in frameworks whose directories
+  are URLs) is test code by the rule above, so its imports carry `test`.
 - Only `import` and `export ... from` statements are read so far: `require`, `import()` and test
   mocks come next, and until then a type-only import is an ordinary edge, so `cycles.forbid` also
   reports cycles that only types close.

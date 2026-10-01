@@ -16,6 +16,7 @@ mod ids;
 mod languages;
 pub mod python;
 pub mod rust;
+mod test_code;
 pub mod typescript;
 mod walk;
 
