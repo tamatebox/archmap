@@ -203,6 +203,11 @@ pub fn scan_source(text: &str) -> PyFile {
         let is_class = trimmed.starts_with("class ");
         if is_def || is_class {
             let (header, consumed) = collect_header(&lines, i - 1);
+            let header = if is_def {
+                without_defaults(&header)
+            } else {
+                header
+            };
             i = (i - 1) + consumed;
             if is_def {
                 functions.push(indent);
@@ -325,6 +330,62 @@ fn opens_multiline_string(trimmed: &str) -> Option<(&'static str, usize)> {
         }
     }
     None
+}
+
+/// `header`, a `def`, with each parameter's default value as `…`: a
+/// default can hold a secret (`url="postgres://user:pass@host"`), as a
+/// constant can. A default runs from an `=` in the parameter list to the
+/// next `,` or `)` there, past strings and brackets.
+fn without_defaults(header: &str) -> String {
+    let chars: Vec<char> = header.chars().collect();
+    let mut out = String::with_capacity(header.len());
+    let (mut depth, mut skipping, mut quote) = (0usize, false, None);
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        // what the text keeps: everything but a default
+        let mut kept = vec![c];
+        if let Some(q) = quote {
+            if c == '\\' {
+                kept.extend(chars.get(i + 1));
+                i += 1;
+            } else if c == q {
+                quote = None;
+            }
+        } else {
+            match c {
+                '\'' | '"' => quote = Some(c),
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => {
+                    if depth == 1 {
+                        skipping = false;
+                    }
+                    depth = depth.saturating_sub(1);
+                }
+                ',' if depth == 1 => skipping = false,
+                '=' if depth == 1
+                    && !skipping
+                    && chars.get(i + 1) != Some(&'=')
+                    && !matches!(out.chars().last(), Some('=' | '!' | '<' | '>')) =>
+                {
+                    if chars.get(i + 1) == Some(&' ') {
+                        kept.push(' ');
+                    }
+                    kept.push('…');
+                    out.extend(kept);
+                    skipping = true;
+                    i += 1;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        if !skipping {
+            out.extend(kept);
+        }
+        i += 1;
+    }
+    out
 }
 
 /// Join a `def` / `class` header that may span several lines. Returns the
@@ -561,6 +622,28 @@ CURRENCY = "JPY"
     }
 
     #[test]
+    fn headers_leave_out_default_values() {
+        // a default can hold a secret, as a constant can
+        let file = scan_source(
+            "def connect(url=\"postgres://u:p@h\", retries: int = 3, *,\n            \
+             key=os.environ.get('K', 'x'), mode='a,b', flag=(1 == 2)) -> Conn:\n    pass\n\
+             class Repo(Base, metaclass=Meta):\n    pass\n",
+        );
+        let signatures: Vec<&str> = file
+            .defs
+            .iter()
+            .filter_map(|d| d.signature.as_deref())
+            .collect();
+        assert_eq!(
+            signatures,
+            [
+                "def connect(url=…, retries: int = …, *, key=…, mode=…, flag=…) -> Conn",
+                "class Repo(Base, metaclass=Meta)",
+            ]
+        );
+    }
+
+    #[test]
     fn imports_inside_functions_are_local() {
         let text = "import a\nif flag:\n    import b\nclass C:\n    import c\n    def m(self):\n        import d\n    x = 1\ndef f():\n    import e\n    def g():\n        import f2\n    import h\nimport i\n";
         let file = scan_source(text);
@@ -688,7 +771,7 @@ import_module("inside the string")
             .collect();
         assert_eq!(
             defs,
-            vec![("f", Some("def f(x=\"\\\"#\")")), ("g", Some("def g()"))]
+            vec![("f", Some("def f(x=…)")), ("g", Some("def g()"))]
         );
     }
 

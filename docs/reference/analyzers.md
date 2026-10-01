@@ -124,7 +124,8 @@ into the model in [graph.md](graph.md); how the commands present it is in
   which no edge can follow
 - public top-level `def` / `class` / `CONSTANT` and public methods of public classes become symbols
   for files inside a regular package tree; test files (pytest conventions) and namespace trees outside
-  any regular package contribute imports only
+  any regular package contribute imports only; in a signature a parameter's default value reads `…`,
+  since a default can hold a secret
 - source files are scanned structurally line by line, not parsed; function bodies are read only for imports
 
 ### Python known gaps
@@ -198,7 +199,8 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   `~/x`) is `unresolved`, and so is a bare-looking name that a tsconfig or jsconfig declares as an alias
   (`@ui/card` for `@ui/*`; a catch-all `*` is not taken as one); the package's own name, when its entry (`dist/`) is not scanned, is
   `local_name`; Node built-ins (`node:fs`, `fs`, `crypto`) are left out
-- exported declarations become symbols with signatures: functions and arrow functions, classes and their
+- exported declarations become symbols with signatures, in which a parameter's default value reads `…`:
+  functions and arrow functions, classes and their
   public methods as `Class.method`, interfaces, type aliases (with their right-hand side), enums, namespaces
   and constants, a named default by its declared name; a constant without a declared type shows the
   shape of its value, never the value, which may be a secret (`: string` for a literal,

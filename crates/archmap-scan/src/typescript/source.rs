@@ -11,9 +11,9 @@ use std::path::Path;
 use archmap_core::{SymbolKind, WHOLE_MODULE};
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    AssignmentExpression, AssignmentTarget, CallExpression, Class, ClassElement, Declaration,
-    ExportDefaultDeclarationKind, Expression, FormalParameters, Function,
-    ImportDeclarationSpecifier, ImportExpression, MethodDefinitionKind, ObjectProperty,
+    AssignmentExpression, AssignmentPattern, AssignmentTarget, CallExpression, Class, ClassElement,
+    Declaration, ExportDefaultDeclarationKind, Expression, FormalParameter, FormalParameters,
+    Function, ImportDeclarationSpecifier, ImportExpression, MethodDefinitionKind, ObjectProperty,
     ObjectPropertyKind, Statement, TSAccessibility, TSImportEqualsDeclaration, TSImportType,
     TSImportTypeQualifier, TSModuleReference,
 };
@@ -125,10 +125,14 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
         .iter()
         .map(|c| (c.span.start, c.span.end))
         .collect();
+    let mut defaults = Defaults(Vec::new());
+    defaults.visit_program(&parsed.program);
+    defaults.0.sort_unstable();
     let source = Source {
         text,
         lines: &lines,
         comments: &comments,
+        defaults: &defaults.0,
     };
 
     // Top-level declarations by name, for `export { a }` and
@@ -667,6 +671,33 @@ fn takes_require(params: &FormalParameters) -> bool {
     })
 }
 
+/// The spans that lie between `start` and `end`, of spans in source order.
+fn within(spans: &[(u32, u32)], start: u32, end: u32) -> &[(u32, u32)] {
+    let first = spans.partition_point(|&(s, _)| s < start);
+    let inside = spans[first..]
+        .iter()
+        .take_while(|&&(s, e)| s < end && e <= end)
+        .count();
+    &spans[first..first + inside]
+}
+
+/// The default values of parameters, destructured ones included.
+struct Defaults(Vec<(u32, u32)>);
+
+impl<'a> Visit<'a> for Defaults {
+    fn visit_formal_parameter(&mut self, it: &FormalParameter<'a>) {
+        if let Some(value) = &it.initializer {
+            self.0.push((value.span().start, value.span().end));
+        }
+        walk::walk_formal_parameter(self, it);
+    }
+
+    fn visit_assignment_pattern(&mut self, it: &AssignmentPattern<'a>) {
+        self.0.push((it.right.span().start, it.right.span().end));
+        walk::walk_assignment_pattern(self, it);
+    }
+}
+
 /// A specifier written out: a string, or a template without substitutions.
 fn literal(expression: &Expression) -> Option<String> {
     match expression {
@@ -698,6 +729,8 @@ struct Source<'a> {
     lines: &'a LineIndex,
     /// Start and end offsets of every comment, in source order.
     comments: &'a [(u32, u32)],
+    /// Those of every parameter's default value, in source order.
+    defaults: &'a [(u32, u32)],
 }
 
 impl Source<'_> {
@@ -706,18 +739,29 @@ impl Source<'_> {
     }
 
     /// The text between two offsets with each comment in it replaced by a
-    /// space: once whitespace is collapsed, a `//` comment would read as
-    /// part of the code after it.
+    /// space, since once whitespace is collapsed a `//` comment would read as
+    /// part of the code after it, and each parameter's default value by `…`,
+    /// since a default can hold a secret, as a constant can.
     fn code(&self, start: u32, end: u32) -> String {
-        let first = self.comments.partition_point(|&(s, _)| s < start);
+        let mut holes: Vec<(u32, u32, &str)> = within(self.comments, start, end)
+            .iter()
+            .map(|&(s, e)| (s, e, " "))
+            .chain(
+                within(self.defaults, start, end)
+                    .iter()
+                    .map(|&(s, e)| (s, e, "…")),
+            )
+            .collect();
+        holes.sort_unstable();
         let mut out = String::new();
         let mut at = start;
-        for &(s, e) in &self.comments[first..] {
-            if s >= end || e > end {
-                break;
+        for (s, e, with) in holes {
+            // a comment inside a default goes with it
+            if s < at {
+                continue;
             }
             out.push_str(self.slice(at, s));
-            out.push(' ');
+            out.push_str(with);
             at = e;
         }
         out.push_str(self.slice(at, end));
@@ -1739,6 +1783,31 @@ export default local;
                 // arithmetic of numbers is a number too
                 "export const MAX_UPLOAD: number",
                 "export const EMPTY = []",
+            ]
+        );
+    }
+
+    #[test]
+    fn signatures_leave_out_default_values() {
+        let file = parse(
+            Path::new("x.ts"),
+            "export function connect(url = 'postgres://u:p@h', retries = 3 /* tries */) {}\n\
+             export const sign = (key: string = process.env.KEY ?? 'sk-1', { scope = 'all' } = {}) => key;\n\
+             export class Client {\n  open(token = 'abc') {}\n}\n",
+        )
+        .unwrap();
+        let signatures: Vec<&str> = file
+            .symbols
+            .iter()
+            .map(|s| s.signature.as_deref().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            signatures,
+            [
+                "export function connect(url = …, retries = …)",
+                "export const sign = (key: string = …, { scope = … } = …) =>",
+                "export class Client",
+                "open(token = …)",
             ]
         );
     }
