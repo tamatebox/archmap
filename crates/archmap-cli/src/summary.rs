@@ -758,7 +758,7 @@ fn external_dependencies(rolled: &ArchitectureGraph, ranked: &[External], cap: u
             );
         }
         if ext.tests > 0 {
-            let _ = write!(line, "  tests: {}", ext.tests);
+            let _ = write!(line, "  test importers: {}", ext.tests);
         }
         let _ = writeln!(text, "{line}");
     }
@@ -1256,7 +1256,7 @@ mod tests {
         let out = render_with(&graph, 1, limits(30, 30, 20));
         assert_eq!(
             section(&out, "External dependencies"),
-            "proptest  importers: 0  tests: 1\nserde  importers: 1  top: p::a 2  tests: 1\n"
+            "proptest  importers: 0  test importers: 1\nserde  importers: 1  top: p::a 2  test importers: 1\n"
         );
     }
 

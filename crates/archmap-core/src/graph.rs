@@ -267,21 +267,26 @@ impl ArchitectureGraph {
     /// Dependencies without that detail (manifests, external packages,
     /// languages that do not record target files) are followed component
     /// by component. `direct` and `transitive` follow production code;
-    /// `tests` holds what only test code reaches, the tests to run again.
+    /// `tests` holds the files only test code reaches, the tests to run
+    /// again.
     pub fn change_impact(&self, seed: ChangeSeed, depth: usize) -> Reach {
-        let mut reach = self.reach(seed, depth, false);
-        let with_tests = self.reach(seed, depth, true);
+        let (mut reach, production) = self.reach(seed, depth, false);
+        let (_, with_tests) = self.reach(seed, depth, true);
         reach.tests = with_tests
-            .transitive
-            .difference(&reach.transitive)
-            .cloned()
+            .difference(&production)
+            .map(|f| (*f).to_owned())
             .collect();
         reach
     }
 
     /// The reach of a change through production code, and through test
-    /// code too when `tests`.
-    fn reach(&self, seed: ChangeSeed, depth: usize, tests: bool) -> Reach {
+    /// code too when `tests`, with the files reached.
+    fn reach<'s>(
+        &'s self,
+        seed: ChangeSeed<'s>,
+        depth: usize,
+        tests: bool,
+    ) -> (Reach, BTreeSet<&'s str>) {
         let mut dependents: BTreeMap<Node, BTreeSet<Node>> = BTreeMap::new();
         let mut files: BTreeSet<&str> = BTreeSet::new();
         for edge in &self.edges {
@@ -397,6 +402,13 @@ impl ArchitectureGraph {
         }
 
         let mut reach = Reach::default();
+        let files = distance
+            .iter()
+            .filter_map(|(node, d)| match node {
+                Node::File(f) if *d > 0 => Some(*f),
+                _ => None,
+            })
+            .collect();
         for (node, d) in &distance {
             let component = match node {
                 Node::File(f) => owner_of(f),
@@ -414,7 +426,7 @@ impl ArchitectureGraph {
             }
             reach.transitive.insert(folded);
         }
-        reach
+        (reach, files)
     }
 
     /// Components from the containment root down to `id`, following
@@ -749,8 +761,9 @@ pub struct Reach {
     pub direct: BTreeSet<ComponentId>,
     /// Every component reached, `direct` included.
     pub transitive: BTreeSet<ComponentId>,
-    /// Components that only test code reaches, directly or not.
-    pub tests: BTreeSet<ComponentId>,
+    /// Files that reach the change only through test code, directly or
+    /// not: the tests to run again, those beside production code included.
+    pub tests: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1728,7 +1741,11 @@ mod tests {
             |set: &BTreeSet<ComponentId>| set.iter().map(|c| c.to_string()).collect::<Vec<_>>();
         assert_eq!(ids(&reach.direct), ["app", "both"]);
         assert_eq!(ids(&reach.transitive), ["app", "both"]);
-        assert_eq!(ids(&reach.tests), ["spec"]);
+        // the test files to run again, those beside production code included
+        assert_eq!(
+            reach.tests.iter().collect::<Vec<_>>(),
+            ["both/a.test.ts", "spec/money.test.ts", "spec/page.test.ts"]
+        );
     }
 
     #[test]

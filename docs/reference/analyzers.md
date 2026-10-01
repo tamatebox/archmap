@@ -202,7 +202,7 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   public methods as `Class.method`, interfaces, type aliases (with their right-hand side), enums, namespaces
   and constants, a named default by its declared name; a constant without a declared type shows the
   shape of its value, never the value, which may be a secret (`: string` for a literal,
-  `= z.object(…)` for a call, `= […] as const`, `= {…}`); test, story and mock files (`*.test.*`, `*.spec.*`,
+  `: number` for arithmetic of numbers, `= z.object(…)` for a call, `= [… 3 items] as const`, `= {…}`); test, story and mock files (`*.test.*`, `*.spec.*`,
   `*.stories.*`, `__mocks__/`) give imports only, while helpers in `tests/` keep their symbols
 - CommonJS exports at the top level of a JavaScript file become symbols too: `exports.pad = ..` and
   `module.exports.pad = ..` as `pad`, each property of `module.exports = { .. }`, and the function,

@@ -44,7 +44,8 @@ edge and dynamic imports. Rules (`deny`, `layers`, `allow`), cycles and
 signals are about production code and leave it out (an edge counts when
 some of its evidence is outside test code, or it has none, as a manifest
 dependency), `summary` counts test statements apart, `query` marks them
-`(test)`, and `impact` lists what only test code reaches under `tests`;
+`(test)`, and `impact` lists the test files that reach a change under
+`tests`;
 undeclared imports count in test code too.
 
 `type_only` marks a statement that takes types only, which the compiler

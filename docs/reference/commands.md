@@ -58,8 +58,8 @@ contains:
   rather than what it depends on: they are counted in a `not listed:` line
 - external dependencies with the manifests that declare them (`declared:`),
   the number of components whose production code imports them
-  (`importers:`), the top importers, and `tests: K` for components that
-  import them only in test code
+  (`importers:`), the top importers, and `test importers: K` for components
+  that import them only in test code
 - the components depended on by the most others in production code, with
   `dependents`, `dependencies` and `rank`
 
@@ -209,10 +209,10 @@ file. Dependencies without a target file
 result is still reported at the roll-up depth. It does not follow the parent
 `__init__.py` that Python runs before a submodule, nor Rust code inside macro
 calls, and a path that names no component or file is an error. `direct` and
-`transitive` follow production code; `tests` lists the components that only
-test code reaches, the tests to run again after the change (for Rust, the
-modules whose unit tests use the target; integration tests under `tests/`
-are not read). For a file target, `importers` lists the statements that
+`transitive` follow production code; `tests` lists the files that reach the
+target only through test code, the tests to run again after the change,
+those beside production code included (for Rust, the module files whose unit
+tests reach it; integration tests under `tests/` are not read). For a file target, `importers` lists the statements that
 import the file directly, up to 5 with the total, production code first and
 test code marked `"test": true`, so the next read can go straight to them;
 they include statements inside the target's own component, which `direct`

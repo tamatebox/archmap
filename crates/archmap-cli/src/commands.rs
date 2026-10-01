@@ -450,8 +450,9 @@ pub struct ImpactResult<'a> {
     pub direct: Vec<ComponentId>,
     /// Every component that transitively depends on the target.
     pub transitive: Vec<ComponentId>,
-    /// Components that only test code reaches: the tests to run again.
-    pub tests: Vec<ComponentId>,
+    /// Files that reach the target only through test code: the tests to
+    /// run again, those beside production code included.
+    pub tests: Vec<String>,
     /// For a file, or a component that is one file: the statements that
     /// import the file directly. For a symbol: those that take its name.
     #[serde(skip_serializing_if = "Option::is_none")]

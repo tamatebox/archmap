@@ -383,8 +383,11 @@ fn impact_of_a_file_uses_the_summary_depth() {
         result["transitive"],
         serde_json::json!(["shop::scripts", "shop::shop", "shop::shop.billing"])
     );
-    // only test code reaches tests
-    assert_eq!(result["tests"], serde_json::json!(["shop::tests"]));
+    // the tests to run again
+    assert_eq!(
+        result["tests"],
+        serde_json::json!(["tests/test_billing.py"])
+    );
 }
 
 #[test]
@@ -1626,11 +1629,14 @@ fn impact_of_a_symbol_starts_at_the_statements_that_take_it() {
     let file = ts_stdout(&["impact", "src/lib/money.ts"]);
     // tests/helpers.ts takes another name from money.ts: the file reaches
     // it, the symbol does not
-    assert!(file.contains("\"ts-shop::tests/helpers.ts\""), "{file}");
-    assert!(
-        !symbol.contains("\"ts-shop::tests/helpers.ts\""),
-        "{symbol}"
+    let tests = |json: &str| -> serde_json::Value {
+        serde_json::from_str::<serde_json::Value>(json).unwrap()["tests"].clone()
+    };
+    assert_eq!(
+        tests(&file),
+        serde_json::json!(["tests/helpers.ts", "tests/money.test.ts"])
     );
+    assert_eq!(tests(&symbol), serde_json::json!(["tests/money.test.ts"]));
     for expected in [
         "\"symbol\": \"ts-shop::src/lib/money.ts::formatPrice\"",
         "\"ts-shop::src/app/page.tsx\"",
@@ -1866,7 +1872,7 @@ fn test_code_is_marked_and_listed_apart() {
     // the tests to run again, apart from the code that depends on the file
     assert_eq!(
         impact["tests"],
-        serde_json::json!(["ts-shop::tests/helpers.ts", "ts-shop::tests/money.test.ts"])
+        serde_json::json!(["tests/helpers.ts", "tests/money.test.ts"])
     );
     // importers: production code first, test code marked
     let impact = fixture_json(&["impact", "src/shop/users.py"]);

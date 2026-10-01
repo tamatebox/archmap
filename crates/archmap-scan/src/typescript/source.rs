@@ -780,7 +780,7 @@ impl Source<'_> {
     fn shape(&self, value: &Expression) -> String {
         match value {
             Expression::StringLiteral(_) | Expression::TemplateLiteral(_) => ": string".into(),
-            Expression::NumericLiteral(_) => ": number".into(),
+            _ if numeric(value) => ": number".into(),
             Expression::BigIntLiteral(_) => ": bigint".into(),
             Expression::BooleanLiteral(_) => ": boolean".into(),
             Expression::NullLiteral(_) => ": null".into(),
@@ -803,7 +803,12 @@ impl Source<'_> {
             Expression::CallExpression(c) => format!("{}(…)", self.form(&c.callee)),
             Expression::NewExpression(n) => format!("new {}(…)", self.form(&n.callee)),
             Expression::ObjectExpression(_) => "{…}".into(),
-            Expression::ArrayExpression(_) => "[…]".into(),
+            // how many items, never which
+            Expression::ArrayExpression(a) => match a.elements.len() {
+                0 => "[]".into(),
+                1 => "[… 1 item]".into(),
+                n => format!("[… {n} items]"),
+            },
             Expression::ParenthesizedExpression(p) => self.form(&p.expression),
             Expression::AwaitExpression(a) => format!("await {}", self.form(&a.argument)),
             Expression::TSAsExpression(a) => format!(
@@ -944,6 +949,19 @@ impl Source<'_> {
             )]],
             _ => Vec::new(),
         }
+    }
+}
+
+/// A number, or arithmetic of numbers (`20 * 1024 * 1024`).
+fn numeric(value: &Expression) -> bool {
+    match value {
+        Expression::NumericLiteral(_) => true,
+        Expression::UnaryExpression(u) => u.operator.is_arithmetic() && numeric(&u.argument),
+        Expression::BinaryExpression(b) => {
+            b.operator.is_arithmetic() && numeric(&b.left) && numeric(&b.right)
+        }
+        Expression::ParenthesizedExpression(p) => numeric(&p.expression),
+        _ => false,
     }
 }
 
@@ -1695,7 +1713,7 @@ export default local;
              export const store = new Map<string, number>();\nexport const UNITS = ['g', 'kg'] as const;\n\
              export const config = { a: 1 } satisfies Config;\nexport const typed: Limits = { max: 1 };\n\
              export const alias = other;\nexport const sum = 1 + 2;\nexport const ref = process.env.KEY;\n\
-             export let count = 0;\n",
+             export let count = 0;\nexport const MAX_UPLOAD = 20 * 1024 * 1024;\nexport const EMPTY = [];\n",
         )
         .unwrap();
         let signatures: Vec<&str> = file
@@ -1711,13 +1729,16 @@ export default local;
                 "export const DEBUG: boolean",
                 "export const schema = z.object(…).strict(…)",
                 "export const store = new Map(…)",
-                "export const UNITS = […] as const",
+                "export const UNITS = [… 2 items] as const",
                 "export const config = {…} satisfies Config",
                 "export const typed: Limits",
                 "export const alias = other",
-                "export const sum = …",
+                "export const sum: number",
                 "export const ref = process.env.KEY",
                 "export let count: number",
+                // arithmetic of numbers is a number too
+                "export const MAX_UPLOAD: number",
+                "export const EMPTY = []",
             ]
         );
     }
