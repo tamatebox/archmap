@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use archmap_core::{
-    ArchitectureGraph, ComponentId, ComponentKind, EdgeKind, Evidence, LanguageCoverage,
+    ArchitectureGraph, ComponentId, ComponentKind, EdgeKind, Evidence, LanguageCoverage, Scope,
     SymbolKind, UnmappedReason,
 };
 use archmap_scan::{scan, ScanOptions};
@@ -109,6 +109,18 @@ fn packages_directories_and_files() {
         BTreeSet::from([
             ("ts-shop::scripts", "scripts", "ts-shop", "javascript"),
             (
+                "ts-shop::scripts/format.cjs",
+                "scripts/format.cjs",
+                "ts-shop::scripts",
+                "javascript"
+            ),
+            (
+                "ts-shop::scripts/report.cjs",
+                "scripts/report.cjs",
+                "ts-shop::scripts",
+                "javascript"
+            ),
+            (
                 "ts-shop::scripts/seed.mjs",
                 "scripts/seed.mjs",
                 "ts-shop::scripts",
@@ -118,6 +130,12 @@ fn packages_directories_and_files() {
             (
                 "ts-shop::src/app/checkout.ts",
                 "app/checkout.ts",
+                "ts-shop::src/app",
+                "typescript"
+            ),
+            (
+                "ts-shop::src/app/lazy.tsx",
+                "app/lazy.tsx",
                 "ts-shop::src/app",
                 "typescript"
             ),
@@ -189,15 +207,15 @@ fn packages_directories_and_files() {
     assert_eq!(
         graph.meta.coverage.get("typescript"),
         Some(&LanguageCoverage {
-            files: 12,
-            read: Some(12)
+            files: 13,
+            read: Some(13)
         })
     );
     assert_eq!(
         graph.meta.coverage.get("javascript"),
         Some(&LanguageCoverage {
-            files: 1,
-            read: Some(1)
+            files: 3,
+            read: Some(3)
         })
     );
 }
@@ -591,6 +609,30 @@ fn exported_declarations_of_files_that_are_not_tests_are_symbols() {
                 SymbolKind::Function,
                 "src/app/checkout.ts:5",
                 "export function total(n: number): string"
+            ),
+            row(
+                "ts-shop::src/app/lazy.tsx::Chart",
+                SymbolKind::Constant,
+                "src/app/lazy.tsx:3",
+                "export const Chart"
+            ),
+            row(
+                "ts-shop::src/app/lazy.tsx::Limits",
+                SymbolKind::TypeAlias,
+                "src/app/lazy.tsx:4",
+                "export type Limits = typeof import('../lib/limits')"
+            ),
+            row(
+                "ts-shop::src/app/lazy.tsx::Purse",
+                SymbolKind::TypeAlias,
+                "src/app/lazy.tsx:5",
+                "export type Purse = import('../lib/money').Wallet"
+            ),
+            row(
+                "ts-shop::src/app/lazy.tsx::load",
+                SymbolKind::Function,
+                "src/app/lazy.tsx:6",
+                "export function load(name: string)"
             ),
             row(
                 "ts-shop::src/app/page.tsx::Page",
@@ -1287,5 +1329,149 @@ fn imports_of_types_only_are_marked() {
             .any(|group| group.iter().any(|id| id.as_str().ends_with("types.ts"))),
         "{:?}",
         graph.cycles()
+    );
+}
+
+#[test]
+fn calls_that_load_modules_are_imports() {
+    let graph = scan_fixture();
+    type Row = (
+        String,
+        String,
+        String,
+        Option<Scope>,
+        Vec<String>,
+        bool,
+        bool,
+    );
+    let rows: BTreeSet<Row> = graph
+        .edges
+        .iter()
+        .flat_map(|e| &e.evidence)
+        .filter_map(|e| {
+            Some((
+                format!("{}:{}", e.file, e.line?),
+                e.target.clone()?,
+                e.note.clone()?,
+                e.scope,
+                e.names.iter().cloned().collect(),
+                e.type_only,
+                e.test,
+            ))
+        })
+        .collect();
+    let row = |at: &str,
+               target: &str,
+               note: &str,
+               scope: Scope,
+               names: &[&str],
+               types: bool,
+               test: bool|
+     -> Row {
+        (
+            at.to_owned(),
+            target.to_owned(),
+            note.to_owned(),
+            Some(scope),
+            names.iter().map(|n| (*n).to_owned()).collect(),
+            types,
+            test,
+        )
+    };
+    for expected in [
+        row(
+            "scripts/report.cjs:1",
+            "scripts/format.cjs",
+            "require",
+            Scope::Module,
+            &["*"],
+            false,
+            false,
+        ),
+        // `.js` written for `.ts`, inside a function
+        row(
+            "scripts/report.cjs:8",
+            "src/lib/money.ts",
+            "import()",
+            Scope::Local,
+            &["*"],
+            false,
+            false,
+        ),
+        row(
+            "src/app/lazy.tsx:3",
+            "src/components/button.tsx",
+            "import()",
+            Scope::Local,
+            &["*"],
+            false,
+            false,
+        ),
+        // `import()` types never run
+        row(
+            "src/app/lazy.tsx:4",
+            "src/lib/limits.ts",
+            "import",
+            Scope::Module,
+            &["*"],
+            true,
+            false,
+        ),
+        row(
+            "src/app/lazy.tsx:5",
+            "src/lib/money.ts",
+            "import",
+            Scope::Module,
+            &["Wallet"],
+            true,
+            false,
+        ),
+        row(
+            "tests/money.test.ts:11",
+            "src/lib/limits.ts",
+            "vi.importActual",
+            Scope::Local,
+            &["*"],
+            false,
+            true,
+        ),
+        row(
+            "tests/money.test.ts:15",
+            "src/lib/types.ts",
+            "vi.mock",
+            Scope::Module,
+            &["*"],
+            false,
+            true,
+        ),
+    ] {
+        assert!(rows.contains(&expected), "missing {expected:?}");
+    }
+    // a computed specifier loads what only the running program knows
+    let dynamic: BTreeSet<(String, String, Option<Scope>)> = graph
+        .dynamic_imports
+        .iter()
+        .map(|d| {
+            (
+                format!("{}:{}", d.evidence.file, d.evidence.line.unwrap_or(0)),
+                d.call.clone(),
+                d.evidence.scope,
+            )
+        })
+        .collect();
+    assert_eq!(
+        dynamic,
+        BTreeSet::from([
+            (
+                "scripts/report.cjs:4".to_owned(),
+                "require".to_owned(),
+                Some(Scope::Local)
+            ),
+            (
+                "src/app/lazy.tsx:7".to_owned(),
+                "import()".to_owned(),
+                Some(Scope::Local)
+            ),
+        ])
     );
 }

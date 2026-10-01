@@ -20,6 +20,11 @@
 //!   each file's tsconfig over the scanned files only (see [`fs`]); an
 //!   import of a stylesheet, image or JSON file is an edge of the importer
 //!   to itself whose evidence names the file
+//! - so do calls with a written-out specifier anywhere in a file
+//!   (`require`, `import()`, `vi.mock` and the other module calls of Vitest
+//!   and Jest; `local` inside a function body) and `import()` types (types
+//!   only); `require` and `import()` of a computed name become
+//!   [`DynamicImport`]s
 //! - a named or default import that reaches a name through re-exports gets
 //!   one more edge for each file that defines a name it takes, noted with
 //!   the first re-export on the way (`import via src/index.ts:2`; see
@@ -35,8 +40,7 @@
 //! - exported declarations become symbols (see [`source`]), except in test,
 //!   story and mock files
 //!
-//! Not read yet: `require`, `import()`, test mocks, type-only scope,
-//! CommonJS exports, scripts and workspaces.
+//! Not read yet: CommonJS exports, scripts and workspaces.
 
 mod exports;
 mod fs;
@@ -50,8 +54,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use archmap_core::{
-    Component, ComponentId, ComponentKind, Edge, EdgeKind, Evidence, Scope, Symbol, SymbolId,
-    UnmappedImport, UnmappedReason, WHOLE_MODULE,
+    Component, ComponentId, ComponentKind, DynamicImport, Edge, EdgeKind, Evidence, Scope, Symbol,
+    SymbolId, UnmappedImport, UnmappedReason, WHOLE_MODULE,
 };
 
 use crate::analyzer::AnalyzerOutput;
@@ -136,6 +140,16 @@ impl Analyzer for TypeScriptAnalyzer {
             if !layout::is_test_file(file) {
                 emit_symbols(owner, file, &parsed, &mut output);
             }
+            for call in &parsed.dynamic {
+                output.fragment.push_dynamic_import(DynamicImport {
+                    from: owner.component.clone(),
+                    call: call.call.to_owned(),
+                    evidence: Evidence::new(display_path(file))
+                        .at_line(call.line)
+                        .in_scope(scope(call.local))
+                        .in_test(is_test_code(file)),
+                });
+            }
             let resolved = parsed
                 .imports
                 .iter()
@@ -217,13 +231,23 @@ impl Analyzer for TypeScriptAnalyzer {
                     }
                 }
                 // a re-export passes names on without using them
-                if let (Resolved::File(loaded), "import") = (resolved, import.note) {
-                    imports.emit_definitions(import, loaded, &mut definitions, &mut output);
+                if let Resolved::File(loaded) = resolved {
+                    if import.note != "export" {
+                        imports.emit_definitions(import, loaded, &mut definitions, &mut output);
+                    }
                 }
             }
         }
         output.warnings.extend(problems);
         Ok(output)
+    }
+}
+
+/// Where a statement or call sits: inside a function body or not.
+fn scope(local: bool) -> Scope {
+    match local {
+        true => Scope::Local,
+        false => Scope::Module,
     }
 }
 
@@ -396,7 +420,7 @@ impl Imports<'_> {
     fn evidence(&self, import: &ImportStatement) -> Evidence {
         Evidence::new(display_path(self.file))
             .at_line(import.line)
-            .in_scope(Scope::Module)
+            .in_scope(scope(import.local))
             .in_test(self.test)
     }
 

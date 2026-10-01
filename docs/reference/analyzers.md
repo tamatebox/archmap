@@ -156,6 +156,14 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   `oxc_resolver` through each file's `tsconfig.json` (`paths`, `baseUrl`, `references`) and `.js` written for
   `.ts`; the resolver sees only the scanned files, so `node_modules` and build output never change the graph,
   and a tsconfig `extends` it cannot load is dropped with a warning while the file's own `paths` still apply
+- calls with a written-out specifier (a string, or a template without substitutions) anywhere in a file
+  become `import` edges too, noted with the call: `require`, `import()`, and the module calls of Vitest
+  and Jest (`vi.mock`, `vi.doMock`, `vi.unmock`, `vi.importActual`, `vi.importMock`, `jest.mock`,
+  `jest.doMock`, `jest.unmock`, `jest.requireActual`, `jest.requireMock`); inside a function body
+  (`lazy(() => import('./chart'))`) their evidence is `local`, and they take the whole module (`*`);
+  `require` and `import()` of a computed specifier are dynamic imports
+- an `import()` type (`typeof import('./m')`, `import('./m').Wallet`) is an `import` edge that takes types
+  only: `*`, or the first name after it
 - an import of a stylesheet, image or JSON file is an edge of the importer to itself whose evidence names the
   file, so `impact` on the file lists its importers
 - a named or default import that reaches a name through re-exports (`export { a } from`, `export *`,
@@ -171,7 +179,7 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   `export *`, none for a side-effect import; `via` evidence records the names as the defining file
   declares them, one evidence per defining file and re-export, and re-export statements are not walked
 - a statement that takes types only is `type_only` (see [graph.md](graph.md)): `import type`,
-  `export type ... from`, `export type *` and `import type x = require()`, and a statement whose names
+  `export type ... from`, `export type *`, `import type x = require()` and `import()` types, and a statement whose names
   all carry `type` (`import { type A }`); one that takes values and types from a file
   (`import { a, type B }`) gives one evidence for the values and one for the types, a name taken both
   ways (`import { A, type A as B }`) counting as a value, while an import of a package or one without
@@ -199,8 +207,11 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
 
 - A route directory named `test` or `tests` (`app/test/page.tsx` in frameworks whose directories
   are URLs) is test code by the rule above, so its imports carry `test`.
-- Only `import` and `export ... from` statements are read so far: `require`, `import()` and test
-  mocks come next.
+- `require`, `import()` and the mock calls take the whole module: destructured names
+  (`const { pad } = require('./format.cjs')`) are not read, so `query` on a symbol lists them under
+  `May use`. A `vi.mock` with a factory, which never loads the real module, is an edge all the same,
+  noted `vi.mock`.
+- Types in JSDoc comments (`@type {import('./m').Wallet}`) are not read.
 - Only `type` written in the statement marks types: the compiler also drops an import whose names
   are used only as types (`import { Money }` for an interface), which archmap counts as running.
   Under `verbatimModuleSyntax`, `import { type A } from 'm'` still loads `m`, which archmap counts

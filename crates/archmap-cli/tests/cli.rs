@@ -1381,8 +1381,10 @@ fn ts_summary_counts_both_languages_and_why_imports_have_no_edge() {
         .unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
     for expected in [
-        "typescript  files: 12  read: 12  imports without an edge: 7 (undeclared 1, extra or dev dependency 2, local name 1, unresolved 3)",
-        "javascript  files: 1  read: 1  imports without an edge: 0",
+        "typescript  files: 13  read: 13  imports without an edge: 7 (undeclared 1, extra or dev dependency 2, local name 1, unresolved 3)",
+        "javascript  files: 3  read: 3  imports without an edge: 0",
+        // `require` and `import()` of a computed name
+        "dynamic imports: 2  in: scripts/report.cjs 1, app/lazy.tsx 1",
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
     }
@@ -1480,9 +1482,10 @@ fn a_symbol_query_lists_the_statements_that_import_it() {
         "\n  src/index.ts:1 (export)\n",
         "\n  src/app/checkout.ts:1 (via src/index.ts:1)\n",
         "\n  tests/money.test.ts:2\n",
-        // a namespace re-export takes the file whole; checkout.ts:1, which
-        // also does through it, is listed by name already
-        "May use: 1 (imports the whole module; 1 re-export)\n  src/index.ts:4 (export)\n",
+        // a namespace re-export and an `import()` take the file whole;
+        // checkout.ts:1, which also does through the re-export, is listed by
+        // name already
+        "May use: 2 (imports the whole module; 1 re-export)\n  src/index.ts:4 (export)\n  scripts/report.cjs:8 (local)\n",
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
     }
@@ -1757,6 +1760,27 @@ to = "money"
         "forbidden by deny[0] types -> money: lib/types.ts -> lib/money.ts (import, types only)\n",
         // page.tsx:1 takes a value too
         "forbidden by deny[1] page -> money: app/page.tsx -> lib/money.ts (import)\n",
+    ] {
+        assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
+    }
+}
+
+#[test]
+fn imports_written_as_calls_show_where_they_run() {
+    let text = ts_stdout(&["query", "src/app/lazy.tsx"]);
+    for expected in [
+        // `lazy(() => import(..))` runs when the component first renders
+        "src/app/lazy.tsx:3 -> src/components/button.tsx (local)",
+        // `typeof import(..)` never runs
+        "src/app/lazy.tsx:4 -> src/lib/limits.ts (type)",
+        "import()  dynamic  1 call: src/app/lazy.tsx:7 (local)",
+    ] {
+        assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
+    }
+    let text = ts_stdout(&["query", "scripts/report.cjs"]);
+    for expected in [
+        "scripts/report.cjs:1 -> scripts/format.cjs\n",
+        "require  dynamic  1 call: scripts/report.cjs:4 (local)",
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
     }

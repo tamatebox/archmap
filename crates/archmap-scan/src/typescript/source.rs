@@ -1,7 +1,8 @@
 //! What one TS/JS file says, read from its `oxc` AST: the modules its
 //! `import` and `export ... from` statements load and the names they take,
-//! the declarations it exports, and its export table (see [`ExportTable`]).
-//! Only top-level statements are read; function bodies are not walked.
+//! the calls that load modules anywhere in the file (`require`, `import()`,
+//! test mocks, `import()` types), the declarations it exports, and its export
+//! table (see [`ExportTable`]). Declarations are read at the top level only.
 
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
@@ -10,10 +11,13 @@ use std::path::Path;
 use archmap_core::{SymbolKind, WHOLE_MODULE};
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    Class, ClassElement, Declaration, ExportDefaultDeclarationKind, Expression, Function,
-    ImportDeclarationSpecifier, MethodDefinitionKind, Statement, TSAccessibility,
-    TSImportEqualsDeclaration, TSModuleReference,
+    CallExpression, Class, ClassElement, Declaration, ExportDefaultDeclarationKind, Expression,
+    Function, ImportDeclarationSpecifier, ImportExpression, MethodDefinitionKind, Statement,
+    TSAccessibility, TSImportEqualsDeclaration, TSImportType, TSImportTypeQualifier,
+    TSModuleReference,
 };
+use oxc_ast::AstKind;
+use oxc_ast_visit::{walk, Visit};
 use oxc_parser::Parser;
 use oxc_span::{GetSpan, SourceType};
 
@@ -43,11 +47,40 @@ pub(crate) struct ImportStatement {
     /// The names among `names` taken as types only (`import type`,
     /// `{ type A }`, `export type ... from`), which the compiler erases.
     pub types: BTreeSet<String>,
+    /// Inside a function body, so it runs only when the function is called.
+    pub local: bool,
 }
+
+/// A call that loads a module by a name computed at runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DynamicCall {
+    /// `require` or `import()`.
+    pub call: &'static str,
+    pub line: u32,
+    pub local: bool,
+}
+
+/// Calls that load a module named by their first argument; `vi.mock` and
+/// `jest.mock` with a factory never load the real one, which their note
+/// keeps apart.
+const MODULE_CALLS: [&str; 10] = [
+    "vi.mock",
+    "vi.doMock",
+    "vi.unmock",
+    "vi.importActual",
+    "vi.importMock",
+    "jest.mock",
+    "jest.doMock",
+    "jest.unmock",
+    "jest.requireActual",
+    "jest.requireMock",
+];
 
 #[derive(Debug, Default)]
 pub(crate) struct ParsedFile {
+    /// Statements first, then calls, each in file order.
     pub imports: Vec<ImportStatement>,
+    pub dynamic: Vec<DynamicCall>,
     pub symbols: Vec<ExportedSymbol>,
     /// What the file exports, with indices into `imports`.
     pub exports: ExportTable,
@@ -119,6 +152,7 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
             note,
             names,
             types,
+            local: false,
         };
         let whole = || vec![WHOLE_MODULE.to_owned()];
         let whole_if = |types: bool| match types {
@@ -334,7 +368,155 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
     }
     let mut seen = BTreeSet::new();
     file.symbols.retain(|s| seen.insert(s.name.clone()));
+    // after the statements, so the indices in the export table stay valid
+    let mut calls = Calls {
+        lines: &lines,
+        functions: 0,
+        imports: Vec::new(),
+        dynamic: Vec::new(),
+    };
+    calls.visit_program(&parsed.program);
+    file.imports.extend(calls.imports);
+    file.dynamic = calls.dynamic;
     Ok(file)
+}
+
+/// The calls of a file that load modules, wherever they sit, and the
+/// `import()` types (`typeof import('m')`, `import('m').A`).
+struct Calls<'s> {
+    lines: &'s LineIndex,
+    /// Function bodies the walk is in.
+    functions: usize,
+    imports: Vec<ImportStatement>,
+    dynamic: Vec<DynamicCall>,
+}
+
+impl Calls<'_> {
+    /// A statement that takes `name`, as a type only when `type_only`.
+    fn import(
+        &mut self,
+        specifier: String,
+        start: u32,
+        note: &'static str,
+        name: String,
+        type_only: bool,
+    ) {
+        let types = match type_only {
+            true => BTreeSet::from([name.clone()]),
+            false => BTreeSet::new(),
+        };
+        self.imports.push(ImportStatement {
+            specifier,
+            line: self.lines.line(start),
+            note,
+            names: vec![name],
+            types,
+            local: self.functions > 0,
+        });
+    }
+
+    fn dynamic(&mut self, call: &'static str, start: u32) {
+        self.dynamic.push(DynamicCall {
+            call,
+            line: self.lines.line(start),
+            local: self.functions > 0,
+        });
+    }
+}
+
+impl<'a> Visit<'a> for Calls<'_> {
+    fn enter_node(&mut self, kind: AstKind<'a>) {
+        if matches!(
+            kind,
+            AstKind::Function(_) | AstKind::ArrowFunctionExpression(_)
+        ) {
+            self.functions += 1;
+        }
+    }
+
+    fn leave_node(&mut self, kind: AstKind<'a>) {
+        if matches!(
+            kind,
+            AstKind::Function(_) | AstKind::ArrowFunctionExpression(_)
+        ) {
+            self.functions -= 1;
+        }
+    }
+
+    fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
+        let note = match &it.callee {
+            Expression::Identifier(callee) if callee.name == "require" => Some("require"),
+            Expression::StaticMemberExpression(member) => match &member.object {
+                Expression::Identifier(object) => MODULE_CALLS.into_iter().find(|call| {
+                    call.split_once('.')
+                        == Some((object.name.as_str(), member.property.name.as_str()))
+                }),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let (Some(note), Some(first)) = (note, it.arguments.first()) {
+            match first.as_expression().and_then(literal) {
+                Some(specifier) => self.import(
+                    specifier,
+                    it.span.start,
+                    note,
+                    WHOLE_MODULE.to_owned(),
+                    false,
+                ),
+                // a mock of a computed name loads nothing to point at
+                None if note == "require" => self.dynamic(note, it.span.start),
+                None => {}
+            }
+        }
+        walk::walk_call_expression(self, it);
+    }
+
+    fn visit_import_expression(&mut self, it: &ImportExpression<'a>) {
+        match literal(&it.source) {
+            Some(specifier) => self.import(
+                specifier,
+                it.span.start,
+                "import()",
+                WHOLE_MODULE.to_owned(),
+                false,
+            ),
+            None => self.dynamic("import()", it.span.start),
+        }
+        walk::walk_import_expression(self, it);
+    }
+
+    fn visit_ts_import_type(&mut self, it: &TSImportType<'a>) {
+        // `import('m').A.B` takes `A`; `typeof import('m')` the whole module
+        let name = it
+            .qualifier
+            .as_ref()
+            .map_or_else(|| WHOLE_MODULE.to_owned(), |q| first_segment(q).to_owned());
+        self.import(
+            it.source.value.to_string(),
+            it.span.start,
+            "import",
+            name,
+            true,
+        );
+        walk::walk_ts_import_type(self, it);
+    }
+}
+
+/// A specifier written out: a string, or a template without substitutions.
+fn literal(expression: &Expression) -> Option<String> {
+    match expression {
+        Expression::StringLiteral(s) => Some(s.value.to_string()),
+        Expression::TemplateLiteral(t) => t.single_quasi().map(|q| q.to_string()),
+        _ => None,
+    }
+}
+
+fn first_segment<'a>(qualifier: &'a TSImportTypeQualifier<'a>) -> &'a str {
+    match qualifier {
+        TSImportTypeQualifier::Identifier(name) => name.name.as_str(),
+        TSImportTypeQualifier::QualifiedName(name) => first_segment(&name.left),
+    }
 }
 
 /// The module that `import x = require('m')` loads; `None` for an alias of
@@ -1006,6 +1188,63 @@ export default local;
         for import in &file.imports {
             assert!(import.types.is_empty(), "{import:?}");
         }
+    }
+
+    #[test]
+    fn calls_that_load_modules_are_imports() {
+        let file = parse(
+            Path::new("x.ts"),
+            "const a = require('a');\n\
+             function f(name: string) {\n\
+             \x20 require(`./plugins/${name}`);\n\
+             \x20 return import('b');\n\
+             }\n\
+             const g = () => import(`c`);\n\
+             vi.mock('d', () => ({}));\n\
+             jest.requireActual('e');\n\
+             type T = typeof import('t');\n\
+             let w: import('u').Wallet.Inner;\n\
+             import(a);\n\
+             require.resolve('r');\n\
+             vi.mock(a);\n",
+        )
+        .unwrap();
+        // specifier, line, note, local, names, types
+        type Row<'a> = (&'a str, u32, &'a str, bool, Vec<&'a str>, Vec<&'a str>);
+        let imports: Vec<Row> = file
+            .imports
+            .iter()
+            .map(|i| {
+                (
+                    i.specifier.as_str(),
+                    i.line,
+                    i.note,
+                    i.local,
+                    i.names.iter().map(String::as_str).collect(),
+                    i.types.iter().map(String::as_str).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            imports,
+            [
+                ("a", 1, "require", false, vec!["*"], vec![]),
+                ("b", 4, "import()", true, vec!["*"], vec![]),
+                ("c", 6, "import()", true, vec!["*"], vec![]),
+                ("d", 7, "vi.mock", false, vec!["*"], vec![]),
+                ("e", 8, "jest.requireActual", false, vec!["*"], vec![]),
+                // in a type position: erased
+                ("t", 9, "import", false, vec!["*"], vec!["*"]),
+                ("u", 10, "import", false, vec!["Wallet"], vec!["Wallet"]),
+            ]
+        );
+        // computed specifiers; `require.resolve` and a computed mock load nothing
+        let dynamic: Vec<(&str, u32, bool)> = file
+            .dynamic
+            .iter()
+            .map(|d| (d.call, d.line, d.local))
+            .collect();
+        assert_eq!(dynamic, [("require", 3, true), ("import()", 11, false)]);
     }
 
     #[test]
