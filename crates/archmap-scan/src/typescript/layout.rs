@@ -109,6 +109,15 @@ pub(crate) fn discover(
         };
         ids.insert(dir, id);
     }
+    // the code no package owns is named after the root directory, unless a
+    // package already is (a monorepo named after its main package)
+    let root_id = match named.get(root_name) {
+        Some(kept) if owned.contains_key(&None) => {
+            renamed.push((root_name.to_owned(), (*kept).clone(), PathBuf::new()));
+            ComponentId::new(format!("{root_name}+."))
+        }
+        _ => ComponentId::new(root_name),
+    };
     renamed.sort();
     let mut packages = Vec::new();
     let mut index: BTreeMap<Option<&PathBuf>, usize> = BTreeMap::new();
@@ -125,7 +134,7 @@ pub(crate) fn discover(
     if let Some(own) = owned.get(&None) {
         index.insert(None, packages.len());
         packages.push(package(
-            ComponentId::new(root_name),
+            root_id,
             Path::new(""),
             manifests.contains_key(Path::new("")).then(PathBuf::new),
             own,
@@ -451,6 +460,38 @@ mod tests {
                 "dup".to_owned(),
                 PathBuf::from("examples/dup"),
                 PathBuf::from("packages/dup")
+            )]
+        );
+    }
+
+    #[test]
+    fn code_no_package_owns_stays_apart_from_a_package_of_the_root_name() {
+        // a monorepo named after its main package: `lay_out` names the
+        // root `repo`
+        let layout = lay_out(
+            &[
+                "package.json",
+                "build.ts",
+                "packages/repo/package.json",
+                "packages/repo/src/index.ts",
+            ],
+            &[
+                ("", manifest(None, false)),
+                ("packages/repo", manifest(Some("repo"), false)),
+            ],
+        );
+        let ids: Vec<&str> = layout.packages.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["repo", "repo+."]);
+        assert_eq!(
+            layout.owners[Path::new("build.ts")].component.as_str(),
+            "repo+.::build.ts"
+        );
+        assert_eq!(
+            layout.renamed,
+            [(
+                "repo".to_owned(),
+                PathBuf::from("packages/repo"),
+                PathBuf::new()
             )]
         );
     }

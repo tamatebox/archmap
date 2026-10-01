@@ -145,7 +145,7 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
 - a `package.json` with a `name` whose directory holds TS/JS files of its own, that declares `workspaces`,
   or that is a workspace member or a path dependency (a package of JSON or configuration included),
   becomes a `package` component; TS/JS files that no package owns go to one root component named after the
-  directory; a `package.json` without a name is no package, but it declares dependencies all the same;
+  directory (`<name>+.` with a warning when a package has that name); a `package.json` without a name is no package, but it declares dependencies all the same;
   of packages that share a name, a workspace member (or path dependency) keeps it as its id, else the first by
   path, and the others become `<name>+<directory>` (`dup+examples/dup`), with a warning
 - every directory between a package and its code files becomes a `module` component, except the source root

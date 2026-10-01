@@ -115,12 +115,19 @@ impl Analyzer for TypeScriptAnalyzer {
             &root_name(ctx.root()),
         );
         for (name, kept, renamed) in &layout.renamed {
-            output.warnings.push(format!(
-                "two packages are named {name}: {} keeps the id, {} is {name}+{}",
-                display_path(&kept.join("package.json")),
-                display_path(&renamed.join("package.json")),
-                display_path(renamed)
-            ));
+            let kept = display_path(&kept.join("package.json"));
+            output.warnings.push(if renamed.as_os_str().is_empty() {
+                format!(
+                    "the TS/JS files no package owns take the root's name {name}, which {kept} \
+                     keeps: they are {name}+."
+                )
+            } else {
+                format!(
+                    "two packages are named {name}: {kept} keeps the id, {} is {name}+{}",
+                    display_path(&renamed.join("package.json")),
+                    display_path(renamed)
+                )
+            });
         }
         let linked: BTreeMap<String, ComponentId> = links
             .iter()
