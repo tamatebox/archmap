@@ -540,6 +540,21 @@ struct Imports<'a> {
 }
 
 impl Imports<'_> {
+    /// Where `declaration` sits, in the `package.json` of `dir`: `the
+    /// enclosing package.json:6` for one above the package's own, which
+    /// declares it for every package below.
+    fn place(&self, dir: &Path, declaration: &Declaration) -> String {
+        let at = place(dir, declaration);
+        let enclosing = self.package.manifest.as_deref() != Some(dir)
+            && self.package.dir.starts_with(dir)
+            && self.package.dir != dir;
+        if enclosing {
+            format!("the enclosing {at}")
+        } else {
+            at
+        }
+    }
+
     fn evidence(&self, import: &ImportStatement) -> Evidence {
         Evidence::new(display_path(self.file))
             .at_line(import.line)
@@ -569,7 +584,7 @@ impl Imports<'_> {
     /// aliases write it), else undeclared.
     fn undeclared(&self, import: &ImportStatement, package: &str) -> (UnmappedReason, String) {
         let spec = &import.specifier;
-        if let Some((pattern, file)) = self.aliases.matching(spec) {
+        if let Some((pattern, file)) = self.aliases.matching(spec, self.file) {
             let note = format!(
                 "{} {spec}: no file matches; {file} declares the alias `{pattern}`",
                 import.note
@@ -695,11 +710,13 @@ impl Imports<'_> {
                                 "{} {spec}, declared as {} in {}",
                                 import.note,
                                 d.name,
-                                place(dir, d)
+                                self.place(dir, d)
                             ),
-                            (false, false) => {
-                                format!("{} {spec}, declared in {}", import.note, place(dir, d))
-                            }
+                            (false, false) => format!(
+                                "{} {spec}, declared in {}",
+                                import.note,
+                                self.place(dir, d)
+                            ),
                             (false, true) if spec != package => format!("{} {spec}", import.note),
                             (false, true) => import.note.to_owned(),
                         };
@@ -724,7 +741,7 @@ impl Imports<'_> {
                             "{} {spec}, declared as {} in {} ({})",
                             import.note,
                             d.name,
-                            place(dir, d),
+                            self.place(dir, d),
                             d.section.key()
                         );
                         output.fragment.push_unmapped_import(self.unmapped(

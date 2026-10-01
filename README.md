@@ -106,7 +106,7 @@ What works today, by the [roadmap](#roadmap) phase it belongs to:
 
 | Capability | Phase | Rust | Python | TS / JS |
 |---|:-:|:-:|:-:|:-:|
-| Packages and declared dependencies | 0 | ✅ | ✅ | ◐ |
+| Packages and declared dependencies | 0 | ✅ | ✅ | ✅ |
 | Module and file components | 1 | ◐ | ✅ | ✅ |
 | Public symbols with signatures | 1 | ✅ | ✅ | ◐ |
 | Imports resolved to the file they load | 1 | ◐ | ✅ | ◐ |
@@ -137,6 +137,8 @@ The gaps behind the marks:
   at the file that defines `name`.
 - Python `impact`: the parent `__init__.py` that Python loads before a
   submodule is not followed.
+- TS/JS imports: aliases defined only in a bundler configuration or a
+  `jsconfig.json` are not followed.
 - TS/JS symbols: declarations inside `declare global { .. }` give none.
 - TS/JS `check`: only `type` written in an import marks it as types only,
   so a type imported without it (`import { Money }` for an interface) can

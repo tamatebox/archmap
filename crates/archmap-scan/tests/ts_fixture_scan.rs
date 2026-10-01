@@ -907,7 +907,7 @@ fn a_nested_package_sees_the_declarations_above_it() {
             "@acme/ui::src/button.ts",
             "ext:npm:react",
             "packages/ui/src/button.ts:1",
-            "import react, declared in package.json:4",
+            "import react, declared in the enclosing package.json:4",
         ),
         (
             "@acme/ui::src/button.ts",
@@ -1638,5 +1638,48 @@ fn packages_that_share_a_name_stay_apart_with_a_warning() {
             "two packages are named dup: examples/dup/package.json keeps the id, \
           packages/dup/package.json is dup+packages/dup"
         ]
+    );
+}
+
+#[test]
+fn an_alias_counts_only_where_its_tsconfig_does() {
+    // a's tsconfig declares `@ui/*`; b has none, so `@ui/card` there is an
+    // undeclared package, not an alias that leads nowhere
+    let root = temp_repo(
+        "alias-scope",
+        &[
+            (
+                "package.json",
+                "{ \"name\": \"mono\", \"workspaces\": [\"a\", \"b\"] }\n",
+            ),
+            ("a/package.json", "{ \"name\": \"a\" }\n"),
+            (
+                "a/tsconfig.json",
+                "{ \"compilerOptions\": { \"paths\": { \"@ui/*\": [\"./src/ui/*\"] } } }\n",
+            ),
+            (
+                "a/src/x.ts",
+                "import y from '@ui/missing';\nexport const x = y;\n",
+            ),
+            ("b/package.json", "{ \"name\": \"b\" }\n"),
+            (
+                "b/src/z.ts",
+                "import w from '@ui/card';\nexport const z = w;\n",
+            ),
+        ],
+    );
+    let graph = scan(&root, &ScanOptions::default()).unwrap().graph;
+    std::fs::remove_dir_all(&root).unwrap();
+    let reasons: BTreeSet<(String, UnmappedReason)> = graph
+        .unmapped_imports
+        .iter()
+        .map(|u| (u.evidence.file.clone(), u.reason))
+        .collect();
+    assert_eq!(
+        reasons,
+        BTreeSet::from([
+            ("a/src/x.ts".to_owned(), UnmappedReason::Unresolved),
+            ("b/src/z.ts".to_owned(), UnmappedReason::Undeclared),
+        ])
     );
 }

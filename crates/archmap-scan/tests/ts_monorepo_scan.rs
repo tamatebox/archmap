@@ -73,3 +73,20 @@ fn members_and_path_dependencies_are_linked_by_name() {
         && e.to.as_str() == "ext:npm:react"
         && e.kind == EdgeKind::Dependency));
 }
+
+#[test]
+fn a_declaration_of_an_enclosing_package_says_so() {
+    let (graph, _) = scan_fixture();
+    let note = graph
+        .unmapped_imports
+        .iter()
+        .find(|u| u.module == "typescript")
+        .and_then(|u| u.evidence.note.as_deref());
+    assert_eq!(
+        note,
+        Some(
+            "import typescript, declared as typescript in the enclosing package.json:6 \
+             (devDependencies)"
+        )
+    );
+}

@@ -194,7 +194,7 @@ fn is_tsconfig_problem(err: &ResolveError) -> bool {
 /// does not read, or a file outside the tsconfig), never an undeclared
 /// package.
 #[derive(Debug, Default)]
-pub(crate) struct Aliases(Vec<(String, String)>);
+pub(crate) struct Aliases(Vec<(String, String, PathBuf)>);
 
 impl Aliases {
     pub(crate) fn collect(ctx: &RepoContext) -> Self {
@@ -218,21 +218,26 @@ impl Aliases {
             };
             // `*` alone matches every bare name and would hide every
             // undeclared package.
+            let dir = rel.parent().unwrap_or(Path::new("")).to_path_buf();
             for pattern in paths
                 .keys()
                 .filter(|p| !p.is_empty() && !p.starts_with('*'))
             {
-                found.push((pattern.clone(), display_path(rel)));
+                found.push((pattern.clone(), display_path(rel), dir.clone()));
             }
         }
         Aliases(found)
     }
 
-    /// The alias pattern `specifier` matches and the file that declares it.
-    pub(crate) fn matching(&self, specifier: &str) -> Option<(&str, &str)> {
+    /// The alias pattern `specifier` matches, written in `file`, and the
+    /// config that declares it: one whose directory holds `file`, as a
+    /// config covers the files below it, so another package's alias never
+    /// hides an undeclared import.
+    pub(crate) fn matching(&self, specifier: &str, file: &Path) -> Option<(&str, &str)> {
         self.0
             .iter()
-            .find(|(pattern, _)| match pattern.split_once('*') {
+            .filter(|(.., dir)| file.starts_with(dir))
+            .find(|(pattern, ..)| match pattern.split_once('*') {
                 Some((prefix, suffix)) => {
                     specifier.len() >= prefix.len() + suffix.len()
                         && specifier.starts_with(prefix)
@@ -240,7 +245,7 @@ impl Aliases {
                 }
                 None => specifier == pattern,
             })
-            .map(|(pattern, file)| (pattern.as_str(), file.as_str()))
+            .map(|(pattern, config, _)| (pattern.as_str(), config.as_str()))
     }
 }
 
