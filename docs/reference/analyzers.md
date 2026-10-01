@@ -152,7 +152,9 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   `src/`, and every code file is a `module` component of its own, named by its path from the source root with
   its extension (`lib/money.ts`, `app/(public)/[slug]/page.tsx`); an `index.*` is its directory's own
   file, and the source root's `index.*` and the files directly in a package directory that has `src/`
-  (`next.config.ts`) belong to the package
+  (`next.config.ts`) belong to the package; of several `index.*` files, the one an import of the directory
+  loads (`index.ts` before `index.tsx` and `index.js`, code before `index.d.ts`) is the evidence and gives
+  the language
 - `dependencies` and `peerDependencies` become `dependency` edges to `ext:npm:*` components;
   `devDependencies` and `optionalDependencies` give no edge
 - `import` (`import x = require('m')` included) and `export ... from` become `import` edges (noted

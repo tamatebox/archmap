@@ -157,15 +157,18 @@ impl ImportResolver {
     }
 }
 
+/// The extensions an import without one is tried with, in order. Code
+/// before declarations: `foo.js` beside `foo.d.ts` is what runs, so it is
+/// what an import of `./foo` depends on.
+pub(crate) const EXTENSIONS: [&str; 10] = [
+    ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".d.ts", ".json",
+];
+
 fn options(tsconfig: Option<TsconfigDiscovery>, types: bool, custom: &[String]) -> ResolveOptions {
     let strings = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
     ResolveOptions {
         tsconfig,
-        // Code before declarations: `foo.js` beside `foo.d.ts` is what runs,
-        // so it is what an import of `./foo` depends on.
-        extensions: strings(&[
-            ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".d.ts", ".json",
-        ]),
+        extensions: strings(&EXTENSIONS),
         // ES module TypeScript writes `./foo.js` for `foo.ts`.
         extension_alias: vec![
             (".js".to_owned(), strings(&[".ts", ".tsx", ".js"])),

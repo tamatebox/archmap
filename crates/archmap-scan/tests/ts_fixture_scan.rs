@@ -1756,3 +1756,45 @@ fn a_package_is_found_before_its_types_package() {
         ]
     );
 }
+
+#[test]
+fn an_index_is_the_file_an_import_of_its_directory_loads() {
+    // code before declarations, `.ts` before `.tsx` and `.js`, as the
+    // resolver tries them
+    let root = temp_repo(
+        "index-order",
+        &[
+            ("package.json", "{ \"name\": \"dts\" }"),
+            ("src/index.d.ts", "export declare const a: number;\n"),
+            ("src/index.ts", "export const a = 1;\n"),
+            ("src/index.tsx", "export const b = 1;\n"),
+            ("src/lib/index.d.ts", "export declare const l: number;\n"),
+            ("src/lib/index.js", "export const l = 1;\n"),
+        ],
+    );
+    let report = scan(&root, &ScanOptions::default()).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    let index = |id: &str| {
+        let c = report.graph.component(&ComponentId::new(id)).unwrap();
+        let file = c
+            .evidence
+            .iter()
+            .find(|e| e.note.as_deref() == Some("index"))
+            .map(|e| e.file.clone());
+        (file, c.language.clone())
+    };
+    assert_eq!(
+        index("dts"),
+        (
+            Some("src/index.ts".to_owned()),
+            Some("typescript".to_owned())
+        )
+    );
+    assert_eq!(
+        index("dts::src/lib"),
+        (
+            Some("src/lib/index.js".to_owned()),
+            Some("javascript".to_owned())
+        )
+    );
+}

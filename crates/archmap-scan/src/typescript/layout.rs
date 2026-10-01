@@ -9,6 +9,7 @@ use archmap_core::{Component, ComponentId, ComponentKind, Evidence};
 
 use super::language::{is_code, language_of, JAVASCRIPT, LANGUAGE};
 use super::package::PackageJson;
+use super::resolve::EXTENSIONS;
 use crate::context::display_path;
 
 /// A package, or the root component of code that no package owns.
@@ -168,9 +169,12 @@ pub(crate) fn discover(
                     symbol_scope: None,
                 }
             } else if is_index(file) {
-                indexes
+                let kept = indexes
                     .entry(dir.to_path_buf())
                     .or_insert_with(|| file.to_path_buf());
+                if index_rank(file) < index_rank(kept) {
+                    *kept = file.to_path_buf();
+                }
                 add_dirs(dir, package, p, &mut dirs);
                 Owner {
                     component: module_id(package, dir),
@@ -375,6 +379,16 @@ fn file_name(file: &Path) -> String {
 
 /// `index.ts`, `index.tsx`, `index.d.ts`, `index.js` ...: the file a
 /// directory import loads, its directory's own file.
+/// Of a directory's `index.*` files, the lower the one an import of the
+/// directory loads: in the order the resolver tries extensions.
+pub(crate) fn index_rank(file: &Path) -> usize {
+    let name = file_name(file);
+    EXTENSIONS
+        .iter()
+        .position(|extension| name.strip_prefix("index") == Some(*extension))
+        .unwrap_or(EXTENSIONS.len())
+}
+
 fn is_index(file: &Path) -> bool {
     let name = file_name(file);
     let stem = name

@@ -430,14 +430,17 @@ fn emit_components(
     output: &mut AnalyzerOutput,
 ) {
     // The source root's `index.*` of each package: the package's own file,
-    // as a directory's `index.*` is the directory's.
-    let indexes: BTreeMap<&ComponentId, &Path> = layout
-        .owners
-        .iter()
-        .filter(|(_, owner)| owner.symbol_scope.is_none())
-        .filter(|(_, owner)| layout.packages[owner.package].id == owner.component)
-        .map(|(file, owner)| (&owner.component, file.as_path()))
-        .collect();
+    // as a directory's `index.*` is the directory's; of several, the one an
+    // import of the directory loads.
+    let mut indexes: BTreeMap<&ComponentId, &Path> = BTreeMap::new();
+    for (file, owner) in layout.owners.iter().filter(|(_, owner)| {
+        owner.symbol_scope.is_none() && layout.packages[owner.package].id == owner.component
+    }) {
+        let kept = indexes.entry(&owner.component).or_insert(file.as_path());
+        if layout::index_rank(file) < layout::index_rank(kept) {
+            *kept = file.as_path();
+        }
+    }
     for package in &layout.packages {
         let mut component = Component::new(
             package.id.clone(),
