@@ -128,7 +128,7 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
         match statement {
             Statement::ImportDeclaration(d) => {
                 let mut names = Vec::new();
-                let mut types = BTreeSet::new();
+                let (mut types, mut values) = (BTreeSet::new(), BTreeSet::new());
                 for specifier in d.specifiers.iter().flatten() {
                     let (local, taken, inline_type) = match specifier {
                         ImportDeclarationSpecifier::ImportSpecifier(s) => (
@@ -147,16 +147,20 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
                     let name = taken.clone().unwrap_or_else(|| WHOLE_MODULE.to_owned());
                     if type_only {
                         types.insert(name.clone());
+                    } else {
+                        values.insert(name.clone());
                     }
                     names.push(name);
                     bindings.insert(local, (index, taken, type_only));
                 }
+                // a name taken as a value and as a type is loaded
+                types.retain(|name| !values.contains(name));
                 file.imports
                     .push(load(d.source.value.to_string(), "import", names, types));
             }
             Statement::ExportFromDeclaration(d) => {
                 let mut names = Vec::new();
-                let mut types = BTreeSet::new();
+                let (mut types, mut values) = (BTreeSet::new(), BTreeSet::new());
                 for s in &d.specifiers {
                     let local = s.local.name().to_string();
                     let type_only = d.export_kind.is_type() || s.export_kind.is_type();
@@ -172,9 +176,12 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
                         .or_insert(export);
                     if type_only {
                         types.insert(local.clone());
+                    } else {
+                        values.insert(local.clone());
                     }
                     names.push(local);
                 }
+                types.retain(|name| !values.contains(name));
                 file.imports
                     .push(load(d.source.value.to_string(), "export", names, types));
             }
@@ -987,6 +994,18 @@ export default local;
         assert_eq!(table.get("k"), Some(&reexport(9, "k", 11, true)));
         assert_eq!(table.get("l"), Some(&reexport(10, "l", 13, true)));
         assert_eq!(file.exports.stars, [(7, 8, true)]);
+    }
+
+    #[test]
+    fn a_name_taken_as_a_value_and_as_a_type_is_a_value() {
+        let file = parse(
+            Path::new("x.ts"),
+            "import { A, type A as B } from 'm';\nexport { c, type c as d } from 'n';\n",
+        )
+        .unwrap();
+        for import in &file.imports {
+            assert!(import.types.is_empty(), "{import:?}");
+        }
     }
 
     #[test]

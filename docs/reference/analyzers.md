@@ -172,9 +172,12 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   declares them, one evidence per defining file and re-export, and re-export statements are not walked
 - a statement that takes types only is `type_only` (see [graph.md](graph.md)): `import type`,
   `export type ... from`, `export type *` and `import type x = require()`, and a statement whose names
-  all carry `type` (`import { type A }`); one that takes values and types (`import { a, type B }`)
-  gives one evidence for the values and one for the types, and `via` evidence is `type_only` when the
-  name is imported as a type or a re-export on the way passes it on as one (`export type { A } from`)
+  all carry `type` (`import { type A }`); one that takes values and types from a file
+  (`import { a, type B }`) gives one evidence for the values and one for the types, a name taken both
+  ways (`import { A, type A as B }`) counting as a value, while an import of a package or one without
+  an edge records no names and gives one evidence, `type_only` when every name is a type; `via`
+  evidence is `type_only` when the name is imported as a type or a re-export on the way passes it on
+  as one (`export type { A } from`)
 - a bare specifier that resolves to no file is matched by package name to the closest `package.json` above
   the importing file that declares it, so a monorepo root's dependencies count for its packages (`@types/x`
   covers `x`): a required declaration gives an edge, another an import without an edge

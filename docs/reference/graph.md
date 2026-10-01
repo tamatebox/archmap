@@ -46,7 +46,9 @@ code like any other, and so do rules and cycles.
 `type_only` marks a statement that takes types only, which the compiler
 erases, so it never runs: TS/JS `import type`, `export type ... from`, and
 a statement whose names all carry `type`. A statement that takes values and
-types gives one piece of evidence for each. An edge is a dependency however
+types from a file gives one piece of evidence for each; evidence without a
+`target` records no names and is one, `type_only` when the statement takes
+only types. An edge is a dependency however
 it is taken, so `deny`, `layers`, `allow`, `query` and `impact` count every
 import, but cycles and signals count only imports that run: an edge whose
 every piece of evidence is `type_only` closes no cycle. Only the TS/JS
