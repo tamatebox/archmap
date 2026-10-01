@@ -217,10 +217,15 @@ impl Analyzer for TypeScriptAnalyzer {
                         .in_test(is_test_code(file)),
                 });
             }
+            let own_name = layout.packages[owner.package]
+                .manifest
+                .as_ref()
+                .and_then(|dir| manifests.get(dir))
+                .and_then(|m| m.name.as_deref());
             let resolved = parsed
                 .imports
                 .iter()
-                .map(|import| resolver.resolve(file, &import.specifier, &mut problems))
+                .map(|import| resolver.resolve(file, &import.specifier, own_name, &mut problems))
                 .collect();
             files.push(ReadFile {
                 file,

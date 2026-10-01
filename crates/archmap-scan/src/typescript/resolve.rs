@@ -70,13 +70,15 @@ impl ImportResolver {
         }
     }
 
-    /// Resolve `specifier` as `file` (relative to the root) writes it. A
-    /// tsconfig the resolver cannot use is reported once in `problems`, and
-    /// the file is resolved without one.
+    /// Resolve `specifier` as `file` (relative to the root), a file of the
+    /// package named `own_name`, writes it. A tsconfig the resolver cannot
+    /// use is reported once in `problems`, and the file is resolved without
+    /// one.
     pub(crate) fn resolve(
         &self,
         file: &Path,
         specifier: &str,
+        own_name: Option<&str>,
         problems: &mut BTreeSet<String>,
     ) -> Resolved {
         let absolute = self.root.join(file);
@@ -92,12 +94,13 @@ impl ImportResolver {
             }
         };
         let mut result = attempt(&self.with_tsconfig, &self.without_tsconfig, problems);
-        // a linked package's `types` condition can lead to built
+        // the `types` condition of a package the view holds (a linked one,
+        // the package's own `imports` and name) can lead to built
         // declarations outside the scan, where its source answers to the
         // next condition; other packages are never in the view
-        if matches!(&result, Err(e) if !matches!(e, ResolveError::Builtin { .. }))
-            && package_name(specifier).is_some_and(|p| self.view.links(p))
-        {
+        let held = specifier.starts_with('#')
+            || package_name(specifier).is_some_and(|p| self.view.links(p) || Some(p) == own_name);
+        if held && matches!(&result, Err(e) if !matches!(e, ResolveError::Builtin { .. })) {
             if let ok @ Ok(_) = attempt(
                 &self.untyped_with_tsconfig,
                 &self.untyped_without_tsconfig,
@@ -369,6 +372,7 @@ mod tests {
         let mut file = |from: &str, specifier: &str| match resolver.resolve(
             Path::new(from),
             specifier,
+            None,
             &mut problems,
         ) {
             Resolved::File(path) => display_path(&path),
@@ -489,8 +493,9 @@ mod tests {
             &[],
         );
         let mut problems = BTreeSet::new();
-        let mut file =
-            |spec: &str| resolver.resolve(Path::new("apps/web/src/a.ts"), spec, &mut problems);
+        let mut file = |spec: &str| {
+            resolver.resolve(Path::new("apps/web/src/a.ts"), spec, None, &mut problems)
+        };
         assert_eq!(
             file("@acme/ui"),
             Resolved::File(PathBuf::from("packages/ui/src/index.ts"))
@@ -532,7 +537,12 @@ mod tests {
         let resolver =
             ImportResolver::new(ctx.root(), view.clone(), &custom_conditions(&ctx, &view));
         let mut problems = BTreeSet::new();
-        let found = resolver.resolve(Path::new("apps/web/src/a.ts"), "@acme/core", &mut problems);
+        let found = resolver.resolve(
+            Path::new("apps/web/src/a.ts"),
+            "@acme/core",
+            None,
+            &mut problems,
+        );
         std::fs::remove_dir_all(&root).unwrap();
         assert_eq!(
             found,
@@ -574,7 +584,7 @@ mod tests {
         let resolver =
             ImportResolver::new(ctx.root(), view.clone(), &custom_conditions(&ctx, &view));
         let mut problems = BTreeSet::new();
-        let found = resolver.resolve(Path::new("web/src/a.ts"), "@acme/core", &mut problems);
+        let found = resolver.resolve(Path::new("web/src/a.ts"), "@acme/core", None, &mut problems);
         std::fs::remove_dir_all(&root).unwrap();
         assert_eq!(
             found,
@@ -588,6 +598,43 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_package_s_own_imports_and_name_skip_built_types_too() {
+        // no workspace: the package's `imports` and its own name
+        let root = repo(
+            "own-types",
+            &[
+                (
+                    "package.json",
+                    r##"{ "name": "solo", "imports": { "#util": { "types": "./dist/util.d.ts", "default": "./src/util.ts" } }, "exports": { ".": { "types": "./dist/index.d.ts", "import": "./src/index.ts" } } }"##,
+                ),
+                ("src/util.ts", "export const u = 1;\n"),
+                ("src/index.ts", "export const i = 1;\n"),
+                ("src/a.ts", "import { u } from '#util';\n"),
+            ],
+        );
+        let ctx = RepoContext::load(&root, ScanOptions::default()).unwrap();
+        let resolver = ImportResolver::new(ctx.root(), ViewFs::new(&ctx, &mut Vec::new()), &[]);
+        let mut problems = BTreeSet::new();
+        let mut file = |specifier: &str| {
+            resolver.resolve(
+                Path::new("src/a.ts"),
+                specifier,
+                Some("solo"),
+                &mut problems,
+            )
+        };
+        let found = [file("#util"), file("solo")];
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            found,
+            [
+                Resolved::File(PathBuf::from("src/util.ts")),
+                Resolved::File(PathBuf::from("src/index.ts"))
+            ]
+        );
+    }
+
     /// Resolve `specifier` from `src/a.ts` in a repository of `files`, with
     /// the problems reported.
     fn resolve_in(name: &str, files: &[(&str, &str)], specifier: &str) -> (Resolved, Vec<String>) {
@@ -596,7 +643,7 @@ mod tests {
         let mut warnings = Vec::new();
         let resolver = ImportResolver::new(ctx.root(), ViewFs::new(&ctx, &mut warnings), &[]);
         let mut problems = BTreeSet::new();
-        let resolved = resolver.resolve(Path::new("src/a.ts"), specifier, &mut problems);
+        let resolved = resolver.resolve(Path::new("src/a.ts"), specifier, None, &mut problems);
         std::fs::remove_dir_all(&root).unwrap();
         let root = format!("{}", root.display());
         for problem in &problems {

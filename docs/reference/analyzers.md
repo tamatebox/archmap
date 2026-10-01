@@ -198,8 +198,9 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   dependencies inside the scanned root, never another package of the same name; a bare import of one resolves to its files through its
   `exports` or `main`, matching the conditions the scanned tsconfigs turn on with `customConditions`,
   themselves or through a config they extend (when a
-  `types` condition leads outside the scan, the next condition answers; a declaration file the scan holds is
-  what the import points at, as tsc reads it), one whose
+  `types` condition leads outside the scan, the next condition answers, as it does for a package's own
+  `imports` (`#util`) and name; a declaration file the scan holds is what the import points at, as tsc
+  reads it), one whose
   entry is outside the scan (`dist/`) is an `import` edge to the package without a file, a declaration of one
   is a `dependency` edge to that package whatever its version (`workspace:*`, `^1.0.0`), and a tsconfig
   `extends` of one loads
