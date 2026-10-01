@@ -121,6 +121,16 @@ enum Command {
         #[arg(long, value_enum, default_value_t = ReportFormat::Text)]
         format: ReportFormat,
     },
+    /// Serve summary, query, impact and check as MCP tools over stdio.
+    ///
+    /// The tools give the same answers as these commands. They read
+    /// `--path` unless a call names another root, and the server scans a
+    /// root again when its files change. stdout carries JSON-RPC only.
+    Mcp {
+        /// Repository the tools read by default.
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
 }
 
 fn main() -> ExitCode {
@@ -158,6 +168,8 @@ fn main() -> ExitCode {
             depth,
             format,
         } => commands::check(&path, config.as_deref(), depth, format),
+        Command::Mcp { path } => archmap_mcp::serve_stdio(archmap_mcp::Options { root: path })
+            .map(|()| ExitCode::SUCCESS),
     };
 
     match result {

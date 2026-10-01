@@ -1,6 +1,6 @@
 {
   "name": "archmap",
-  "description": "Skill for reading archmap output (summary, query, impact) before exploring a repository. Requires the archmap CLI on PATH.",
+  "description": "MCP server and skill for archmap, which maps a repository's components and dependencies (summary, query, impact, check). Requires the archmap binary on PATH, installed separately: cargo install --git https://github.com/tamatebox/archmap archmap-cli",
   "author": { "name": "tamatebox" },
   "repository": "https://github.com/tamatebox/archmap",
   "license": "MIT",

@@ -5,7 +5,8 @@ on archmap's own repository unless they name another root: any Rust, Python
 or TypeScript/JavaScript project or package directory works the same way,
 given as the argument of `summary` and `scan` or as `--path` of the others. The graph
 they read is described in [graph.md](graph.md); `check` and its rules are in
-[rules.md](rules.md).
+[rules.md](rules.md). `summary`, `query`, `impact` and `check` are also MCP
+tools with the same answers ([mcp.md](mcp.md)).
 
 ## Depth and roll-up
 

@@ -74,7 +74,7 @@ up to 3 locations per finding, marked `(type)`, `(test)` and `(local)` as
 exits 0 without findings, 1 with findings, and 2 when the rules or the
 repository cannot be read, including a `--config` file that does not exist.
 Without `--config` and without an `archmap.toml`, `check` reports signals
-only and exits 0. archmap checks its own `cli -> app -> scan -> core` direction
+only and exits 0. archmap checks its own `{cli, mcp} -> app -> scan -> core` direction
 this way; see `archmap.toml`.
 
 `[cycles] scope` limits cycle findings to cycles with at least one member

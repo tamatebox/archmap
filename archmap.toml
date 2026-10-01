@@ -17,7 +17,7 @@ order = ["cli", "mcp", "app", "scan", "core"]
 # for everything; core depends on no other crate.
 [[allow]]
 from = "cli"
-to = ["app"]
+to = ["mcp", "app"]
 
 [[allow]]
 from = "mcp"

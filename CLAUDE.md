@@ -28,18 +28,20 @@ and impact without re-reading the whole repository.
 - **Full graph != agent context.** Agent-facing defaults (`summary`, text `query`, `impact`) stay small however large the repository is: cap lists and count the rest. Complete detail lives behind `--format json`. Commands never read `graph.json`; it is an export.
 - **Cheap structural scan first, deep analysis only for chosen targets.** Do not parse bodies or docstrings by default. Deeper passes (calls, types, data flow; Phase 4) run on demand for a component, never over the whole repository by default.
 - **Many inputs, one model.** Each language / manifest / schema may be analyzed differently, but everything normalizes into `archmap-core` types.
-- **Interfaces share one layer.** `archmap-core`, `archmap-scan` and `archmap-app` know no interface. The CLI is one interface and an MCP server (planned) another; each is first-class and offers the same capabilities, getting scanning, target lookup, the commands and their capped output from `archmap-app`, and holds no analysis or rendering of its own.
+- **Interfaces share one layer.** `archmap-core`, `archmap-scan` and `archmap-app` know no interface. The CLI and the MCP server are first-class interfaces to the same capabilities: each gets scanning, target lookup, the commands and their capped output from `archmap-app`, and holds no analysis or rendering of its own. The CLI depends on `archmap-mcp` only to start it (`archmap mcp`).
 
 ## Crates and dependency direction
 
 ```
-archmap-cli  ->  archmap-app  ->  archmap-scan  ->  archmap-core
+archmap-cli ─┬───────────────> archmap-app  ->  archmap-scan  ->  archmap-core
+             └─> archmap-mcp ─┘
 ```
 
 - `archmap-core`: graph model (`Component`, `Symbol`, `Edge`, `Evidence`, `GraphFragment`, `ArchitectureGraph`), merge/normalize, roll-up, cycles, query and impact primitives, and declared rules (`rules`). No I/O, no language knowledge, no dependency on other workspace crates.
 - `archmap-scan`: repo walking, project detection, the `Analyzer` trait and concrete analyzers (`rust/`, `python/`, `typescript/`). Emits `GraphFragment`s; `scan()` merges them.
 - `archmap-app`: what every interface shares: scanning into a `Workspace`, path targets and target lookup, reading `archmap.toml`, and `summary`, `query`, `impact` and `check` with their capped text and JSON, returned as finished strings. It never prints, exits or parses arguments.
-- `archmap-cli`: `clap` commands, stdout and stderr, exit codes and `scan`'s file output only. No analysis, lookup or rendering.
+- `archmap-cli`: `clap` commands, stdout and stderr, exit codes and `scan`'s file output only, and `archmap mcp`, which only starts the server. No analysis, lookup or rendering.
+- `archmap-mcp`: the MCP server (rmcp, stdio): tool parameters and descriptions, server instructions (`src/text.rs`), the root of a call, and one workspace per root, scanned again when `archmap_app::stamp` changes. Answers come from `archmap-app` only; it never runs the CLI.
 
 Never add a dependency that points against the arrow. Never make `archmap-core` aware of Cargo, `syn`, files or paths beyond plain strings. An interface depends on `archmap-app` alone: never re-export items of `archmap-scan` or `archmap-core` to it, since archmap's Rust analyzer follows a `pub use` to the defining crate and `check` sees the edge; give `archmap-app` its own type instead.
 
@@ -56,10 +58,10 @@ Never add a dependency that points against the arrow. Never make `archmap-core` 
 ## Distributed plugin
 
 - `plugins/archmap/` is what users install, for agents that *use* archmap in their own repositories; this file is for agents that develop archmap. `.claude-plugin/marketplace.json` lists it.
-- The plugin only calls the `archmap` binary. Keep the CLI vendor-neutral: nothing in `crates/` knows about any agent.
+- The plugin only calls the `archmap` binary: `.mcp.json` declares `archmap mcp --path ${CLAUDE_PROJECT_DIR:-.}`, and the binary is installed separately. Keep `crates/` vendor-neutral: nothing in them knows about any agent, and the server takes its root from `--path` and each call's `path`, never from an agent's environment variables.
 - `archmap` on PATH is a copy from the last `cargo install`, not the working tree. Develop and verify with `cargo run`; before trying a change through the plugin, reinstall with `cargo install --path crates/archmap-cli`.
-- `plugins/archmap/skills/archmap/SKILL.md` restates CLI behavior. When a change alters commands, flags, output wording or a known gap the skill names, update the skill in the same change.
-- README is the overview; `docs/reference/` (analyzers, graph, commands, rules) is where behavior is documented. A change that alters behavior updates the page that states it in the same change. README's "Support by language" marks and gap notes summarize `analyzers.md`; a change that closes or opens a gap updates both. Facts shared by every language go in `graph.md` or `commands.md`, not under each language.
+- `plugins/archmap/skills/archmap/SKILL.md` and the MCP texts in `crates/archmap-mcp/src/text.rs` restate behavior. When a change alters commands, flags, output wording or a known gap they name, update them in the same change. The texts say what a tool gives, when it helps and what it cannot see; they never name a capability archmap lacks or prescribe an order of tools.
+- README is the overview; `docs/reference/` (analyzers, graph, commands, mcp, rules) is where behavior is documented. A change that alters behavior updates the page that states it in the same change. README's "Support by language" marks and gap notes summarize `analyzers.md`; a change that closes or opens a gap updates both. Facts shared by every language go in `graph.md` or `commands.md`, not under each language.
 - Keep the skill a short guide to reading output and choosing the next command, not a manual. Its frontmatter follows the [Agent Skills](https://agentskills.io/specification) spec, so the skill directory also works outside Claude Code.
 - `plugin.json` omits `version` on purpose so installs follow commits. After editing, run `claude plugin validate .`; it warns about the missing version and must otherwise pass.
 
@@ -107,6 +109,6 @@ cargo check --workspace
 cargo run -q -p archmap-cli -- check
 ```
 
-The last command enforces archmap's own `cli -> app -> scan -> core` direction from `archmap.toml`.
+The last command enforces archmap's own `{cli, mcp} -> app -> scan -> core` direction from `archmap.toml`.
 
 Try the tool on itself as a smoke test without writing files: `cargo run -p archmap-cli -- scan . -o -`

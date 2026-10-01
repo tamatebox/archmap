@@ -29,20 +29,26 @@ the source. Re-run it after pulling or changing the code.
 
 ### Agent plugin
 
-`plugins/archmap/` is a plugin whose skill tells a coding agent how to use
-archmap around a change: start from `summary`, drill down with `query` and
-`impact`, edit only the source that matters, then run `check` when the
-repository declares rules in `archmap.toml`. It also says what the graph
-cannot see. It only calls the CLI, so install both. In Claude Code:
+`plugins/archmap/` is a plugin for coding agents. It declares archmap's MCP
+server, which gives an agent `summary`, `query`, `impact` and `check` as
+tools, and a skill on how to read their output, including what the graph
+cannot see. The plugin starts `archmap mcp` but ships no binary: install
+archmap as above first, and again after pulling a newer plugin. In Claude
+Code:
 
 ```bash
+cargo install --git https://github.com/tamatebox/archmap archmap-cli   # the binary the plugin starts
 claude plugin marketplace add tamatebox/archmap   # or ./ from the root of a clone
 claude plugin install archmap@archmap
 ```
 
-The skill directory, `plugins/archmap/skills/archmap/`, follows the
+Without the binary, `/mcp` shows the server as failed and the skill tells
+the agent to install archmap. The skill directory,
+`plugins/archmap/skills/archmap/`, follows the
 [Agent Skills](https://agentskills.io/specification) format, so other agents
-can use a copy of it.
+can use a copy of it, and any MCP client can start the server itself:
+`archmap mcp --path <repository>` speaks MCP over stdio
+([mcp.md](docs/reference/mcp.md)).
 
 ## Quick start
 
@@ -78,11 +84,13 @@ aims at about 8 KiB, lists are capped at 30 entries, and a capped list ends
 in an `omitted:` line that names the query showing the rest. `--verbose`
 lifts the caps and `--format json` adds every piece of evidence.
 
-An MCP server is planned, offering the same commands through the layer the CLI
-uses (`archmap-app`).
+The same four commands are MCP tools: `archmap mcp` serves them over stdio
+with the same answers, since the CLI and the server share one layer
+(`archmap-app`), and keeps the graph of each repository in memory until its
+files change.
 
-Details: [commands](docs/reference/commands.md), [rules and signals](docs/reference/rules.md),
-[graph model and JSON](docs/reference/graph.md).
+Details: [commands](docs/reference/commands.md), [MCP server](docs/reference/mcp.md),
+[rules and signals](docs/reference/rules.md), [graph model and JSON](docs/reference/graph.md).
 
 ## What archmap reads
 
@@ -165,9 +173,8 @@ lists every known gap.
    never renames, groups by meaning, or adds prose.
 5. **Many inputs, one model.** Rust, TypeScript, Python, OpenAPI... are
    analyzed differently but normalized into one graph.
-6. **Interfaces share one engine.** Every interface offers the same
-   capabilities through one shared layer; the CLI is the first, and an MCP
-   server is planned.
+6. **Interfaces share one engine.** The CLI and the MCP server offer the
+   same capabilities through one shared layer; neither has logic of its own.
 
 ## Roadmap
 
@@ -189,7 +196,7 @@ comes later.
 | 5 Cross-system Graph | OpenAPI, Terraform, databases, HTTP, events, CI/build/deploy relationships | planned |
 | 6 Change & Work Graph | Git history, churn and co-change; Issue → PR → Commit → File; PR overlap and other explicit work links | planned |
 | 7 Semantic Enrichment | LLM naming, responsibilities, intent and other semantic interpretations, stored separately as inferred facts | planned |
-| 8 Agent Interface | plugin and skill for agents; MCP adapter over the same engine | plugin and skill exist; MCP planned |
+| 8 Agent Interface | plugin and skill for agents; MCP server over the same engine | MCP server (`archmap mcp`), plugin and skill |
 | 9 Incremental / Runtime | incremental scans and caches; runtime traces and other observed execution relationships | planned |
 
 Phase 4 never runs over the whole repository by default. The cheap scan
@@ -234,9 +241,9 @@ eliminate `grep`.
 
 ## Development
 
-The Cargo workspace has four crates: `archmap-core` (model), `archmap-scan`
+The Cargo workspace has five crates: `archmap-core` (model), `archmap-scan`
 (extraction), `archmap-app` (the commands and their output, shared by every
-interface) and `archmap-cli`. While developing, run
+interface), `archmap-cli` and `archmap-mcp` (the MCP server). While developing, run
 `cargo run -p archmap-cli -- <command>` instead of the installed `archmap`;
 it always builds the current tree.
 
@@ -248,6 +255,6 @@ cargo check --workspace
 cargo run -q -p archmap-cli -- check
 ```
 
-The last command checks archmap's own `cli -> app -> scan -> core` direction
+The last command checks archmap's own `{cli, mcp} -> app -> scan -> core` direction
 against `archmap.toml`. Behavior is documented in `docs/reference/`; see
 `CLAUDE.md` for design principles and contribution rules.

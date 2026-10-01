@@ -1,0 +1,80 @@
+# MCP server
+
+`archmap mcp` serves `summary`, `query`, `impact` and `check` as MCP tools
+over stdio. It is the other interface beside the CLI, with the same
+capabilities: both get every answer from the same shared layer
+(`archmap-app`), so a tool returns exactly what the command prints. What the
+answers say is in [commands.md](commands.md).
+
+```bash
+archmap mcp                       # tools read the working directory
+archmap mcp --path ../some-repo   # tools read another repository by default
+```
+
+stdout carries JSON-RPC only. The server exits when the client closes its
+stdin, and exits 2 at once when `--path` is not a directory.
+
+## Registering it
+
+The [plugin](../../plugins/archmap/) declares the server in
+`plugins/archmap/.mcp.json`, started as
+`archmap mcp --path ${CLAUDE_PROJECT_DIR:-.}`. The plugin ships no binary:
+install archmap first (see [README](../../README.md#install)). Without the
+binary, Claude Code shows the server as failed in `/mcp` and the plugin's
+skill still loads; the skill tells the agent how to install archmap. An
+`archmap` installed before the server existed fails with "unrecognized
+subcommand 'mcp'": install again.
+
+Elsewhere, register the command with your client, such as
+`claude mcp add archmap -- archmap mcp --path /path/to/repo`.
+
+## Roots
+
+A tool reads the server's root (`--path`, else the working directory)
+unless the call gives `path`: another repository root, absolute or relative
+to the server's root. A `path` that is no directory is a tool error. MCP
+roots are not used; the 2026-07-28 MCP specification deprecates them in
+favor of tool parameters and server configuration. Targets are paths
+(absolute or relative to the root) or names, as for the CLI.
+
+## Tools
+
+| tool | parameters |
+|---|---|
+| `summary` | `path?`, `depth?` |
+| `query` | `target`, `path?`, `depth?`, `format?` (`text` or `json`) |
+| `impact` | `target`, `path?`, `depth?`, `verbose?` |
+| `check` | `path?`, `config?`, `depth?`, `format?` |
+
+The parameters mirror the CLI's flags, and their defaults are the CLI's:
+`depth` is 2 for every tool, as `DEFAULT_DEPTH`, so an agent need not keep
+one value; text answers are capped and `format: json` (for `impact`, which
+answers in JSON, `verbose`) gives every entry. `summary --verbose` and
+`query --verbose` have no parameter: JSON carries everything, and summary's
+`omitted:` lines name the query for the rest. `check`'s `config` is a rules
+file inside the root, relative to it; the rules are read on every call.
+
+Every tool is read-only. A target that names several things answers with
+its candidates, an ordinary result, as are `check`'s findings; a tool error
+(`isError`) carries the CLI's error message: nothing has that name, a path
+is outside the root, a root cannot be read. Scan warnings, which the CLI
+prints to stderr, follow an answer in a content block of their own, the
+first 5 shown, so a JSON answer stays JSON.
+
+The server's instructions and each tool's description say what the tool
+gives, when it helps and what it cannot see, including that runtime
+coupling (HTTP, databases, queues, dynamic loading) is not seen. They live
+in `crates/archmap-mcp/src/text.rs`.
+
+## The graph it keeps
+
+The server keeps one scanned graph per root in memory, up to 8 roots; the
+least recently used goes first. Before each call it stamps the root: the
+files a scan would walk, with their size, modification time and (on Unix)
+change time, and the `site-packages` directories of the virtualenvs the
+Python analyzer reads. When the stamp matches the one taken before the kept
+graph's scan, the graph answers; otherwise the root is scanned again, so an
+edit, a new file, a deleted or renamed file, or a package installed into
+`.venv` shows in the next answer. A failed scan keeps nothing, and the next
+call tries again. Calls run one at a time, so two calls on one root scan it
+once. Nothing is written to disk; `.archmap/graph.json` is never read.

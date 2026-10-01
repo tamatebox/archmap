@@ -2150,3 +2150,119 @@ fn query_and_impact_exit_0_for_an_answer_1_for_candidates_and_2_for_errors() {
         .unwrap();
     assert_eq!(missing.status.code(), Some(2));
 }
+
+/// Speak MCP to `archmap mcp --path <root>` over its stdin and stdout: the
+/// responses to `requests` (each with an id), by id, after asserting that
+/// every line the server wrote is JSON-RPC.
+fn mcp_session(root: &Path, requests: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    use std::io::{BufRead, BufReader, Write};
+    let mut child = archmap()
+        .args(["mcp", "--path"])
+        .arg(root)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let mut send = |message: serde_json::Value| {
+        writeln!(stdin, "{message}").unwrap();
+        stdin.flush().unwrap();
+    };
+    send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 0, "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "archmap-cli-test", "version": "0"}
+        }
+    }));
+    let mut read = || {
+        let line = lines.next().expect("the server closed stdout").unwrap();
+        serde_json::from_str::<serde_json::Value>(&line)
+            .unwrap_or_else(|e| panic!("not JSON-RPC on stdout: {line:?}: {e}"))
+    };
+    let initialized = read();
+    assert_eq!(initialized["id"], 0, "{initialized}");
+    send(serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+    let mut answers = Vec::new();
+    for request in requests {
+        send(request.clone());
+        let answer = read();
+        assert_eq!(answer["id"], request["id"], "{answer}");
+        answers.push(answer);
+    }
+    drop(stdin);
+    let status = child.wait().unwrap();
+    assert!(status.success(), "the server exits when stdin closes");
+    answers
+}
+
+#[test]
+fn archmap_mcp_answers_as_the_cli_does_and_writes_only_json_rpc() {
+    let root = python_fixture();
+    let call = |id: u32, tool: &str, args: serde_json::Value| {
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": {"name": tool, "arguments": args}
+        })
+    };
+    let answers = mcp_session(
+        &root,
+        &[
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+            call(2, "query", serde_json::json!({"target": "shop.users"})),
+            call(
+                3,
+                "impact",
+                serde_json::json!({"target": "src/shop/users.py"}),
+            ),
+            call(4, "summary", serde_json::json!({})),
+        ],
+    );
+    let tools: Vec<&str> = answers[0]["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(tools, ["check", "impact", "query", "summary"]);
+    let text = |answer: &serde_json::Value| {
+        assert_eq!(answer["result"]["isError"], false, "{answer}");
+        answer["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let cli = |args: &[&str]| {
+        let out = archmap()
+            .args(args)
+            .arg("--path")
+            .arg(&root)
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap()
+    };
+    assert_eq!(text(&answers[1]), cli(&["query", "shop.users"]));
+    assert_eq!(text(&answers[2]), cli(&["impact", "src/shop/users.py"]));
+    let summary = archmap().arg("summary").arg(&root).output().unwrap();
+    assert_eq!(
+        text(&answers[3]),
+        String::from_utf8(summary.stdout).unwrap()
+    );
+}
+
+#[test]
+fn archmap_mcp_refuses_a_root_that_is_not_there() {
+    let out = archmap()
+        .args(["mcp", "--path", "no-such-root"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("no-such-root"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
