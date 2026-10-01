@@ -15,6 +15,14 @@ pub struct ComponentView<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub folded_from: Option<ComponentId>,
     pub component: &'a Component,
+    /// Other components with the component's name: its id answered, and
+    /// theirs pick them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub also_named: Vec<&'a ComponentId>,
+    /// Other components at the component's path, as when two analyzers map
+    /// one directory.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub also_at_path: Vec<&'a ComponentId>,
     /// Direct children in the unrolled graph, to query with a larger depth.
     pub children: Vec<&'a ComponentId>,
     pub symbols: Vec<&'a Symbol>,

@@ -1444,6 +1444,41 @@ fn a_python_package_keeps_its_files_when_scripts_sit_below_it() {
         shallow.starts_with("myapp (module, python) at myapp, depth 1\n"),
         "{shallow}"
     );
+    // the TS/JS directory at the same path is named, so it can be queried
+    assert!(
+        named.contains("\nalso at this path: ") && named.contains("::myapp\n"),
+        "{named}"
+    );
+}
+
+#[test]
+fn query_and_impact_name_other_components_of_the_same_name() {
+    let dir = std::env::temp_dir().join(format!("archmap-cli-dup-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for (file, text) in [
+        (
+            "rust/Cargo.toml",
+            "[package]\nname = \"dup\"\nversion = \"0.1.0\"\n",
+        ),
+        ("rust/src/lib.rs", "pub fn f() {}\n"),
+        ("web/package.json", "{ \"name\": \"dup\" }\n"),
+        ("web/index.js", "export const g = 1;\n"),
+    ] {
+        let path = dir.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    // `dup` is the Rust package's id; the TS/JS one was renamed
+    let text = query_text(&dir, &["dup"]);
+    let impact = archmap()
+        .args(["impact", "dup", "--path"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(text.contains("\nalso named: dup+typescript\n"), "{text}");
+    let impact: serde_json::Value = serde_json::from_slice(&impact.stdout).unwrap();
+    assert_eq!(impact["also_named"], serde_json::json!(["dup+typescript"]));
 }
 
 #[test]

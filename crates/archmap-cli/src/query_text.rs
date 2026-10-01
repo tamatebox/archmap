@@ -95,8 +95,27 @@ fn component(
     if let Some(from) = &view.folded_from {
         let _ = writeln!(out, "folded from: {}", display(full, from));
     }
-
     let mut truncated = false;
+    for (label, ids) in [
+        ("also named", &view.also_named),
+        ("also at this path", &view.also_at_path),
+    ] {
+        if ids.is_empty() {
+            continue;
+        }
+        let shown: Vec<String> = ids
+            .iter()
+            .take(caps.neighbors)
+            .map(|id| shell_word(id.as_str()))
+            .collect();
+        let mut line = format!("{label}: {}", shown.join(", "));
+        if ids.len() > shown.len() {
+            truncated = true;
+            let _ = write!(line, ", +{} more", ids.len() - shown.len());
+        }
+        let _ = writeln!(out, "{line}");
+    }
+
     if !view.children.is_empty() {
         let total = view.children.len();
         let shown = total.min(caps.neighbors);

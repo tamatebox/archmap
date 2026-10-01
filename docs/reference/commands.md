@@ -245,7 +245,10 @@ the same file is not affected. Two things widen or narrow it:
 A name that several components share stops `query` and `impact` with their
 ids and paths (the first 10), and an id or `./<path>` picks one, unless they
 all sit at one path (a directory that two analyzers map), which answers for
-the one with evidence there.
+the one with evidence there. When an id or a path answers for one component
+while others share its name (`dup` and `dup+typescript` after an id
+collision) or its path, `query` names them on `also named:` and `also at
+this path:` lines, and `impact` in `also_named` and `also_at_path`.
 
 ## check
 

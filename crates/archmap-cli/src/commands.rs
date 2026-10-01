@@ -315,11 +315,14 @@ fn component_view<'a>(
     let component = rolled
         .component(&at.id)
         .with_context(|| format!("`{}` is missing after roll-up", at.id))?;
+    let (also_named, also_at_path) = namesakes(full, component);
     Ok(QueryResult::Component(ComponentView {
         requested,
         depth,
         folded_from: at.folded_from,
         component,
+        also_named,
+        also_at_path,
         children: full
             .components
             .values()
@@ -438,6 +441,11 @@ pub struct ImpactResult<'a> {
     /// For a symbol: its id.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub symbol: Option<SymbolId>,
+    /// Other components with the target's name, and at its path.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub also_named: Vec<ComponentId>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub also_at_path: Vec<ComponentId>,
     /// Components that directly depend on the target.
     pub direct: Vec<ComponentId>,
     /// Every component that transitively depends on the target.
@@ -508,6 +516,27 @@ fn sites_of(
         total,
         shown: sites,
     }
+}
+
+/// Other components that share `component`'s name, and those that share
+/// its path: an id or a path answered for one of them, and theirs pick the
+/// others.
+fn namesakes<'a>(
+    full: &'a ArchitectureGraph,
+    component: &Component,
+) -> (Vec<&'a ComponentId>, Vec<&'a ComponentId>) {
+    let at_path: Vec<&ComponentId> = full
+        .components
+        .values()
+        .filter(|c| c.id != component.id && c.path.is_some() && c.path == component.path)
+        .map(|c| &c.id)
+        .collect();
+    let named = full
+        .components_named(&component.name)
+        .filter(|c| c.id != component.id && !at_path.contains(&&c.id))
+        .map(|c| &c.id)
+        .collect();
+    (named, at_path)
 }
 
 /// The one symbol `target` names, by id or by name; an error that lists the
@@ -593,7 +622,14 @@ pub fn impact(path: &str, target: &str, depth: usize, format: OutputFormat) -> R
         bail!("no component, file or symbol `{target}` in graph");
     };
 
+    let (also_named, also_at_path) = full
+        .component(&at.id)
+        .map(|c| namesakes(full, c))
+        .unwrap_or_default();
+    let owned = |ids: Vec<&ComponentId>| ids.into_iter().cloned().collect();
     let result = ImpactResult {
+        also_named: owned(also_named),
+        also_at_path: owned(also_at_path),
         requested: target,
         depth,
         direct: reach.direct.into_iter().collect(),
