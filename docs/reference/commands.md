@@ -84,9 +84,9 @@ The whole summary then aims at 8 KiB: over it, the largest list gives up
 its lowest-ranked entries, down to 10 each. The header, coverage, `omitted:`
 lines and the most depended on list are never trimmed, so very long names
 can exceed the target, but the size does not grow with the repository.
-`--verbose` lists everything. On archmap's own repository (92 source files,
-fixtures included), depth 2 turns a 230 KB graph into a summary of about
-8 KB (19 KB with `--verbose`).
+`--verbose` lists everything. On archmap's own repository (110 source files,
+fixtures included), depth 2 turns a 295 KB graph into a summary of about
+8 KB (23 KB with `--verbose`).
 
 ## scan
 
@@ -147,7 +147,7 @@ per module with the reason (`local name`, `extra or dev dependency`,
 they are, so an absent edge is never mistaken for an absent dependency.
 Lists are capped at 30 entries and 3 locations, and the rest is counted. On
 archmap's own repository, its busiest component (`archmap_core::graph`)
-takes 5 KB as text and 18 KB as JSON. `--verbose` lifts the caps and
+takes 6 KB as text and 20 KB as JSON. `--verbose` lifts the caps and
 `--format json` adds every piece of evidence.
 
 `query` also takes a single file, by path (`src/shop/users.py`, relative to

@@ -280,6 +280,8 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   re-exports compilers write into CommonJS output (`__exportStar(require('./a'), exports)`) are not read.
 - Files loaded by a pattern (Vite's `import.meta.glob('./pages/*.ts')`, webpack's `require.context`)
   are not read.
+- An import of a name that Node also has built in (`events`, `buffer`) is the built-in, as Node reads
+  it, and gives nothing, even where `package.json` declares the npm package of that name for a bundler.
 - Vue, Svelte and Astro components and GraphQL documents are not code to the analyzer: an import of
   one is an import of a file, as for a stylesheet, and the imports inside them are not read.
 - The links are one map for the whole scan: two independent workspace roots that each name a
