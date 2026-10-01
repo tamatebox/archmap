@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Component, ComponentId, DynamicImport, Edge, EdgeKind, Evidence, GraphFragment,
-    LanguageCoverage, Symbol, SymbolId, UnmappedImport, SCHEMA_VERSION,
+    LanguageCoverage, Symbol, SymbolId, UnmappedImport, SCHEMA_VERSION, WHOLE_MODULE,
 };
 
 /// Information about how a graph was produced.
@@ -508,6 +508,62 @@ impl ArchitectureGraph {
         }
     }
 
+    /// The statements that import `symbol`: those that take its name from
+    /// the file it is reached through, and, apart from them, those that take
+    /// that file whole. One entry per statement, the first in edge order.
+    /// `None` for a symbol without a location.
+    pub fn symbol_importers(&self, symbol: &Symbol) -> Option<SymbolImporters<'_>> {
+        let reached = symbol
+            .evidence
+            .iter()
+            .find_map(|e| Some((e.target.as_deref()?, e.names.iter().next()?.as_str())));
+        let (file, name) = match reached {
+            Some((file, name)) => (file.to_owned(), name.to_owned()),
+            None => (
+                symbol.location()?.file.clone(),
+                reached_name(&symbol.name).to_owned(),
+            ),
+        };
+        let language = self
+            .component_for_path(&file)
+            .and_then(|c| c.language.as_deref());
+        let imports = || self.edges.iter().filter(|e| e.kind == EdgeKind::Import);
+        let mut recorded = false;
+        let mut seen: BTreeSet<(&str, Option<u32>)> = BTreeSet::new();
+        let mut by_name = Vec::new();
+        for edge in imports() {
+            let to_language = self.component(&edge.to).and_then(|c| c.language.as_deref());
+            for e in &edge.evidence {
+                recorded |= e.target.is_some() && to_language == language;
+                if e.target.as_deref() == Some(file.as_str())
+                    && e.names.contains(name.as_str())
+                    && seen.insert((e.file.as_str(), e.line))
+                {
+                    by_name.push((edge, e));
+                }
+            }
+        }
+        let mut may_use = Vec::new();
+        for edge in imports() {
+            for e in &edge.evidence {
+                if e.target.as_deref() == Some(file.as_str())
+                    && e.names.contains(WHOLE_MODULE)
+                    && seen.insert((e.file.as_str(), e.line))
+                {
+                    may_use.push((edge, e));
+                }
+            }
+        }
+        let recorded = recorded || !seen.is_empty();
+        Some(SymbolImporters {
+            file,
+            name,
+            by_name,
+            may_use,
+            recorded,
+        })
+    }
+
     /// Everything the graph records about `file`: its public symbols, the
     /// imports it writes, the imports elsewhere that load it, and the imports
     /// in it that map to no component.
@@ -572,6 +628,35 @@ impl ArchitectureGraph {
     pub fn component_for_path(&self, file: &str) -> Option<&Component> {
         PathIndex::new(self).owner(file)
     }
+}
+
+/// The statements that import a symbol, for a symbol query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SymbolImporters<'a> {
+    /// The file the symbol is reached through, relative to the root: where
+    /// it is defined, or where its type is for a Rust method.
+    pub file: String,
+    /// The name it is reached by in that file: its own, or its type's.
+    pub name: String,
+    /// Statements that take that name from that file, with their edge.
+    pub by_name: Vec<(&'a Edge, &'a Evidence)>,
+    /// Statements that take that file whole (`*`), the others aside.
+    pub may_use: Vec<(&'a Edge, &'a Evidence)>,
+    /// Whether evidence names imported files for the file's language at all.
+    /// Without it, both lists are unknown rather than empty.
+    pub recorded: bool,
+}
+
+/// The name a member is imported by: its type's, without generics and
+/// module path (`Edge` for `crate:: model:: Edge::kind`, `Wrapper` for
+/// `Wrapper<crate::a::B>::new`, `Class` for `Class.method`); any other
+/// symbol goes by its own name.
+fn reached_name(name: &str) -> &str {
+    let Some((owner, _)) = name.rsplit_once("::").or_else(|| name.rsplit_once('.')) else {
+        return name;
+    };
+    let owner = owner.split('<').next().unwrap_or(owner);
+    owner.rsplit("::").next().unwrap_or(owner).trim()
 }
 
 /// What the graph records about one file, for a file-level query.
@@ -1349,6 +1434,133 @@ mod tests {
             "no target files recorded: unknown, not none"
         );
         assert_eq!(graph.file_facts("a/src/lib.rs").imports.len(), 1);
+    }
+
+    fn symbol(id: &str, name: &str, evidence: Vec<Evidence>) -> Symbol {
+        Symbol {
+            id: SymbolId::new(id),
+            name: name.into(),
+            kind: SymbolKind::Function,
+            component: "lib".into(),
+            signature: None,
+            evidence,
+        }
+    }
+
+    fn app_and_lib() -> ArchitectureGraph {
+        let mut graph = ArchitectureGraph::default();
+        for id in ["app", "lib"] {
+            let mut c = Component::new(id, id, ComponentKind::Module);
+            c.path = Some(id.into());
+            graph.add_component(c);
+        }
+        graph
+    }
+
+    fn at(list: &[(&Edge, &Evidence)]) -> Vec<String> {
+        list.iter()
+            .map(|(_, e)| format!("{}:{}", e.file, e.line.unwrap_or(0)))
+            .collect()
+    }
+
+    #[test]
+    fn symbol_importers_take_the_name_or_the_whole_file() {
+        let mut graph = app_and_lib();
+        let import = |file: &str, line: u32, note: &str, names: &[&str]| {
+            Edge::new("app", "lib", EdgeKind::Import).with_evidence(
+                Evidence::new(file)
+                    .at_line(line)
+                    .with_note(note)
+                    .pointing_at("lib/money.ts")
+                    .taking(names.iter().copied()),
+            )
+        };
+        graph.add_edges([
+            import("app/a.ts", 1, "import", &["formatPrice"]),
+            // the same statement through another re-export, whole: once
+            import("app/a.ts", 1, "import via app/index.ts:4", &["*"]),
+            import("app/b.ts", 2, "import", &["*"]),
+            // a side-effect import and another name
+            import("app/c.ts", 3, "import", &[]),
+            import("app/d.ts", 4, "import", &["Wallet"]),
+            // the name beside the whole module: by name
+            import("app/e.ts", 5, "import", &["*", "formatPrice"]),
+        ]);
+        let price = symbol(
+            "lib::formatPrice",
+            "formatPrice",
+            vec![Evidence::new("lib/money.ts").at_line(8)],
+        );
+        let found = graph.symbol_importers(&price).unwrap();
+        assert_eq!(
+            (found.file.as_str(), found.name.as_str()),
+            ("lib/money.ts", "formatPrice")
+        );
+        assert_eq!(at(&found.by_name), ["app/a.ts:1", "app/e.ts:5"]);
+        assert_eq!(at(&found.may_use), ["app/b.ts:2"]);
+        assert!(found.recorded);
+    }
+
+    #[test]
+    fn a_member_is_reached_through_its_type() {
+        let mut graph = app_and_lib();
+        graph.add_edges([Edge::new("app", "lib", EdgeKind::Import).with_evidence(
+            Evidence::new("app/main.rs")
+                .at_line(2)
+                .with_note("use")
+                .pointing_at("lib/model.rs")
+                .taking(["Edge"]),
+        )]);
+        // the impl sits in another file than its type: evidence says where
+        let kind = symbol(
+            "lib::Edge::kind",
+            "Edge::kind",
+            vec![
+                Evidence::new("lib/impls.rs").at_line(9),
+                Evidence::new("lib/impls.rs")
+                    .at_line(8)
+                    .with_note("impl")
+                    .pointing_at("lib/model.rs")
+                    .taking(["Edge"]),
+            ],
+        );
+        let found = graph.symbol_importers(&kind).unwrap();
+        assert_eq!(
+            (found.file.as_str(), found.name.as_str()),
+            ("lib/model.rs", "Edge")
+        );
+        assert_eq!(at(&found.by_name), ["app/main.rs:2"]);
+        // without such evidence: the type's name, without generics and path
+        for (name, reached) in [
+            ("Wrapper<crate::a::B>::new", "Wrapper"),
+            ("crate:: model:: Edge::kind", "Edge"),
+            ("Resolver<'a>::new", "Resolver"),
+            ("Class.method", "Class"),
+            ("greet", "greet"),
+        ] {
+            let s = symbol("lib::x", name, vec![Evidence::new("lib/x.rs").at_line(1)]);
+            assert_eq!(graph.symbol_importers(&s).unwrap().name, reached, "{name}");
+        }
+    }
+
+    #[test]
+    fn symbol_importers_are_unknown_where_no_evidence_names_imported_files() {
+        let mut graph = ArchitectureGraph::default();
+        for id in ["a", "b"] {
+            let mut c = Component::new(id, id, ComponentKind::Package);
+            c.path = Some(id.into());
+            c.language = Some("rust".into());
+            graph.add_component(c);
+        }
+        graph.add_edge(edge("a", "b", "a/src/lib.rs", 3));
+        let s = symbol("b::f", "f", vec![Evidence::new("b/src/lib.rs").at_line(1)]);
+        let found = graph.symbol_importers(&s).unwrap();
+        assert!(found.by_name.is_empty() && found.may_use.is_empty());
+        assert!(!found.recorded);
+        // no location, no answer
+        assert!(graph
+            .symbol_importers(&symbol("b::g", "g", Vec::new()))
+            .is_none());
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! What `archmap query` returns: built by [`crate::commands`], rendered as
 //! JSON there or as text by [`crate::query_text`].
 
-use archmap_core::{Component, ComponentId, DynamicImport, Edge, Symbol, UnmappedImport};
+use archmap_core::{Component, ComponentId, DynamicImport, Edge, Evidence, Symbol, UnmappedImport};
 use serde::Serialize;
 
 /// What `archmap query` returns for a component.
@@ -67,6 +67,29 @@ pub struct UnmappedView<'a> {
 pub enum QueryResult<'a> {
     Component(ComponentView<'a>),
     File(FileView<'a>),
-    Symbols(Vec<&'a Symbol>),
+    Symbols(Vec<SymbolView<'a>>),
     NotMapped(UnmappedView<'a>),
+}
+
+/// A symbol `query` found, with the statements that import it.
+#[derive(Debug, Serialize)]
+pub struct SymbolView<'a> {
+    #[serde(flatten)]
+    pub symbol: &'a Symbol,
+    /// Statements that take the symbol's name from the file it is reached
+    /// through (its own, or its type's for a Rust method). `None` when no
+    /// evidence names imported files for its language: unknown, not none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub imported_by: Option<Vec<Importer<'a>>>,
+    /// Statements that take that file whole, the others aside.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub may_use: Option<Vec<Importer<'a>>>,
+}
+
+/// An importing statement: the component it is in, and its evidence.
+#[derive(Debug, Serialize)]
+pub struct Importer<'a> {
+    pub from: &'a ComponentId,
+    #[serde(flatten)]
+    pub evidence: &'a Evidence,
 }

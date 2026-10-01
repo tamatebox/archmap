@@ -19,7 +19,7 @@ pub mod signals;
 
 pub use evidence::{Evidence, Scope, WHOLE_MODULE};
 pub use fragment::GraphFragment;
-pub use graph::{ArchitectureGraph, ChangeSeed, FileFacts, GraphMeta, Reach};
+pub use graph::{ArchitectureGraph, ChangeSeed, FileFacts, GraphMeta, Reach, SymbolImporters};
 pub use model::{
     Component, ComponentId, ComponentKind, DynamicImport, Edge, EdgeKind, LanguageCoverage, Symbol,
     SymbolId, SymbolKind, UnmappedImport, UnmappedReason,

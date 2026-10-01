@@ -133,6 +133,31 @@ facts behind its component: the file's public symbols, what it imports
 imports without an edge. Where no evidence names imported files for the
 file's language, `Imported by` says it is unknown rather than showing none.
 
+`query` on a symbol (by name, `Class.method` / `Type::method`, or by id)
+lists the statements that import it, from the names their evidence records
+(see [graph.md](graph.md)). `Imported by` lists the statements that take the
+symbol's name from the file that defines it; a method goes by its type's
+name, and a Rust method whose type another file defines, by that file. `May
+use` lists, apart from those, the statements that take that file whole (a
+namespace import, a glob, `import pkg.sub`). Statements that only load the
+file take no name and are in neither list. Both lists show 5 statements and
+count the rest; nothing found reads `none resolved`, which does not mean
+unused. When several symbols match, each line counts its importers instead
+(`imported by 3, may use 1`), and querying one by its id lists them. What
+the lists miss:
+
+- Python does not follow re-exports: `from pkg import pay`, where
+  `pkg/__init__.py` re-exports `pay`, is listed for `__init__.py`, not for
+  the file that defines `pay`.
+- A Rust function called through a module that a `use` brought in (`use
+  crate::graph;`, then `graph::build()`) is only under `May use`, through
+  that `use`; and Rust path evidence shows the first path from its file to
+  the target, not always one that names the symbol.
+- A TS/JS barrel imported as a namespace (`import * as ui from './ui'`) is
+  not listed for the files behind the barrel.
+- Code that runs when a file loads (a side-effect import) is listed for
+  neither.
+
 ## impact
 
 ```bash

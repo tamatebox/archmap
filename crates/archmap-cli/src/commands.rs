@@ -13,7 +13,7 @@ use archmap_scan::{ScanOptions, ScanReport};
 use serde::Serialize;
 
 use crate::output::{render, OutputFormat, ReportFormat};
-use crate::views::{ComponentView, FileView, QueryResult, UnmappedView};
+use crate::views::{ComponentView, FileView, Importer, QueryResult, SymbolView, UnmappedView};
 
 fn run_scan(path: &str, manifests_only: bool) -> Result<ScanReport> {
     let options = ScanOptions { manifests_only };
@@ -236,7 +236,12 @@ pub fn query(
             .chain(rolled.symbols_named(target))
             .collect();
         if !symbols.is_empty() {
-            QueryResult::Symbols(symbols)
+            QueryResult::Symbols(
+                symbols
+                    .into_iter()
+                    .map(|symbol| symbol_view(full, symbol))
+                    .collect(),
+            )
         } else if let Some(file) = full.file_for_dotted_name(target) {
             QueryResult::File(file_view(full, depth, target, file))
         } else if let Some(owner) = directory_target(full, path, target).transpose()? {
@@ -267,6 +272,32 @@ pub fn query(
         ),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// A symbol with the statements that import it, read in the full graph.
+fn symbol_view<'a>(full: &'a ArchitectureGraph, symbol: &'a Symbol) -> SymbolView<'a> {
+    let importers = full.symbol_importers(symbol).filter(|i| i.recorded);
+    let list = |pairs: Vec<(&'a Edge, &'a Evidence)>| {
+        pairs
+            .into_iter()
+            .map(|(edge, evidence)| Importer {
+                from: &edge.from,
+                evidence,
+            })
+            .collect()
+    };
+    match importers {
+        Some(found) => SymbolView {
+            symbol,
+            imported_by: Some(list(found.by_name)),
+            may_use: Some(list(found.may_use)),
+        },
+        None => SymbolView {
+            symbol,
+            imported_by: None,
+            may_use: None,
+        },
+    }
 }
 
 /// The component `at` points to, as `query` shows it.

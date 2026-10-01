@@ -114,6 +114,7 @@ What works today, by the [roadmap](#roadmap) phase it belongs to:
 | Names each import takes | 1 | ◐ | ✅ | ✅ |
 | Imports without an edge, with the reason | 1 | ✅ | ✅ | ✅ |
 | `summary` and `query`, down to one file | 2 | ✅ | ✅ | ✅ |
+| `query` on a symbol: statements that import it by name | 2 | ◐ | ◐ | ✅ |
 | `impact` file by file | 2 | ✅ | ◐ | ✅ |
 | `check` rules and cycles | 3 | ✅ | ✅ | ◐ |
 | Callers of a symbol | 4 | — | — | — |

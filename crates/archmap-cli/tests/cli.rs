@@ -591,7 +591,8 @@ fn query_text_is_a_compact_drill_down() {
     let symbols = query_text(&fixture_root(), &["greet"]);
     assert_eq!(
         symbols,
-        "Symbols matching `greet`: 1\n  pub fn greet(user: &User) -> String  crates/lib_core/src/lib.rs:28  in lib_core\n"
+        "Symbols matching `greet`: 1\n  pub fn greet(user: &User) -> String  crates/lib_core/src/lib.rs:28  in lib_core\n\
+         \nImported by: 2\n  crates/app/src/main.rs:2\n  crates/app/src/config.rs:12 (local)\n"
     );
 }
 
@@ -1468,4 +1469,100 @@ fn a_statement_counts_each_other_file_it_loads_once() {
         text.contains("src/app/checkout.ts:1 -> src/lib/limits.ts (+1 file) (via src/index.ts:3)"),
         "{text}"
     );
+}
+
+#[test]
+fn a_symbol_query_lists_the_statements_that_import_it() {
+    let text = ts_stdout(&["query", "formatPrice"]);
+    for expected in [
+        "Imported by: 4\n",
+        "\n  src/app/page.tsx:1\n",
+        "\n  src/index.ts:1\n",
+        "\n  src/app/checkout.ts:1 (via src/index.ts:1)\n",
+        "\n  tests/money.test.ts:2\n",
+        // a namespace re-export takes the file whole; checkout.ts:1, which
+        // also does through it, is listed by name already
+        "May use: 1 (imports the whole module)\n  src/index.ts:4\n",
+    ] {
+        assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
+    }
+    let json = ts_stdout(&["query", "formatPrice", "--format", "json"]);
+    for expected in ["\"imported_by\"", "\"may_use\"", "\"from\""] {
+        assert!(json.contains(expected), "missing {expected} in:\n{json}");
+    }
+}
+
+#[test]
+fn a_rust_method_is_imported_through_its_type() {
+    let total = query_text(&fixture_root(), &["Invoice::total"]);
+    assert!(
+        total.contains(
+            "Imported by: 1\n  crates/app/src/config.rs:1 (via crates/lib_core/src/lib.rs:7)\n"
+        ),
+        "{total}"
+    );
+    let greet = query_text(&fixture_root(), &["greet"]);
+    for expected in [
+        "Imported by: 2\n",
+        "\n  crates/app/src/main.rs:2\n",
+        "\n  crates/app/src/config.rs:12 (local)\n",
+    ] {
+        assert!(
+            greet.contains(expected),
+            "missing `{expected}` in:\n{greet}"
+        );
+    }
+    let receipt = query_text(&fixture_root(), &["receipt"]);
+    assert!(
+        receipt.contains("Imported by: none resolved\n"),
+        "{receipt}"
+    );
+}
+
+#[test]
+fn a_python_symbol_is_imported_from_the_file_that_defines_it() {
+    let user = query_text(&python_fixture(), &["User"]);
+    assert!(user.contains("Imported by: 5\n"), "{user}");
+    // `from shop.billing import pay` stops at the package's `__init__.py`,
+    // which re-exports `pay`: only that re-export imports it from charge.py
+    let pay = query_text(&python_fixture(), &["pay"]);
+    assert!(
+        pay.contains("Imported by: 1\n  src/shop/billing/__init__.py:1\n"),
+        "{pay}"
+    );
+}
+
+#[test]
+fn several_symbols_of_one_name_count_their_importers() {
+    let dir = std::env::temp_dir().join(format!("archmap-cli-helpers-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for (file, text) in [
+        ("package.json", "{\"name\": \"two\"}\n"),
+        (
+            "src/a.ts",
+            "export function helper(): number {\n  return 1;\n}\n",
+        ),
+        (
+            "src/b.ts",
+            "export function helper(): number {\n  return 2;\n}\n",
+        ),
+        (
+            "src/c.ts",
+            "import { helper } from './a';\nexport const x = helper();\n",
+        ),
+    ] {
+        let path = dir.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    let text = query_text(&dir, &["helper"]);
+    std::fs::remove_dir_all(&dir).unwrap();
+    for expected in [
+        "Symbols matching `helper`: 2\n",
+        "src/a.ts:1  in a.ts  imported by 1, may use 0\n",
+        "src/b.ts:1  in b.ts  imported by 0, may use 0\n",
+        "Query one by its id, such as `two::src/a.ts::helper`, for the statements that import it.",
+    ] {
+        assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
+    }
 }

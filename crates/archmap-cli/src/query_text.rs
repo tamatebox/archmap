@@ -13,17 +13,19 @@ use archmap_core::{
     Symbol, SymbolKind, UnmappedImport, UnmappedReason,
 };
 
-use crate::views::{ComponentView, FileView, QueryResult, UnmappedView};
+use crate::views::{ComponentView, FileView, Importer, QueryResult, SymbolView, UnmappedView};
 
 /// Default caps, lifted by `--verbose`.
 const MAX_SYMBOLS: usize = 30;
 const MAX_NEIGHBORS: usize = 30;
 const MAX_LOCATIONS: usize = 3;
+const MAX_IMPORTERS: usize = 5;
 
 struct Caps {
     symbols: usize,
     neighbors: usize,
     locations: usize,
+    importers: usize,
 }
 
 impl Caps {
@@ -33,12 +35,14 @@ impl Caps {
                 symbols: usize::MAX,
                 neighbors: usize::MAX,
                 locations: usize::MAX,
+                importers: usize::MAX,
             }
         } else {
             Caps {
                 symbols: MAX_SYMBOLS,
                 neighbors: MAX_NEIGHBORS,
                 locations: MAX_LOCATIONS,
+                importers: MAX_IMPORTERS,
             }
         }
     }
@@ -431,7 +435,7 @@ fn unmapped_name(
 
 fn symbol_list(
     out: &mut String,
-    symbols: &[&Symbol],
+    symbols: &[SymbolView],
     target: &str,
     rolled: &ArchitectureGraph,
     caps: &Caps,
@@ -439,15 +443,72 @@ fn symbol_list(
     let total = symbols.len();
     let shown = total.min(caps.symbols);
     let _ = writeln!(out, "Symbols matching `{target}`: {}", count(total, shown));
-    for symbol in symbols.iter().take(shown) {
+    for view in symbols.iter().take(shown) {
+        let mut line = format!(
+            "  {}  in {}",
+            symbol_line(view.symbol),
+            display(rolled, &view.symbol.component)
+        );
+        if let ([_, _, ..], Some(by_name), Some(may_use)) =
+            (symbols, &view.imported_by, &view.may_use)
+        {
+            let _ = write!(
+                line,
+                "  imported by {}, may use {}",
+                by_name.len(),
+                may_use.len()
+            );
+        }
+        let _ = writeln!(out, "{line}");
+    }
+    let mut truncated = shown < total;
+    match symbols {
+        [one] => truncated |= importers(out, one, rolled, caps),
+        [] => {}
+        [first, ..] => {
+            let _ = writeln!(
+                out,
+                "\nQuery one by its id, such as `{}`, for the statements that import it.",
+                first.symbol.id
+            );
+        }
+    }
+    truncated
+}
+
+/// The statements that import one symbol: those that take its name, then
+/// those that take its file whole.
+fn importers(out: &mut String, view: &SymbolView, rolled: &ArchitectureGraph, caps: &Caps) -> bool {
+    let (Some(by_name), Some(may_use)) = (&view.imported_by, &view.may_use) else {
+        let language = rolled
+            .component(&view.symbol.component)
+            .and_then(|c| c.language.as_deref())
+            .unwrap_or("this language");
         let _ = writeln!(
             out,
-            "  {}  in {}",
-            symbol_line(symbol),
-            display(rolled, &symbol.component)
+            "\nImported by: unknown (no evidence names imported files for {language})"
         );
+        return false;
+    };
+    let mut truncated = false;
+    if by_name.is_empty() {
+        let _ = writeln!(out, "\nImported by: none resolved");
+    } else {
+        truncated |= sites(out, "Imported by", "", by_name, caps);
     }
-    shown < total
+    if !may_use.is_empty() {
+        truncated |= sites(out, "May use", " (imports the whole module)", may_use, caps);
+    }
+    truncated
+}
+
+fn sites(out: &mut String, title: &str, aside: &str, list: &[Importer], caps: &Caps) -> bool {
+    let shown = list.len().min(caps.importers);
+    let _ = writeln!(out, "\n{title}: {}{aside}", count(list.len(), shown));
+    for importer in list.iter().take(shown) {
+        let _ = writeln!(out, "  {}", import_location(importer.evidence, 0, false));
+    }
+    shown < list.len()
 }
 
 /// `def pay(user: User) -> Payment  src/shop/billing/charge.py:25`. The
