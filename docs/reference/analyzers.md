@@ -168,7 +168,8 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   (`lazy(() => import('./chart'))`) their evidence is `local`, and they take the whole module (`*`);
   `require` and `import()` of a computed specifier are dynamic imports
 - an `import()` type (`typeof import('./m')`, `import('./m').Wallet`) is an `import` edge that takes types
-  only: `*`, or the first name after it
+  only: `*`, or the first name after it; calls on one line that load one module with one note are one
+  statement with the names of all (`import('./m').A | import('./m').B` takes `A` and `B`)
 - an import of a stylesheet, image or JSON file is an edge of the importer to itself whose evidence names the
   file, so `impact` on the file lists its importers, or to the package that holds the file when that is
   another package

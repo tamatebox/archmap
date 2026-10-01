@@ -540,6 +540,8 @@ struct Calls<'s> {
 
 impl Calls<'_> {
     /// A statement that takes `name`, as a type only when `type_only`.
+    /// Calls on one line that load one module the same way are one
+    /// statement, with the names of all (`import('./m').A | import('./m').B`).
     fn import(
         &mut self,
         specifier: String,
@@ -548,17 +550,37 @@ impl Calls<'_> {
         name: String,
         type_only: bool,
     ) {
+        let line = self.lines.line(start);
+        let local = !self.functions.is_empty();
+        let same = self
+            .imports
+            .iter_mut()
+            .rev()
+            .take_while(|i| i.line == line)
+            .find(|i| i.specifier == specifier && i.note == note && i.local == local);
+        if let Some(same) = same {
+            // a value wins over a type of the same name
+            if !same.names.contains(&name) {
+                same.names.push(name.clone());
+                if type_only {
+                    same.types.insert(name);
+                }
+            } else if !type_only {
+                same.types.remove(&name);
+            }
+            return;
+        }
         let types = match type_only {
             true => BTreeSet::from([name.clone()]),
             false => BTreeSet::new(),
         };
         self.imports.push(ImportStatement {
             specifier,
-            line: self.lines.line(start),
+            line,
             note,
             names: vec![name],
             types,
-            local: !self.functions.is_empty(),
+            local,
         });
     }
 
@@ -1599,6 +1621,37 @@ export default local;
         for import in &file.imports {
             assert!(import.types.is_empty(), "{import:?}");
         }
+    }
+
+    #[test]
+    fn calls_on_one_line_that_load_one_module_are_one_statement() {
+        // as a compiler writes declaration files
+        let file = parse(
+            Path::new("x.d.ts"),
+            "export type T = import('./m').A | import('./m').B | typeof import('./m');\n\
+             export declare const load: () => [typeof import('./m'), import('./n').C];\n",
+        )
+        .unwrap();
+        let imports: Vec<(&str, u32, Vec<&str>, usize)> = file
+            .imports
+            .iter()
+            .map(|i| {
+                (
+                    i.specifier.as_str(),
+                    i.line,
+                    i.names.iter().map(String::as_str).collect(),
+                    i.types.len(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            imports,
+            [
+                ("./m", 1, vec!["A", "B", "*"], 3),
+                ("./m", 2, vec!["*"], 1),
+                ("./n", 2, vec!["C"], 1),
+            ]
+        );
     }
 
     #[test]
