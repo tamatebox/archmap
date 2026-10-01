@@ -237,8 +237,8 @@ both and `app/utils/registry.py` reaches neither.
 
 `impact` also takes a symbol, by name or by id, and an import name that no
 component carries, which starts from the files that import it: `direct`
-names their components, `importers` lists the statements, and `module`
-stands in for `target`. For a symbol, the first step goes only through the
+names their components, `importers` lists the statements, and `module` names
+it while `target` is `null`. For a symbol, the first step goes only through the
 statements that `query` lists for the symbol: those that take its name
 (`importers`) and those that take its file whole (`may_use`); every later
 step is file by file as above, and dependencies without a target file on
@@ -283,8 +283,8 @@ for the one with evidence there.
 
 When the deciding kind has several matches, the answer lists every match of
 every kind as candidates instead: components with their path and kind,
-symbols with their location and importer counts, files, and directories as
-`./<path>`. A component id that is also the id of a symbol other than the
+symbols with their location, kind and importer counts, files, and
+directories as `./<path>`. A component id that is also the id of a symbol other than the
 module itself, and a name with `/` that is also another path under the root,
 give candidates too. Text shows the first 10 and counts the rest; JSON
 (`query --format json`, and `impact`, which prints JSON) has every one as
@@ -292,9 +292,10 @@ give candidates too. Text shows the first 10 and counts the rest; JSON
 Retry with one of the ids, or with the path as `./<path>`.
 
 Both commands exit 0 with an answer, 1 with candidates, and 2 when they
-cannot answer (nothing has that name, a path is outside the root, the
-repository cannot be read), as `check` exits 1 with findings and 2 when it
-cannot run.
+cannot answer (nothing has that name, a path is outside the root). Every
+command exits 2 when it cannot run (the repository cannot be read, an
+argument is wrong), and 1 only for a result to act on: candidates here,
+findings in `check`.
 
 When an id or a path answers for one component while others share its name
 (`dup` and `dup+typescript` after an id collision) or its path, `query`

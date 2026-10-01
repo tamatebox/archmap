@@ -1617,8 +1617,8 @@ fn several_symbols_of_one_name_count_their_importers() {
     assert_eq!(
         text,
         "`helper` names 2 symbols; query one of them by id or path:\n  \
-         two::src/a.ts::helper  src/a.ts:1  imported by 1, may use 0\n  \
-         two::src/b.ts::helper  src/b.ts:1  imported by 0, may use 0\n"
+         two::src/a.ts::helper  src/a.ts:1  function  imported by 1, may use 0\n  \
+         two::src/b.ts::helper  src/b.ts:1  function  imported by 0, may use 0\n"
     );
 }
 
@@ -1658,6 +1658,7 @@ fn impact_of_a_name_several_symbols_share_lists_their_ids() {
     assert_eq!(json["candidates"][0]["kind"], "symbol");
     assert_eq!(json["candidates"][0]["id"], "two::src/a.ts::helper");
     assert_eq!(json["candidates"][0]["imported_by"], 1);
+    assert_eq!(json["candidates"][0]["symbol_kind"], "function");
     assert_eq!(json["candidates"][1]["id"], "two::src/b.ts::helper");
 }
 
@@ -1746,7 +1747,7 @@ fn ids_that_the_shell_would_expand_are_quoted() {
     let picked = query_text(&dir, &["'two::src/(group)/a.ts::helper'"]);
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(
-        query.contains("\n  'two::src/(group)/a.ts::helper'  src/(group)/a.ts:1\n"),
+        query.contains("\n  'two::src/(group)/a.ts::helper'  src/(group)/a.ts:1  constant\n"),
         "{query}"
     );
     // the directory named like the symbols is one more candidate, never the

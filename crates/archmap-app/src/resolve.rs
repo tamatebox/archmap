@@ -11,7 +11,7 @@ use archmap_core::{
 };
 use serde::Serialize;
 
-use crate::query_text::{component_kind, shell_word};
+use crate::query_text::{component_kind, shell_word, symbol_kind};
 use crate::target::{directory_target, file_target, find_component, owner_of_shared_path};
 use crate::Format;
 
@@ -341,7 +341,11 @@ impl Candidates<'_> {
                     None => e.file.clone(),
                 })
                 .unwrap_or_default();
-            let mut line = format!("  {}  {at}", shell_word(s.id.as_str()));
+            let mut line = format!(
+                "  {}  {at}  {}",
+                shell_word(s.id.as_str()),
+                symbol_kind(s.kind)
+            );
             if let Some((by_name, may_use)) = importer_counts(full, s) {
                 let _ = write!(line, "  imported by {by_name}, may use {may_use}");
             }
@@ -365,6 +369,7 @@ impl Candidates<'_> {
     fn views(&self, full: &ArchitectureGraph) -> Vec<CandidateView<'_>> {
         let blank = CandidateView {
             kind: "",
+            symbol_kind: None,
             id: None,
             path: None,
             file: None,
@@ -382,6 +387,7 @@ impl Candidates<'_> {
             let counts = importer_counts(full, s);
             CandidateView {
                 kind: "symbol",
+                symbol_kind: Some(symbol_kind(s.kind)),
                 id: Some(s.id.as_str()),
                 file: s.location().map(|e| e.file.as_str()),
                 line: s.location().and_then(|e| e.line),
@@ -419,6 +425,9 @@ struct CandidatesView<'a> {
 #[derive(Clone, Copy, Serialize)]
 struct CandidateView<'a> {
     kind: &'static str,
+    /// For a symbol: what it is (`function`, `struct`, ...).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    symbol_kind: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     id: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]

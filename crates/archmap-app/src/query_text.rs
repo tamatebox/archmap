@@ -791,7 +791,7 @@ pub(crate) fn component_kind(kind: ComponentKind) -> &'static str {
     }
 }
 
-fn symbol_kind(kind: SymbolKind) -> &'static str {
+pub(crate) fn symbol_kind(kind: SymbolKind) -> &'static str {
     match kind {
         SymbolKind::Function => "function",
         SymbolKind::Struct => "struct",

@@ -17,9 +17,8 @@ pub struct ImpactResult<'a> {
     /// The target as given on the command line.
     pub requested: &'a str,
     pub depth: usize,
-    /// The component that changes; `None` for an import name that no
+    /// The component that changes; `null` for an import name that no
     /// component carries, given in `module`.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<ComponentId>,
     /// For an import name that no component carries: that name.
     #[serde(skip_serializing_if = "Option::is_none")]

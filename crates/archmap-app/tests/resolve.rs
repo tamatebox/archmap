@@ -164,9 +164,9 @@ fn query_and_impact_list_the_same_candidates_of_every_kind() {
     assert_eq!(query_as(&ws, "helper", Format::Json).output, impact.output);
     for expected in [
         "`helper` names 2 symbols and a directory; query one of them by id or path:\n",
-        "\n  'two::src/(group)/a.ts::helper'  src/(group)/a.ts:1\n",
+        "\n  'two::src/(group)/a.ts::helper'  src/(group)/a.ts:1  constant\n",
         // no import anywhere: no names recorded, so no counts
-        "\n  two::src/b.ts::helper  src/b.ts:1\n",
+        "\n  two::src/b.ts::helper  src/b.ts:1  constant\n",
         "\n  ./helper  directory\n",
     ] {
         assert!(
@@ -333,7 +333,13 @@ fn impact_on_an_import_name_follows_the_files_that_import_it() {
     assert_eq!(answer.found, Found::One);
     let value: serde_json::Value = serde_json::from_str(&answer.output).unwrap();
     assert_eq!(value["module"], "pytest", "{}", answer.output);
-    assert!(value.get("target").is_none(), "{}", answer.output);
+    // the key stays, so every answer has one shape
+    assert!(
+        value.as_object().unwrap().contains_key("target"),
+        "{}",
+        answer.output
+    );
+    assert!(value["target"].is_null(), "{}", answer.output);
     assert_eq!(value["direct"], serde_json::json!(["shop::scripts"]));
     assert_eq!(value["importers"]["shown"][0]["file"], "scripts/report.py");
     assert_eq!(value["importers"]["shown"][0]["line"], 2);
