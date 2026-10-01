@@ -101,14 +101,21 @@ impl Analyzer for TypeScriptAnalyzer {
         let manifests = read_manifests(ctx, &mut output.warnings);
         // the packages an install links by name: workspace members and the
         // targets of `file:` dependencies
-        let pnpm: BTreeMap<PathBuf, Vec<String>> = ctx
-            .files_named("pnpm-workspace.yaml")
-            .filter_map(|rel| {
-                let text = ctx.read_to_string(rel).ok()?;
-                let dir = rel.parent().unwrap_or(Path::new("")).to_path_buf();
-                Some((dir, workspace::pnpm_patterns(&text)))
-            })
-            .collect();
+        let mut pnpm: BTreeMap<PathBuf, Vec<String>> = BTreeMap::new();
+        for rel in ctx.files_named("pnpm-workspace.yaml") {
+            let Ok(text) = ctx.read_to_string(rel) else {
+                continue;
+            };
+            match workspace::pnpm_patterns(&text) {
+                Ok(patterns) => {
+                    let dir = rel.parent().unwrap_or(Path::new("")).to_path_buf();
+                    pnpm.insert(dir, patterns);
+                }
+                Err(err) => output
+                    .warnings
+                    .push(format!("{}: {err}", display_path(rel))),
+            }
+        }
         let links = workspace::links(&manifests, &pnpm);
         let members = links.members();
         let layout = layout::discover(

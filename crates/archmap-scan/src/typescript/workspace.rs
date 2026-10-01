@@ -120,94 +120,17 @@ fn globs(patterns: &[String]) -> (GlobSet, GlobSet) {
     (build(include), build(exclude))
 }
 
-/// The `packages:` list of a `pnpm-workspace.yaml`, read line by line: a
-/// block list (`- 'packages/*'`) or a flow list (`['a/*', 'b/*']`), over
-/// one line or several.
-pub(crate) fn pnpm_patterns(text: &str) -> Vec<String> {
-    let mut patterns = Vec::new();
-    let mut inside = false;
-    // the text of a flow list until its `]`
-    let mut flow: Option<String> = None;
-    for line in text.lines() {
-        let line = without_comment(line);
-        if let Some(list) = &mut flow {
-            list.push_str(line);
-            if line.contains(']') {
-                patterns.extend(items(list));
-                flow = None;
-            }
-            continue;
-        }
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if !line.starts_with([' ', '\t', '-']) {
-            inside = false;
-            match trimmed.strip_prefix("packages:").map(str::trim) {
-                Some("") => inside = true,
-                Some(list) if list.starts_with('[') && list.contains(']') => {
-                    patterns.extend(items(list));
-                }
-                Some(list) if list.starts_with('[') => flow = Some(list.to_owned()),
-                _ => {}
-            }
-            continue;
-        }
-        if let (true, Some(item)) = (inside, trimmed.strip_prefix('-')) {
-            let item = unquote(item.trim());
-            if !item.is_empty() {
-                patterns.push(item.to_owned());
-            }
-        }
-    }
-    patterns
-}
-
-/// `line` up to a `#` comment: one at the start or after a space, outside
-/// quotes.
-fn without_comment(line: &str) -> &str {
-    let mut quote = None;
-    let mut previous = ' ';
-    for (i, c) in line.char_indices() {
-        match (quote, c) {
-            (None, '\'' | '"') => quote = Some(c),
-            (Some(q), _) if c == q => quote = None,
-            (None, '#') if previous.is_whitespace() => return &line[..i],
-            _ => {}
-        }
-        previous = c;
-    }
-    line
-}
-
-/// The items of a flow list, `[` to `]`, split at commas outside quotes.
-fn items(list: &str) -> Vec<String> {
-    let inner = list.trim().trim_start_matches('[');
-    let inner = inner.rsplit_once(']').map_or(inner, |(items, _)| items);
-    let mut items = Vec::new();
-    let (mut quote, mut start) = (None, 0);
-    for (i, c) in inner.char_indices() {
-        match (quote, c) {
-            (None, '\'' | '"') => quote = Some(c),
-            (Some(q), _) if c == q => quote = None,
-            (None, ',') => {
-                items.push(&inner[start..i]);
-                start = i + 1;
-            }
-            _ => {}
-        }
-    }
-    items.push(&inner[start..]);
-    items
+/// The `packages:` list of a `pnpm-workspace.yaml`, none when it has none;
+/// `Err` with the parser's message for a file that is no YAML.
+pub(crate) fn pnpm_patterns(text: &str) -> Result<Vec<String>, String> {
+    let documents = yaml_rust2::YamlLoader::load_from_str(text).map_err(|e| e.to_string())?;
+    Ok(documents
+        .first()
+        .and_then(|document| document["packages"].as_vec())
         .into_iter()
-        .map(|item| unquote(item.trim()).to_owned())
-        .filter(|item| !item.is_empty())
-        .collect()
-}
-
-fn unquote(item: &str) -> &str {
-    item.trim_matches(|c| c == '\'' || c == '"')
+        .flatten()
+        .filter_map(|item| item.as_str().map(str::to_owned))
+        .collect())
 }
 
 /// `path` with `.` and `..` resolved lexically; `None` when it leaves the
@@ -316,23 +239,39 @@ mod tests {
     #[test]
     fn pnpm_reads_comments_and_flow_lists() {
         let block = "packages:\n  - 'packages/*' # libraries\n  - apps/* # apps\n  - \"a#b/*\"\n";
-        assert_eq!(pnpm_patterns(block), ["packages/*", "apps/*", "a#b/*"]);
+        assert_eq!(
+            pnpm_patterns(block).unwrap(),
+            ["packages/*", "apps/*", "a#b/*"]
+        );
         let flow = "packages: ['a/*', \"b/{c,d}\"] # all\ncatalog:\n  react: ^19\n";
-        assert_eq!(pnpm_patterns(flow), ["a/*", "b/{c,d}"]);
+        assert_eq!(pnpm_patterns(flow).unwrap(), ["a/*", "b/{c,d}"]);
         let lines = "packages: [\n  'a/*', # first\n  b/*\n]\ncatalog: {}\n";
-        assert_eq!(pnpm_patterns(lines), ["a/*", "b/*"]);
+        assert_eq!(pnpm_patterns(lines).unwrap(), ["a/*", "b/*"]);
+        // YAML that a reader by lines misses: an anchor, a key indented
+        let anchored = "defaults: &all\n  - 'libs/*'\npackages: *all\n";
+        assert_eq!(pnpm_patterns(anchored).unwrap(), ["libs/*"]);
+        // no list: no members
+        assert_eq!(
+            pnpm_patterns("catalog:\n  react: ^19\n").unwrap(),
+            Vec::<String>::new()
+        );
+        // a file that is no YAML says why
+        assert!(pnpm_patterns("packages: [\n  'a/*'\n").is_err());
     }
 
     #[test]
     fn pnpm_lists_its_packages() {
         let text = "packages:\n  - 'packages/*'\n  - \"apps/*\"\n  # tests\n  - '!**/test/**'\n\
                     catalog:\n  react: ^19\n";
-        assert_eq!(pnpm_patterns(text), ["packages/*", "apps/*", "!**/test/**"]);
+        assert_eq!(
+            pnpm_patterns(text).unwrap(),
+            ["packages/*", "apps/*", "!**/test/**"]
+        );
         let manifests: BTreeMap<PathBuf, PackageJson> = [("packages/a", named("a"))]
             .into_iter()
             .map(|(dir, m)| (PathBuf::from(dir), m))
             .collect();
-        let pnpm = BTreeMap::from([(PathBuf::new(), pnpm_patterns(text))]);
+        let pnpm = BTreeMap::from([(PathBuf::new(), pnpm_patterns(text).unwrap())]);
         assert_eq!(
             links(&manifests, &pnpm),
             Links::from(BTreeMap::from([(
