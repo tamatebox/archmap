@@ -898,9 +898,19 @@ fn emit_imports(
                         "import {top}, next to the importing file \
                          (assumes its directory is on sys.path)"
                     );
+                    // the names taken from the file itself, else all of it
+                    let names: Vec<String> = if full == top && !named.is_empty() {
+                        named.iter().map(|n| (*n).clone()).collect()
+                    } else {
+                        vec![WHOLE_MODULE.to_owned()]
+                    };
                     output.fragment.push_edge(
-                        Edge::new(owner.clone(), owner.clone(), EdgeKind::Import)
-                            .with_evidence(evidence().with_note(note).pointing_at(sibling)),
+                        Edge::new(owner.clone(), owner.clone(), EdgeKind::Import).with_evidence(
+                            evidence()
+                                .with_note(note)
+                                .pointing_at(sibling)
+                                .taking(names),
+                        ),
                     );
                     continue;
                 }

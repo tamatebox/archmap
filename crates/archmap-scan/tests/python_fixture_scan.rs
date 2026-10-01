@@ -765,6 +765,7 @@ fn imports_of_files_next_to_the_importer_resolve_to_them() {
                 e.line,
                 e.target.as_deref(),
                 e.note.as_deref(),
+                e.names.iter().map(String::as_str).collect::<Vec<_>>(),
             )
         })
         .collect();
@@ -775,13 +776,16 @@ fn imports_of_files_next_to_the_importer_resolve_to_them() {
                 "scripts/report.py",
                 Some(3),
                 Some("scripts/helpers.py"),
-                Some("import helpers, next to the importing file (assumes its directory is on sys.path)")
+                Some("import helpers, next to the importing file (assumes its directory is on sys.path)"),
+                // the whole module, and the name taken from it
+                vec!["*"],
             ),
             (
                 "scripts/report.py",
                 Some(4),
                 Some("scripts/backfill.py"),
-                Some("import backfill, next to the importing file (assumes its directory is on sys.path)")
+                Some("import backfill, next to the importing file (assumes its directory is on sys.path)"),
+                vec!["backfill_payments"],
             ),
         ]
     );
