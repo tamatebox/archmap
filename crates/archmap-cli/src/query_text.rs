@@ -593,8 +593,10 @@ fn importers(
         return false;
     };
     let mut truncated = false;
+    // the component that declares it, before roll-up folds it away
     let script = full
-        .component(&view.symbol.component)
+        .symbol(&view.symbol.id)
+        .and_then(|s| full.component(&s.component))
         .is_some_and(|c| c.kind == ComponentKind::Script);
     if by_name.is_empty() && script {
         let _ = writeln!(

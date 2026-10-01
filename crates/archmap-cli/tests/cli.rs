@@ -1852,13 +1852,16 @@ fn a_script_shows_its_kind_and_globals() {
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
     }
-    let text = ts_stdout(&["query", "VERSION"]);
-    assert!(
-        text.contains(
-            "Imported by: none (a script declares it globally: what uses it is not traced)"
-        ),
-        "{text}"
-    );
+    // at any depth, where the script folds into its package
+    for depth in ["2", "0"] {
+        let text = ts_stdout(&["query", "VERSION", "--depth", depth]);
+        assert!(
+            text.contains(
+                "Imported by: none (a script declares it globally: what uses it is not traced)"
+            ),
+            "{text}"
+        );
+    }
 }
 
 #[test]
