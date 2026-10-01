@@ -41,7 +41,9 @@ pub(crate) fn links(
             let Some(path) = &declaration.path else {
                 continue;
             };
-            let target = normalize(&dir.join(path));
+            let Some(target) = normalize(&dir.join(path)) else {
+                continue;
+            };
             if manifests.contains_key(&target) {
                 links.entry(declaration.name.clone()).or_insert(target);
             }
@@ -71,21 +73,42 @@ fn globs(patterns: &[String]) -> (GlobSet, GlobSet) {
     (build(include), build(exclude))
 }
 
-/// The `packages:` list of a `pnpm-workspace.yaml`, read line by line.
+/// The `packages:` list of a `pnpm-workspace.yaml`, read line by line: a
+/// block list (`- 'packages/*'`) or a flow list (`['a/*', 'b/*']`), over
+/// one line or several.
 pub(crate) fn pnpm_patterns(text: &str) -> Vec<String> {
     let mut patterns = Vec::new();
     let mut inside = false;
+    // the text of a flow list until its `]`
+    let mut flow: Option<String> = None;
     for line in text.lines() {
+        let line = without_comment(line);
+        if let Some(list) = &mut flow {
+            list.push_str(line);
+            if line.contains(']') {
+                patterns.extend(items(list));
+                flow = None;
+            }
+            continue;
+        }
         let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+        if trimmed.is_empty() {
             continue;
         }
         if !line.starts_with([' ', '\t', '-']) {
-            inside = trimmed == "packages:";
+            inside = false;
+            match trimmed.strip_prefix("packages:").map(str::trim) {
+                Some("") => inside = true,
+                Some(list) if list.starts_with('[') && list.contains(']') => {
+                    patterns.extend(items(list));
+                }
+                Some(list) if list.starts_with('[') => flow = Some(list.to_owned()),
+                _ => {}
+            }
             continue;
         }
         if let (true, Some(item)) = (inside, trimmed.strip_prefix('-')) {
-            let item = item.trim().trim_matches(|c| c == '\'' || c == '"');
+            let item = unquote(item.trim());
             if !item.is_empty() {
                 patterns.push(item.to_owned());
             }
@@ -94,19 +117,69 @@ pub(crate) fn pnpm_patterns(text: &str) -> Vec<String> {
     patterns
 }
 
-/// `path` with `.` and `..` resolved lexically.
-fn normalize(path: &Path) -> PathBuf {
+/// `line` up to a `#` comment: one at the start or after a space, outside
+/// quotes.
+fn without_comment(line: &str) -> &str {
+    let mut quote = None;
+    let mut previous = ' ';
+    for (i, c) in line.char_indices() {
+        match (quote, c) {
+            (None, '\'' | '"') => quote = Some(c),
+            (Some(q), _) if c == q => quote = None,
+            (None, '#') if previous.is_whitespace() => return &line[..i],
+            _ => {}
+        }
+        previous = c;
+    }
+    line
+}
+
+/// The items of a flow list, `[` to `]`, split at commas outside quotes.
+fn items(list: &str) -> Vec<String> {
+    let inner = list.trim().trim_start_matches('[');
+    let inner = inner.rsplit_once(']').map_or(inner, |(items, _)| items);
+    let mut items = Vec::new();
+    let (mut quote, mut start) = (None, 0);
+    for (i, c) in inner.char_indices() {
+        match (quote, c) {
+            (None, '\'' | '"') => quote = Some(c),
+            (Some(q), _) if c == q => quote = None,
+            (None, ',') => {
+                items.push(&inner[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    items.push(&inner[start..]);
+    items
+        .into_iter()
+        .map(|item| unquote(item.trim()).to_owned())
+        .filter(|item| !item.is_empty())
+        .collect()
+}
+
+fn unquote(item: &str) -> &str {
+    item.trim_matches(|c| c == '\'' || c == '"')
+}
+
+/// `path` with `.` and `..` resolved lexically; `None` when it leaves the
+/// root, where a directory of the same name is another one.
+fn normalize(path: &Path) -> Option<PathBuf> {
     let mut out = PathBuf::new();
     for component in path.components() {
         match component {
             PathComponent::ParentDir => {
-                out.pop();
+                if !out.pop() {
+                    return None;
+                }
             }
             PathComponent::CurDir => {}
-            other => out.push(other.as_os_str()),
+            PathComponent::Normal(name) => out.push(name),
+            PathComponent::RootDir | PathComponent::Prefix(_) => return None,
         }
     }
-    out
+    Some(out)
 }
 
 #[cfg(test)]
@@ -164,6 +237,34 @@ mod tests {
                 ("web", "apps/web"),
             ]
         );
+    }
+
+    #[test]
+    fn a_path_dependency_outside_the_root_links_nothing() {
+        let mut web = named("web");
+        web.declarations.push(Declaration {
+            name: "shared".into(),
+            section: Section::Dependencies,
+            line: Some(3),
+            // `shared/` beside the checkout, not the one inside it
+            path: Some("../../../shared".into()),
+        });
+        let manifests: BTreeMap<PathBuf, PackageJson> =
+            [("apps/web", web), ("shared", named("shared"))]
+                .into_iter()
+                .map(|(dir, m)| (PathBuf::from(dir), m))
+                .collect();
+        assert_eq!(links(&manifests, &BTreeMap::new()), BTreeMap::new());
+    }
+
+    #[test]
+    fn pnpm_reads_comments_and_flow_lists() {
+        let block = "packages:\n  - 'packages/*' # libraries\n  - apps/* # apps\n  - \"a#b/*\"\n";
+        assert_eq!(pnpm_patterns(block), ["packages/*", "apps/*", "a#b/*"]);
+        let flow = "packages: ['a/*', \"b/{c,d}\"] # all\ncatalog:\n  react: ^19\n";
+        assert_eq!(pnpm_patterns(flow), ["a/*", "b/{c,d}"]);
+        let lines = "packages: [\n  'a/*', # first\n  b/*\n]\ncatalog: {}\n";
+        assert_eq!(pnpm_patterns(lines), ["a/*", "b/*"]);
     }
 
     #[test]

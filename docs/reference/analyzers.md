@@ -194,7 +194,7 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
 - the packages an install links by name are linked in the resolver's view as `node_modules/<name>`: the members
   of a workspace (`workspaces` in a `package.json`, an array or `{ "packages": [..] }`, and
   `pnpm-workspace.yaml`; `!` patterns leave members out) and the directories of `file:`, `link:` and `portal:`
-  dependencies, never another package of the same name; a bare import of one resolves to its files through its
+  dependencies inside the scanned root, never another package of the same name; a bare import of one resolves to its files through its
   `exports` or `main`, matching the conditions the scanned tsconfigs turn on with `customConditions` (when a
   `types` condition leads outside the scan, the next condition answers; a declaration file the scan holds is
   what the import points at, as tsc reads it), one whose
