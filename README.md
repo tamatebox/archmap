@@ -165,6 +165,11 @@ can use a copy of it.
     and a tsconfig `extends` it cannot load is dropped with a warning while the file's own `paths` still apply
   - an import of a stylesheet, image or JSON file is an edge of the importer to itself whose evidence names the
     file, so `impact` on the file lists its importers
+  - a named or default import that reaches a name through re-exports (`export { a } from`, `export *`,
+    `export * as ns`, `import { a } from 'm'; export { a }`) also has evidence for the file that defines the
+    name, noted `import via <file>:<line>` with the first re-export on the way, so `query` and `impact` on the
+    defining file list importers that go through barrels; a name not found, `export *` sources that disagree,
+    a cycle or more than 32 hops leave only the loaded file, and namespace and side-effect imports never walk
   - a bare specifier that resolves to no file is matched by package name to the closest `package.json` above
     the importing file that declares it, so a monorepo root's dependencies count for its packages (`@types/x`
     covers `x`): a required declaration gives an edge, another an import without an edge
@@ -219,14 +224,13 @@ than Python's: a module file rather than a package directory.
 For TypeScript and JavaScript, only `import` and `export ... from` statements
 are read so far: `require`, `import()` and test mocks come next, and until
 then a type-only import is an ordinary edge, so `cycles.forbid` also reports
-cycles that only types close. A named import through a barrel points at the
-barrel rather than at the file that defines the name, CommonJS exports give no
-symbols, workspace packages are not linked, and two packages with one name
-merge. Aliases defined only in a bundler configuration, `jsconfig.json` and
-Deno import maps are not read: an import through such an alias is
-`unresolved` when a tsconfig or jsconfig declares its pattern, `local name`
-when it names a top directory of the source root (`@components/button`), and
-`undeclared` otherwise (`@ui/card` defined only in `vite.config.ts`).
+cycles that only types close. CommonJS exports give no symbols, workspace
+packages are not linked, and two packages with one name merge. Aliases defined
+only in a bundler configuration, `jsconfig.json` and Deno import maps are not
+read: an import through such an alias is `unresolved` when a tsconfig or
+jsconfig declares its pattern, `local name` when it names a top directory of
+the source root (`@components/button`), and `undeclared` otherwise (`@ui/card`
+defined only in `vite.config.ts`).
 
 ## Usage
 

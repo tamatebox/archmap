@@ -85,6 +85,12 @@ fn packages_directories_and_files() {
             ),
             ("ts-shop::src/app", "app", "ts-shop", "typescript"),
             (
+                "ts-shop::src/app/checkout.ts",
+                "app/checkout.ts",
+                "ts-shop::src/app",
+                "typescript"
+            ),
+            (
                 "ts-shop::src/app/page.tsx",
                 "app/page.tsx",
                 "ts-shop::src/app",
@@ -152,8 +158,8 @@ fn packages_directories_and_files() {
     assert_eq!(
         graph.meta.coverage.get("typescript"),
         Some(&LanguageCoverage {
-            files: 11,
-            read: Some(11)
+            files: 12,
+            read: Some(12)
         })
     );
     assert_eq!(
@@ -348,6 +354,18 @@ fn every_re_export_is_an_import_edge_noted_export() {
             "src/components/index.ts:1",
             "src/components/button.tsx",
         ),
+        (
+            "ts-shop",
+            "ts-shop::src/lib/limits.ts",
+            "src/index.ts:3",
+            "src/lib/limits.ts",
+        ),
+        (
+            "ts-shop",
+            "ts-shop::src/lib/money.ts",
+            "src/index.ts:4",
+            "src/lib/money.ts",
+        ),
     ] {
         let row = (
             from.to_owned(),
@@ -536,6 +554,12 @@ fn exported_declarations_of_files_that_are_not_tests_are_symbols() {
                 SymbolKind::Constant,
                 "src/components/button.tsx:14",
                 "export const Fragment"
+            ),
+            row(
+                "ts-shop::src/app/checkout.ts::total",
+                SymbolKind::Function,
+                "src/app/checkout.ts:5",
+                "export function total(n: number): string"
             ),
             row(
                 "ts-shop::src/app/page.tsx::Page",
@@ -967,4 +991,65 @@ fn a_broken_package_json_is_a_warning() {
         .graph
         .symbol(&archmap_core::SymbolId::new(format!("{name}::a.ts::a")))
         .is_some());
+}
+
+#[test]
+fn named_imports_reach_the_files_that_define_the_names() {
+    let edges = imports(&scan_fixture());
+    let via = |from: &str, to: &str, at: &str, target: &str, through: &str| {
+        (
+            from.to_owned(),
+            to.to_owned(),
+            at.to_owned(),
+            Some(target.to_owned()),
+            format!("import via {through}"),
+        )
+    };
+    for row in [
+        via(
+            "ts-shop::src/app/page.tsx",
+            "ts-shop::src/components/button.tsx",
+            "src/app/page.tsx:6",
+            "src/components/button.tsx",
+            "src/components/index.ts:1",
+        ),
+        via(
+            "ts-shop::src/app/checkout.ts",
+            "ts-shop::src/lib/money.ts",
+            "src/app/checkout.ts:1",
+            "src/lib/money.ts",
+            "src/index.ts:1",
+        ),
+        via(
+            "ts-shop::src/app/checkout.ts",
+            "ts-shop::src/components/button.tsx",
+            "src/app/checkout.ts:1",
+            "src/components/button.tsx",
+            "src/index.ts:2",
+        ),
+        via(
+            "ts-shop::src/app/checkout.ts",
+            "ts-shop::src/lib/limits.ts",
+            "src/app/checkout.ts:1",
+            "src/lib/limits.ts",
+            "src/index.ts:6",
+        ),
+    ] {
+        assert!(edges.contains(&row), "missing {row:?}");
+    }
+    // nothing else walks: namespace and side-effect imports, `Missing`,
+    // direct imports and the re-export statements themselves
+    let walked: Vec<_> = edges
+        .iter()
+        .filter(|(.., note)| note.contains(" via "))
+        .collect();
+    assert_eq!(walked.len(), 4, "{walked:#?}");
+    // the loaded file keeps its own evidence
+    assert!(edges.contains(&(
+        "ts-shop::src/app/checkout.ts".to_owned(),
+        "ts-shop".to_owned(),
+        "src/app/checkout.ts:1".to_owned(),
+        Some("src/index.ts".to_owned()),
+        "import".to_owned(),
+    )));
 }

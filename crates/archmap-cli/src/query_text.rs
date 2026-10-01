@@ -470,8 +470,9 @@ fn display(graph: &ArchitectureGraph, id: &ComponentId) -> String {
     }
 }
 
-/// `src/a.py:3 -> src/b.py (local)`: where the statement is, the file it
-/// loads when the evidence names one (and how many more), and `(local)` when
+/// `src/a.py:3 -> src/b.py (via src/c.py:4) (local)`: where the statement
+/// is, the file it loads when the evidence names one (and how many more),
+/// the re-export it went through when its note says so, and `(local)` when
 /// it sits inside a function body, so it runs only when the function is
 /// called.
 fn import_location(evidence: &Evidence, more_files: usize, show_target: bool) -> String {
@@ -481,6 +482,13 @@ fn import_location(evidence: &Evidence, more_files: usize, show_target: bool) ->
         if more_files > 0 {
             let _ = write!(out, " (+{})", plural(more_files, "file"));
         }
+    }
+    if let Some((_, place)) = evidence
+        .note
+        .as_deref()
+        .and_then(|note| note.split_once(" via "))
+    {
+        let _ = write!(out, " (via {place})");
     }
     if evidence.scope == Some(Scope::Local) {
         out.push_str(" (local)");

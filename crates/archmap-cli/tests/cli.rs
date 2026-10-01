@@ -930,7 +930,10 @@ fn query_a_rust_file_lists_the_statements_that_import_it() {
     // an import through a re-export counts for the file that defines the item
     let invoice = query_text(&fixture_root(), &["crates/lib_core/src/billing/invoice.rs"]);
     assert!(
-        invoice.contains("\nImported by: 1\n  app::config  1 import: crates/app/src/config.rs:1\n"),
+        invoice.contains(
+            "\nImported by: 1\n  app::config  1 import: crates/app/src/config.rs:1 \
+             (via crates/lib_core/src/lib.rs:7)\n"
+        ),
         "{invoice}"
     );
 }
@@ -1377,7 +1380,7 @@ fn ts_summary_counts_both_languages_and_why_imports_have_no_edge() {
         .unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
     for expected in [
-        "typescript  files: 11  read: 11  imports without an edge: 7 (undeclared 1, extra or dev dependency 2, local name 1, unresolved 3)",
+        "typescript  files: 12  read: 12  imports without an edge: 7 (undeclared 1, extra or dev dependency 2, local name 1, unresolved 3)",
         "javascript  files: 1  read: 1  imports without an edge: 0",
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
@@ -1430,5 +1433,21 @@ fn a_python_package_keeps_its_files_when_scripts_sit_below_it() {
     assert!(
         shallow.starts_with("myapp (module, python) at myapp, depth 1\n"),
         "{shallow}"
+    );
+}
+
+#[test]
+fn a_ts_file_query_shows_importers_that_come_through_re_exports() {
+    let text = ts_stdout(&["query", "src/components/button.tsx"]);
+    for expected in [
+        "src/app/page.tsx:6 (via src/components/index.ts:1)",
+        "src/app/checkout.ts:1 (via src/index.ts:2)",
+    ] {
+        assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
+    }
+    let text = ts_stdout(&["query", "src/app/checkout.ts"]);
+    assert!(
+        text.contains("src/app/checkout.ts:1 -> src/lib/limits.ts (via src/index.ts:6)"),
+        "{text}"
     );
 }

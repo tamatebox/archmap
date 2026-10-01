@@ -16,11 +16,14 @@
 //!   `ext:npm:*` components; `devDependencies` and `optionalDependencies`
 //!   are declared but give no edge
 //! - `import` (`import x = require('m')` too) and `export ... from`
-//!   statements become `Import` edges,
-//!   resolved by `oxc_resolver` through each file's tsconfig over the
-//!   scanned files only (see [`fs`]); an import of a stylesheet, image or
-//!   JSON file is an edge of the importer to itself whose evidence names the
-//!   file
+//!   statements become `Import` edges, resolved by `oxc_resolver` through
+//!   each file's tsconfig over the scanned files only (see [`fs`]); an
+//!   import of a stylesheet, image or JSON file is an edge of the importer
+//!   to itself whose evidence names the file
+//! - a named or default import that reaches a name through re-exports gets
+//!   one more edge for each file that defines a name it takes, noted with
+//!   the first re-export on the way (`import via src/index.ts:2`; see
+//!   [`exports`])
 //! - a bare specifier that resolves to no file is matched by package name to
 //!   the closest `package.json` above the importing file that declares it
 //!   (`@types/x` covers `x`): a required declaration gives an edge, another
@@ -32,10 +35,10 @@
 //! - exported declarations become symbols (see [`source`]), except in test,
 //!   story and mock files
 //!
-//! Not read yet: `require`, `import()`, test mocks, type-only scope, the
-//! file that defines a name imported through a re-export, CommonJS exports,
-//! scripts and workspaces.
+//! Not read yet: `require`, `import()`, test mocks, type-only scope,
+//! CommonJS exports, scripts and workspaces.
 
+mod exports;
 mod fs;
 mod language;
 mod layout;
@@ -101,6 +104,9 @@ impl Analyzer for TypeScriptAnalyzer {
             resolve::ImportResolver::new(ctx.root(), fs::ViewFs::new(ctx, &mut output.warnings));
         let aliases = resolve::Aliases::collect(ctx);
         let mut problems = BTreeSet::new();
+        // Every file is parsed and its imports resolved before any import is
+        // emitted: a walk through re-exports reads the files it passes.
+        let mut files: Vec<ReadFile> = Vec::new();
         for file in &code {
             let Some(owner) = layout.owners.get(*file) else {
                 continue;
@@ -129,27 +135,61 @@ impl Analyzer for TypeScriptAnalyzer {
             if !layout::is_test_file(file) {
                 emit_symbols(owner, file, &parsed, &mut output);
             }
-            let package = &layout.packages[owner.package];
+            let resolved = parsed
+                .imports
+                .iter()
+                .map(|import| resolver.resolve(file, &import.specifier, &mut problems))
+                .collect();
+            files.push(ReadFile {
+                file,
+                owner,
+                imports: parsed.imports,
+                exports: parsed.exports,
+                resolved,
+            });
+        }
+        let modules: BTreeMap<PathBuf, exports::Module> = files
+            .iter_mut()
+            .map(|read| {
+                let loads = read
+                    .resolved
+                    .iter()
+                    .map(|resolved| match resolved {
+                        Resolved::File(target) if is_code(target) => Some(target.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                let exports = std::mem::take(&mut read.exports);
+                (read.file.to_path_buf(), exports::Module { exports, loads })
+            })
+            .collect();
+        let mut definitions = exports::Definitions::new(&modules);
+        for read in &files {
+            let package = &layout.packages[read.owner.package];
             let imports = Imports {
                 layout: &layout,
-                owner,
+                owner: read.owner,
                 package,
                 own_name: package
                     .manifest
                     .as_ref()
                     .and_then(|dir| manifests.get(dir))
                     .and_then(|m| m.name.as_deref()),
-                manifests: file
+                manifests: read
+                    .file
                     .ancestors()
                     .skip(1)
                     .filter_map(|dir| manifests.get_key_value(dir))
                     .map(|(dir, m)| (dir.as_path(), m))
                     .collect(),
                 aliases: &aliases,
-                file,
+                file: read.file,
             };
-            for import in &parsed.imports {
-                imports.emit(import, &resolver, &mut problems, &mut output);
+            for (import, resolved) in read.imports.iter().zip(&read.resolved) {
+                imports.emit(import, resolved, &mut output);
+                if let Resolved::File(loaded) = resolved {
+                    imports.emit_definitions(import, loaded, &mut definitions, &mut output);
+                }
             }
         }
         output.warnings.extend(problems);
@@ -294,6 +334,16 @@ fn emit_symbols(owner: &Owner, file: &Path, parsed: &ParsedFile, output: &mut An
     }
 }
 
+/// A code file once parsed, its symbols already emitted, with what each of
+/// its imports resolves to.
+struct ReadFile<'a> {
+    file: &'a Path,
+    owner: &'a Owner,
+    imports: Vec<ImportStatement>,
+    exports: exports::ExportTable,
+    resolved: Vec<Resolved>,
+}
+
 /// What the imports of one file resolve against.
 struct Imports<'a> {
     layout: &'a Layout,
@@ -367,27 +417,21 @@ impl Imports<'_> {
         }
     }
 
-    fn emit(
-        &self,
-        import: &ImportStatement,
-        resolver: &resolve::ImportResolver,
-        problems: &mut BTreeSet<String>,
-        output: &mut AnalyzerOutput,
-    ) {
+    fn emit(&self, import: &ImportStatement, resolved: &Resolved, output: &mut AnalyzerOutput) {
         let from = &self.owner.component;
         let spec = &import.specifier;
-        match resolver.resolve(self.file, spec, problems) {
+        match resolved {
             Resolved::Builtin => {}
             Resolved::File(target) => {
-                if target == self.file {
+                if target.as_path() == self.file {
                     return;
                 }
                 // A stylesheet, image or JSON file is no component: the
                 // importer depends on it as a file.
-                let to = if is_code(&target) {
+                let to = if is_code(target) {
                     self.layout
                         .owners
-                        .get(&target)
+                        .get(target)
                         .map_or_else(|| from.clone(), |owner| owner.component.clone())
                 } else {
                     from.clone()
@@ -396,7 +440,7 @@ impl Imports<'_> {
                     Edge::new(from.clone(), to, EdgeKind::Import).with_evidence(
                         self.evidence(import)
                             .with_note(import.note)
-                            .pointing_at(display_path(&target)),
+                            .pointing_at(display_path(target)),
                     ),
                 );
             }
@@ -489,6 +533,48 @@ impl Imports<'_> {
                     }
                 }
             }
+        }
+    }
+
+    /// One edge for each file that defines a name the import takes from
+    /// `loaded` through re-exports, noted with the first re-export on the
+    /// way (`import via src/index.ts:2`). The loaded file keeps its own
+    /// edge from [`Imports::emit`].
+    fn emit_definitions(
+        &self,
+        import: &ImportStatement,
+        loaded: &Path,
+        definitions: &mut exports::Definitions,
+        output: &mut AnalyzerOutput,
+    ) {
+        let mut done = BTreeSet::new();
+        for name in &import.names {
+            let Some(definition) = definitions.of(loaded, name) else {
+                continue;
+            };
+            if definition.file == self.file
+                || definition.file == loaded
+                || !done.insert(definition.file.clone())
+            {
+                continue;
+            }
+            let Some(owner) = self.layout.owners.get(&definition.file) else {
+                continue;
+            };
+            let (via, line) = &definition.via;
+            let note = format!("{} via {}:{line}", import.note, display_path(via));
+            output.fragment.push_edge(
+                Edge::new(
+                    self.owner.component.clone(),
+                    owner.component.clone(),
+                    EdgeKind::Import,
+                )
+                .with_evidence(
+                    self.evidence(import)
+                        .with_note(note)
+                        .pointing_at(display_path(&definition.file)),
+                ),
+            );
         }
     }
 }
