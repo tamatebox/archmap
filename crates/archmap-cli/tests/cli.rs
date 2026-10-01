@@ -2304,3 +2304,32 @@ fn coverage_counts_an_import_under_the_language_of_its_file() {
         "{text}"
     );
 }
+
+#[test]
+fn only_a_walked_note_reads_as_via() {
+    // specifiers that contain ` via `, beside one import through a re-export
+    let repo = temp_repo("via-notes");
+    std::fs::create_dir_all(repo.join("web/src")).unwrap();
+    std::fs::write(
+        repo.join("web/package.json"),
+        "{ \"name\": \"web\", \"dependencies\": { \"pkg\": \"1\" } }",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("web/src/m.ts"),
+        "import x from './a via b';\nimport y from 'pkg/c via d';\nimport { z } from './z';\n\
+         export const all = [x, y, z];\n",
+    )
+    .unwrap();
+    std::fs::write(repo.join("web/src/z.ts"), "export { z } from './zz';\n").unwrap();
+    std::fs::write(repo.join("web/src/zz.ts"), "export const z = 1;\n").unwrap();
+    let text = query_text(&repo, &["web/src/m.ts"]);
+    std::fs::remove_dir_all(&repo).unwrap();
+    for expected in [
+        "1 import: web/src/m.ts:2\n",
+        "1 import: web/src/m.ts:3 -> web/src/zz.ts (via web/src/z.ts:1)\n",
+        "unresolved  1 import: web/src/m.ts:1\n",
+    ] {
+        assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
+    }
+}

@@ -22,6 +22,19 @@ pub(crate) enum Counted {
     Through,
 }
 
+/// The re-export a statement went through, `src/index.ts:2` of
+/// `import via src/index.ts:2`: the analyzers note a walk as one word (the
+/// statement's own note: `import`, `require`, `vi.mock`, `use`), ` via `
+/// and the place. A note that only contains ` via `, as a specifier written
+/// with it does (`import ./a via b: no file matches`), is none.
+pub(crate) fn via_place(note: &str) -> Option<&str> {
+    let (word, place) = note.split_once(" via ")?;
+    let line = place.rsplit_once(':')?.1;
+    let one_word = !word.is_empty() && !word.contains(char::is_whitespace);
+    let numbered = !line.is_empty() && line.bytes().all(|b| b.is_ascii_digit());
+    (one_word && numbered).then_some(place)
+}
+
 /// What the rule needs to know of the whole graph.
 pub(crate) struct Pairs<'g> {
     full: &'g ArchitectureGraph,
@@ -37,7 +50,7 @@ impl<'g> Pairs<'g> {
             .edges
             .iter()
             .flat_map(|edge| &edge.evidence)
-            .filter(|e| e.note.as_deref().is_some_and(|n| n.contains(" via ")))
+            .filter(|e| e.note.as_deref().and_then(via_place).is_some())
             .map(|e| (e.file.as_str(), e.line))
             .collect();
         let mut defined: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
@@ -111,6 +124,30 @@ impl Pair<'_, '_> {
             Counted::Test
         } else {
             Counted::Production
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_walked_note_names_a_re_export() {
+        for (note, place) in [
+            ("import via src/index.ts:2", Some("src/index.ts:2")),
+            (
+                "import() via src/a b/index.ts:12",
+                Some("src/a b/index.ts:12"),
+            ),
+            ("vi.mock via src/index.ts:3", Some("src/index.ts:3")),
+            ("use via src/shapes/mod.rs:2", Some("src/shapes/mod.rs:2")),
+            ("import ./a via b: no file matches", None),
+            ("import pkg/c via d", None),
+            ("import via src/index.ts", None),
+            (" via src/index.ts:2", None),
+        ] {
+            assert_eq!(via_place(note), place, "{note}");
         }
     }
 }

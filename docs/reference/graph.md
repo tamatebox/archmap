@@ -30,8 +30,10 @@ it: a default export goes by the name its declaration in `target` gives
 (`default` when `target` declares none or re-exports it), `*` stands for
 the whole module (a namespace import, `export *`), and no names with a
 `target` means the statement only loads the file (a side-effect import).
-Through re-exports, evidence noted `via <file>:<line>` names what the
-defining file declares. A statement gives one piece of evidence per file
+Through re-exports, evidence noted `<note> via <file>:<line>` (one word,
+`import via src/index.ts:2`, `use via src/shapes/mod.rs:2`) names what the
+defining file declares; a note that only contains ` via `, as a specifier
+written with it does, is no such evidence. A statement gives one piece of evidence per file
 it points at and re-export it goes through, with all of its names. Every
 analyzer records `names`.
 

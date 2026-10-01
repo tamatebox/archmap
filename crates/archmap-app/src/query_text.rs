@@ -734,11 +734,7 @@ fn import_location(evidence: &Evidence, more_files: usize, show_target: bool) ->
             let _ = write!(out, " (+{})", plural(more_files, "file"));
         }
     }
-    if let Some((_, place)) = evidence
-        .note
-        .as_deref()
-        .and_then(|note| note.split_once(" via "))
-    {
+    if let Some(place) = evidence.note.as_deref().and_then(crate::pairs::via_place) {
         let _ = write!(out, " (via {place})");
     }
     // a re-export statement passes names on: not a use of them
