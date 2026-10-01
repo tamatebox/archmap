@@ -377,6 +377,15 @@ fn emit_components(
     manifests: &BTreeMap<PathBuf, PackageJson>,
     output: &mut AnalyzerOutput,
 ) {
+    // The source root's `index.*` of each package: the package's own file,
+    // as a directory's `index.*` is the directory's.
+    let indexes: BTreeMap<&ComponentId, &Path> = layout
+        .owners
+        .iter()
+        .filter(|(_, owner)| owner.symbol_scope.is_none())
+        .filter(|(_, owner)| layout.packages[owner.package].id == owner.component)
+        .map(|(file, owner)| (&owner.component, file.as_path()))
+        .collect();
     for package in &layout.packages {
         let mut component = Component::new(
             package.id.clone(),
@@ -391,6 +400,11 @@ fn emit_components(
             }
             None => Evidence::new(".").with_note("TS/JS files without a package.json"),
         });
+        if let Some(index) = indexes.get(&package.id) {
+            component
+                .evidence
+                .push(Evidence::new(display_path(index)).with_note("index"));
+        }
         output.fragment.push_component(component);
 
         let Some((dir, manifest)) = package

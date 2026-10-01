@@ -244,13 +244,14 @@ impl ArchitectureGraph {
 
     /// Groups of components that reach each other through dependency
     /// cycles, over every edge kind, counting only dependencies that are there
-    /// when the program runs (not imports of types only). Each group has at
-    /// least two members and is sorted; groups are sorted too.
+    /// when the program runs (not imports of types only, nor test code).
+    /// Each group has at least two members and is sorted; groups are sorted
+    /// too.
     pub fn cycles(&self) -> Vec<Vec<ComponentId>> {
         strongly_connected(
             self.edges
                 .iter()
-                .filter(|e| e.at_runtime())
+                .filter(|e| e.runs_in_production())
                 .map(|e| (&e.from, &e.to)),
         )
         .into_iter()
@@ -1348,6 +1349,18 @@ mod tests {
             .add_edges([Edge::new("b", "a", EdgeKind::Import)
                 .with_evidence(Evidence::new("b.ts").at_line(2))]);
         assert_eq!(ids(graph.cycles()), vec![vec!["a", "b"]]);
+    }
+
+    #[test]
+    fn cycles_leave_out_test_code() {
+        let mut graph = ArchitectureGraph::default();
+        graph.add_edges([
+            Edge::new("a", "b", EdgeKind::Import).with_evidence(Evidence::new("a.ts").at_line(1)),
+            // only a test of b imports a
+            Edge::new("b", "a", EdgeKind::Import)
+                .with_evidence(Evidence::new("b/b.test.ts").at_line(1).in_test(true)),
+        ]);
+        assert!(graph.cycles().is_empty());
     }
 
     #[test]

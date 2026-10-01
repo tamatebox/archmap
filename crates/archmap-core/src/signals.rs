@@ -49,7 +49,7 @@ pub fn signals(graph: &ArchitectureGraph, depth: usize) -> Vec<Signal> {
         .edges
         .iter()
         .filter(|e| e.from != e.to && internal(&e.from) && internal(&e.to))
-        .filter(|e| e.at_runtime())
+        .filter(|e| e.runs_in_production())
         .map(|e| (&e.from, &e.to))
         .collect();
     let mut partners: BTreeMap<ComponentId, BTreeSet<ComponentId>> = BTreeMap::new();
@@ -73,7 +73,7 @@ pub fn signals(graph: &ArchitectureGraph, depth: usize) -> Vec<Signal> {
         if !partners.get(&from).is_some_and(|p| p.contains(&to)) {
             continue;
         }
-        for e in edge.evidence.iter().filter(|e| !e.type_only) {
+        for e in edge.evidence.iter().filter(|e| e.runs_in_production()) {
             uses.entry(from.clone())
                 .or_default()
                 .entry(e.file.clone())
@@ -203,6 +203,37 @@ mod tests {
             dep("models", "util", "models/m.py", "util/log.py", false),
             dep("util", "core", "util/store.py", "core/a.py", true),
             dep("util", "models", "util/registry.py", "models/m.py", true),
+        ]);
+        assert!(signals(&g, 9).is_empty());
+    }
+
+    #[test]
+    fn imports_in_test_code_mix_no_directions() {
+        let mut g = ArchitectureGraph::default();
+        for id in ["core", "util", "models"] {
+            let mut c = Component::new(id, id, ComponentKind::Module);
+            c.path = Some(id.into());
+            g.add_component(c);
+        }
+        let dep = |from: &str, to: &str, file: &str, target: &str, test: bool| {
+            Edge::new(from, to, EdgeKind::Import).with_evidence(
+                Evidence::new(file)
+                    .at_line(1)
+                    .pointing_at(target)
+                    .in_test(test),
+            )
+        };
+        g.add_edges([
+            dep("core", "util", "core/a.py", "util/log.py", false),
+            dep("models", "util", "models/m.py", "util/log.py", false),
+            dep("util", "core", "util/test_store.py", "core/a.py", true),
+            dep(
+                "util",
+                "models",
+                "util/test_registry.py",
+                "models/m.py",
+                true,
+            ),
         ]);
         assert!(signals(&g, 9).is_empty());
     }

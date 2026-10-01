@@ -311,10 +311,17 @@ impl Edge {
         self.from == other.from && self.to == other.to && self.kind == other.kind
     }
 
+    /// Whether production code makes the dependency: some of its evidence
+    /// is outside test code, or it has no evidence to say (a manifest).
+    pub fn in_production(&self) -> bool {
+        self.evidence.is_empty() || self.evidence.iter().any(|e| !e.test)
+    }
+
     /// Whether the dependency is there when the program runs: some of its
-    /// evidence takes more than types, or it has no evidence to say.
-    pub fn at_runtime(&self) -> bool {
-        self.evidence.is_empty() || self.evidence.iter().any(|e| !e.type_only)
+    /// evidence is production code that takes more than types, or it has no
+    /// evidence to say.
+    pub fn runs_in_production(&self) -> bool {
+        self.evidence.is_empty() || self.evidence.iter().any(Evidence::runs_in_production)
     }
 
     /// Distinct source locations behind the edge. One statement can point
@@ -395,6 +402,28 @@ mod tests {
         );
         let read: LanguageCoverage = serde_json::from_str(r#"{ "files": 2 }"#).unwrap();
         assert_eq!(read.scripts, 0);
+    }
+
+    #[test]
+    fn edges_say_whether_production_code_makes_them_and_runs_them() {
+        let edge = |evidence: Vec<Evidence>| {
+            let mut e = Edge::new("a", "b", EdgeKind::Import);
+            e.evidence = evidence;
+            e
+        };
+        let at = |test: bool, types: bool| {
+            Evidence::new("a.ts")
+                .at_line(1)
+                .in_test(test)
+                .type_only(types)
+        };
+        // a manifest says nothing about tests or types
+        assert!(edge(vec![]).in_production() && edge(vec![]).runs_in_production());
+        assert!(!edge(vec![at(true, false)]).in_production());
+        assert!(edge(vec![at(true, false), at(false, true)]).in_production());
+        // production takes types, and only a test imports what runs
+        assert!(!edge(vec![at(true, false), at(false, true)]).runs_in_production());
+        assert!(edge(vec![at(false, false)]).runs_in_production());
     }
 
     #[test]

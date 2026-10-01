@@ -246,7 +246,9 @@ pub fn check(graph: &ArchitectureGraph, rules: &RuleSet, depth: usize) -> Vec<Fi
                 });
             }
         }
-        for edge in &graph.edges {
+        // rules are about production code: what only tests import is no
+        // violation
+        for edge in graph.edges.iter().filter(|e| e.in_production()) {
             let (Some(source), Some(target)) =
                 (graph.component(&edge.from), graph.component(&edge.to))
             else {
@@ -259,7 +261,7 @@ pub fn check(graph: &ArchitectureGraph, rules: &RuleSet, depth: usize) -> Vec<Fi
                     from: edge.from.clone(),
                     to: edge.to.clone(),
                     edge: edge.kind,
-                    evidence: edge.evidence.clone(),
+                    evidence: production(edge),
                 });
             }
         }
@@ -329,12 +331,13 @@ pub fn check(graph: &ArchitectureGraph, rules: &RuleSet, depth: usize) -> Vec<Fi
                 continue;
             }
             let members: BTreeSet<&ComponentId> = components.iter().collect();
-            // what runs closes the cycle: imports of types only are left out
+            // what runs closes the cycle: imports of types only and test
+            // code are left out
             let edges = rolled
                 .edges
                 .iter()
                 .filter(|e| members.contains(&e.from) && members.contains(&e.to))
-                .filter(|e| e.at_runtime())
+                .filter(|e| e.runs_in_production())
                 .map(|e| CycleEdge {
                     from: e.from.clone(),
                     to: e.to.clone(),
@@ -342,7 +345,7 @@ pub fn check(graph: &ArchitectureGraph, rules: &RuleSet, depth: usize) -> Vec<Fi
                     evidence: e
                         .evidence
                         .iter()
-                        .filter(|e| !e.type_only)
+                        .filter(|e| e.runs_in_production())
                         .cloned()
                         .collect(),
                 })
@@ -380,10 +383,19 @@ fn declared_edges<'g>(
     graph: &'g ArchitectureGraph,
     membership: &'g BTreeMap<ComponentId, &'g str>,
 ) -> impl Iterator<Item = (&'g str, &'g str, &'g crate::Edge)> + 'g {
-    graph.edges.iter().filter_map(move |edge| {
-        let (from, to) = (*membership.get(&edge.from)?, *membership.get(&edge.to)?);
-        (from != to).then_some((from, to, edge))
-    })
+    graph
+        .edges
+        .iter()
+        .filter(|edge| edge.in_production())
+        .filter_map(move |edge| {
+            let (from, to) = (*membership.get(&edge.from)?, *membership.get(&edge.to)?);
+            (from != to).then_some((from, to, edge))
+        })
+}
+
+/// The evidence of an edge in production code, which a rule finding lists.
+fn production(edge: &crate::Edge) -> Vec<Evidence> {
+    edge.evidence.iter().filter(|e| !e.test).cloned().collect()
 }
 
 fn check_layers(
@@ -413,7 +425,7 @@ fn check_layers(
                     from: edge.from.clone(),
                     to: edge.to.clone(),
                     edge: edge.kind,
-                    evidence: edge.evidence.clone(),
+                    evidence: production(edge),
                 });
             }
         }
@@ -451,7 +463,7 @@ fn check_allow(
                 from: edge.from.clone(),
                 to: edge.to.clone(),
                 edge: edge.kind,
-                evidence: edge.evidence.clone(),
+                evidence: production(edge),
             });
         }
     }
@@ -534,7 +546,7 @@ fn file_level(
         if !members.contains(&from) || !members.contains(&to) {
             continue;
         }
-        for e in edge.evidence.iter().filter(|e| !e.type_only) {
+        for e in edge.evidence.iter().filter(|e| e.runs_in_production()) {
             if let Some(target) = e.target.as_deref() {
                 owner.insert(e.file.as_str(), from.clone());
                 owner.insert(target, to.clone());
@@ -1159,6 +1171,77 @@ mod tests {
             declared: "cycles.scope[1]".into(),
             selector: "vendor".into()
         }));
+    }
+
+    #[test]
+    fn rules_leave_out_imports_in_test_code() {
+        let mut g = ArchitectureGraph::default();
+        for id in ["a", "b", "c"] {
+            g.add_component(module(id, id));
+        }
+        let import = |from: &str, to: &str, file: &str, test: bool| {
+            Edge::new(from, to, EdgeKind::Import)
+                .with_evidence(Evidence::new(file).at_line(1).in_test(test))
+        };
+        g.add_edges([
+            // only a test of a imports b
+            import("a", "b", "a/a.test.ts", true),
+            // production and a test of c import b
+            import("c", "b", "c/c.ts", false),
+            import("c", "b", "c/c.test.ts", true),
+        ]);
+        let declared = BTreeMap::from([
+            ("a".to_owned(), vec!["a".to_owned()]),
+            ("b".to_owned(), vec!["b".to_owned()]),
+            ("c".to_owned(), vec!["c".to_owned()]),
+        ]);
+        let deny = |from: &str| DenyRule {
+            from: from.into(),
+            to: "b".into(),
+            reason: None,
+        };
+        let set = RuleSet {
+            components: declared.clone(),
+            deny: vec![deny("a"), deny("c")],
+            ..RuleSet::default()
+        };
+        let findings = check(&g, &set, 9);
+        let [Finding::Forbidden { from, evidence, .. }] = findings.as_slice() else {
+            panic!("expected only c's finding: {findings:?}");
+        };
+        assert_eq!(from.as_str(), "c");
+        // the test's import is no location of the finding
+        let files: Vec<&str> = evidence.iter().map(|e| e.file.as_str()).collect();
+        assert_eq!(files, ["c/c.ts"]);
+        // the layers say the same
+        let set = RuleSet {
+            components: declared.clone(),
+            layers: LayerRule {
+                order: vec!["b".into(), "a".into(), "c".into()],
+            },
+            ..RuleSet::default()
+        };
+        let findings = check(&g, &set, 9);
+        assert!(
+            matches!(findings.as_slice(), [Finding::LayerViolation { from, .. }] if from.as_str() == "c"),
+            "{findings:?}"
+        );
+        // an allowance that only tests use is stale
+        let set = RuleSet {
+            components: declared,
+            allow: vec![AllowRule {
+                from: "a".into(),
+                to: vec!["b".into()],
+            }],
+            ..RuleSet::default()
+        };
+        let findings = check(&g, &set, 9);
+        assert!(
+            findings
+                .iter()
+                .any(|f| matches!(f, Finding::StaleAllowance { from, .. } if from == "a")),
+            "{findings:?}"
+        );
     }
 
     #[test]

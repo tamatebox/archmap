@@ -109,6 +109,12 @@ impl Evidence {
         self
     }
 
+    /// The statement runs when the program does: production code that
+    /// takes more than types.
+    pub fn runs_in_production(&self) -> bool {
+        !self.type_only && !self.test
+    }
+
     pub fn taking<I, S>(mut self, names: I) -> Self
     where
         I: IntoIterator<Item = S>,

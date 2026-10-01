@@ -40,8 +40,11 @@ Python and TS/JS a file named `*.test.*`, `*.spec.*`, `test_*.py`,
 `*_test.py` or `conftest.py`, or any file below a directory named `test`,
 `tests`, `__tests__` or `__mocks__`; for Rust, code under `#[cfg(test)]` or
 `#[test]`, never a path. It is on the evidence of edges, imports without an
-edge and dynamic imports. No command reads it yet: `impact` counts test
-code like any other, and so do rules and cycles.
+edge and dynamic imports. Rules (`deny`, `layers`, `allow`), cycles and
+signals are about production code and leave it out (an edge counts when
+some of its evidence is outside test code, or it has none, as a manifest
+dependency), and `summary` counts test statements apart; undeclared imports
+count in test code too.
 
 `type_only` marks a statement that takes types only, which the compiler
 erases, so it never runs: TS/JS `import type`, `export type ... from`, and
@@ -50,9 +53,9 @@ types from a file gives one piece of evidence for each; evidence without a
 `target` records no names and is one, `type_only` when the statement takes
 only types. An edge is a dependency however
 it is taken, so `deny`, `layers`, `allow`, `query` and `impact` count every
-import, but cycles and signals count only imports that run: an edge whose
-every piece of evidence is `type_only` closes no cycle. Only the TS/JS
-analyzer sets it.
+import, but cycles and signals count only imports that run in production:
+an edge closes a cycle only through evidence that is neither `type_only` nor
+`test`. Only the TS/JS analyzer sets it.
 
 A symbol's evidence with a `target` says how the symbol is reached rather
 than where it is: a Rust method whose type another file defines carries

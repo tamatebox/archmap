@@ -214,11 +214,16 @@ fn summary_is_deterministic_markdown() {
         "\n    shop.billing  path: src/shop/billing  symbols: 4\n",
         "## Internal dependencies\n",
         "\nshop.billing -> shop  imports: 2\n",
+        // test code is counted apart
+        "\ntests -> shop  tests: 1\n",
+        // `src/shop/__init__.py` imports its own subpackage
+        "\nnot listed: 1 statement of entry files into their own component's submodules\n",
         "## External dependencies\n",
         "\nrequests  declared: pyproject.toml, requirements.txt  importers: 1  top: shop.billing 1\n",
         "\npyyaml  declared: requirements.txt  importers: 1  top: shop.billing 1\n",
         "## Most depended on\n",
-        "\nshop  dependents: 4  dependencies: 1  rank: 1/7\n",
+        // tests make no dependents
+        "\nshop  dependents: 2  dependencies: 0  rank: 1/7\n",
     ] {
         assert!(first.contains(expected), "missing `{expected}` in:\n{first}");
     }
@@ -238,10 +243,7 @@ fn summary_depth_controls_the_roll_up() {
         shallow.contains("\n  shop  path: src/shop  symbols: 9  folded: 3\n"),
         "{shallow}"
     );
-    assert!(
-        shallow.contains("\ntests -> shop  imports: 3\n"),
-        "{shallow}"
-    );
+    assert!(shallow.contains("\ntests -> shop  tests: 3\n"), "{shallow}");
 
     let packages_only = summary_stdout(&["--depth", "0"]);
     assert!(
@@ -638,7 +640,11 @@ order = ["app", "scripts"]   # scripts sits below app, so scripts -> app points 
 
 [[allow]]
 from = "tests"
-to = []                      # tests may depend on nothing declared
+to = []                      # test code breaks no rule
+
+[[allow]]
+from = "scripts"
+to = []                      # scripts may depend on nothing declared
 
 [[allow]]
 from = "app"
@@ -652,11 +658,12 @@ fn check_enforces_layers_and_allow_lists() {
     let text = String::from_utf8_lossy(&out.stdout);
     for expected in [
         "layer violation: scripts must not depend on the higher layer app: scripts -> shop.billing (import)\n  scripts/backfill.py:1 -> src/shop/billing/__init__.py  import\n",
-        "unexpected dependency: tests -> app is not in the allow list: tests.unit -> shop (import)\n",
+        "unexpected dependency: scripts -> app is not in the allow list: scripts -> shop.billing (import)\n",
         "stale allowance: app -> scripts is allowed but not observed\n",
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
     }
+    assert!(!text.contains("tests -> app"), "{text}");
 
     let json = check_with(
         "layers-json",
@@ -776,7 +783,7 @@ fn summary_says_what_the_map_does_not_cover_before_the_map() {
     let summary = summary_stdout(&[]);
     let coverage = [
         "\n## Coverage",
-        "python  files: 15  read: 15  imports without an edge: 3 (undeclared 1, extra or dev dependency 1, local name 1)",
+        "python  files: 15  read: 15  imports without an edge: 3 (undeclared 1, extra or dev dependency 1, local name 1 (1 in tests))",
         "not analyzed  shell: 1",
         "dynamic imports: 1  in: scripts 1",
         "runtime coupling: not analyzed (HTTP, databases, queues, subprocesses, configuration-driven loading)",
@@ -1381,7 +1388,8 @@ fn ts_summary_counts_both_languages_and_why_imports_have_no_edge() {
         .unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
     for expected in [
-        "typescript  files: 14  read: 14  imports without an edge: 7 (undeclared 1, extra or dev dependency 2, local name 1, unresolved 3)",
+        // vitest, imported by a test
+        "typescript  files: 14  read: 14  imports without an edge: 7 (undeclared 1, extra or dev dependency 2 (1 in tests), local name 1, unresolved 3)",
         "javascript  files: 3  read: 3  imports without an edge: 0",
         // src/global.d.ts
         "scripts: 1 (no import or export: what uses their declarations is not traced)",

@@ -37,7 +37,8 @@ contains:
   the full graph` (`N shown of K at depth` when the tree is capped), counts,
   the `source` of the facts and the `next` commands
 - `## Coverage`, before the map: for each analyzed language `files`, `read`
-  and `imports without an edge`, counted in statements per reason; the languages no analyzer reads, such as
+  and `imports without an edge`, counted in statements per reason with those
+  in test code (`extra or dev dependency 2 (1 in tests)`); the languages no analyzer reads, such as
   `not analyzed  sql: 145  notebook: 68`; the number of TS/JS `scripts`, files
   without imports or exports whose declarations are used without an import;
   the number of `dynamic imports` and
@@ -46,22 +47,28 @@ contains:
   configuration-driven loading)
 - the component tree, indented by containment, with kind, language, path,
   `symbols: N` and `folded: N` for submodules folded into the component
-- internal dependencies as `a -> b  imports: N`, plus `declared: yes` when a
-  manifest also declares the dependency; N counts distinct `file:line`
-  statements, and imports between files of one component are not listed
+- internal dependencies as `a -> b  imports: N`, plus `tests: M` for
+  statements in test code and `declared: yes` when a manifest also declares
+  the dependency; N and M count distinct `file:line` statements, a pair that
+  only tests make shows `tests: M` alone, and imports between files of one
+  component are not listed. Statements of a component's own entry file (an
+  `index.*`, an `__init__.py`) into its own submodules say what it holds
+  rather than what it depends on: they are counted in a `not listed:` line
 - external dependencies with the manifests that declare them (`declared:`),
-  the number of importing components (`importers:`) and the top importers
-- the components depended on by the most others, with `dependents`,
-  `dependencies` and `rank`
+  the number of components whose production code imports them
+  (`importers:`), the top importers, and `tests: K` for components that
+  import them only in test code
+- the components depended on by the most others in production code, with
+  `dependents`, `dependencies` and `rank`
 
 The summary is an index for choosing what to `query` next, so it stays
 small however large the repository is. The component tree lists the
 packages first and then the modules with the most dependents plus
 dependencies, each only when it fits with its ancestors, up to 30 lines.
 Internal dependencies keep 30: those between packages first, then those
-into components more others depend on, then those with more import
-statements. External dependencies keep the 20 imported by the most
-components. A capped list ends in an `omitted:` line that counts the rest,
+with more import statements in production code, then in tests, so the
+heavy flows show rather than one-statement lines into a popular target.
+External dependencies keep the 20 imported by the most components. A capped list ends in an `omitted:` line that counts the rest,
 says where they are and names the query that shows them:
 
 ```text

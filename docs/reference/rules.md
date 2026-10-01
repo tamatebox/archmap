@@ -55,6 +55,14 @@ every component under its selectors to belong to a declaration, judged at
 the roll-up depth and for leaves only, so a container such as `src` counts
 as covered by what it contains.
 
+Rules are about production code. `deny`, `layers` and `allow` leave out
+imports in test code (test files and directories, `#[cfg(test)]`; see
+[graph.md](graph.md)), so a test may import what its code may not, and an
+allowance that only tests use is stale. Undeclared imports count in test
+code too: a missing declaration breaks the test run as well. A route
+directory named `test` or `tests` (`app/test/page.tsx` in frameworks whose
+directories are URLs) is test code by that rule, so rules miss its imports.
+
 `check` reports forbidden, upward and unexpected dependencies with the
 evidence behind them, stale allowances, uncovered components, dependency
 cycles at the roll-up depth (`depth` in the file or `--depth`, default 2),
@@ -71,8 +79,9 @@ this way; see `archmap.toml`.
 
 `[cycles] scope` limits cycle findings to cycles with at least one member
 under its selectors, such as product code but not fixtures. Cycles count
-only imports that run: a TS/JS import of types only (`import type`) closes
-none, while `deny`, `layers` and `allow` count it like any other import.
+only production imports that run: a TS/JS import of types only (`import
+type`) and an import in test code close none, while `deny`, `layers` and
+`allow` count imports of types like any other.
 Every cycle finding also says what the files behind it show, because
 roll-up joins the files of each component and different files can close the
 loop:
@@ -110,8 +119,8 @@ a `signal:` line and JSON lists it under `signals`.
 
 One kind exists today, `mixed_directions`: a component and a partner
 depend on each other, but the files of the component that the partner uses
-are not the files that use the partner. Like cycles, it counts only imports
-that run.
+are not the files that use the partner. Like cycles, it counts only
+production imports that run.
 
 ```text
 signal: app.utils mixes dependency directions with app.core, app.models

@@ -18,7 +18,7 @@ use std::fmt::Write;
 use std::path::Path;
 
 use archmap_core::{
-    ArchitectureGraph, Component, ComponentId, ComponentKind, EdgeKind, UnmappedReason,
+    ArchitectureGraph, Component, ComponentId, ComponentKind, EdgeKind, Evidence, UnmappedReason,
 };
 
 use crate::query_text::reason_label;
@@ -86,9 +86,19 @@ impl Limits {
 /// One internal dependency at the summary's depth.
 #[derive(Default)]
 struct Dependency {
+    /// Import statements in production code.
     imports: usize,
+    /// Import statements in test code.
+    tests: usize,
     declared: bool,
     other: BTreeMap<&'static str, usize>,
+}
+
+impl Dependency {
+    /// Production code makes it, or a manifest declares it.
+    fn in_production(&self) -> bool {
+        self.imports > 0 || self.declared || !self.other.is_empty()
+    }
 }
 
 /// A rendered list with its heading.
@@ -111,15 +121,41 @@ fn render_with(graph: &ArchitectureGraph, depth: usize, limits: Limits) -> Strin
         .collect();
 
     let mut dependencies: BTreeMap<(&ComponentId, &ComponentId), Dependency> = BTreeMap::new();
+    // A component's own entry file (an index, an `__init__.py`) that imports
+    // its submodules says what the component holds, not what it depends on.
+    let mut entry_statements: BTreeSet<(&str, Option<u32>)> = BTreeSet::new();
     for edge in &rolled.edges {
         if !internal_id(&rolled, &edge.from) || !internal_id(&rolled, &edge.to) {
             continue;
         }
+        let own_files: BTreeSet<&str> =
+            if edge.from != edge.to && rolled.containment_path(&edge.to).contains(&edge.from) {
+                graph
+                    .component(&edge.from)
+                    .into_iter()
+                    .flat_map(|c| &c.evidence)
+                    .map(|e| e.file.as_str())
+                    .collect()
+            } else {
+                BTreeSet::new()
+            };
+        let (entry, counted): (Vec<&Evidence>, Vec<&Evidence>) = edge
+            .evidence
+            .iter()
+            .partition(|e| own_files.contains(e.file.as_str()));
+        entry_statements.extend(entry.iter().map(|e| (e.file.as_str(), e.line)));
+        if counted.is_empty() && !edge.evidence.is_empty() {
+            continue;
+        }
         let dep = dependencies.entry((&edge.from, &edge.to)).or_default();
+        let (production, tests) = statements(&counted);
         match edge.kind {
-            EdgeKind::Import => dep.imports += edge.statements(),
+            EdgeKind::Import => {
+                dep.imports += production;
+                dep.tests += tests;
+            }
             EdgeKind::Dependency => dep.declared = true,
-            other => *dep.other.entry(other.as_str()).or_default() += edge.statements().max(1),
+            other => *dep.other.entry(other.as_str()).or_default() += (production + tests).max(1),
         }
     }
     let externals: Vec<&Component> = rolled
@@ -128,11 +164,11 @@ fn render_with(graph: &ArchitectureGraph, depth: usize, limits: Limits) -> Strin
         .filter(|c| c.kind == ComponentKind::External)
         .collect();
 
-    // Distinct internal dependencies in each direction: the structural rank
-    // that the lists and "most depended on" share.
+    // Distinct internal dependencies of production code in each direction:
+    // the structural rank that the lists and "most depended on" share.
     let mut dependents: BTreeMap<&ComponentId, usize> = BTreeMap::new();
     let mut uses: BTreeMap<&ComponentId, usize> = BTreeMap::new();
-    for (from, to) in dependencies.keys() {
+    for ((from, to), _) in dependencies.iter().filter(|(_, d)| d.in_production()) {
         *dependents.entry(*to).or_default() += 1;
         *uses.entry(*from).or_default() += 1;
     }
@@ -143,11 +179,11 @@ fn render_with(graph: &ArchitectureGraph, depth: usize, limits: Limits) -> Strin
     most_depended_on(&mut most, &rolled, internal.len(), &dependents, &uses);
 
     let tree = Tree::new(graph, &rolled, &internal, depth, &dependents, &uses);
-    let ranked_dependencies = rank_dependencies(&rolled, &dependencies, &dependents);
+    let ranked_dependencies = rank_dependencies(&rolled, &dependencies);
     let ranked_externals = rank_externals(&rolled, &externals);
     let list = |i: usize, cap: usize| match i {
         0 => tree.render(&rolled, cap),
-        1 => internal_dependencies(&rolled, &ranked_dependencies, cap),
+        1 => internal_dependencies(&rolled, &ranked_dependencies, entry_statements.len(), cap),
         _ => external_dependencies(&rolled, &ranked_externals, cap),
     };
     let mut lists: Vec<Section> = [limits.components, limits.internal, limits.external]
@@ -232,8 +268,9 @@ fn coverage(out: &mut String, graph: &ArchitectureGraph, rolled: &ArchitectureGr
     let _ = writeln!(out, "\n## Coverage");
 
     // Language -> why imports have no edge -> the statements, so that
-    // `from torch import nn, Tensor` counts once.
-    type Statements<'a> = BTreeSet<(&'a str, Option<u32>)>;
+    // `from torch import nn, Tensor` counts once, and whether each is test
+    // code.
+    type Statements<'a> = BTreeSet<(&'a str, Option<u32>, bool)>;
     let mut without_edge: BTreeMap<&str, BTreeMap<UnmappedReason, Statements>> = BTreeMap::new();
     for import in &graph.unmapped_imports {
         if let Some(language) = graph
@@ -245,7 +282,11 @@ fn coverage(out: &mut String, graph: &ArchitectureGraph, rolled: &ArchitectureGr
                 .or_default()
                 .entry(import.reason)
                 .or_default()
-                .insert((import.evidence.file.as_str(), import.evidence.line));
+                .insert((
+                    import.evidence.file.as_str(),
+                    import.evidence.line,
+                    import.evidence.test,
+                ));
         }
     }
     let mut not_analyzed = Vec::new();
@@ -265,7 +306,14 @@ fn coverage(out: &mut String, graph: &ArchitectureGraph, rolled: &ArchitectureGr
                 if let Some(reasons) = reasons {
                     let parts: Vec<String> = reasons
                         .iter()
-                        .map(|(reason, s)| format!("{} {}", reason_label(*reason), s.len()))
+                        .map(|(reason, s)| {
+                            let tests = s.iter().filter(|(.., test)| *test).count();
+                            let mut part = format!("{} {}", reason_label(*reason), s.len());
+                            if tests > 0 {
+                                let _ = write!(part, " ({tests} in tests)");
+                            }
+                            part
+                        })
                         .collect();
                     let _ = write!(line, " ({})", parts.join(", "));
                 }
@@ -492,24 +540,24 @@ impl<'a> Tree<'a> {
 }
 
 /// Internal dependencies in the order a cap keeps them: those between
-/// packages first, then those into components more others depend on, then
-/// those with more import statements.
+/// Dependencies in the order a cap keeps them: those between packages
+/// first, then those with more import statements in production code, then
+/// more in tests. Statements, not dependents, so that the heavy flows show
+/// rather than one-statement lines into a popular target.
 fn rank_dependencies<'a>(
     rolled: &ArchitectureGraph,
     dependencies: &'a BTreeMap<(&'a ComponentId, &'a ComponentId), Dependency>,
-    dependents: &BTreeMap<&ComponentId, usize>,
 ) -> Vec<(&'a ComponentId, &'a ComponentId, &'a Dependency)> {
     let within =
         |from: &ComponentId, to: &ComponentId| package_of(rolled, from) == package_of(rolled, to);
-    let dependents = |id: &ComponentId| dependents.get(id).copied().unwrap_or(0);
     // The keys walk the containment tree, so each is computed once.
     let mut ranked: Vec<_> = dependencies
         .iter()
         .map(|((from, to), dep)| {
             let key = (
                 within(from, to),
-                std::cmp::Reverse(dependents(to)),
                 std::cmp::Reverse(dep.imports),
+                std::cmp::Reverse(dep.tests),
             );
             (key, *from, *to, dep)
         })
@@ -519,6 +567,17 @@ fn rank_dependencies<'a>(
         .into_iter()
         .map(|(_, from, to, dep)| (from, to, dep))
         .collect()
+}
+
+/// Distinct statements among `evidence`, in production code and in test
+/// code. Test code is a property of a file, so a statement is one or the
+/// other.
+fn statements(evidence: &[&Evidence]) -> (usize, usize) {
+    let (tests, production): (BTreeSet<_>, BTreeSet<_>) = evidence
+        .iter()
+        .map(|e| (e.test, e.file.as_str(), e.line))
+        .partition(|(test, ..)| *test);
+    (production.len(), tests.len())
 }
 
 /// The outermost component containing `id` at the summary's depth.
@@ -536,11 +595,22 @@ fn package_of<'a>(rolled: &'a ArchitectureGraph, mut id: &'a ComponentId) -> &'a
 fn internal_dependencies(
     rolled: &ArchitectureGraph,
     ranked: &[(&ComponentId, &ComponentId, &Dependency)],
+    entry_statements: usize,
     cap: usize,
 ) -> Section {
     let mut text = String::from("\n## Internal dependencies\n");
+    let not_listed = |text: &mut String| {
+        if entry_statements > 0 {
+            let _ = writeln!(
+                text,
+                "not listed: {} of entry files into their own component's submodules",
+                count(entry_statements, "statement", "statements")
+            );
+        }
+    };
     if ranked.is_empty() {
         text.push_str("none\n");
+        not_listed(&mut text);
         return Section { text, listed: 0 };
     }
     let (kept, omitted) = ranked.split_at(cap.min(ranked.len()));
@@ -558,12 +628,16 @@ fn internal_dependencies(
     lines.sort_by(|a, b| {
         a.0.cmp(b.0)
             .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| b.3.tests.cmp(&a.3.tests))
             .then_with(|| a.2.cmp(b.2))
     });
     for (from, imports, to, dep) in lines {
         let mut line = format!("{from} -> {to}");
         if imports > 0 {
             let _ = write!(line, "  imports: {imports}");
+        }
+        if dep.tests > 0 {
+            let _ = write!(line, "  tests: {}", dep.tests);
         }
         if dep.declared {
             line.push_str("  declared: yes");
@@ -585,6 +659,7 @@ fn internal_dependencies(
             top_counts(rolled, sources, MAX_OMITTED_NAMES)
         );
     }
+    not_listed(&mut text);
     Section {
         text,
         listed: kept.len(),
@@ -596,7 +671,10 @@ fn internal_dependencies(
 struct External<'a> {
     component: &'a Component,
     declared_in: BTreeSet<&'a str>,
+    /// Components whose production code imports it, with their statements.
     importers: Vec<(&'a ComponentId, usize)>,
+    /// Components that import it only in test code.
+    tests: usize,
 }
 
 /// External dependencies in the order a cap keeps them: imported by more
@@ -610,12 +688,19 @@ fn rank_externals<'a>(
         .map(|ext| {
             let mut declared_in = BTreeSet::new();
             let mut importers = Vec::new();
+            let mut tests = 0;
             for edge in rolled.incoming(&ext.id) {
                 match edge.kind {
                     EdgeKind::Dependency => {
                         declared_in.extend(edge.evidence.iter().map(|e| e.file.as_str()));
                     }
-                    EdgeKind::Import => importers.push((&edge.from, edge.statements())),
+                    EdgeKind::Import => {
+                        let evidence: Vec<&Evidence> = edge.evidence.iter().collect();
+                        match statements(&evidence) {
+                            (0, n) if n > 0 => tests += 1,
+                            (production, _) => importers.push((&edge.from, production)),
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -623,6 +708,7 @@ fn rank_externals<'a>(
                 component: ext,
                 declared_in,
                 importers,
+                tests,
             }
         })
         .collect();
@@ -632,6 +718,7 @@ fn rank_externals<'a>(
             .len()
             .cmp(&a.importers.len())
             .then_with(|| statements(b).cmp(&statements(a)))
+            .then_with(|| b.tests.cmp(&a.tests))
             .then_with(|| a.component.id.cmp(&b.component.id))
     });
     ranked
@@ -652,8 +739,10 @@ fn external_dependencies(rolled: &ArchitectureGraph, ranked: &[External], cap: u
             let files: Vec<&str> = ext.declared_in.iter().copied().collect();
             let _ = write!(line, "  declared: {}", files.join(", "));
         }
-        if ext.importers.is_empty() {
+        if ext.importers.is_empty() && ext.tests == 0 {
             line.push_str("  importers: none resolved");
+        } else if ext.importers.is_empty() {
+            line.push_str("  importers: 0");
         } else {
             let _ = write!(
                 line,
@@ -661,6 +750,9 @@ fn external_dependencies(rolled: &ArchitectureGraph, ranked: &[External], cap: u
                 ext.importers.len(),
                 top_counts(rolled, ext.importers.iter().copied(), MAX_IMPORTERS)
             );
+        }
+        if ext.tests > 0 {
+            let _ = write!(line, "  tests: {}", ext.tests);
         }
         let _ = writeln!(text, "{line}");
     }
@@ -764,7 +856,7 @@ fn name_of<'a>(graph: &'a ArchitectureGraph, id: &'a ComponentId) -> &'a str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use archmap_core::{Edge, Evidence};
+    use archmap_core::Edge;
 
     fn package(id: &str) -> Component {
         let mut c = Component::new(id, id, ComponentKind::Package);
@@ -786,6 +878,17 @@ mod tests {
     fn import(from: &str, to: &str, statements: u32) -> Edge {
         (1..=statements).fold(Edge::new(from, to, EdgeKind::Import), |edge, line| {
             edge.with_evidence(Evidence::new(from).at_line(line))
+        })
+    }
+
+    /// An import edge backed by `statements` statements in a test file.
+    fn test_import(from: &str, to: &str, statements: u32) -> Edge {
+        (1..=statements).fold(Edge::new(from, to, EdgeKind::Import), |edge, line| {
+            edge.with_evidence(
+                Evidence::new(format!("{from}.test"))
+                    .at_line(line)
+                    .in_test(true),
+            )
         })
     }
 
@@ -924,7 +1027,7 @@ mod tests {
     }
 
     #[test]
-    fn dependencies_across_packages_come_first_then_busy_targets_then_imports() {
+    fn dependencies_across_packages_come_first_then_more_statements() {
         let graph = graph(
             vec![
                 package("p"),
@@ -945,8 +1048,113 @@ mod tests {
         let out = render_with(&graph, 2, limits(30, 3, 20));
         assert_eq!(
             section(&out, "Internal dependencies"),
-            "p::a -> q  imports: 1\np::b -> q  imports: 1\nq -> p::b  imports: 2\n\
-             omitted: 3 dependencies  from: p::a 2, p::b 1  next: archmap query <component>\n"
+            "p::a -> r  imports: 3\np::a -> q  imports: 1\nq -> p::b  imports: 2\n\
+             omitted: 3 dependencies  from: p::b 2, p::a 1  next: archmap query <component>\n"
+        );
+    }
+
+    #[test]
+    fn test_statements_are_counted_apart_and_rank_after_production() {
+        let graph = graph(
+            vec![
+                package("p"),
+                module("p::a", "p"),
+                module("p::b", "p"),
+                module("p::c", "p"),
+                module("p::d", "p"),
+                module("p::e", "p"),
+            ],
+            vec![
+                import("p::a", "p::b", 1),
+                import("p::c", "p::b", 3),
+                // only tests: more statements, ranked last all the same
+                test_import("p::d", "p::b", 4),
+                import("p::e", "p::b", 2),
+                test_import("p::e", "p::b", 2),
+            ],
+        );
+        let out = render_with(&graph, 1, limits(30, 2, 20));
+        assert_eq!(
+            section(&out, "Internal dependencies"),
+            "p::c -> p::b  imports: 3\np::e -> p::b  imports: 2  tests: 2\n\
+             omitted: 2 dependencies  from: p::a 1, p::d 1  next: archmap query <component>\n"
+        );
+        let out = render_with(&graph, 1, limits(30, 30, 20));
+        assert!(
+            section(&out, "Internal dependencies").contains("p::d -> p::b  tests: 4\n"),
+            "{out}"
+        );
+        // tests make no dependents
+        assert!(
+            section(&out, "Most depended on").starts_with("p::b  dependents: 3  dependencies: 0"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn entry_files_that_import_their_own_submodules_are_counted_not_listed() {
+        // `p/index.ts` is p's own file, as a barrel or an `__init__.py` is
+        let mut p = package("p");
+        p.evidence
+            .push(Evidence::new("p/index.ts").with_note("index"));
+        let from = |file: &str, line: u32| {
+            Edge::new("p", "p::a", EdgeKind::Import)
+                .with_evidence(Evidence::new(file).at_line(line))
+        };
+        let graph = graph(
+            vec![p, module("p::a", "p"), module("p::b", "p")],
+            vec![
+                from("p/index.ts", 1),
+                from("p/index.ts", 2),
+                import("p::b", "p::a", 1),
+            ],
+        );
+        let out = render_with(&graph, 1, limits(30, 30, 20));
+        assert_eq!(
+            section(&out, "Internal dependencies"),
+            "p::b -> p::a  imports: 1\n\
+             not listed: 2 statements of entry files into their own component's submodules\n"
+        );
+        assert!(
+            section(&out, "Most depended on").starts_with("p::a  dependents: 1"),
+            "{out}"
+        );
+        // another file of p that imports p::a depends on it
+        let graph = graph_with(&graph, vec![from("p/config.ts", 1)]);
+        let out = render_with(&graph, 1, limits(30, 30, 20));
+        assert!(
+            section(&out, "Internal dependencies").contains("p -> p::a  imports: 1\n"),
+            "{out}"
+        );
+    }
+
+    /// `graph` with `edges` added.
+    fn graph_with(graph: &ArchitectureGraph, edges: Vec<Edge>) -> ArchitectureGraph {
+        let mut graph = graph.clone();
+        graph.add_edges(edges);
+        graph
+    }
+
+    #[test]
+    fn external_importers_in_test_code_are_counted_apart() {
+        let graph = graph(
+            vec![
+                package("p"),
+                module("p::a", "p"),
+                module("p::t", "p"),
+                external("serde"),
+                external("proptest"),
+            ],
+            vec![
+                import("p::a", "ext:cargo:serde", 2),
+                test_import("p::t", "ext:cargo:serde", 1),
+                test_import("p::t", "ext:cargo:proptest", 1),
+            ],
+        );
+        let out = render_with(&graph, 1, limits(30, 30, 20));
+        assert_eq!(
+            section(&out, "External dependencies"),
+            "proptest  importers: 0  tests: 1\nserde  importers: 1  top: p::a 2  tests: 1\n"
         );
     }
 

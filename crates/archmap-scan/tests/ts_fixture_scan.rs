@@ -1589,3 +1589,22 @@ fn commonjs_exports_are_symbols() {
         ])
     );
 }
+
+#[test]
+fn a_package_names_its_own_index_file() {
+    // as a directory names its `index.*`: the file that says what it holds
+    let graph = scan_fixture();
+    let package = graph.component(&ComponentId::new("ts-shop")).unwrap();
+    let files: Vec<(&str, Option<&str>)> = package
+        .evidence
+        .iter()
+        .map(|e| (e.file.as_str(), e.note.as_deref()))
+        .collect();
+    assert_eq!(
+        files,
+        [
+            ("package.json", Some("package.json")),
+            ("src/index.ts", Some("index"))
+        ]
+    );
+}
