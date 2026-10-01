@@ -145,8 +145,8 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
 - a `package.json` with a `name` whose directory holds TS/JS files of its own, or that declares `workspaces`,
   becomes a `package` component; TS/JS files that no package owns go to one root component named after the
   directory; a `package.json` without a name is no package, but it declares dependencies all the same;
-  of packages that share a name, the first by path keeps it as its id and the others become
-  `<name>+<directory>` (`dup+packages/dup`), with a warning
+  of packages that share a name, a workspace member (or path dependency) keeps it as its id, else the first by
+  path, and the others become `<name>+<directory>` (`dup+examples/dup`), with a warning
 - every directory between a package and its code files becomes a `module` component, except the source root
   `src/`, and every code file is a `module` component of its own, named by its path from the source root with
   its extension (`lib/money.ts`, `app/(public)/[slug]/page.tsx`); an `index.*` is its directory's own
@@ -193,7 +193,9 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   of a workspace (`workspaces` in a `package.json`, an array or `{ "packages": [..] }`, and
   `pnpm-workspace.yaml`; `!` patterns leave members out) and the directories of `file:`, `link:` and `portal:`
   dependencies, never another package of the same name; a bare import of one resolves to its files through its
-  `exports` or `main` (when a `types` condition leads outside the scan, the next condition answers), one whose
+  `exports` or `main`, matching the conditions the scanned tsconfigs turn on with `customConditions` (when a
+  `types` condition leads outside the scan, the next condition answers; a declaration file the scan holds is
+  what the import points at, as tsc reads it), one whose
   entry is outside the scan (`dist/`) is an `import` edge to the package without a file, a declaration of one
   is a `dependency` edge to that package whatever its version (`workspace:*`, `^1.0.0`), and a tsconfig
   `extends` of one loads
@@ -261,6 +263,9 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
 - Declarations inside `declare global { .. }`, triple-slash directives (`/// <reference types="vite/client" />`),
   spreads in `module.exports = { ...require('./a') }` and `Object.defineProperty(exports, 'a', ..)`
   are not read.
+- The links are one map for the whole scan: two independent workspace roots that each name a
+  package of one name link it to the first, while each root installs its own. A tsconfig's
+  `customConditions` count for every file, not only those its config covers.
 - Aliases defined only in a bundler configuration, `jsconfig.json` and Deno import maps are not
   read: an import through such an alias is `unresolved` when a tsconfig or jsconfig declares its
   pattern, `local name` when it names a top directory of the source root (`@components/button`),

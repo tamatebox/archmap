@@ -1061,7 +1061,13 @@ fn signature(raw: &str) -> String {
         s.pop();
     }
     if s.chars().count() > MAX_SIGNATURE {
-        s = s.chars().take(MAX_SIGNATURE).collect::<String>() + "...";
+        // cut between words, never inside a token such as `=>`
+        let cut: String = s.chars().take(MAX_SIGNATURE).collect();
+        let cut = match cut.rfind(' ') {
+            Some(space) => &cut[..space],
+            None => &cut,
+        };
+        s = format!("{cut} ...");
     }
     s
 }
@@ -1810,6 +1816,16 @@ export default local;
                 "open(token = …)",
             ]
         );
+    }
+
+    #[test]
+    fn a_long_signature_is_cut_between_words() {
+        let long = format!("export const handler = ({}: number) =>", "a".repeat(196));
+        let cut = signature(&long);
+        // never inside a token such as `=>`
+        assert!(cut.ends_with(" ..."), "{cut}");
+        assert!(!cut.contains("=..."), "{cut}");
+        assert!(cut.chars().count() <= MAX_SIGNATURE + 4, "{cut}");
     }
 
     #[test]

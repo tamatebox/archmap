@@ -62,6 +62,7 @@ pub(crate) struct Layout {
 pub(crate) fn discover(
     code: &[&Path],
     manifests: &BTreeMap<PathBuf, PackageJson>,
+    members: &BTreeSet<PathBuf>,
     files: &[PathBuf],
     root_name: &str,
 ) -> Layout {
@@ -77,31 +78,46 @@ pub(crate) fn discover(
         owned.entry(manifest).or_default().push(file);
     }
 
-    let mut packages = Vec::new();
-    let mut index: BTreeMap<Option<&PathBuf>, usize> = BTreeMap::new();
-    // the first package of a name by path keeps it as its id
+    // The packages, and their ids: of packages that share a name, the
+    // workspace member (or path dependency) keeps it, then the first by
+    // path; the others become `<name>+<dir>`.
+    let made: Vec<(&PathBuf, &String, &[&Path])> = manifests
+        .iter()
+        .filter_map(|(dir, manifest)| {
+            let name = manifest.name.as_ref()?;
+            let own = owned.get(&Some(dir)).map(Vec::as_slice).unwrap_or_default();
+            (!own.is_empty() || manifest.workspaces).then_some((dir, name, own))
+        })
+        .collect();
     let mut named: BTreeMap<&str, &PathBuf> = BTreeMap::new();
+    let mut ids: BTreeMap<&PathBuf, ComponentId> = BTreeMap::new();
     let mut renamed = Vec::new();
-    for (dir, manifest) in manifests {
-        let Some(name) = &manifest.name else {
-            continue;
-        };
-        let own = owned.get(&Some(dir)).map(Vec::as_slice).unwrap_or_default();
-        if own.is_empty() && !manifest.workspaces {
-            continue;
-        }
+    let (first, rest): (Vec<_>, Vec<_>) = made.iter().partition(|(dir, ..)| members.contains(*dir));
+    for (dir, name, _) in first.into_iter().chain(rest) {
         let id = match named.get(name.as_str()) {
-            Some(first) => {
-                renamed.push((name.clone(), (*first).clone(), dir.clone()));
+            Some(kept) => {
+                renamed.push(((*name).clone(), (*kept).clone(), (*dir).clone()));
                 ComponentId::new(format!("{name}+{}", display_path(dir)))
             }
             None => {
                 named.insert(name, dir);
-                ComponentId::new(name)
+                ComponentId::new(name.as_str())
             }
         };
+        ids.insert(dir, id);
+    }
+    renamed.sort();
+    let mut packages = Vec::new();
+    let mut index: BTreeMap<Option<&PathBuf>, usize> = BTreeMap::new();
+    for (dir, _, own) in &made {
         index.insert(Some(dir), packages.len());
-        packages.push(package(id, dir, Some(dir.clone()), own, files));
+        packages.push(package(
+            ids[dir].clone(),
+            dir,
+            Some((*dir).clone()),
+            own,
+            files,
+        ));
     }
     if let Some(own) = owned.get(&None) {
         index.insert(None, packages.len());
@@ -381,7 +397,7 @@ mod tests {
             .iter()
             .map(|(dir, m)| (PathBuf::from(dir), m.clone()))
             .collect();
-        discover(&code, &manifests, &files, "repo")
+        discover(&code, &manifests, &BTreeSet::new(), &files, "repo")
     }
 
     fn module<'a>(layout: &'a Layout, id: &str) -> &'a Component {
@@ -425,6 +441,36 @@ mod tests {
                 PathBuf::from("packages/dup")
             )]
         );
+    }
+
+    #[test]
+    fn a_workspace_member_keeps_its_name_over_a_package_that_sorts_first() {
+        let mut files: Vec<PathBuf> = [
+            "examples/dup/package.json",
+            "examples/dup/index.ts",
+            "packages/dup/package.json",
+            "packages/dup/src/index.ts",
+        ]
+        .iter()
+        .map(PathBuf::from)
+        .collect();
+        files.sort();
+        let code: Vec<&Path> = files
+            .iter()
+            .map(PathBuf::as_path)
+            .filter(|f| language_of(f).is_some())
+            .collect();
+        let manifests: BTreeMap<PathBuf, PackageJson> = [
+            ("examples/dup", manifest(Some("dup"), false)),
+            ("packages/dup", manifest(Some("dup"), false)),
+        ]
+        .into_iter()
+        .map(|(dir, m)| (PathBuf::from(dir), m))
+        .collect();
+        let members = BTreeSet::from([PathBuf::from("packages/dup")]);
+        let layout = discover(&code, &manifests, &members, &files, "repo");
+        let ids: Vec<&str> = layout.packages.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["dup+examples/dup", "dup"]);
     }
 
     #[test]

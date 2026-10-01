@@ -340,6 +340,8 @@ fn without_defaults(header: &str) -> String {
     let chars: Vec<char> = header.chars().collect();
     let mut out = String::with_capacity(header.len());
     let (mut depth, mut skipping, mut quote) = (0usize, false, None);
+    // inside the parameters of a lambda default, whose commas are its own
+    let mut lambda = false;
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
@@ -362,7 +364,8 @@ fn without_defaults(header: &str) -> String {
                     }
                     depth = depth.saturating_sub(1);
                 }
-                ',' if depth == 1 => skipping = false,
+                ':' if depth == 1 && lambda => lambda = false,
+                ',' if depth == 1 && !lambda => skipping = false,
                 '=' if depth == 1
                     && !skipping
                     && chars.get(i + 1) != Some(&'=')
@@ -374,6 +377,10 @@ fn without_defaults(header: &str) -> String {
                     kept.push('…');
                     out.extend(kept);
                     skipping = true;
+                    let value: String = chars[i + 1..].iter().collect();
+                    let value = value.trim_start();
+                    lambda = value.starts_with("lambda")
+                        && !value[6..].starts_with(|c: char| c.is_alphanumeric() || c == '_');
                     i += 1;
                     continue;
                 }
@@ -627,7 +634,8 @@ CURRENCY = "JPY"
         let file = scan_source(
             "def connect(url=\"postgres://u:p@h\", retries: int = 3, *,\n            \
              key=os.environ.get('K', 'x'), mode='a,b', flag=(1 == 2)) -> Conn:\n    pass\n\
-             class Repo(Base, metaclass=Meta):\n    pass\n",
+             class Repo(Base, metaclass=Meta):\n    pass\n\
+             def sort(items, key=lambda a, b: a < b, reverse=False):\n    pass\n",
         );
         let signatures: Vec<&str> = file
             .defs
@@ -639,6 +647,8 @@ CURRENCY = "JPY"
             [
                 "def connect(url=…, retries: int = …, *, key=…, mode=…, flag=…) -> Conn",
                 "class Repo(Base, metaclass=Meta)",
+                // a lambda's parameters are part of the default
+                "def sort(items, key=…, reverse=…)",
             ]
         );
     }

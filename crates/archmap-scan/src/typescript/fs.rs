@@ -209,6 +209,16 @@ fn normalize(path: &Path) -> PathBuf {
     out
 }
 
+impl ViewFs {
+    /// Whether the view links the package `name` (a workspace member, a
+    /// path dependency), the only packages whose files it holds.
+    pub(crate) fn links(&self, name: &str) -> bool {
+        self.0
+            .links
+            .contains_key(&self.0.root.join("node_modules").join(name))
+    }
+}
+
 impl View {
     /// The tsconfig an `extends` entry names, when the view holds it: a
     /// path, or a file of a package the view links (a workspace member that

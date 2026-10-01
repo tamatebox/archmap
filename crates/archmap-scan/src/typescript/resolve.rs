@@ -51,9 +51,14 @@ pub(crate) struct ImportResolver {
 }
 
 impl ImportResolver {
-    pub(crate) fn new(root: &Path, view: ViewFs) -> Self {
+    /// A resolver over `view` that also matches the `exports` conditions
+    /// the tsconfigs turn on (`customConditions`).
+    pub(crate) fn new(root: &Path, view: ViewFs, conditions: &[String]) -> Self {
         let resolver = |tsconfig: Option<TsconfigDiscovery>, types: bool| {
-            ResolverGeneric::new_with_file_system(view.clone(), options(tsconfig, types))
+            ResolverGeneric::new_with_file_system(
+                view.clone(),
+                options(tsconfig, types, conditions),
+            )
         };
         Self {
             root: root.to_path_buf(),
@@ -87,10 +92,11 @@ impl ImportResolver {
             }
         };
         let mut result = attempt(&self.with_tsconfig, &self.without_tsconfig, problems);
-        // a package's `types` condition can lead to built declarations
-        // outside the scan, where its source answers to the next condition
+        // a linked package's `types` condition can lead to built
+        // declarations outside the scan, where its source answers to the
+        // next condition; other packages are never in the view
         if matches!(&result, Err(e) if !matches!(e, ResolveError::Builtin { .. }))
-            && !is_path(specifier)
+            && package_name(specifier).is_some_and(|p| self.view.links(p))
         {
             if let ok @ Ok(_) = attempt(
                 &self.untyped_with_tsconfig,
@@ -148,7 +154,7 @@ impl ImportResolver {
     }
 }
 
-fn options(tsconfig: Option<TsconfigDiscovery>, types: bool) -> ResolveOptions {
+fn options(tsconfig: Option<TsconfigDiscovery>, types: bool, custom: &[String]) -> ResolveOptions {
     let strings = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
     ResolveOptions {
         tsconfig,
@@ -164,11 +170,15 @@ fn options(tsconfig: Option<TsconfigDiscovery>, types: bool) -> ResolveOptions {
             (".mjs".to_owned(), strings(&[".mts", ".mjs"])),
             (".cjs".to_owned(), strings(&[".cts", ".cjs"])),
         ],
-        condition_names: if types {
-            strings(&["types", "import", "require", "node", "default"])
-        } else {
-            strings(&["import", "require", "node", "default"])
-        },
+        condition_names: custom
+            .iter()
+            .cloned()
+            .chain(strings(if types {
+                &["types", "import", "require", "node", "default"]
+            } else {
+                &["import", "require", "node", "default"]
+            }))
+            .collect(),
         builtin_modules: true,
         // NODE_PATH would make the graph depend on the environment.
         node_path: false,
@@ -247,6 +257,36 @@ impl Aliases {
             })
             .map(|(pattern, config, _)| (pattern.as_str(), config.as_str()))
     }
+}
+
+/// The `customConditions` that the scanned tsconfig and jsconfig files turn
+/// on, sorted. A condition counts for every file, not only those its config
+/// covers: oxc_resolver reads no `customConditions`, and one resolver serves
+/// the whole scan.
+pub(crate) fn custom_conditions(ctx: &RepoContext) -> Vec<String> {
+    let mut found = BTreeSet::new();
+    for rel in ctx.files().iter().filter(|f| is_config(f)) {
+        let Ok(text) = ctx.read_to_string(rel) else {
+            continue;
+        };
+        let mut text = text.trim_start_matches('\u{feff}').to_owned();
+        if json_strip_comments::strip(&mut text).is_err() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        let conditions = value
+            .pointer("/compilerOptions/customConditions")
+            .and_then(|v| v.as_array());
+        found.extend(
+            conditions
+                .into_iter()
+                .flatten()
+                .filter_map(|c| c.as_str().map(str::to_owned)),
+        );
+    }
+    found.into_iter().collect()
 }
 
 /// `tsconfig.json`, `jsconfig.json`, `tsconfig.app.json` ...
@@ -337,7 +377,7 @@ mod tests {
         );
         let ctx = RepoContext::load(&root, ScanOptions::default()).unwrap();
         let mut warnings = Vec::new();
-        let resolver = ImportResolver::new(ctx.root(), ViewFs::new(&ctx, &mut warnings));
+        let resolver = ImportResolver::new(ctx.root(), ViewFs::new(&ctx, &mut warnings), &[]);
         let mut problems = BTreeSet::new();
         let mut file = |from: &str, specifier: &str| match resolver.resolve(
             Path::new(from),
@@ -400,7 +440,7 @@ mod tests {
         );
         let ctx = RepoContext::load(&root, ScanOptions::default()).unwrap();
         let mut warnings = Vec::new();
-        let resolver = ImportResolver::new(ctx.root(), ViewFs::new(&ctx, &mut warnings));
+        let resolver = ImportResolver::new(ctx.root(), ViewFs::new(&ctx, &mut warnings), &[]);
         assert_eq!(
             resolver.module_options(Path::new("app/a.ts")),
             ModuleOptions {
@@ -456,8 +496,11 @@ mod tests {
         .map(|(name, dir)| (name.to_owned(), PathBuf::from(dir)))
         .collect();
         let mut warnings = Vec::new();
-        let resolver =
-            ImportResolver::new(ctx.root(), ViewFs::new_linked(&ctx, &links, &mut warnings));
+        let resolver = ImportResolver::new(
+            ctx.root(),
+            ViewFs::new_linked(&ctx, &links, &mut warnings),
+            &[],
+        );
         let mut problems = BTreeSet::new();
         let mut file =
             |spec: &str| resolver.resolve(Path::new("apps/web/src/a.ts"), spec, &mut problems);
@@ -477,13 +520,48 @@ mod tests {
         assert!(problems.is_empty(), "{problems:?}");
     }
 
+    #[test]
+    fn custom_conditions_of_the_tsconfigs_choose_exports() {
+        // a member points its source at a condition the tsconfig turns on
+        let root = repo(
+            "conditions",
+            &[
+                (
+                    "tsconfig.json",
+                    r#"{ "compilerOptions": { "customConditions": ["@acme/source"] } }"#,
+                ),
+                (
+                    "packages/core/package.json",
+                    r#"{ "name": "@acme/core", "exports": { ".": { "@acme/source": "./src/index.ts", "import": "./dist/index.js" } } }"#,
+                ),
+                ("packages/core/src/index.ts", "export const c = 1;\n"),
+                ("apps/web/src/a.ts", "import { c } from '@acme/core';\n"),
+            ],
+        );
+        let ctx = RepoContext::load(&root, ScanOptions::default()).unwrap();
+        let links = BTreeMap::from([("@acme/core".to_owned(), PathBuf::from("packages/core"))]);
+        let mut warnings = Vec::new();
+        let resolver = ImportResolver::new(
+            ctx.root(),
+            ViewFs::new_linked(&ctx, &links, &mut warnings),
+            &custom_conditions(&ctx),
+        );
+        let mut problems = BTreeSet::new();
+        let found = resolver.resolve(Path::new("apps/web/src/a.ts"), "@acme/core", &mut problems);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            found,
+            Resolved::File(PathBuf::from("packages/core/src/index.ts"))
+        );
+    }
+
     /// Resolve `specifier` from `src/a.ts` in a repository of `files`, with
     /// the problems reported.
     fn resolve_in(name: &str, files: &[(&str, &str)], specifier: &str) -> (Resolved, Vec<String>) {
         let root = repo(name, files);
         let ctx = RepoContext::load(&root, ScanOptions::default()).unwrap();
         let mut warnings = Vec::new();
-        let resolver = ImportResolver::new(ctx.root(), ViewFs::new(&ctx, &mut warnings));
+        let resolver = ImportResolver::new(ctx.root(), ViewFs::new(&ctx, &mut warnings), &[]);
         let mut problems = BTreeSet::new();
         let resolved = resolver.resolve(Path::new("src/a.ts"), specifier, &mut problems);
         std::fs::remove_dir_all(&root).unwrap();

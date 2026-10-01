@@ -95,15 +95,6 @@ impl Analyzer for TypeScriptAnalyzer {
             .filter(|f| is_code(f))
             .collect();
         let manifests = read_manifests(ctx, &mut output.warnings);
-        let layout = layout::discover(&code, &manifests, ctx.files(), &root_name(ctx.root()));
-        for (name, kept, renamed) in &layout.renamed {
-            output.warnings.push(format!(
-                "two packages are named {name}: {} keeps the id, {} is {name}+{}",
-                display_path(&kept.join("package.json")),
-                display_path(&renamed.join("package.json")),
-                display_path(renamed)
-            ));
-        }
         // the packages an install links by name: workspace members and the
         // targets of `file:` dependencies
         let pnpm: BTreeMap<PathBuf, Vec<String>> = ctx
@@ -115,6 +106,22 @@ impl Analyzer for TypeScriptAnalyzer {
             })
             .collect();
         let links = workspace::links(&manifests, &pnpm);
+        let members: BTreeSet<PathBuf> = links.values().cloned().collect();
+        let layout = layout::discover(
+            &code,
+            &manifests,
+            &members,
+            ctx.files(),
+            &root_name(ctx.root()),
+        );
+        for (name, kept, renamed) in &layout.renamed {
+            output.warnings.push(format!(
+                "two packages are named {name}: {} keeps the id, {} is {name}+{}",
+                display_path(&kept.join("package.json")),
+                display_path(&renamed.join("package.json")),
+                display_path(renamed)
+            ));
+        }
         let linked: BTreeMap<String, ComponentId> = links
             .iter()
             .filter_map(|(name, dir)| {
@@ -138,6 +145,7 @@ impl Analyzer for TypeScriptAnalyzer {
         let resolver = resolve::ImportResolver::new(
             ctx.root(),
             fs::ViewFs::new_linked(ctx, &links, &mut output.warnings),
+            &resolve::custom_conditions(ctx),
         );
         let aliases = resolve::Aliases::collect(ctx);
         let mut problems = BTreeSet::new();
