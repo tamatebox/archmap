@@ -98,7 +98,7 @@ pub fn query(
     format: ReportFormat,
     verbose: bool,
 ) -> Result<ExitCode> {
-    // before the scan: a path outside the root needs none
+    // fails before scanning; the shared layer checks again for every interface
     archmap_app::reject_outside(Path::new(path), target)?;
     let answer = run_scan(path, ScanMode::Full)?.query(&QueryRequest {
         target,
@@ -119,6 +119,7 @@ pub fn impact(
 ) -> Result<ExitCode> {
     // impact prints JSON, its only format
     let OutputFormat::Json = format;
+    // fails before scanning; the shared layer checks again for every interface
     archmap_app::reject_outside(Path::new(path), target)?;
     let answer = run_scan(path, ScanMode::Full)?.impact(&ImpactRequest {
         target,

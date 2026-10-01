@@ -2071,3 +2071,64 @@ fn a_file_query_names_the_components_that_share_its_name() {
     let json: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(json["also_named"], serde_json::json!(["b::src/types.ts"]));
 }
+
+#[test]
+fn the_cli_prints_what_the_shared_layer_answers() {
+    use archmap_app::{
+        load_rules, CheckRequest, Format, ImpactRequest, QueryRequest, ScanMode, Workspace,
+        DEFAULT_DEPTH,
+    };
+    let root = python_fixture();
+    let ws = Workspace::scan(&root, ScanMode::Full).unwrap();
+    let query = |target, format| {
+        ws.query(&QueryRequest {
+            target,
+            depth: DEFAULT_DEPTH,
+            format,
+            verbose: false,
+        })
+        .unwrap()
+    };
+    let rules = load_rules(&root, None).unwrap();
+    let check = ws
+        .check(
+            &rules,
+            &CheckRequest {
+                depth: None,
+                format: Format::Text,
+            },
+        )
+        .unwrap()
+        .output;
+    let root_arg = root.to_str().unwrap();
+    let cases: Vec<(Vec<&str>, String)> = vec![
+        (vec!["summary", root_arg], ws.summary(DEFAULT_DEPTH, false)),
+        (
+            vec!["query", "shop.users", "--path", root_arg],
+            query("shop.users", Format::Text),
+        ),
+        (
+            vec!["query", "shop", "--format", "json", "--path", root_arg],
+            query("shop", Format::Json),
+        ),
+        (
+            vec!["impact", "src/shop/users.py", "--path", root_arg],
+            ws.impact(&ImpactRequest {
+                target: "src/shop/users.py",
+                depth: DEFAULT_DEPTH,
+                verbose: false,
+            })
+            .unwrap(),
+        ),
+        (vec!["check", "--path", root_arg], check),
+    ];
+    for (args, expected) in cases {
+        let out = archmap().args(&args).output().unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            expected,
+            "archmap {}",
+            args.join(" ")
+        );
+    }
+}

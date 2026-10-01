@@ -25,13 +25,28 @@ struct CheckReport<'a> {
 }
 
 /// The rules `check` compares the graph with: from a rules file, or none
-/// (signals only).
+/// (signals only). The rule set stays inside this crate, so an interface
+/// never needs `archmap-core`.
 #[derive(Debug, Default)]
 pub struct Rules {
-    pub set: RuleSet,
-    /// The rules file as an interface names it in the report, `None` when
-    /// there is none.
-    pub label: Option<String>,
+    set: RuleSet,
+    label: Option<String>,
+}
+
+impl Rules {
+    /// The rules file as the report names it, `None` when there is none.
+    pub fn label(&self) -> Option<&str> {
+        self.label.as_deref()
+    }
+
+    /// The same rules, named `label` in the report: an interface whose root
+    /// is absolute names the file relative to it.
+    pub fn with_label(self, label: impl Into<String>) -> Rules {
+        Rules {
+            label: Some(label.into()),
+            ..self
+        }
+    }
 }
 
 /// The rules for `root`: from `config` when given, else from

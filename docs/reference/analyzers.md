@@ -59,7 +59,7 @@ into the model in [graph.md](graph.md); how the commands present it is in
 ### Rust known gaps
 
 - `use` declarations and module paths in code are imports, but code inside macro calls
-  (`vec![Box::new(rust::RustAnalyzer)]`, `print!("{}", crate::query_text::render(..))`) is not
+  (`vec![Box::new(rust::RustAnalyzer)]`, `write!(out, "{}", crate::query_text::shell_word(..))`) is not
   read, and neither is a module's own use of what it re-exports, so `query` and `impact` miss
   those dependents.
 - Files under `src/bin/`, `#[path]` modules and targets that `Cargo.toml` places elsewhere belong
