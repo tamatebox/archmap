@@ -132,6 +132,8 @@ facts behind its component: the file's public symbols, what it imports
 (`Imports`), the statements elsewhere that import it (`Imported by`), and its
 imports without an edge. Where no evidence names imported files for the
 file's language, `Imported by` says it is unknown rather than showing none.
+A TS/JS re-export statement (`export ... from`) is marked `(export)`
+wherever a location is shown: it passes names on rather than uses them.
 
 `query` on a symbol (by name, `Class.method` / `Type::method`, or by id)
 lists the statements that import it, from the names their evidence records
@@ -141,8 +143,11 @@ name, and a Rust method whose type another file defines, by that file. `May
 use` lists, apart from those, the statements that take that file whole (a
 namespace import, a glob, `import pkg.sub`). Statements that only load the
 file take no name and are in neither list. Both lists show 5 statements and
-count the rest; nothing found reads `none resolved`, which does not mean
-unused. When several symbols match, each line counts its importers instead
+count the rest, and their heading counts the re-export statements among them
+(`Imported by: 4 (2 re-exports)`); nothing found reads `none resolved`, with
+a reminder that only import statements are read, so it does not mean
+unused: an entry point that a framework or runtime loads by name or path,
+such as a route or a handler, shows the same. When several symbols match, each line counts its importers instead
 (`imported by 3, may use 1`), and querying one by its id lists them. A
 Rust module (`pub mod invoice;`) is also a symbol of the file that declares
 it, but its imports name its own file, so `query` points at its component
@@ -196,11 +201,17 @@ step is file by file as above, and dependencies without a target file on
 the symbol's component are kept. So a file that imports another name from
 the same file is not affected. Two things widen or narrow it:
 
-- A TS/JS barrel's `export { X } from` takes `X` by name, so the barrel is
-  `direct`, and from there every importer of the barrel is `transitive`,
-  those that take other names included.
+- A re-export takes the name, so the statement that re-exports it is
+  `direct`, and from there every importer of the re-exporting file is
+  `transitive`, those that take other names included: a TS/JS barrel's
+  `export { X } from`, and a Python `__init__.py`'s `from .m import X`, whose
+  importers (`from pkg import X`) are only `transitive` (Python does not
+  follow re-exports).
 - A statement that only loads the file (a side-effect import) is not in the
   first step, although code that runs on load may call the symbol.
+
+`importers` and `may_use` show 5 statements with their total, as for a file;
+`query <symbol> --format json` lists them all.
 
 ## Names that several components share
 

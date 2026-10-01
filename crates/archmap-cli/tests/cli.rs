@@ -1475,14 +1475,14 @@ fn a_statement_counts_each_other_file_it_loads_once() {
 fn a_symbol_query_lists_the_statements_that_import_it() {
     let text = ts_stdout(&["query", "formatPrice"]);
     for expected in [
-        "Imported by: 4\n",
+        "Imported by: 4 (1 re-export)\n",
         "\n  src/app/page.tsx:1\n",
-        "\n  src/index.ts:1\n",
+        "\n  src/index.ts:1 (export)\n",
         "\n  src/app/checkout.ts:1 (via src/index.ts:1)\n",
         "\n  tests/money.test.ts:2\n",
         // a namespace re-export takes the file whole; checkout.ts:1, which
         // also does through it, is listed by name already
-        "May use: 1 (imports the whole module)\n  src/index.ts:4\n",
+        "May use: 1 (imports the whole module; 1 re-export)\n  src/index.ts:4 (export)\n",
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
     }
@@ -1643,4 +1643,77 @@ fn a_rust_module_symbol_points_at_its_component() {
         "{json}"
     );
     assert!(!json.contains("\"symbol\""), "{json}");
+}
+
+#[test]
+fn re_export_statements_are_marked_among_importers() {
+    // a file query: `export { default as limitOf } from` beside an import
+    let file = ts_stdout(&["query", "src/lib/limits.ts"]);
+    assert!(file.contains("src/index.ts:3 (export)"), "{file}");
+    assert!(!file.contains("src/index.ts:5 (export)"), "{file}");
+    // a symbol query counts them apart
+    let symbol = ts_stdout(&["query", "limitOf"]);
+    for expected in [
+        "Imported by: 4 (2 re-exports)\n",
+        "\n  src/index.ts:3 (export)\n",
+        "\n  src/app/checkout.ts:1 (via src/index.ts:3)\n",
+    ] {
+        assert!(
+            symbol.contains(expected),
+            "missing `{expected}` in:\n{symbol}"
+        );
+    }
+}
+
+#[test]
+fn nothing_resolved_says_what_the_map_cannot_see() {
+    let receipt = query_text(&fixture_root(), &["receipt"]);
+    assert!(
+        receipt.contains(
+            "Imported by: none resolved\n  (only import statements are read; code that a framework or runtime loads by name or path is not seen)\n"
+        ),
+        "{receipt}"
+    );
+}
+
+/// A TS package with two exports named `helper`, one under a directory
+/// whose name the shell would expand, and a directory named `helper` that
+/// holds no code.
+fn helpers_beside_a_directory(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("archmap-cli-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for (file, text) in [
+        ("package.json", "{\"name\": \"two\"}\n"),
+        ("src/(group)/a.ts", "export const helper = 1;\n"),
+        ("src/b.ts", "export const helper = 2;\n"),
+        // a directory without code: no component of that name, only a path
+        ("helper/README.md", "notes\n"),
+    ] {
+        let path = dir.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    dir
+}
+
+#[test]
+fn ids_that_the_shell_would_expand_are_quoted() {
+    let dir = helpers_beside_a_directory("quoted");
+    let query = query_text(&dir, &["helper"]);
+    let out = archmap()
+        .args(["impact", "helper", "--path"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(
+        query.contains("such as `'two::src/(group)/a.ts::helper'`"),
+        "{query}"
+    );
+    // a directory named like several symbols answers before the names fail
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }

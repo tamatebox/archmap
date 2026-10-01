@@ -472,7 +472,7 @@ fn symbol_list(
             let _ = writeln!(
                 out,
                 "\nQuery one by its id, such as `{}`, for the statements that import it.",
-                first.symbol.id
+                shell_word(first.symbol.id.as_str())
             );
         }
     }
@@ -512,19 +512,47 @@ fn importers(
     };
     let mut truncated = false;
     if by_name.is_empty() {
-        let _ = writeln!(out, "\nImported by: none resolved");
+        let _ = writeln!(
+            out,
+            "\nImported by: none resolved\n  (only import statements are read; code that a \
+             framework or runtime loads by name or path is not seen)"
+        );
     } else {
-        truncated |= sites(out, "Imported by", "", by_name, caps);
+        truncated |= sites(out, "Imported by", None, by_name, caps);
     }
     if !may_use.is_empty() {
-        truncated |= sites(out, "May use", " (imports the whole module)", may_use, caps);
+        truncated |= sites(
+            out,
+            "May use",
+            Some("imports the whole module"),
+            may_use,
+            caps,
+        );
     }
     truncated
 }
 
-fn sites(out: &mut String, title: &str, aside: &str, list: &[Importer], caps: &Caps) -> bool {
+fn sites(
+    out: &mut String,
+    title: &str,
+    note: Option<&str>,
+    list: &[Importer],
+    caps: &Caps,
+) -> bool {
     let shown = list.len().min(caps.importers);
-    let _ = writeln!(out, "\n{title}: {}{aside}", count(list.len(), shown));
+    let exports = list
+        .iter()
+        .filter(|i| i.evidence.note.as_deref() == Some("export"))
+        .count();
+    let mut notes: Vec<String> = note.map(str::to_owned).into_iter().collect();
+    if exports > 0 {
+        notes.push(plural(exports, "re-export"));
+    }
+    let notes = match notes.is_empty() {
+        true => String::new(),
+        false => format!(" ({})", notes.join("; ")),
+    };
+    let _ = writeln!(out, "\n{title}: {}{notes}", count(list.len(), shown));
     for importer in list.iter().take(shown) {
         let _ = writeln!(out, "  {}", import_location(importer.evidence, 0, false));
     }
@@ -574,10 +602,28 @@ fn import_location(evidence: &Evidence, more_files: usize, show_target: bool) ->
     {
         let _ = write!(out, " (via {place})");
     }
+    // a re-export statement passes names on: not a use of them
+    if evidence.note.as_deref() == Some("export") {
+        out.push_str(" (export)");
+    }
     if evidence.scope == Some(Scope::Local) {
         out.push_str(" (local)");
     }
     out
+}
+
+/// `word` as a shell reads it back: in single quotes when it holds a
+/// character the shell would expand or split on (TS/JS paths such as
+/// `app/(public)/[slug]/page.tsx`).
+pub(crate) fn shell_word(word: &str) -> String {
+    let plain = word
+        .chars()
+        .all(|c| c.is_alphanumeric() || "_-./:@+=,%^~".contains(c));
+    if plain {
+        word.to_owned()
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
+    }
 }
 
 fn location(evidence: &Evidence) -> String {

@@ -411,7 +411,7 @@ fn reject_ambiguous(full: &ArchitectureGraph, target: &str) -> Result<()> {
         let _ = write!(
             message,
             "\n  {}  {}",
-            component.id,
+            crate::query_text::shell_word(component.id.as_str()),
             component.path.as_deref().unwrap_or("-")
         );
     }
@@ -501,26 +501,32 @@ fn sites_of(
 
 /// The one symbol `target` names, by id or by name; an error that lists the
 /// candidates when several share the name.
-fn single_symbol<'a>(full: &'a ArchitectureGraph, target: &str) -> Result<Option<&'a Symbol>> {
-    if let Some(symbol) = full.symbol(&SymbolId::new(target)) {
-        return Ok(Some(symbol));
+fn symbols_for<'a>(full: &'a ArchitectureGraph, target: &str) -> Vec<&'a Symbol> {
+    match full.symbol(&SymbolId::new(target)) {
+        Some(symbol) => vec![symbol],
+        None => full.symbols_named(target).collect(),
     }
-    let named: Vec<&Symbol> = full.symbols_named(target).collect();
-    if named.len() < 2 {
-        return Ok(named.first().copied());
-    }
-    let mut message = format!("`{target}` names {} symbols; give an id:", named.len());
-    for symbol in named.iter().take(MAX_CANDIDATES) {
+}
+
+/// The error for a name that several symbols share: their ids, quoted for
+/// the shell where needed, and where they are.
+fn ambiguous_symbols(target: &str, symbols: &[&Symbol]) -> String {
+    let mut message = format!("`{target}` names {} symbols; give an id:", symbols.len());
+    for symbol in symbols.iter().take(MAX_CANDIDATES) {
         let at = symbol
             .location()
             .map(|e| format!("{}:{}", e.file, e.line.unwrap_or(0)))
             .unwrap_or_default();
-        let _ = write!(message, "\n  {}  {at}", symbol.id);
+        let _ = write!(
+            message,
+            "\n  {}  {at}",
+            crate::query_text::shell_word(symbol.id.as_str())
+        );
     }
-    if named.len() > MAX_CANDIDATES {
-        let _ = write!(message, "\n  +{} more", named.len() - MAX_CANDIDATES);
+    if symbols.len() > MAX_CANDIDATES {
+        let _ = write!(message, "\n  +{} more", symbols.len() - MAX_CANDIDATES);
     }
-    bail!(message)
+    message
 }
 
 pub fn impact(path: &str, target: &str, depth: usize, format: OutputFormat) -> Result<ExitCode> {
@@ -532,6 +538,7 @@ pub fn impact(path: &str, target: &str, depth: usize, format: OutputFormat) -> R
 
     let component =
         find_component(&rolled, full, target).or_else(|| find_component(full, full, target));
+    let symbols = symbols_for(full, target);
     let mut importers = None;
     let (mut symbol_id, mut may_use) = (None, None);
     let (at, reach) = if let Some(component) = component {
@@ -546,24 +553,31 @@ pub fn impact(path: &str, target: &str, depth: usize, format: OutputFormat) -> R
         let reach = full.change_impact(ChangeSeed::File(&file), depth);
         importers = Some(import_sites(full, depth, &file));
         (fold(full, depth, &owner.id), reach)
-    } else if let Some(module) = single_symbol(full, target)?
-        .and_then(|symbol| full.component(&ComponentId::new(symbol.id.as_str())))
-    {
-        // a Rust module's symbol stands for its component
-        let reach = full.change_impact(ChangeSeed::Component(&module.id), depth);
-        importers = component_file(full, path, module).map(|file| import_sites(full, depth, &file));
-        (fold(full, depth, &module.id), reach)
-    } else if let Some(symbol) = single_symbol(full, target)? {
-        let reach = full.change_impact(ChangeSeed::Symbol(symbol), depth);
-        if let Some(found) = full.symbol_importers(symbol) {
-            importers = Some(sites_of(full, depth, &found.by_name, found.recorded));
-            may_use = Some(sites_of(full, depth, &found.may_use, found.recorded));
+    } else if let [symbol] = symbols.as_slice() {
+        match full.component(&ComponentId::new(symbol.id.as_str())) {
+            // a Rust module's symbol stands for its component
+            Some(module) => {
+                let reach = full.change_impact(ChangeSeed::Component(&module.id), depth);
+                importers =
+                    component_file(full, path, module).map(|file| import_sites(full, depth, &file));
+                (fold(full, depth, &module.id), reach)
+            }
+            None => {
+                let reach = full.change_impact(ChangeSeed::Symbol(symbol), depth);
+                if let Some(found) = full.symbol_importers(symbol) {
+                    importers = Some(sites_of(full, depth, &found.by_name, found.recorded));
+                    may_use = Some(sites_of(full, depth, &found.may_use, found.recorded));
+                }
+                symbol_id = Some(symbol.id.clone());
+                (fold(full, depth, &symbol.component), reach)
+            }
         }
-        symbol_id = Some(symbol.id.clone());
-        (fold(full, depth, &symbol.component), reach)
     } else if let Some(owner) = directory_target(full, path, target).transpose()? {
+        // a directory answers before names that several symbols share fail
         let reach = full.change_impact(ChangeSeed::Component(&owner.id), depth);
         (fold(full, depth, &owner.id), reach)
+    } else if symbols.len() > 1 {
+        bail!(ambiguous_symbols(target, &symbols));
     } else {
         bail!("no component, file or symbol `{target}` in graph");
     };
