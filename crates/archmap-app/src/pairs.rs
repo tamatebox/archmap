@@ -17,7 +17,7 @@ pub(crate) enum Counted {
     /// imports one of its submodules: what the component holds, not what it
     /// depends on.
     Entry,
-    /// A TS/JS import of names that the loaded file only re-exports: it
+    /// A TS/JS import whose every name the loaded file only re-exports: it
     /// counts for the files that define them, through its `via` evidence.
     Through,
 }
@@ -35,37 +35,41 @@ pub(crate) fn via_place(note: &str) -> Option<&str> {
     (one_word && numbered).then_some(place)
 }
 
+/// A statement: its file and line.
+type Statement<'g> = (&'g str, Option<u32>);
+
 /// What the rule needs to know of the whole graph.
 pub(crate) struct Pairs<'g> {
     full: &'g ArchitectureGraph,
-    /// Statements that reach a name through a re-export.
-    walked: BTreeSet<(&'g str, Option<u32>)>,
-    /// The names each file declares, by its symbols.
-    defined: BTreeMap<&'g str, BTreeSet<&'g str>>,
+    /// The names each TS/JS `import` statement takes from the file it loads,
+    /// its values and its types together.
+    taken: BTreeMap<Statement<'g>, BTreeSet<&'g str>>,
+    /// The names each statement reaches through re-exports, with the file
+    /// that defines each: one per name taken, the names as those files
+    /// declare them.
+    walked: BTreeMap<Statement<'g>, BTreeSet<(&'g str, &'g str)>>,
 }
 
 impl<'g> Pairs<'g> {
     pub(crate) fn new(full: &'g ArchitectureGraph) -> Self {
-        let walked = full
-            .edges
-            .iter()
-            .flat_map(|edge| &edge.evidence)
-            .filter(|e| e.note.as_deref().and_then(via_place).is_some())
-            .map(|e| (e.file.as_str(), e.line))
-            .collect();
-        let mut defined: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-        for symbol in full.symbols.values() {
-            if let Some(at) = symbol.location() {
-                defined
-                    .entry(at.file.as_str())
+        let mut taken: BTreeMap<Statement, BTreeSet<&str>> = BTreeMap::new();
+        let mut walked: BTreeMap<Statement, BTreeSet<(&str, &str)>> = BTreeMap::new();
+        for e in full.edges.iter().flat_map(|edge| &edge.evidence) {
+            let at = (e.file.as_str(), e.line);
+            let names = e.names.iter().map(String::as_str);
+            match (e.note.as_deref(), e.target.as_deref()) {
+                (Some("import"), Some(_)) => taken.entry(at).or_default().extend(names),
+                (Some(note), Some(target)) if via_place(note).is_some() => walked
+                    .entry(at)
                     .or_default()
-                    .insert(symbol.name.as_str());
+                    .extend(names.map(|name| (target, name))),
+                _ => {}
             }
         }
         Pairs {
             full,
+            taken,
             walked,
-            defined,
         }
     }
 
@@ -105,19 +109,22 @@ impl Pair<'_, '_> {
         if self.entry.contains(e.file.as_str()) {
             return Counted::Entry;
         }
-        // the evidence for the file a TS/JS statement loads; Rust notes
-        // `use`, and its re-exports never make such evidence
-        let own = |name: &String| {
-            e.target
-                .as_deref()
-                .and_then(|t| self.pairs.defined.get(t))
-                .is_some_and(|names| names.contains(name.as_str()))
-        };
-        if e.note.as_deref() == Some("import")
-            && self.pairs.walked.contains(&(e.file.as_str(), e.line))
+        // the evidence for the file a TS/JS statement loads (Rust notes
+        // `use`, and its re-exports never make such evidence): it passes
+        // through when re-exports lead each of its names to the file that
+        // defines it. A name the loaded file declares itself, an anonymous
+        // default included, one that leads outside the scan and one found
+        // nowhere have no `via` evidence, so the counts differ and the
+        // statement counts for the loaded file; two names of one definition
+        // count for it too.
+        let at = (e.file.as_str(), e.line);
+        let through = e.note.as_deref() == Some("import")
             && !e.names.contains(WHOLE_MODULE)
-            && !e.names.iter().any(own)
-        {
+            && match (self.pairs.taken.get(&at), self.pairs.walked.get(&at)) {
+                (Some(taken), Some(walked)) => taken.len() == walked.len(),
+                _ => false,
+            };
+        if through {
             return Counted::Through;
         }
         if e.test {

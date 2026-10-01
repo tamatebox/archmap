@@ -55,7 +55,10 @@ contains:
   only tests make shows `tests: M` alone, and imports between files of one
   component are not listed. A statement that reaches a name through a
   re-export counts for the file that defines the name, and for the barrel it
-  loads only when it takes the barrel whole or a name the barrel declares. Statements of a component's own entry file (an
+  loads unless re-exports lead every name it takes elsewhere: it counts for
+  the barrel when it takes the barrel whole, a name the barrel declares (an
+  anonymous default included), or a name that leads outside the scan or
+  nowhere. Statements of a component's own entry file (an
   `index.*`, an `__init__.py`) into its own submodules say what it holds
   rather than what it depends on: they are counted in a `not listed:` line
 - external dependencies with the manifests that declare them (`declared:`,
@@ -142,9 +145,9 @@ erases, so it never runs, and `(test)` a statement in test code. Each
 neighbor counts its statements as `summary` counts the pair: in production
 code and in tests apart (`2 imports, 1 in tests`), and apart from those
 statements of the component's entry file into its own submodules (`6 of its
-entry file`) and those that load a barrel only to reach names it re-exports
-(`3 through re-exports`, located `(through)`), which count for the files
-that define the names. Production code is listed first, and neighbors with
+entry file`) and those that load a barrel only to reach names it re-exports,
+every name they take (`3 through re-exports`, located `(through)`), which
+count for the files that define the names. Production code is listed first, and neighbors with
 more production statements come first. A `Not mapped`
 section then lists the imports of the component that no edge shows, one line
 per module with the reason (`local name`, `extra or dev dependency`,

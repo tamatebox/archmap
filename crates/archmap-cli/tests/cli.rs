@@ -1918,8 +1918,9 @@ fn symbols_are_listed_in_source_order() {
 
 #[test]
 fn summary_and_query_count_a_pair_alike() {
-    // checkout.ts imports from the package's barrel five times; three
-    // statements only reach names it re-exports
+    // checkout.ts imports from the package's barrel five times; two
+    // statements only reach names it re-exports, while line 1 also takes a
+    // name found nowhere, which counts for the barrel
     let summary = archmap()
         .arg("summary")
         .arg(ts_fixture())
@@ -1928,12 +1929,12 @@ fn summary_and_query_count_a_pair_alike() {
         .unwrap();
     let summary = String::from_utf8_lossy(&summary.stdout);
     assert!(
-        summary.contains("\napp/checkout.ts -> ts-shop  imports: 2\n"),
+        summary.contains("\napp/checkout.ts -> ts-shop  imports: 3\n"),
         "{summary}"
     );
     let query = ts_stdout(&["query", "src/app/checkout.ts"]);
     assert!(
-        query.contains("ts-shop                2 imports, 3 through re-exports: "),
+        query.contains("ts-shop                3 imports, 2 through re-exports: "),
         "{query}"
     );
     // a package's entry file into its own submodules: left out of the count,
@@ -2332,4 +2333,51 @@ fn only_a_walked_note_reads_as_via() {
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
     }
+}
+
+#[test]
+fn a_statement_counts_for_a_barrel_unless_every_name_passes_through() {
+    let repo = temp_repo("barrel-own");
+    std::fs::create_dir_all(repo.join("web/src/ui")).unwrap();
+    std::fs::write(
+        repo.join("web/package.json"),
+        "{ \"name\": \"web\", \"dependencies\": { \"@radix-ui/react-dialog\": \"1\" } }",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("web/src/ui/index.ts"),
+        "export { Widget } from './widget';\nexport * from '@radix-ui/react-dialog';\n\
+         export default { theme: 'dark' };\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("web/src/ui/widget.ts"),
+        "export const Widget = 1;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("web/src/app.ts"),
+        // the barrel's own default; a name from outside the scan; only a
+        // re-exported name
+        "import cfg, { Widget } from './ui';\nimport { Dialog } from './ui';\n\
+         import { Widget as W } from './ui';\nexport const all = [cfg, Widget, Dialog, W];\n",
+    )
+    .unwrap();
+    let out = archmap()
+        .arg("summary")
+        .arg(&repo)
+        .args(["-o", "-"])
+        .output()
+        .unwrap();
+    let query = query_text(&repo, &["web/src/app.ts"]);
+    std::fs::remove_dir_all(&repo).unwrap();
+    let summary = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        summary.contains("\napp.ts -> ui  imports: 2\n"),
+        "{summary}"
+    );
+    assert!(
+        query.contains("\n  ui            2 imports, 1 through re-exports: "),
+        "{query}"
+    );
 }
