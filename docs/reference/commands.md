@@ -38,7 +38,9 @@ contains:
   the `source` of the facts and the `next` commands
 - `## Coverage`, before the map: for each analyzed language `files`, `read`
   and `imports without an edge`, counted in statements per reason; the languages no analyzer reads, such as
-  `not analyzed  sql: 145  notebook: 68`; the number of `dynamic imports` and
+  `not analyzed  sql: 145  notebook: 68`; the number of TS/JS `scripts`, files
+  without imports or exports whose declarations are used without an import;
+  the number of `dynamic imports` and
   the components that make them; and a fixed line naming the runtime coupling
   no analyzer reads (HTTP, databases, queues, subprocesses,
   configuration-driven loading)

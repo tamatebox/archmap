@@ -22,8 +22,24 @@ pub(crate) enum Resolved {
     NotFound,
 }
 
+/// What a file's tsconfig says about whether TypeScript reads the file as a
+/// module rather than a script.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ModuleOptions {
+    /// `module` is `node16`, `node18`, `node20` or `nodenext`, under which
+    /// `"type": "module"` in the closest `package.json` makes a module.
+    pub node: bool,
+    /// `jsx` is `react-jsx` or `react-jsxdev`, which imports a runtime into
+    /// every file with JSX.
+    pub jsx_runtime: bool,
+    /// `moduleDetection` is `force`: every file but a declaration file is a
+    /// module.
+    pub force: bool,
+}
+
 pub(crate) struct ImportResolver {
     root: PathBuf,
+    view: ViewFs,
     /// Applies each file's tsconfig (`paths`, `baseUrl`, `references`).
     with_tsconfig: ResolverGeneric<ViewFs>,
     /// For files whose tsconfig the resolver cannot use.
@@ -34,6 +50,7 @@ impl ImportResolver {
     pub(crate) fn new(root: &Path, view: ViewFs) -> Self {
         Self {
             root: root.to_path_buf(),
+            view: view.clone(),
             with_tsconfig: ResolverGeneric::new_with_file_system(
                 view.clone(),
                 options(Some(TsconfigDiscovery::Auto)),
@@ -66,6 +83,26 @@ impl ImportResolver {
                 .map_or(Resolved::NotFound, |rel| Resolved::File(rel.to_path_buf())),
             Err(ResolveError::Builtin { .. }) => Resolved::Builtin,
             Err(_) => Resolved::NotFound,
+        }
+    }
+
+    /// What the tsconfig of `file` (relative to the root) says about module
+    /// detection; nothing for a file without one, or with one the resolver
+    /// cannot use.
+    pub(crate) fn module_options(&self, file: &Path) -> ModuleOptions {
+        let Ok(Some(tsconfig)) = self.with_tsconfig.find_tsconfig(self.root.join(file)) else {
+            return ModuleOptions::default();
+        };
+        let options = &tsconfig.compiler_options;
+        let one_of = |value: &Option<String>, names: &[&str]| {
+            value
+                .as_deref()
+                .is_some_and(|v| names.iter().any(|n| v.eq_ignore_ascii_case(n)))
+        };
+        ModuleOptions {
+            node: one_of(&options.module, &["node16", "node18", "node20", "nodenext"]),
+            jsx_runtime: one_of(&options.jsx, &["react-jsx", "react-jsxdev"]),
+            force: self.view.module_detection_forced(tsconfig.path()),
         }
     }
 
@@ -290,6 +327,60 @@ mod tests {
         assert_eq!(file("scripts/c.mjs", "@/lib/b"), "not found");
         assert_eq!(file("scripts/c.mjs", "../src/lib/b.ts"), "src/lib/b.ts");
         assert!(problems.is_empty(), "{problems:?}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn tsconfig_options_say_how_typescript_reads_a_file() {
+        let root = repo(
+            "module-options",
+            &[
+                // one project: `module` and `jsx` come through `extends`,
+                // `moduleDetection` from the file itself
+                (
+                    "app/tsconfig.json",
+                    "{ \"extends\": \"./tsconfig.base.json\", \"compilerOptions\": \
+                     { \"moduleDetection\": \"force\" } }",
+                ),
+                (
+                    "app/tsconfig.base.json",
+                    "{ \"compilerOptions\": { \"module\": \"NodeNext\", \"jsx\": \"react-jsx\" } }",
+                ),
+                ("app/a.ts", "const a = 1;\n"),
+                // another: `moduleDetection` only through `extends`
+                (
+                    "web/tsconfig.json",
+                    "{ \"extends\": [\"./other.json\", \"./base\"] }",
+                ),
+                (
+                    "web/other.json",
+                    "{ \"compilerOptions\": { \"moduleDetection\": \"auto\" } }",
+                ),
+                (
+                    "web/base.json",
+                    "{ \"compilerOptions\": { \"moduleDetection\": \"force\" } }",
+                ),
+                ("web/b.ts", "const b = 1;\n"),
+                ("plain/c.js", "var c = 1;\n"),
+            ],
+        );
+        let ctx = RepoContext::load(&root, ScanOptions::default()).unwrap();
+        let mut warnings = Vec::new();
+        let resolver = ImportResolver::new(ctx.root(), ViewFs::new(&ctx, &mut warnings));
+        assert_eq!(
+            resolver.module_options(Path::new("app/a.ts")),
+            ModuleOptions {
+                node: true,
+                jsx_runtime: true,
+                force: true
+            }
+        );
+        // the last entry of `extends` wins
+        assert!(resolver.module_options(Path::new("web/b.ts")).force);
+        assert_eq!(
+            resolver.module_options(Path::new("plain/c.js")),
+            ModuleOptions::default()
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 

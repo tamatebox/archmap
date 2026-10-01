@@ -1381,8 +1381,10 @@ fn ts_summary_counts_both_languages_and_why_imports_have_no_edge() {
         .unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
     for expected in [
-        "typescript  files: 13  read: 13  imports without an edge: 7 (undeclared 1, extra or dev dependency 2, local name 1, unresolved 3)",
+        "typescript  files: 14  read: 14  imports without an edge: 7 (undeclared 1, extra or dev dependency 2, local name 1, unresolved 3)",
         "javascript  files: 3  read: 3  imports without an edge: 0",
+        // src/global.d.ts
+        "scripts: 1 (no import or export: what uses their declarations is not traced)",
         // `require` and `import()` of a computed name
         "dynamic imports: 2  in: scripts/report.cjs 1, app/lazy.tsx 1",
     ] {
@@ -1781,6 +1783,18 @@ fn imports_written_as_calls_show_where_they_run() {
     for expected in [
         "scripts/report.cjs:1 -> scripts/format.cjs\n",
         "require  dynamic  1 call: scripts/report.cjs:4 (local)",
+    ] {
+        assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
+    }
+}
+
+#[test]
+fn a_script_shows_its_kind_and_globals() {
+    let text = ts_stdout(&["query", "src/global.d.ts"]);
+    for expected in [
+        "(script, typescript)",
+        "declare const VERSION: string  src/global.d.ts:1",
+        "interface Window  src/global.d.ts:3",
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
     }

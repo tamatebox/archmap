@@ -11,10 +11,11 @@ use std::path::Path;
 use archmap_core::{SymbolKind, WHOLE_MODULE};
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    CallExpression, Class, ClassElement, Declaration, ExportDefaultDeclarationKind, Expression,
-    FormalParameters, Function, ImportDeclarationSpecifier, ImportExpression, MethodDefinitionKind,
-    Statement, TSAccessibility, TSImportEqualsDeclaration, TSImportType, TSImportTypeQualifier,
-    TSModuleReference,
+    AssignmentExpression, AssignmentTarget, CallExpression, Class, ClassElement, Declaration,
+    ExportDefaultDeclarationKind, Expression, FormalParameters, Function,
+    ImportDeclarationSpecifier, ImportExpression, MethodDefinitionKind, ObjectProperty,
+    ObjectPropertyKind, Statement, TSAccessibility, TSImportEqualsDeclaration, TSImportType,
+    TSImportTypeQualifier, TSModuleReference,
 };
 use oxc_ast::AstKind;
 use oxc_ast_visit::{walk, Visit};
@@ -84,6 +85,17 @@ pub(crate) struct ParsedFile {
     pub symbols: Vec<ExportedSymbol>,
     /// What the file exports, with indices into `imports`.
     pub exports: ExportTable,
+    /// What makes TypeScript read the file as a module rather than a
+    /// script: an `import` or `export` declaration, `import x = require()`,
+    /// `import.meta`, and in JavaScript a `require` call or an assignment to
+    /// `module.exports` or `exports`.
+    pub module_syntax: bool,
+    /// The file holds JSX, which makes it a module where the tsconfig's
+    /// `jsx` imports a runtime.
+    pub has_jsx: bool,
+    /// Without module syntax: every top-level declaration, the first of a
+    /// name, which a script declares globally.
+    pub globals: Vec<ExportedSymbol>,
 }
 
 /// Characters of a signature kept; a longer one ends in `...`.
@@ -93,7 +105,8 @@ const MAX_SIGNATURE: usize = 200;
 /// JavaScript, JSX and `.d.ts`. Fails only when the parser gives up.
 pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
     let mut source_type = SourceType::from_path(path).map_err(|e| e.to_string())?;
-    if source_type.is_javascript() {
+    let javascript = source_type.is_javascript();
+    if javascript {
         // Plain `.js` files carry JSX as often as `.jsx` files do.
         source_type = source_type.with_jsx(true);
     }
@@ -159,6 +172,9 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
             true => BTreeSet::from([WHOLE_MODULE.to_owned()]),
             false => BTreeSet::new(),
         };
+        if statement.is_module_declaration() {
+            file.module_syntax = true;
+        }
         match statement {
             Statement::ImportDeclaration(d) => {
                 let mut names = Vec::new();
@@ -243,6 +259,7 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
             }
             Statement::TSImportEqualsDeclaration(d) => {
                 if let Some(specifier) = required_by(d) {
+                    file.module_syntax = true;
                     let type_only = d.import_kind.is_type();
                     bindings.insert(d.id.name.to_string(), (index, None, type_only));
                     file.imports
@@ -340,6 +357,9 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
                 };
                 exported.push((local, "default".to_owned(), line, false));
             }
+            Statement::ExpressionStatement(e) if javascript => {
+                commonjs_exports(&source, &e.expression, &locals, &mut file);
+            }
             _ => {}
         }
     }
@@ -371,25 +391,144 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
     // after the statements, so the indices in the export table stay valid
     let mut calls = Calls {
         lines: &lines,
+        javascript,
         functions: Vec::new(),
         imports: Vec::new(),
         dynamic: Vec::new(),
+        module_syntax: false,
+        has_jsx: false,
     };
     calls.visit_program(&parsed.program);
     file.imports.extend(calls.imports);
     file.dynamic = calls.dynamic;
+    file.module_syntax |= calls.module_syntax;
+    file.has_jsx = calls.has_jsx;
+    if !file.module_syntax {
+        let mut seen = BTreeSet::new();
+        for statement in &parsed.program.body {
+            if let Some(declaration) = statement.as_declaration() {
+                for symbols in source.declared(declaration, statement.span().start) {
+                    if seen.insert(symbols[0].name.clone()) {
+                        file.globals.extend(symbols);
+                    }
+                }
+            }
+        }
+    }
     Ok(file)
+}
+
+/// The symbols and export-table entries of a top-level CommonJS export:
+/// `exports.a = ..`, `module.exports.a = ..` and `module.exports = ..`, the
+/// last also as the default export. The `exports.a = exports.b = void 0`
+/// that compilers write before the real assignments gives nothing.
+fn commonjs_exports(
+    source: &Source,
+    expression: &Expression,
+    locals: &BTreeMap<String, Vec<ExportedSymbol>>,
+    file: &mut ParsedFile,
+) {
+    let mut targets = Vec::new();
+    let mut value = expression;
+    while let Expression::AssignmentExpression(a) = value {
+        let Some(target) = commonjs_target(&a.left) else {
+            break;
+        };
+        targets.push((target, a.span.start));
+        value = &a.right;
+    }
+    if value.is_void_0() {
+        return;
+    }
+    for (target, start) in targets {
+        match target {
+            Some(name) if name != "default" => {
+                file.symbols
+                    .extend(source.assigned(name, value, start, locals));
+                file.exports
+                    .names
+                    .entry(name.to_owned())
+                    .or_insert(Export::Local);
+            }
+            // the module itself, or its default export
+            _ => {
+                let declared = match value {
+                    Expression::Identifier(id) => locals.get(id.name.as_str()).cloned(),
+                    Expression::FunctionExpression(f) => {
+                        f.id.as_ref()
+                            .and_then(|_| source.function(f, start).map(|s| vec![s]))
+                    }
+                    Expression::ClassExpression(c) => {
+                        Some(source.class(c, start)).filter(|s| !s.is_empty())
+                    }
+                    _ => None,
+                };
+                if let Some(symbols) = declared {
+                    if file.exports.default_name.is_none() {
+                        file.exports.default_name = Some(symbols[0].name.clone());
+                    }
+                    file.symbols.extend(symbols);
+                }
+                if let (None, Expression::ObjectExpression(object)) = (target, value) {
+                    for property in &object.properties {
+                        let ObjectPropertyKind::ObjectProperty(p) = property else {
+                            continue;
+                        };
+                        let Some(name) = p.key.static_name() else {
+                            continue;
+                        };
+                        file.symbols.extend(source.property(&name, p, locals));
+                        file.exports
+                            .names
+                            .entry(name.into_owned())
+                            .or_insert(Export::Local);
+                    }
+                }
+                file.exports
+                    .names
+                    .entry("default".to_owned())
+                    .or_insert(Export::Local);
+            }
+        }
+    }
+}
+
+/// What an assignment exports: `Some(None)` for `module.exports` itself,
+/// `Some(Some(name))` for `exports.name` and `module.exports.name`.
+fn commonjs_target<'a>(target: &'a AssignmentTarget) -> Option<Option<&'a str>> {
+    let AssignmentTarget::StaticMemberExpression(member) = target else {
+        return None;
+    };
+    let property = member.property.name.as_str();
+    match &member.object {
+        Expression::Identifier(object) if object.name == "module" => {
+            (property == "exports").then_some(None)
+        }
+        Expression::Identifier(object) if object.name == "exports" => Some(Some(property)),
+        Expression::StaticMemberExpression(inner)
+            if inner.property.name == "exports"
+                && matches!(&inner.object, Expression::Identifier(o) if o.name == "module") =>
+        {
+            Some(Some(property))
+        }
+        _ => None,
+    }
 }
 
 /// The calls of a file that load modules, wherever they sit, and the
 /// `import()` types (`typeof import('m')`, `import('m').A`).
 struct Calls<'s> {
     lines: &'s LineIndex,
+    /// JavaScript, where `require` and `module.exports` make a module.
+    javascript: bool,
     /// The function bodies the walk is in, each with whether it takes a
     /// parameter named `require`, as a bundle's module wrapper does.
     functions: Vec<bool>,
     imports: Vec<ImportStatement>,
     dynamic: Vec<DynamicCall>,
+    /// `import.meta`, or in JavaScript `require` or `module.exports`.
+    module_syntax: bool,
+    has_jsx: bool,
 }
 
 impl Calls<'_> {
@@ -430,6 +569,8 @@ impl<'a> Visit<'a> for Calls<'_> {
         match kind {
             AstKind::Function(f) => self.functions.push(takes_require(&f.params)),
             AstKind::ArrowFunctionExpression(f) => self.functions.push(takes_require(&f.params)),
+            AstKind::ImportMeta(_) => self.module_syntax = true,
+            AstKind::JSXElement(_) | AstKind::JSXFragment(_) => self.has_jsx = true,
             _ => {}
         }
     }
@@ -460,6 +601,9 @@ impl<'a> Visit<'a> for Calls<'_> {
             },
             _ => None,
         };
+        if note == Some("require") && self.javascript {
+            self.module_syntax = true;
+        }
         if let (Some(note), Some(first)) = (note, it.arguments.first()) {
             match first.as_expression().and_then(literal) {
                 Some(specifier) => self.import(
@@ -475,6 +619,13 @@ impl<'a> Visit<'a> for Calls<'_> {
             }
         }
         walk::walk_call_expression(self, it);
+    }
+
+    fn visit_assignment_expression(&mut self, it: &AssignmentExpression<'a>) {
+        if self.javascript && commonjs_target(&it.left).is_some() {
+            self.module_syntax = true;
+        }
+        walk::walk_assignment_expression(self, it);
     }
 
     fn visit_import_expression(&mut self, it: &ImportExpression<'a>) {
@@ -579,6 +730,47 @@ impl Source<'_> {
             kind,
             line: self.lines.line(start),
             signature: Some(signature(&self.code(start, end))),
+        }
+    }
+
+    /// The symbols of `name` assigned `value` by a statement at `start`
+    /// (`exports.pad = (text) => ..`): a local declaration's own, under
+    /// `name` at its line, else one by the kind of the value.
+    fn assigned(
+        &self,
+        name: &str,
+        value: &Expression,
+        start: u32,
+        locals: &BTreeMap<String, Vec<ExportedSymbol>>,
+    ) -> Vec<ExportedSymbol> {
+        if let Expression::Identifier(id) = value {
+            if let Some(symbols) = locals.get(id.name.as_str()) {
+                return exported_as(symbols, name);
+            }
+        }
+        let (kind, end) = value_kind(value);
+        vec![self.symbol(name.to_owned(), kind, start, end)]
+    }
+
+    /// The symbols of a property of `module.exports = { .. }`; a value that
+    /// is no function or class goes by its key alone.
+    fn property(
+        &self,
+        name: &str,
+        property: &ObjectProperty,
+        locals: &BTreeMap<String, Vec<ExportedSymbol>>,
+    ) -> Vec<ExportedSymbol> {
+        let start = property.span.start;
+        match value_kind(&property.value) {
+            (SymbolKind::Constant, _) if !matches!(property.value, Expression::Identifier(_)) => {
+                vec![self.symbol(
+                    name.to_owned(),
+                    SymbolKind::Constant,
+                    start,
+                    property.key.span().end,
+                )]
+            }
+            _ => self.assigned(name, &property.value, start, locals),
         }
     }
 
@@ -698,6 +890,20 @@ impl Source<'_> {
             )]],
             _ => Vec::new(),
         }
+    }
+}
+
+/// The kind of a value assigned to an export, and where its signature
+/// ends: before a function's body, else before the value.
+fn value_kind(value: &Expression) -> (SymbolKind, u32) {
+    match value {
+        Expression::ArrowFunctionExpression(a) => (SymbolKind::Function, a.body.span().start),
+        Expression::FunctionExpression(f) => (
+            SymbolKind::Function,
+            f.body.as_ref().map_or(f.span.end, |b| b.span.start),
+        ),
+        Expression::ClassExpression(c) => (SymbolKind::Struct, c.body.span.start),
+        _ => (SymbolKind::Constant, value.span().start),
     }
 }
 
@@ -1277,6 +1483,152 @@ export default local;
         let specifiers: Vec<&str> = file.imports.iter().map(|i| i.specifier.as_str()).collect();
         assert_eq!(specifiers, ["./outer"]);
         assert!(file.dynamic.is_empty(), "{:?}", file.dynamic);
+    }
+
+    #[test]
+    fn a_file_without_imports_or_exports_has_no_module_syntax() {
+        let syntax = |path: &str, text: &str| parse(Path::new(path), text).unwrap().module_syntax;
+        assert!(!syntax(
+            "x.ts",
+            "declare const VERSION: string;\ninterface Window { shop: string }\nfunction track() {}\n"
+        ));
+        // an alias of a namespace, a wrapper's own `require` and `import()`
+        assert!(!syntax(
+            "x.ts",
+            "namespace NS { export const y = 1; }\nimport x = NS.y;\n\
+             (function (require) { require('a'); })();\nconst p = import('b');\n"
+        ));
+        // CommonJS makes only JavaScript a module, as TypeScript reads it
+        assert!(!syntax(
+            "x.ts",
+            "const fs = require('fs');\nmodule.exports = fs;\n"
+        ));
+        for (path, text) in [
+            ("x.ts", "import 'a';"),
+            ("x.ts", "export {};"),
+            ("x.ts", "export const a = 1;"),
+            ("x.ts", "export default 1;"),
+            ("x.ts", "export * from 'a';"),
+            ("x.ts", "import x = require('a');"),
+            ("x.ts", "export = 1;"),
+            ("x.d.ts", "export as namespace Lib;"),
+            ("x.ts", "const u = import.meta.url;"),
+            ("x.js", "function f() { return require('a'); }"),
+            ("x.js", "module.exports = {};"),
+            ("x.js", "exports.a = 1;"),
+            ("x.js", "if (x) { module.exports.a = 1; }"),
+        ] {
+            assert!(syntax(path, text), "{text}");
+        }
+    }
+
+    #[test]
+    fn jsx_is_noticed() {
+        let jsx = |text: &str| parse(Path::new("x.tsx"), text).unwrap().has_jsx;
+        assert!(jsx("const a = <div />;"));
+        assert!(jsx("function f() { return <></>; }"));
+        assert!(!jsx("const a = 1 < 2;"));
+    }
+
+    #[test]
+    fn every_top_level_declaration_is_a_global() {
+        let file = parse(
+            Path::new("global.d.ts"),
+            "declare const VERSION: string;\ninterface Window {\n  shop: { version: string };\n}\n\
+             declare function track(event: string): void;\n\
+             declare module '*.svg' {\n  const src: string;\n  export default src;\n}\n",
+        )
+        .unwrap();
+        let globals: Vec<(&str, SymbolKind, u32)> = file
+            .globals
+            .iter()
+            .map(|s| (s.name.as_str(), s.kind, s.line))
+            .collect();
+        assert_eq!(
+            globals,
+            [
+                ("VERSION", SymbolKind::Constant, 1),
+                ("Window", SymbolKind::Trait, 2),
+                ("track", SymbolKind::Function, 5),
+            ]
+        );
+        assert!(file.symbols.is_empty());
+    }
+
+    #[test]
+    fn commonjs_exports_are_symbols() {
+        let symbols = |path: &str, text: &str| -> Vec<(String, SymbolKind, u32, String)> {
+            parse(Path::new(path), text)
+                .unwrap()
+                .symbols
+                .into_iter()
+                .map(|s| (s.name, s.kind, s.line, s.signature.unwrap_or_default()))
+                .collect()
+        };
+        let row = |name: &str, kind, line, signature: &str| {
+            (name.to_owned(), kind, line, signature.to_owned())
+        };
+        assert_eq!(
+            symbols(
+                "x.cjs",
+                "function helper(a) {\n  return a;\n}\nexports.pad = (text) => text;\n\
+                 module.exports.limit = 10;\nexports.help = helper;\n",
+            ),
+            [
+                row("pad", SymbolKind::Function, 4, "exports.pad = (text) =>"),
+                row("limit", SymbolKind::Constant, 5, "module.exports.limit"),
+                // a local declaration, under the exported name at its line
+                row("help", SymbolKind::Function, 1, "function helper(a)"),
+            ]
+        );
+        assert_eq!(
+            symbols(
+                "y.js",
+                "function helper(a) {\n  return a;\n}\nclass Store {\n  get() {}\n}\n\
+                 module.exports = {\n  helper,\n  Store,\n  size: 3,\n  run() {},\n  go: function () {},\n};\n",
+            ),
+            [
+                row("helper", SymbolKind::Function, 1, "function helper(a)"),
+                row("Store", SymbolKind::Struct, 4, "class Store"),
+                row("Store.get", SymbolKind::Function, 5, "get()"),
+                row("size", SymbolKind::Constant, 10, "size"),
+                row("run", SymbolKind::Function, 11, "run()"),
+                row("go", SymbolKind::Function, 12, "go: function ()"),
+            ]
+        );
+        // the module itself: its declared name, as a default export
+        let file = parse(
+            Path::new("z.js"),
+            "module.exports = function limitOf(n) {\n  return n;\n};\n",
+        )
+        .unwrap();
+        assert_eq!(file.symbols[0].name, "limitOf");
+        assert_eq!(file.exports.default_name.as_deref(), Some("limitOf"));
+        // `exports.default` is the default export, under its declared name
+        let file = parse(
+            Path::new("d.js"),
+            "function helper() {}\nexports.default = helper;\n",
+        )
+        .unwrap();
+        assert_eq!(file.symbols[0].name, "helper");
+        assert_eq!(file.exports.default_name.as_deref(), Some("helper"));
+        // the placeholders compilers write before the real assignments
+        let file = parse(
+            Path::new("v.js"),
+            "exports.a = exports.b = void 0;\nexports.a = () => 1;\n",
+        )
+        .unwrap();
+        let placed: Vec<(&str, u32)> = file
+            .symbols
+            .iter()
+            .map(|s| (s.name.as_str(), s.line))
+            .collect();
+        assert_eq!(placed, [("a", 2)]);
+        // names enter the export table, so `export *` of the file finds them
+        let file = parse(Path::new("w.js"), "exports.a = 1;\nmodule.exports.b = 2;\n").unwrap();
+        for name in ["a", "b"] {
+            assert_eq!(file.exports.names.get(name), Some(&Export::Local), "{name}");
+        }
     }
 
     #[test]

@@ -207,15 +207,17 @@ fn packages_directories_and_files() {
     assert_eq!(
         graph.meta.coverage.get("typescript"),
         Some(&LanguageCoverage {
-            files: 13,
-            read: Some(13)
+            files: 14,
+            read: Some(14),
+            scripts: 1
         })
     );
     assert_eq!(
         graph.meta.coverage.get("javascript"),
         Some(&LanguageCoverage {
             files: 3,
-            read: Some(3)
+            read: Some(3),
+            scripts: 0
         })
     );
 }
@@ -603,6 +605,44 @@ fn exported_declarations_of_files_that_are_not_tests_are_symbols() {
                 SymbolKind::Constant,
                 "src/components/button.tsx:14",
                 "export const Fragment"
+            ),
+            // CommonJS exports
+            row(
+                "ts-shop::scripts/format.cjs::pad",
+                SymbolKind::Function,
+                "scripts/format.cjs:1",
+                "exports.pad = (text) =>"
+            ),
+            row(
+                "ts-shop::scripts/report.cjs::plugin",
+                SymbolKind::Function,
+                "scripts/report.cjs:3",
+                "function plugin(name)"
+            ),
+            row(
+                "ts-shop::scripts/report.cjs::money",
+                SymbolKind::Function,
+                "scripts/report.cjs:7",
+                "async function money()"
+            ),
+            row(
+                "ts-shop::scripts/report.cjs::title",
+                SymbolKind::Constant,
+                "scripts/report.cjs:11",
+                "title"
+            ),
+            // the globals of a script
+            row(
+                "ts-shop::src/global.d.ts::VERSION",
+                SymbolKind::Constant,
+                "src/global.d.ts:1",
+                "declare const VERSION: string"
+            ),
+            row(
+                "ts-shop::src/global.d.ts::Window",
+                SymbolKind::Trait,
+                "src/global.d.ts:3",
+                "interface Window"
             ),
             row(
                 "ts-shop::src/app/checkout.ts::total",
@@ -1472,6 +1512,80 @@ fn calls_that_load_modules_are_imports() {
                 "import()".to_owned(),
                 Some(Scope::Local)
             ),
+        ])
+    );
+}
+
+#[test]
+fn a_file_without_imports_or_exports_is_a_script_of_globals() {
+    let graph = scan_fixture();
+    let script = graph
+        .component(&ComponentId::new("ts-shop::src/global.d.ts"))
+        .expect("global.d.ts is a component");
+    assert_eq!(script.kind, ComponentKind::Script);
+    let symbols: BTreeSet<(&str, String, String)> = graph
+        .symbols_of(&script.id)
+        .map(|s| {
+            (
+                s.name.as_str(),
+                format!("{:?}", s.kind),
+                s.signature.clone().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        symbols,
+        BTreeSet::from([
+            (
+                "VERSION",
+                format!("{:?}", SymbolKind::Constant),
+                "declare const VERSION: string".to_owned()
+            ),
+            (
+                "Window",
+                format!("{:?}", SymbolKind::Trait),
+                "interface Window".to_owned()
+            ),
+        ])
+    );
+    assert_eq!(graph.meta.coverage["typescript"].scripts, 1);
+    // `.cjs` is a module whatever it holds
+    assert_eq!(graph.meta.coverage["javascript"].scripts, 0);
+}
+
+#[test]
+fn commonjs_exports_are_symbols() {
+    let graph = scan_fixture();
+    let of = |file: &str| -> BTreeSet<(String, String, u32)> {
+        graph
+            .symbols
+            .values()
+            .filter(|s| s.evidence.first().is_some_and(|e| e.file == file))
+            .map(|s| {
+                (
+                    s.name.clone(),
+                    format!("{:?}", s.kind),
+                    s.evidence[0].line.unwrap_or(0),
+                )
+            })
+            .collect()
+    };
+    let rows = |rows: &[(&str, SymbolKind, u32)]| -> BTreeSet<(String, String, u32)> {
+        rows.iter()
+            .map(|(name, kind, line)| ((*name).to_owned(), format!("{kind:?}"), *line))
+            .collect()
+    };
+    assert_eq!(
+        of("scripts/format.cjs"),
+        rows(&[("pad", SymbolKind::Function, 1)])
+    );
+    // shorthand properties point at the declarations
+    assert_eq!(
+        of("scripts/report.cjs"),
+        rows(&[
+            ("plugin", SymbolKind::Function, 3),
+            ("money", SymbolKind::Function, 7),
+            ("title", SymbolKind::Constant, 11),
         ])
     );
 }

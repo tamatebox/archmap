@@ -279,6 +279,13 @@ fn coverage(out: &mut String, graph: &ArchitectureGraph, rolled: &ArchitectureGr
     } else {
         let _ = writeln!(out, "not analyzed  {}", not_analyzed.join("  "));
     }
+    let scripts: usize = graph.meta.coverage.values().map(|c| c.scripts).sum();
+    if scripts > 0 {
+        let _ = writeln!(
+            out,
+            "scripts: {scripts} (no import or export: what uses their declarations is not traced)"
+        );
+    }
 
     let mut importers: BTreeMap<&ComponentId, usize> = BTreeMap::new();
     for import in &rolled.dynamic_imports {

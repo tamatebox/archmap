@@ -9,6 +9,8 @@ pub(crate) struct PackageJson {
     pub name: Option<String>,
     /// Declares `workspaces`: a monorepo root, a package even without code.
     pub workspaces: bool,
+    /// `"type": "module"`: Node runs the `.js` files below it as ES modules.
+    pub module: bool,
     /// In file order within each section, sections in [`Section::ALL`]
     /// order.
     pub declarations: Vec<Declaration>,
@@ -102,6 +104,7 @@ pub(crate) fn parse(text: &str) -> Result<PackageJson, String> {
             .and_then(|v| v.as_str())
             .map(str::to_owned),
         workspaces: value.get("workspaces").is_some(),
+        module: value.get("type").and_then(|v| v.as_str()) == Some("module"),
         declarations,
     })
 }
@@ -218,6 +221,13 @@ mod tests {
             parse("\u{feff}{ \"name\": \"x\", \"dependencies\": { \"react\": \"^19\" } }").unwrap();
         assert_eq!(p.name.as_deref(), Some("x"));
         assert_eq!(p.declarations.len(), 1);
+    }
+
+    #[test]
+    fn type_module_is_read() {
+        assert!(parse(r#"{ "type": "module" }"#).unwrap().module);
+        assert!(!parse(r#"{ "type": "commonjs" }"#).unwrap().module);
+        assert!(!parse("{}").unwrap().module);
     }
 
     #[test]

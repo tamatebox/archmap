@@ -140,7 +140,7 @@ The gaps behind the marks:
 - TS/JS packages and imports: the packages of a monorepo workspace are not
   linked to each other, so an import of one by its package name points at
   the npm package, not at its files.
-- TS/JS symbols: CommonJS exports give none.
+- TS/JS symbols: declarations inside `declare global { .. }` give none.
 - TS/JS `check`: only `type` written in an import marks it as types only,
   so a type imported without it (`import { Money }` for an interface) can
   close a cycle that `cycles.forbid` reports.

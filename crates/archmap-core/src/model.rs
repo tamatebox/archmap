@@ -71,6 +71,10 @@ pub enum ComponentKind {
     Package,
     /// A sub-unit of a package (Rust module, Python module, Go package, ...).
     Module,
+    /// A file TypeScript reads as a script (a TS/JS file without imports or
+    /// exports): it checks the top-level declarations as global, so other
+    /// files use them without importing the file.
+    Script,
     /// A dependency that lives outside the repository.
     External,
 }
@@ -231,6 +235,14 @@ pub struct LanguageCoverage {
     /// Files an analyzer read. `None` when no analyzer reads the language.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub read: Option<usize>,
+    /// Files read as scripts: without imports or exports, so no import
+    /// shows who uses their top-level declarations.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub scripts: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// The nature of a relationship between two components.
@@ -359,6 +371,30 @@ mod tests {
         assert!(!import("lodash-es").covered_by("lodash"));
         assert!(import("google.api_core.exceptions").covered_by("google.api_core"));
         assert!(!import("google.api_core").covered_by("google.api"));
+    }
+
+    #[test]
+    fn scripts_are_a_kind_and_counted_only_when_there_are_some() {
+        assert_eq!(
+            serde_json::to_value(ComponentKind::Script).unwrap(),
+            serde_json::json!("script")
+        );
+        let none = LanguageCoverage {
+            files: 2,
+            read: Some(2),
+            scripts: 0,
+        };
+        assert_eq!(
+            serde_json::to_value(&none).unwrap(),
+            serde_json::json!({ "files": 2, "read": 2 })
+        );
+        let some = LanguageCoverage { scripts: 1, ..none };
+        assert_eq!(
+            serde_json::to_value(&some).unwrap(),
+            serde_json::json!({ "files": 2, "read": 2, "scripts": 1 })
+        );
+        let read: LanguageCoverage = serde_json::from_str(r#"{ "files": 2 }"#).unwrap();
+        assert_eq!(read.scripts, 0);
     }
 
     #[test]

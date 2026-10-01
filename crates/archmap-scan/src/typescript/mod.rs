@@ -64,8 +64,8 @@ use crate::test_code::is_test_code;
 use crate::{Analyzer, RepoContext, ScanError};
 use layout::{Layout, Owner, Package};
 use package::{Declaration, PackageJson};
-use resolve::Resolved;
-use source::{ImportStatement, ParsedFile};
+use resolve::{ModuleOptions, Resolved};
+use source::{ExportedSymbol, ImportStatement, ParsedFile};
 
 use language::{is_code, language_of};
 pub use language::{JAVASCRIPT, LANGUAGE};
@@ -112,6 +112,9 @@ impl Analyzer for TypeScriptAnalyzer {
         // Every file is parsed and its imports resolved before any import is
         // emitted: a walk through re-exports reads the files it passes.
         let mut files: Vec<ReadFile> = Vec::new();
+        // Scripts by their owner, with the file's path: a script that is a
+        // component of its own is of kind `Script`.
+        let mut scripts: BTreeMap<ComponentId, String> = BTreeMap::new();
         for file in &code {
             let Some(owner) = layout.owners.get(*file) else {
                 continue;
@@ -137,8 +140,27 @@ impl Analyzer for TypeScriptAnalyzer {
             if let Some(language) = language_of(file) {
                 *output.read.entry(language.to_owned()).or_default() += 1;
             }
+            // a script declares its top-level names globally
+            let script = !parsed.module_syntax
+                && is_script(
+                    file,
+                    &parsed,
+                    type_module(file, &manifests),
+                    resolver.module_options(file),
+                );
+            if script {
+                if let Some(language) = language_of(file) {
+                    *output.scripts.entry(language.to_owned()).or_default() += 1;
+                }
+                scripts.insert(owner.component.clone(), display_path(file));
+            }
             if !layout::is_test_file(file) {
-                emit_symbols(owner, file, &parsed, &mut output);
+                let symbols = if script {
+                    &parsed.globals
+                } else {
+                    &parsed.symbols
+                };
+                emit_symbols(owner, file, symbols, &mut output);
             }
             for call in &parsed.dynamic {
                 output.fragment.push_dynamic_import(DynamicImport {
@@ -238,9 +260,45 @@ impl Analyzer for TypeScriptAnalyzer {
                 }
             }
         }
+        for component in &mut output.fragment.components {
+            if component.path.is_some() && scripts.get(&component.id) == component.path.as_ref() {
+                component.kind = ComponentKind::Script;
+            }
+        }
         output.warnings.extend(problems);
         Ok(output)
     }
+}
+
+/// Whether TypeScript reads `file`, which has no module syntax, as a script,
+/// whose top-level declarations are global: not when its extension makes it
+/// a module, when the closest `package.json` says `"type": "module"` and the
+/// tsconfig's `module` reads it, when its JSX imports a runtime, or when the
+/// tsconfig forces module detection on a file that declares no types only.
+fn is_script(file: &Path, parsed: &ParsedFile, type_module: bool, options: ModuleOptions) -> bool {
+    let name = file
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    let extension = file
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default();
+    // `global.d.ts`, `styles.d.css.ts`
+    let declarations = name.ends_with(".ts") && name.contains(".d.");
+    !(parsed.module_syntax
+        || matches!(extension, "mjs" | "mts" | "cjs" | "cts")
+        || (type_module && options.node)
+        || (parsed.has_jsx && options.jsx_runtime)
+        || (options.force && !declarations))
+}
+
+/// Whether the closest `package.json` above `file` says `"type": "module"`.
+fn type_module(file: &Path, manifests: &BTreeMap<PathBuf, PackageJson>) -> bool {
+    file.ancestors()
+        .skip(1)
+        .find_map(|dir| manifests.get(dir))
+        .is_some_and(|manifest| manifest.module)
 }
 
 /// Where a statement or call sits: inside a function body or not.
@@ -368,8 +426,13 @@ fn emit_components(
     }
 }
 
-fn emit_symbols(owner: &Owner, file: &Path, parsed: &ParsedFile, output: &mut AnalyzerOutput) {
-    for symbol in &parsed.symbols {
+fn emit_symbols(
+    owner: &Owner,
+    file: &Path,
+    symbols: &[ExportedSymbol],
+    output: &mut AnalyzerOutput,
+) {
+    for symbol in symbols {
         let mut id = owner.component.to_string();
         if let Some(scope) = &owner.symbol_scope {
             id.push_str("::");
@@ -656,5 +719,60 @@ impl Imports<'_> {
                 ),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scripts_follow_how_typescript_reads_a_file() {
+        let plain = ParsedFile::default();
+        let none = ModuleOptions::default();
+        assert!(is_script(Path::new("src/global.d.ts"), &plain, false, none));
+        assert!(is_script(
+            Path::new("public/legacy.js"),
+            &plain,
+            false,
+            none
+        ));
+        let module = ParsedFile {
+            module_syntax: true,
+            ..ParsedFile::default()
+        };
+        assert!(!is_script(Path::new("a.ts"), &module, false, none));
+        for file in ["a.mjs", "a.cjs", "a.mts", "a.cts", "a.d.mts"] {
+            assert!(!is_script(Path::new(file), &plain, false, none), "{file}");
+        }
+        // `"type": "module"` counts only where the tsconfig's `module` reads it
+        let node = ModuleOptions { node: true, ..none };
+        assert!(is_script(Path::new("a.js"), &plain, true, none));
+        assert!(!is_script(Path::new("a.js"), &plain, true, node));
+        assert!(is_script(Path::new("a.js"), &plain, false, node));
+        // JSX imports a runtime under `react-jsx`
+        let jsx = ParsedFile {
+            has_jsx: true,
+            ..ParsedFile::default()
+        };
+        let runtime = ModuleOptions {
+            jsx_runtime: true,
+            ..none
+        };
+        assert!(is_script(Path::new("a.tsx"), &jsx, false, none));
+        assert!(!is_script(Path::new("a.tsx"), &jsx, false, runtime));
+        // `moduleDetection: force` leaves declaration files scripts
+        let force = ModuleOptions {
+            force: true,
+            ..none
+        };
+        assert!(!is_script(Path::new("a.ts"), &plain, false, force));
+        assert!(is_script(Path::new("global.d.ts"), &plain, false, force));
+        assert!(is_script(
+            Path::new("styles.d.css.ts"),
+            &plain,
+            false,
+            force
+        ));
     }
 }

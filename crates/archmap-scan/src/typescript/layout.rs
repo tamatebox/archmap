@@ -354,7 +354,7 @@ mod tests {
         PackageJson {
             name: name.map(str::to_owned),
             workspaces,
-            declarations: Vec::new(),
+            ..PackageJson::default()
         }
     }
 

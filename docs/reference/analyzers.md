@@ -199,6 +199,19 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   public methods as `Class.method`, interfaces, type aliases (with their right-hand side), enums, namespaces
   and constants, a named default by its declared name; test, story and mock files (`*.test.*`, `*.spec.*`,
   `*.stories.*`, `__mocks__/`) give imports only, while helpers in `tests/` keep their symbols
+- CommonJS exports at the top level of a JavaScript file become symbols too: `exports.pad = ..` and
+  `module.exports.pad = ..` as `pad`, each property of `module.exports = { .. }`, and the function,
+  class or local declaration that `module.exports` or `exports.default` is, also as the default
+  export; a local declaration keeps its own kind, line and signature, as with `export { a as b }`,
+  and the `exports.a = void 0` placeholders that compilers write give nothing
+- a file TypeScript reads as a script, whose top-level declarations are global, gives every
+  top-level declaration as a symbol and is a `script` component when it is a component of its own,
+  and `summary` counts scripts in Coverage; a file is a script unless it has an `import` or `export`
+  declaration, `import x = require()` or `import.meta`, in JavaScript a `require` call or an
+  assignment to `module.exports` or `exports`, the extension `.mjs`, `.mts`, `.cjs` or `.cts`, JSX
+  where the tsconfig's `jsx` is `react-jsx` or `react-jsxdev`, `"type": "module"` in the closest
+  `package.json` where the tsconfig's `module` is `node16`, `node18`, `node20` or `nodenext`, or a
+  tsconfig with `"moduleDetection": "force"` (declaration files stay scripts then)
 - the imports of test code carry `test` in their evidence (see [graph.md](graph.md)): `*.test.*` and
   `*.spec.*` files and any file below a `test`, `tests`, `__tests__` or `__mocks__` directory, helpers
   included; stories are not test code
@@ -224,7 +237,14 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   are used only as types (`import { Money }` for an interface), which archmap counts as running.
   Under `verbatimModuleSyntax`, `import { type A } from 'm'` still loads `m`, which archmap counts
   as types only.
-- CommonJS exports give no symbols.
+- A JavaScript file that Node runs is a module of its own even without `require` or exports;
+  archmap follows how TypeScript reads it, so such a file is a script, and so is a TypeScript file
+  whose only module code is `require`.
+- `moduleDetection` is read from the tsconfig of a file and the ones it extends by a path; one it
+  extends from a package is not in the scan.
+- Declarations inside `declare global { .. }`, triple-slash directives (`/// <reference types="vite/client" />`),
+  spreads in `module.exports = { ...require('./a') }` and `Object.defineProperty(exports, 'a', ..)`
+  are not read.
 - Workspace packages are not linked, and two packages with one name merge.
 - Aliases defined only in a bundler configuration, `jsconfig.json` and Deno import maps are not
   read: an import through such an alias is `unresolved` when a tsconfig or jsconfig declares its

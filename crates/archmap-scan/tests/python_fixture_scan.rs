@@ -691,7 +691,8 @@ fn coverage_counts_files_read_per_language() {
                 "python",
                 &LanguageCoverage {
                     files: 15,
-                    read: Some(15)
+                    read: Some(15),
+                    scripts: 0
                 }
             ),
             // scripts/deploy.sh: seen, but no analyzer reads shell
@@ -699,7 +700,8 @@ fn coverage_counts_files_read_per_language() {
                 "shell",
                 &LanguageCoverage {
                     files: 1,
-                    read: None
+                    read: None,
+                    scripts: 0
                 }
             ),
         ]

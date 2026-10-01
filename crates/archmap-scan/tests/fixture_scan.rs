@@ -555,7 +555,8 @@ fn coverage_counts_only_the_files_under_src() {
         graph.meta.coverage["rust"],
         LanguageCoverage {
             files: 9,
-            read: Some(8)
+            read: Some(8),
+            scripts: 0
         }
     );
 }

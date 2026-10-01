@@ -7,8 +7,8 @@ feeds and every command ([commands.md](commands.md)) reads.
 
 ```text
 ArchitectureGraph
-├── meta:       { root, analyzers, tool_version, coverage: { language -> { files, read? } } }
-├── components: { id -> Component { kind: package | module | external, language, path, parent?, evidence } }
+├── meta:       { root, analyzers, tool_version, coverage: { language -> { files, read?, scripts? } } }
+├── components: { id -> Component { kind: package | module | script | external, language, path, parent?, evidence } }
 ├── symbols:    { id -> Symbol { kind: function | struct | enum | trait | ..., component, signature, evidence } }
 ├── edges:      [ Edge { from, to, kind: import | dependency | call | http | database | event | unknown, evidence } ]
 ├── unmapped_imports: [ UnmappedImport { from, module, reason: undeclared | declared_not_required | local_name | unresolved, provided_by?, evidence } ]
@@ -65,7 +65,12 @@ they mark where a dependency may exist that no edge shows. `query` lists them
 and `check` reports the undeclared ones. `meta.coverage` counts the files of
 each recognized source language and how many an analyzer read; a language
 without `read` has no analyzer. Configuration, data and documentation files
-are not counted. The JSON carries `schema_version: 3`.
+are not counted. A `script` is a file TypeScript reads as a script, without
+imports or exports (see [analyzers.md](analyzers.md)): its top-level
+declarations are global, so they are its symbols and no edge shows who uses
+them. `meta.coverage` counts scripts per language, files that belong to
+their package without being a component of their own included. The JSON
+carries `schema_version: 3`.
 
 ## Ids and merging
 

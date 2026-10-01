@@ -13,6 +13,9 @@ pub struct AnalyzerOutput {
     /// languages it ran for but read nothing of, such as with
     /// `--manifests-only`.
     pub read: BTreeMap<String, usize>,
+    /// Of those, the files read as scripts, without imports or exports, per
+    /// language.
+    pub scripts: BTreeMap<String, usize>,
 }
 
 /// One source of architectural facts (a language, a manifest format, an

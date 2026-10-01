@@ -93,19 +93,12 @@ fn without_unloadable_extends(
     let mut stripped = text.trim_start_matches('\u{feff}').to_owned();
     json_strip_comments::strip(&mut stripped).ok()?;
     let mut value: serde_json::Value = serde_json::from_str(&stripped).ok()?;
+    let entries = extends_entries(&value)?;
     let object = value.as_object_mut()?;
-    let entries: Vec<String> = match object.get("extends")? {
-        serde_json::Value::String(entry) => vec![entry.clone()],
-        serde_json::Value::Array(items) => items
-            .iter()
-            .filter_map(|item| item.as_str().map(str::to_owned))
-            .collect(),
-        _ => return None,
-    };
     let dir = path.parent()?;
     let (kept, dropped): (Vec<String>, Vec<String>) = entries
         .into_iter()
-        .partition(|entry| loads(dir, entry, files));
+        .partition(|entry| extended(dir, entry, files).is_some());
     if dropped.is_empty() {
         return None;
     }
@@ -127,11 +120,11 @@ fn without_unloadable_extends(
     Some((value.to_string(), dropped))
 }
 
-/// Whether the view holds the tsconfig an `extends` entry names. Only paths
-/// can: a package lives in `node_modules`, which the view never shows.
-fn loads(dir: &Path, entry: &str, files: &HashSet<PathBuf>) -> bool {
+/// The tsconfig an `extends` entry names, when the view holds it. Only
+/// paths can: a package lives in `node_modules`, which the view never shows.
+fn extended(dir: &Path, entry: &str, files: &HashSet<PathBuf>) -> Option<PathBuf> {
     if !(entry.starts_with('.') || entry.starts_with('/')) {
-        return false;
+        return None;
     }
     let target = normalize(&dir.join(entry));
     let mut with_json = target.clone().into_os_string();
@@ -141,8 +134,53 @@ fn loads(dir: &Path, entry: &str, files: &HashSet<PathBuf>) -> bool {
         PathBuf::from(with_json),
         target.join("tsconfig.json"),
     ]
-    .iter()
-    .any(|candidate| files.contains(candidate))
+    .into_iter()
+    .find(|candidate| files.contains(candidate))
+}
+
+/// The `extends` entries of a tsconfig, in order.
+fn extends_entries(value: &serde_json::Value) -> Option<Vec<String>> {
+    match value.get("extends")? {
+        serde_json::Value::String(entry) => Some(vec![entry.clone()]),
+        serde_json::Value::Array(items) => Some(
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_owned))
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+impl ViewFs {
+    /// Whether the tsconfig at `path` sets `moduleDetection` to `force`,
+    /// itself or through a tsconfig it extends that the view holds: its own
+    /// setting wins, then the last of its `extends` entries.
+    pub(crate) fn module_detection_forced(&self, path: &Path) -> bool {
+        self.module_detection(path, 0) == Some(true)
+    }
+
+    fn module_detection(&self, path: &Path, depth: usize) -> Option<bool> {
+        // `extends` cycles end here; the resolver reports them
+        if depth > 8 {
+            return None;
+        }
+        let mut text = self.read_to_string(path).ok()?;
+        text = text.trim_start_matches('\u{feff}').to_owned();
+        json_strip_comments::strip(&mut text).ok()?;
+        let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+        if let Some(setting) = value
+            .pointer("/compilerOptions/moduleDetection")
+            .and_then(|v| v.as_str())
+        {
+            return Some(setting.eq_ignore_ascii_case("force"));
+        }
+        let dir = path.parent()?;
+        extends_entries(&value)?.iter().rev().find_map(|entry| {
+            let target = extended(dir, entry, &self.0.files)?;
+            self.module_detection(&target, depth + 1)
+        })
+    }
 }
 
 /// `path` with `.` and `..` resolved lexically.

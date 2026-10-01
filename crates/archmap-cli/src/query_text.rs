@@ -660,6 +660,7 @@ fn component_kind(kind: ComponentKind) -> &'static str {
     match kind {
         ComponentKind::Package => "package",
         ComponentKind::Module => "module",
+        ComponentKind::Script => "script",
         ComponentKind::External => "external",
     }
 }

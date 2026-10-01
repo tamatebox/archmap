@@ -76,6 +76,7 @@ pub fn scan_with(
     });
     let mut warnings = Vec::new();
     let mut read: BTreeMap<String, usize> = BTreeMap::new();
+    let mut scripts: BTreeMap<String, usize> = BTreeMap::new();
     let mut contributed = ids::ContributedIds::default();
 
     for analyzer in analyzers {
@@ -90,24 +91,38 @@ pub fn scan_with(
         for (language, n) in output.read {
             *read.entry(language).or_default() += n;
         }
+        for (language, n) in output.scripts {
+            *scripts.entry(language).or_default() += n;
+        }
     }
 
-    graph.meta.coverage = coverage(ctx.files(), read);
+    graph.meta.coverage = coverage(ctx.files(), read, scripts);
     graph.normalize();
     Ok(ScanReport { graph, warnings })
 }
 
-/// Files of each recognized language, with how many an analyzer read.
+/// Files of each recognized language, with how many an analyzer read and
+/// how many of those are scripts.
 fn coverage(
     files: &[PathBuf],
     read: BTreeMap<String, usize>,
+    scripts: BTreeMap<String, usize>,
 ) -> BTreeMap<String, LanguageCoverage> {
     let mut coverage: BTreeMap<String, LanguageCoverage> = languages::count_files(files)
         .into_iter()
-        .map(|(language, files)| (language.to_owned(), LanguageCoverage { files, read: None }))
+        .map(|(language, files)| {
+            let c = LanguageCoverage {
+                files,
+                ..LanguageCoverage::default()
+            };
+            (language.to_owned(), c)
+        })
         .collect();
     for (language, n) in read {
         coverage.entry(language).or_default().read = Some(n);
+    }
+    for (language, n) in scripts {
+        coverage.entry(language).or_default().scripts = n;
     }
     coverage
 }
