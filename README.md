@@ -245,7 +245,7 @@ cargo run -p archmap-cli -- query archmap-core --format json # complete, with al
 cargo run -p archmap-cli -- query scan            # by symbol name
 cargo run -p archmap-cli -- impact archmap-core
 cargo run -p archmap-cli -- impact crates/archmap-scan/src/lib.rs
-cargo run -p archmap-cli -- query src.pipeline.components --depth 3 --path ../some-python-repo
+cargo run -p archmap-cli -- query shop --depth 3 --path ../some-python-repo
 cargo run -p archmap-cli -- check                 # rules from ./archmap.toml; exit 1 on findings
 cargo run -p archmap-cli -- check --format json --config ci/rules.toml
 cargo run -p archmap-cli -- check --path ../some-python-repo   # no archmap.toml: signals only
@@ -369,8 +369,9 @@ The whole summary then aims at 8 KiB: over it, the largest list gives up
 its lowest-ranked entries, down to 10 each. The header, coverage, `omitted:`
 lines and the most depended on list are never trimmed, so very long names
 can exceed the target, but the size does not grow with the repository.
-`--verbose` lists everything. On a 380-file Python repository, depth 2 turns
-a 790 KB graph into a summary of about 8 KB (11 KB with `--verbose`).
+`--verbose` lists everything. On archmap's own repository (92 source files,
+fixtures included), depth 2 turns a 230 KB graph into a summary of about
+8 KB (19 KB with `--verbose`).
 
 `summary`, `query` and `impact` share one default depth, so they always
 describe the same components. Asking `query` or `impact` about a component
@@ -381,7 +382,7 @@ says so, and `query` lists the children to ask about with a larger
 `query` prints compact text by default: public symbols with their location,
 and each neighboring component with its import count and a few example
 locations. A location names the file the statement loads when archmap knows
-it, as in `src/core/raw_data.py:6 -> src/utils/log.py`, and ends in
+it, as in `src/shop/billing/charge.py:5 -> src/shop/users.py`, and ends in
 `(local)` when the import sits inside a function body and so runs only when
 the function is called; the others run when their file loads. A `Not mapped`
 section then lists the imports of the component that no edge shows, one line
@@ -389,8 +390,8 @@ per module with the reason (`local name`, `extra or dev dependency`,
 `undeclared`, or `dynamic` for a call that loads modules by name) and where
 they are, so an absent edge is never mistaken for an absent dependency.
 Lists are capped at 30 entries and 3 locations, and the rest is counted. On
-the repository above, its busiest component takes 10 KB as text and 118 KB
-as JSON. `--verbose` lifts the caps and `--format json` adds every piece of
+archmap's own repository, its busiest component (`archmap_core::graph`)
+takes 5 KB as text and 18 KB as JSON. `--verbose` lifts the caps and `--format json` adds every piece of
 evidence.
 
 `query` also takes a single file, by path (`src/shop/users.py`) or as
@@ -410,10 +411,11 @@ result is still reported at the roll-up depth. It does not follow the parent
 `__init__.py` that Python runs before a submodule, nor Rust code inside macro
 calls, and a path that names no component or file is an error. For a file target, `importers`
 lists the statements that import the file directly, up to 5 with the total,
-so the next read can go straight to them. On the repository above, a cycle
-between its two most shared components made a change to either reach 29
-components; following files, a single changed file in them reaches 8 to 27
-components depending on the file.
+so the next read can go straight to them. In
+`fixtures/mixed-utils-project`, `app.utils` and `app.core` depend on each
+other, so following components a change anywhere in `app.utils` reaches
+`app.core` and `app.models`; following files, `app/utils/log.py` reaches
+both and `app/utils/registry.py` reaches neither.
 
 ## Rules
 
@@ -422,13 +424,13 @@ components depending on the file.
 
 ```toml
 [components]            # declared name = selectors
-domain = ["src/core", "src/models"]
-pipeline = ["src/pipeline"]
+shop = ["src/shop"]
+jobs = ["scripts"]
 
 [[deny]]
-from = "domain"         # a declared name or a selector
-to = "pipeline"
-reason = "domain code must not know about orchestration"
+from = "shop"           # a declared name or a selector
+to = "jobs"
+reason = "library code must not know about the scripts that run it"
 
 [cycles]
 forbid = true           # cycles between components at the roll-up depth
@@ -439,17 +441,17 @@ forbid = true           # imports of packages no manifest declares
 ignore = ["ujson"]      # dotted prefixes to accept, e.g. optional imports
 
 [layers]
-order = ["pipeline", "domain"]   # top to bottom: never depend on a layer above
+order = ["jobs", "shop"]   # top to bottom: never depend on a layer above
 
 [[allow]]
-from = "domain"
-to = []                 # the declared components domain may depend on
+from = "shop"
+to = []                 # the declared components shop may depend on
 
 [coverage]
 require = ["src"]       # everything under src must be declared
 ```
 
-A selector is a path prefix, where `src/core` covers everything below it, or
+A selector is a path prefix, where `src/shop` covers everything below it, or
 an external id such as `ext:pypi:requests` or `ext:pypi:google-*`. An
 external selector without an ecosystem (`ext:requests`, as written before
 external ids carried one) matches nothing and is reported. When selectors
@@ -560,14 +562,18 @@ The same principle applies as later phases broaden the graph.
 Cross-system, history and work data add new kinds of observed
 relationships, but not all of those facts need to enter an agent's
 context. `summary`, `query`, `impact` and later task-oriented views keep
-selecting a small relevant subgraph.
+selecting a small relevant subgraph: the graph may grow, while each task
+receives only the part it needs.
 
 The roadmap therefore grows in three directions:
 
-- **depth**: Phase 4 adds finer relationships inside selected code;
-- **breadth**: Phase 5 connects code to the surrounding software system;
+- **depth**: Phase 4 adds finer relationships inside selected code, such
+  as the callers of a symbol or a value followed through several functions;
+- **breadth**: Phase 5 connects code to the surrounding software system:
+  infrastructure, APIs, databases and events;
 - **time and work**: Phase 6 connects the current structure to changes
-  and explicit development activity.
+  and explicit development activity: how an area changed, what tends to
+  change with it, and which issue and PR introduced it.
 
 Through Phase 6, the emphasis stays on relationships that can be extracted
 deterministically and attached to evidence. Semantic interpretation begins
@@ -581,66 +587,10 @@ be structurally affected. Each answer stays small (about 8 KB for
 `summary`, a few KB to a few tens of KB for `query`, a few KB for
 `impact`), with complete detail one `--format json` away.
 
-Coding-agent trials are a development feedback loop, not a gate between
-phases. The question is not only whether archmap reduces tool calls
-overall, but what an agent still searches for after using it.
-
-Early trials already changed the interface. With the first skill, agents
-read `summary` and went straight back to ordinary search. Rewriting the
-skill as rules (run `query` before searching inside a component) got
-agents to call `query` on most non-local tasks, and in some runs to open
-the files it listed without searching for them first. One intermediate
-wording lost that again, so which command an agent picks still depends
-heavily on the skill. File-level queries and the statements that import a
-file were added after a remaining search showed that navigation path was
-missing.
-
-The searches that remain set priorities for later phases. Seen so far:
-
-- callers of, or references to, a symbol: Phase 4 call and reference
-  analysis;
-- values such as weights followed through several functions: Phase 4
-  selective data flow.
-
-Later phases are meant to answer searches such as:
-
-- crossing from code into infrastructure, APIs, databases or events:
-  Phase 5;
-- how a suspicious area changed, what tends to change with it, or which
-  issue and PR introduced it: Phase 6.
-
 Ordinary text search still has a place. Error messages, arbitrary
 configuration values, prose and other information with no deterministic
 graph relationship do not need to be absorbed into archmap merely to
 eliminate `grep`.
-
-The development loop is therefore:
-
-```text
-add an observable relationship
-        ↓
-let agents use it on real changes
-        ↓
-inspect the searches they still perform
-        ↓
-decide whether the missing information is
-a deterministic fact archmap should expose
-        ↓
-add the smallest useful layer or query
-```
-
-Semantic expansion waits until the deterministic structure, cross-system
-and change/work layers are broad enough to exercise in real repositories.
-More knowledge should not mean proportionally more agent context: the
-graph may grow, while each task receives only the part it needs.
-
-Rust has module-level components and target files in its evidence, as
-Python does, so Rust repositories can get the same treatment. Module paths
-written in code count as imports too; what stays invisible to `query` and
-`impact` is code inside macro calls, and which items a module uses after
-importing them, which Phase 4 references would cover. Extending language and manifest
-discovery, including Cargo targets other than `src/lib.rs` and
-`src/main.rs`, completes Phase 0 for additional ecosystems.
 
 ## Development
 

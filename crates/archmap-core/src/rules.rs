@@ -9,7 +9,7 @@
 //! reports [`Finding`]s, each with the evidence behind it.
 //!
 //! A selector is either a path prefix relative to the repository root
-//! (`src/core` covers `src/core` and everything below it; `.` covers
+//! (`src/domain` covers `src/domain` and everything below it; `.` covers
 //! everything) or an external component id (`ext:pypi:requests`, with a
 //! trailing `*` for a prefix such as `ext:pypi:google-*`). An external
 //! selector without an ecosystem (`ext:requests`) matches nothing.
@@ -664,16 +664,16 @@ mod tests {
         c
     }
 
-    /// src.core, src.core.io, src.pipeline, scripts, ext:pypi:requests
+    /// src.domain, src.domain.io, src.jobs, scripts, ext:pypi:requests
     fn graph() -> ArchitectureGraph {
         let mut graph = ArchitectureGraph::default();
         let mut root = Component::new("app", "app", ComponentKind::Package);
         root.path = Some(".".into());
         graph.add_component(root);
         for (id, path) in [
-            ("src.core", "src/core"),
-            ("src.core.io", "src/core/io"),
-            ("src.pipeline", "src/pipeline"),
+            ("src.domain", "src/domain"),
+            ("src.domain.io", "src/domain/io"),
+            ("src.jobs", "src/jobs"),
             ("scripts", "scripts"),
         ] {
             graph.add_component(module(id, path));
@@ -684,10 +684,10 @@ mod tests {
             ComponentKind::External,
         ));
         graph.add_edge(
-            Edge::new("src.core.io", "src.pipeline", EdgeKind::Import)
-                .with_evidence(Evidence::new("src/core/io/read.py").at_line(3)),
+            Edge::new("src.domain.io", "src.jobs", EdgeKind::Import)
+                .with_evidence(Evidence::new("src/domain/io/read.py").at_line(3)),
         );
-        graph.add_edge(Edge::new("src.pipeline", "src.core", EdgeKind::Import));
+        graph.add_edge(Edge::new("src.jobs", "src.domain", EdgeKind::Import));
         graph.add_edge(Edge::new("scripts", "ext:pypi:requests", EdgeKind::Import));
         graph
     }
@@ -696,9 +696,9 @@ mod tests {
     fn selectors_match_path_prefixes_and_external_ids() {
         let g = graph();
         let c = |id: &str| g.component(&id.into()).unwrap();
-        assert!(selector_matches("src/core", c("src.core.io")));
-        assert!(selector_matches("./src/core/", c("src.core")));
-        assert!(!selector_matches("src/co", c("src.core")));
+        assert!(selector_matches("src/domain", c("src.domain.io")));
+        assert!(selector_matches("./src/domain/", c("src.domain")));
+        assert!(!selector_matches("src/dom", c("src.domain")));
         assert!(selector_matches(".", c("scripts")));
         assert!(!selector_matches(".", c("ext:pypi:requests")));
         assert!(selector_matches(
@@ -713,12 +713,12 @@ mod tests {
     fn deny_rules_report_forbidden_edges_with_evidence() {
         let set = RuleSet {
             components: BTreeMap::from([
-                ("domain".to_owned(), vec!["src/core".to_owned()]),
-                ("pipeline".to_owned(), vec!["src/pipeline".to_owned()]),
+                ("domain".to_owned(), vec!["src/domain".to_owned()]),
+                ("jobs".to_owned(), vec!["src/jobs".to_owned()]),
             ]),
             deny: vec![DenyRule {
                 from: "domain".into(),
-                to: "pipeline".into(),
+                to: "jobs".into(),
                 reason: Some("domain stays independent".into()),
             }],
             ..RuleSet::default()
@@ -737,21 +737,21 @@ mod tests {
         };
         assert_eq!(
             (from.as_str(), to.as_str(), *rule),
-            ("src.core.io", "src.pipeline", 0)
+            ("src.domain.io", "src.jobs", 0)
         );
-        assert_eq!(evidence[0].file, "src/core/io/read.py");
+        assert_eq!(evidence[0].file, "src/domain/io/read.py");
     }
 
     #[test]
     fn the_most_specific_declaration_wins() {
-        // `src` would also cover src/pipeline; the longer selector decides
+        // `src` would also cover src/jobs; the longer selector decides
         let set = RuleSet {
             components: BTreeMap::from([
                 ("everything".to_owned(), vec!["src".to_owned()]),
-                ("pipeline".to_owned(), vec!["src/pipeline".to_owned()]),
+                ("jobs".to_owned(), vec!["src/jobs".to_owned()]),
             ]),
             deny: vec![DenyRule {
-                from: "pipeline".into(),
+                from: "jobs".into(),
                 to: "everything".into(),
                 reason: None,
             }],
@@ -765,7 +765,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(forbidden, vec![("src.pipeline", "src.core")]);
+        assert_eq!(forbidden, vec![("src.jobs", "src.domain")]);
     }
 
     #[test]
@@ -779,7 +779,7 @@ mod tests {
                 },
                 DenyRule {
                     from: "domian".into(),
-                    to: "src/pipeline".into(),
+                    to: "src/jobs".into(),
                     reason: None,
                 },
             ],
@@ -934,11 +934,11 @@ mod tests {
 
     #[test]
     fn layers_forbid_depending_on_a_higher_layer() {
-        // src.pipeline -> src.core, and src.core.io -> src.pipeline
+        // src.jobs -> src.domain, and src.domain.io -> src.jobs
         let set = RuleSet {
-            components: declared(&[("domain", "src/core"), ("pipeline", "src/pipeline")]),
+            components: declared(&[("domain", "src/domain"), ("jobs", "src/jobs")]),
             layers: LayerRule {
-                order: vec!["pipeline".into(), "domain".into(), "nowhere".into()],
+                order: vec!["jobs".into(), "domain".into(), "nowhere".into()],
             },
             ..RuleSet::default()
         };
@@ -961,7 +961,7 @@ mod tests {
         };
         assert_eq!(
             (from_layer.as_str(), to_layer.as_str(), from.as_str()),
-            ("domain", "pipeline", "src.core.io")
+            ("domain", "jobs", "src.domain.io")
         );
     }
 
@@ -969,8 +969,8 @@ mod tests {
     fn allow_lists_report_unexpected_and_stale_dependencies() {
         let set = RuleSet {
             components: declared(&[
-                ("domain", "src/core"),
-                ("pipeline", "src/pipeline"),
+                ("domain", "src/domain"),
+                ("jobs", "src/jobs"),
                 ("scripts", "scripts"),
             ]),
             allow: vec![
@@ -980,7 +980,7 @@ mod tests {
                     to: vec![],
                 },
                 AllowRule {
-                    from: "pipeline".into(),
+                    from: "jobs".into(),
                     to: vec!["domain".into(), "scripts".into()],
                 },
             ],
@@ -991,22 +991,22 @@ mod tests {
             findings.iter().any(|f| matches!(
                 f,
                 Finding::UnexpectedDependency { declared_from, declared_to, .. }
-                    if declared_from == "domain" && declared_to == "pipeline"
+                    if declared_from == "domain" && declared_to == "jobs"
             )),
             "{findings:?}"
         );
         assert!(findings.contains(&Finding::StaleAllowance {
-            from: "pipeline".into(),
+            from: "jobs".into(),
             to: "scripts".into()
         }));
-        // pipeline -> domain is allowed and observed: not reported
+        // jobs -> domain is allowed and observed: not reported
         assert_eq!(findings.len(), 2, "{findings:?}");
     }
 
     #[test]
     fn coverage_requires_leaf_components_to_be_declared() {
         let set = RuleSet {
-            components: declared(&[("domain", "src/core")]),
+            components: declared(&[("domain", "src/domain")]),
             coverage: CoverageRule {
                 require: vec!["src".into(), "lib".into()],
             },
@@ -1014,14 +1014,14 @@ mod tests {
         };
         let findings = check(&graph(), &set, 2);
         assert!(findings.contains(&Finding::Uncovered {
-            component: "src.pipeline".into(),
-            path: Some("src/pipeline".into())
+            component: "src.jobs".into(),
+            path: Some("src/jobs".into())
         }));
         assert!(findings.contains(&Finding::Unmatched {
             declared: "coverage.require[1]".into(),
             selector: "lib".into()
         }));
-        // src.core and src.core.io are declared; scripts is not required
+        // src.domain and src.domain.io are declared; scripts is not required
         assert_eq!(findings.len(), 2, "{findings:?}");
     }
 
@@ -1094,24 +1094,24 @@ mod tests {
     #[test]
     fn cycle_scope_limits_which_cycles_are_reported() {
         let mut g = modules(&[
-            ("core", "src/core"),
+            ("domain", "src/domain"),
             ("util", "src/util"),
             ("fa", "fixtures/a"),
             ("fb", "fixtures/b"),
         ]);
         g.add_edges([
             file_dep(
-                "core",
+                "domain",
                 "util",
-                "src/core/a.py",
+                "src/domain/a.py",
                 "src/util/b.py",
                 Scope::Module,
             ),
             file_dep(
                 "util",
-                "core",
+                "domain",
                 "src/util/b.py",
-                "src/core/a.py",
+                "src/domain/a.py",
                 Scope::Module,
             ),
             file_dep(
@@ -1146,7 +1146,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(cycles, vec![vec!["core", "util"]]);
+        assert_eq!(cycles, vec![vec!["domain", "util"]]);
         assert!(findings.contains(&Finding::Unmatched {
             declared: "cycles.scope[1]".into(),
             selector: "vendor".into()
@@ -1156,13 +1156,13 @@ mod tests {
     #[test]
     fn cycles_are_reported_at_the_requested_depth() {
         let mut g = graph();
-        for id in ["src.core", "src.pipeline"] {
+        for id in ["src.domain", "src.jobs"] {
             let mut c = g.component(&id.into()).unwrap().clone();
             c.parent = Some("app".into());
             g.components.insert(c.id.clone(), c);
         }
-        let mut io = g.component(&"src.core.io".into()).unwrap().clone();
-        io.parent = Some("src.core".into());
+        let mut io = g.component(&"src.domain.io".into()).unwrap().clone();
+        io.parent = Some("src.domain".into());
         g.components.insert(io.id.clone(), io);
 
         let set = RuleSet {
@@ -1172,7 +1172,7 @@ mod tests {
             },
             ..RuleSet::default()
         };
-        // at depth 1, src.core.io folds into src.core: core <-> pipeline
+        // at depth 1, src.domain.io folds into src.domain: domain <-> jobs
         let findings = check(&g, &set, 1);
         let Some(Finding::Cycle {
             components, edges, ..
@@ -1181,9 +1181,9 @@ mod tests {
             panic!("expected a cycle: {findings:?}");
         };
         let members: Vec<&str> = components.iter().map(|c| c.as_str()).collect();
-        assert_eq!(members, vec!["src.core", "src.pipeline"]);
+        assert_eq!(members, vec!["src.domain", "src.jobs"]);
         assert_eq!(edges.len(), 2);
-        // at full depth there is no cycle: io -> pipeline -> core
+        // at full depth there is no cycle: io -> jobs -> domain
         assert!(check(&g, &set, 9).is_empty());
         // and without the rule nothing is reported
         assert!(check(&g, &RuleSet::default(), 1).is_empty());

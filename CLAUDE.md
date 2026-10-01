@@ -13,6 +13,7 @@ and impact without re-reading the whole repository.
 - Every node and edge must carry `Evidence` (file, line, note) explaining why it exists.
 - Small, testable changes. Add or extend a fixture under `fixtures/` for new extraction behavior.
 - Verify before claiming done: run the commands below and read the output.
+- Agent trials are a feedback loop, not a gate between phases: watch what agents still search for after using archmap on real changes, and add the smallest deterministic fact or query that would have answered it.
 
 ## Non-negotiable distinctions
 
