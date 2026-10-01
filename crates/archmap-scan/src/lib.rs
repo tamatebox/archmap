@@ -16,6 +16,7 @@ mod ids;
 mod languages;
 pub mod python;
 pub mod rust;
+mod stamp;
 mod test_code;
 pub mod typescript;
 mod walk;
@@ -23,6 +24,7 @@ mod walk;
 pub use analyzer::Analyzer;
 pub use context::RepoContext;
 pub use error::ScanError;
+pub use stamp::{stamp, Stamp};
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

@@ -273,7 +273,7 @@ impl Resolver<'_> {
     }
 }
 
-fn site_packages_dirs(venv: &Path) -> Vec<PathBuf> {
+pub(crate) fn site_packages_dirs(venv: &Path) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Ok(entries) = std::fs::read_dir(venv.join("lib")) {
         let mut pythons: Vec<PathBuf> = entries

@@ -93,3 +93,18 @@ fn check_without_a_rules_file_reports_signals_only() {
         answer.output
     );
 }
+
+#[test]
+fn a_stamp_tells_whether_a_workspace_is_still_current() {
+    let dir = std::env::temp_dir().join(format!("archmap-app-stamp-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("pkg")).unwrap();
+    std::fs::write(dir.join("pkg/__init__.py"), "def run():\n    pass\n").unwrap();
+    let before = archmap_app::stamp(&dir).unwrap();
+    assert_eq!(archmap_app::stamp(&dir).unwrap(), before);
+    std::fs::write(dir.join("pkg/more.py"), "X = 1\n").unwrap();
+    assert_ne!(archmap_app::stamp(&dir).unwrap(), before);
+    std::fs::remove_dir_all(&dir).unwrap();
+    let err = archmap_app::stamp(&dir).err().unwrap();
+    assert!(format!("{err:#}").starts_with("scanning "), "{err:#}");
+}

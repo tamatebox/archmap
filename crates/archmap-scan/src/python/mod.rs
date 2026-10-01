@@ -1122,6 +1122,25 @@ fn local_names(py_files: &[&Path]) -> BTreeMap<PathBuf, BTreeSet<String>> {
     names
 }
 
+/// The `site-packages` directories a scan of `root` may read: those of the
+/// `.venv` beside each Python manifest among `files` and of the one at the
+/// root, where `load_installed` looks.
+pub(crate) fn installed_dirs(root: &Path, files: &[PathBuf]) -> Vec<PathBuf> {
+    let mut venvs: BTreeSet<PathBuf> = BTreeSet::from([root.join(".venv")]);
+    for file in files {
+        let name = file.file_name().and_then(|n| n.to_str());
+        if matches!(name, Some("pyproject.toml" | "setup.py" | "setup.cfg")) {
+            let dir = file.parent().unwrap_or(Path::new(""));
+            venvs.insert(root.join(dir).join(".venv"));
+        }
+    }
+    venvs
+        .iter()
+        .filter(|venv| venv.is_dir())
+        .flat_map(|venv| resolve::site_packages_dirs(venv))
+        .collect()
+}
+
 /// Installed metadata for each project: the `.venv` in the project
 /// directory, else the one at the scanned root. Projects sharing a
 /// virtualenv share one index.

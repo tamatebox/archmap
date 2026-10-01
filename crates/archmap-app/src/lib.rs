@@ -136,6 +136,20 @@ impl Workspace {
     }
 }
 
+/// What a scan of a root would read, as far as sizes and times tell: an
+/// interface that keeps a [`Workspace`] compares stamps to know when to
+/// scan again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stamp(archmap_scan::Stamp);
+
+/// Stamp `root` the way [`Workspace::scan`] reads it. Take it before the
+/// scan, so an edit made during the scan shows in the next stamp.
+pub fn stamp(root: &Path) -> Result<Stamp> {
+    archmap_scan::stamp(root)
+        .map(Stamp)
+        .with_context(|| format!("scanning {}", root.display()))
+}
+
 /// Pretty JSON with a closing newline, as every command prints it.
 fn json<T: Serialize>(value: &T) -> Result<String> {
     Ok(serde_json::to_string_pretty(value)? + "\n")
