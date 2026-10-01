@@ -6,6 +6,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use archmap_core::WHOLE_MODULE;
+
 /// Re-export hops a walk follows before it gives up.
 pub(crate) const MAX_HOPS: usize = 32;
 
@@ -16,6 +18,10 @@ pub(crate) struct ExportTable {
     /// `export * from 'm'`: the statement's index among the file's import
     /// statements, and its line.
     pub stars: Vec<(usize, u32)>,
+    /// The name the file's own default export declares, which its symbol
+    /// carries: `limitOf` for `export default function limitOf`. `None` for
+    /// an anonymous or a re-exported default, or none at all.
+    pub default_name: Option<String>,
 }
 
 /// Where an exported name comes from.
@@ -50,6 +56,10 @@ pub(crate) struct Definition {
     pub file: PathBuf,
     /// The first re-export on the way: its file and line.
     pub via: (PathBuf, u32),
+    /// The name in `file`: a default export by the name its declaration
+    /// gives (`default` without one), [`WHOLE_MODULE`] when a namespace
+    /// re-export leads to the whole file.
+    pub name: String,
 }
 
 /// Definitions of names as files export them. A (file, name) asked about
@@ -80,17 +90,35 @@ impl<'a> Definitions<'a> {
         let found = self
             .index
             .walk(file, name, 0, &mut BTreeSet::new())
-            .and_then(|f| f.via.map(|via| Definition { file: f.file, via }));
+            .and_then(|f| {
+                let via = f.via?;
+                let name = self.index.declared(&f.file, f.name);
+                Some(Definition {
+                    file: f.file,
+                    via,
+                    name,
+                })
+            });
         self.walked.insert(key, found.clone());
         found
     }
+
+    /// The name a statement that takes `name` from `file` records: `name`
+    /// itself, except that a default export goes by the name its
+    /// declaration in `file` gives. A default that `file` re-exports, whole
+    /// or not, stays `default`: `file` declares no name for it, and the
+    /// statement's `via` evidence names it as the defining file does.
+    pub(crate) fn recorded(&self, file: &Path, name: &str) -> String {
+        self.index.declared(file, name.to_owned())
+    }
 }
 
-/// A name found: the file that declares it, and the first re-export on the
-/// way, if any.
+/// A name found: the file that declares it, the first re-export on the
+/// way, if any, and the name in that file.
 struct Found {
     file: PathBuf,
     via: Option<(PathBuf, u32)>,
+    name: String,
 }
 
 /// The modules, and for each one with `export *` the star entries whose
@@ -125,6 +153,18 @@ impl<'a> Index<'a> {
         Index { modules, providers }
     }
 
+    /// `name` as `file` declares it: a default export by the name its
+    /// declaration gives, when it gives one.
+    fn declared(&self, file: &Path, name: String) -> String {
+        if name != "default" {
+            return name;
+        }
+        self.modules
+            .get(file)
+            .and_then(|m| m.exports.default_name.clone())
+            .unwrap_or(name)
+    }
+
     fn walk<'x>(
         &'x self,
         file: &'x Path,
@@ -145,6 +185,7 @@ impl<'a> Index<'a> {
                 return Some(Found {
                     file: file.to_path_buf(),
                     via: None,
+                    name: name.to_owned(),
                 });
             }
             Some(Export::Reexport {
@@ -157,6 +198,7 @@ impl<'a> Index<'a> {
                 return Some(Found {
                     file: found.file,
                     via: via(*line),
+                    name: found.name,
                 });
             }
             Some(Export::Namespace { import, line }) => {
@@ -164,6 +206,7 @@ impl<'a> Index<'a> {
                 return Some(Found {
                     file: next.to_path_buf(),
                     via: via(*line),
+                    name: WHOLE_MODULE.to_owned(),
                 });
             }
             None => {}
@@ -187,6 +230,7 @@ impl<'a> Index<'a> {
                     found = Some(Found {
                         file: this.file,
                         via: via(line),
+                        name: this.name,
                     })
                 }
                 Some(first) if first.file == this.file => {}
@@ -252,6 +296,7 @@ mod tests {
                     .map(|(name, export)| ((*name).to_owned(), export.clone()))
                     .collect(),
                 stars: stars.to_vec(),
+                default_name: None,
             },
             loads: loads.iter().map(|l| l.map(PathBuf::from)).collect(),
         }
@@ -288,6 +333,135 @@ mod tests {
 
     fn found(file: &str, via: &str, line: u32) -> Option<(String, String, u32)> {
         Some((file.to_owned(), via.to_owned(), line))
+    }
+
+    /// The name the defining file gives what `file` exports as `name`.
+    fn defined_name(modules: &BTreeMap<PathBuf, Module>, file: &str, name: &str) -> Option<String> {
+        Definitions::new(modules)
+            .of(Path::new(file), name)
+            .map(|d| d.name)
+    }
+
+    fn with_default(mut m: Module, name: &str) -> Module {
+        m.exports.default_name = Some(name.to_owned());
+        m
+    }
+
+    #[test]
+    fn the_walk_returns_the_name_the_defining_file_declares() {
+        let modules = modules([
+            (
+                "index.ts",
+                module(
+                    &[
+                        ("b", reexport(0, "a", 3)),
+                        ("limitOf", reexport(1, "default", 4)),
+                        ("anon", reexport(2, "default", 5)),
+                        ("ns", Export::Namespace { import: 0, line: 6 }),
+                    ],
+                    &[],
+                    &[Some("mid.ts"), Some("limits.ts"), Some("anon.ts")],
+                ),
+            ),
+            (
+                "mid.ts",
+                module(&[("a", reexport(0, "x", 7))], &[], &[Some("leaf.ts")]),
+            ),
+            ("leaf.ts", module(&[("x", Export::Local)], &[], &[])),
+            (
+                "limits.ts",
+                with_default(module(&[("default", Export::Local)], &[], &[]), "limitOf"),
+            ),
+            ("anon.ts", module(&[("default", Export::Local)], &[], &[])),
+        ]);
+        assert_eq!(
+            defined_name(&modules, "index.ts", "b").as_deref(),
+            Some("x")
+        );
+        assert_eq!(
+            defined_name(&modules, "index.ts", "limitOf").as_deref(),
+            Some("limitOf")
+        );
+        assert_eq!(
+            defined_name(&modules, "index.ts", "anon").as_deref(),
+            Some("default")
+        );
+        assert_eq!(
+            defined_name(&modules, "index.ts", "ns").as_deref(),
+            Some("*")
+        );
+    }
+
+    #[test]
+    fn stars_that_reach_one_file_agree_whatever_the_name() {
+        // b.ts and c.ts both lead to leaf.ts under different names: two
+        // names of one binding in valid code (`export { f as g }`), so the
+        // first star's name stands
+        let modules = modules([
+            (
+                "index.ts",
+                module(&[], &[(0, 1), (1, 2)], &[Some("b.ts"), Some("c.ts")]),
+            ),
+            (
+                "b.ts",
+                module(&[("X", reexport(0, "a", 1))], &[], &[Some("leaf.ts")]),
+            ),
+            (
+                "c.ts",
+                module(&[("X", reexport(0, "b", 1))], &[], &[Some("leaf.ts")]),
+            ),
+            (
+                "leaf.ts",
+                module(&[("a", Export::Local), ("b", Export::Local)], &[], &[]),
+            ),
+        ]);
+        assert_eq!(
+            definition(&modules, "index.ts", "X"),
+            found("leaf.ts", "index.ts", 1)
+        );
+        assert_eq!(
+            defined_name(&modules, "index.ts", "X").as_deref(),
+            Some("a")
+        );
+    }
+
+    #[test]
+    fn recorded_names_go_by_the_declaration() {
+        let modules = modules([
+            (
+                "index.ts",
+                module(
+                    &[("default", reexport(0, "default", 1))],
+                    &[],
+                    &[Some("limits.ts")],
+                ),
+            ),
+            (
+                "limits.ts",
+                with_default(module(&[("default", Export::Local)], &[], &[]), "limitOf"),
+            ),
+            ("anon.ts", module(&[("default", Export::Local)], &[], &[])),
+            (
+                "ns.ts",
+                module(
+                    &[("default", Export::Namespace { import: 0, line: 2 })],
+                    &[],
+                    &[Some("limits.ts")],
+                ),
+            ),
+        ]);
+        let definitions = Definitions::new(&modules);
+        let recorded = |file: &str, name: &str| definitions.recorded(Path::new(file), name);
+        // the file's own default by its declared name; a default the file
+        // re-exports, whole or not, and an anonymous one stay `default`:
+        // the file declares no name for them
+        assert_eq!(recorded("limits.ts", "default"), "limitOf");
+        assert_eq!(recorded("index.ts", "default"), "default");
+        assert_eq!(recorded("ns.ts", "default"), "default");
+        assert_eq!(recorded("anon.ts", "default"), "default");
+        // other names, and files that are no scanned code, stay as written
+        assert_eq!(recorded("index.ts", "other"), "other");
+        assert_eq!(recorded("data.json", "default"), "default");
     }
 
     #[test]

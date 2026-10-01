@@ -4,8 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use archmap_core::{
-    ArchitectureGraph, ComponentId, ComponentKind, EdgeKind, LanguageCoverage, SymbolKind,
-    UnmappedReason,
+    ArchitectureGraph, ComponentId, ComponentKind, EdgeKind, Evidence, LanguageCoverage,
+    SymbolKind, UnmappedReason,
 };
 use archmap_scan::{scan, ScanOptions};
 
@@ -48,6 +48,37 @@ fn imports(
                     ev.note.clone().unwrap_or_default(),
                 )
             })
+        })
+        .collect()
+}
+
+/// For the evidence of the statement at `at` (`file:line`) that points at
+/// `target`: its note and the names it takes.
+fn names_taken(graph: &ArchitectureGraph, at: &str, target: &str) -> BTreeMap<String, Vec<String>> {
+    graph
+        .edges
+        .iter()
+        .flat_map(|e| &e.evidence)
+        .filter(|e| {
+            format!("{}:{}", e.file, e.line.unwrap_or(0)) == at
+                && e.target.as_deref() == Some(target)
+        })
+        .map(|e| {
+            (
+                e.note.clone().unwrap_or_default(),
+                e.names.iter().cloned().collect(),
+            )
+        })
+        .collect()
+}
+
+fn noted(rows: &[(&str, &[&str])]) -> BTreeMap<String, Vec<String>> {
+    rows.iter()
+        .map(|(note, names)| {
+            (
+                (*note).to_owned(),
+                names.iter().map(|n| (*n).to_owned()).collect(),
+            )
         })
         .collect()
 }
@@ -1037,13 +1068,14 @@ fn named_imports_reach_the_files_that_define_the_names() {
     ] {
         assert!(edges.contains(&row), "missing {row:?}");
     }
-    // nothing else walks: namespace and side-effect imports, `Missing`,
-    // direct imports and the re-export statements themselves
+    // walked: page.tsx:6 (one re-export), checkout.ts:1 through index.ts
+    // lines 1, 2, 3, 4 and 6, checkout.ts:2 through line 7; namespace and
+    // side-effect imports, `Missing` and the re-export statements do not
     let walked: Vec<_> = edges
         .iter()
         .filter(|(.., note)| note.contains(" via "))
         .collect();
-    assert_eq!(walked.len(), 4, "{walked:#?}");
+    assert_eq!(walked.len(), 7, "{walked:#?}");
     // the loaded file keeps its own evidence
     assert!(edges.contains(&(
         "ts-shop::src/app/checkout.ts".to_owned(),
@@ -1052,4 +1084,123 @@ fn named_imports_reach_the_files_that_define_the_names() {
         Some("src/index.ts".to_owned()),
         "import".to_owned(),
     )));
+}
+
+#[test]
+fn imports_record_the_names_they_take() {
+    let graph = scan_fixture();
+    // named imports as the loaded file exports them, unknown ones included
+    assert_eq!(
+        names_taken(&graph, "src/app/checkout.ts:1", "src/index.ts"),
+        noted(&[(
+            "import",
+            &[
+                "Button",
+                "LIMIT",
+                "Missing",
+                "formatPrice",
+                "limitOf",
+                "money"
+            ]
+        )])
+    );
+    // a default that the loaded file re-exports, beside the whole module:
+    // the loaded file declares no name for it
+    assert_eq!(
+        names_taken(&graph, "src/app/checkout.ts:2", "src/index.ts"),
+        noted(&[("import", &["*", "default"])])
+    );
+    // a side-effect import takes nothing
+    assert_eq!(
+        names_taken(&graph, "src/app/checkout.ts:3", "src/index.ts"),
+        noted(&[("import", &[])])
+    );
+    // a file that is no code keeps the name as written
+    assert_eq!(
+        names_taken(&graph, "src/app/page.tsx:7", "src/app/data.json"),
+        noted(&[("import", &["default"])])
+    );
+}
+
+#[test]
+fn via_evidence_names_what_the_defining_file_declares() {
+    let graph = scan_fixture();
+    // one evidence per re-export on the way
+    assert_eq!(
+        names_taken(&graph, "src/app/checkout.ts:1", "src/lib/money.ts"),
+        noted(&[
+            ("import via src/index.ts:1", &["formatPrice"]),
+            ("import via src/index.ts:4", &["*"]),
+        ])
+    );
+    assert_eq!(
+        names_taken(&graph, "src/app/checkout.ts:1", "src/lib/limits.ts"),
+        noted(&[
+            ("import via src/index.ts:3", &["limitOf"]),
+            ("import via src/index.ts:6", &["MAX_UPLOAD"]),
+        ])
+    );
+    assert_eq!(
+        names_taken(&graph, "src/app/checkout.ts:2", "src/lib/limits.ts"),
+        noted(&[("import via src/index.ts:7", &["limitOf"])])
+    );
+    // two names through one re-export: one evidence
+    assert_eq!(
+        names_taken(&graph, "src/app/page.tsx:6", "src/components/button.tsx"),
+        noted(&[(
+            "import via src/components/index.ts:1",
+            &["Button", "Fragment"]
+        )])
+    );
+}
+
+#[test]
+fn re_export_statements_record_names_and_are_not_walked() {
+    let graph = scan_fixture();
+    for (at, target, names) in [
+        ("src/index.ts:1", "src/lib/money.ts", &["formatPrice"][..]),
+        ("src/index.ts:2", "src/components/index.ts", &["*"]),
+        ("src/index.ts:3", "src/lib/limits.ts", &["limitOf"]),
+        ("src/index.ts:4", "src/lib/money.ts", &["*"]),
+        ("src/index.ts:7", "src/lib/limits.ts", &["limitOf"]),
+        (
+            "src/components/index.ts:1",
+            "src/components/button.tsx",
+            &["*"],
+        ),
+    ] {
+        assert_eq!(
+            names_taken(&graph, at, target),
+            noted(&[("export", names)]),
+            "{at}"
+        );
+    }
+    let walked: Vec<&Evidence> = graph
+        .edges
+        .iter()
+        .flat_map(|e| &e.evidence)
+        .filter(|e| {
+            e.note
+                .as_deref()
+                .is_some_and(|n| n.starts_with("export via"))
+        })
+        .collect();
+    assert!(walked.is_empty(), "{walked:#?}");
+}
+
+#[test]
+fn no_edge_holds_evidence_that_differs_only_in_names() {
+    let graph = scan_fixture();
+    for edge in &graph.edges {
+        let mut seen = BTreeSet::new();
+        for e in &edge.evidence {
+            let key = (&e.file, e.line, &e.note, &e.target, e.scope);
+            assert!(
+                seen.insert(key),
+                "{} -> {}: {key:?} twice",
+                edge.from,
+                edge.to
+            );
+        }
+    }
 }

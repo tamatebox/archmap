@@ -14,7 +14,7 @@ ArchitectureGraph
 ├── unmapped_imports: [ UnmappedImport { from, module, reason: undeclared | declared_not_required | local_name | unresolved, provided_by?, evidence } ]
 └── dynamic_imports:  [ DynamicImport { from, call, evidence } ]
 
-Evidence { file, line?, note?, target?, scope?: module | local }
+Evidence { file, line?, note?, target?, scope?: module | local, names? }
 ```
 
 `target` is the repository file a dependency points at and `scope` says
@@ -24,6 +24,17 @@ or only when the function is called; for Rust it is only where the statement
 is written. Roll-up hides which files of a component are involved; `impact`
 and the cycle check read `target` and `scope` to recover it. Python and Rust
 record both.
+
+`names` says what the statement takes from `target`, as `target` exports
+it: a default export goes by the name its declaration in `target` gives
+(`default` when `target` declares none or re-exports it), `*` stands for
+the whole module (a namespace import, `export *`), and no names with a
+`target` means the statement only loads the file (a side-effect import).
+Through re-exports, evidence noted `via <file>:<line>` names what the
+defining file declares. A statement gives one piece of evidence per file
+it points at and re-export it goes through, with all of its names. TS/JS
+records `names`; for Python and Rust a `target` without `names` means they
+are not recorded yet.
 
 An unmapped import is an import that maps to no component, standard-library
 imports aside, and `reason` says why. A dynamic import is a call that loads a

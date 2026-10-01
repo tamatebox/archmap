@@ -135,6 +135,13 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   name, noted `import via <file>:<line>` with the first re-export on the way, so `query` and `impact` on the
   defining file list importers that go through barrels; a name not found, `export *` sources that disagree,
   a cycle or more than 32 hops leave only the loaded file, and namespace and side-effect imports never walk
+- every import and re-export statement records the names it takes from the file it loads (see
+  [graph.md](graph.md)): the exported name for a named import (`a` for `import { a as b }`) and for
+  `export { a } from`, the name the loaded file's default export declares for a default import (`limitOf`
+  for `export default function limitOf`, `default` when it declares none or re-exports it), `*` for a
+  namespace import, `import x = require()` and
+  `export *`, none for a side-effect import; `via` evidence records the names as the defining file
+  declares them, one evidence per defining file and re-export, and re-export statements are not walked
 - a bare specifier that resolves to no file is matched by package name to the closest `package.json` above
   the importing file that declares it, so a monorepo root's dependencies count for its packages (`@types/x`
   covers `x`): a required declaration gives an edge, another an import without an edge

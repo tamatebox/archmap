@@ -1445,9 +1445,27 @@ fn a_ts_file_query_shows_importers_that_come_through_re_exports() {
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
     }
+    // the statement reaches limits.ts through two re-exports; a file query
+    // shows a statement's first evidence in sort order
     let text = ts_stdout(&["query", "src/app/checkout.ts"]);
     assert!(
-        text.contains("src/app/checkout.ts:1 -> src/lib/limits.ts (via src/index.ts:6)"),
+        text.contains("src/app/checkout.ts:1 -> src/lib/limits.ts (via src/index.ts:3)"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_statement_counts_each_other_file_it_loads_once() {
+    // checkout.ts:1 reaches lib/limits.ts and lib/money.ts through two
+    // re-exports each: the other files count, not their evidence
+    let text = ts_stdout(&["query", "src/app/checkout.ts", "--depth", "0"]);
+    assert!(
+        text.contains("src/app/checkout.ts:1 -> src/index.ts (+3 files)"),
+        "{text}"
+    );
+    let text = ts_stdout(&["query", "src/app/checkout.ts", "--depth", "1"]);
+    assert!(
+        text.contains("src/app/checkout.ts:1 -> src/lib/limits.ts (+1 file) (via src/index.ts:3)"),
         "{text}"
     );
 }

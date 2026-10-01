@@ -3,10 +3,11 @@
 //! the declarations it exports, and its export table (see [`ExportTable`]).
 //! Only top-level statements are read; function bodies are not walked.
 
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use archmap_core::SymbolKind;
+use archmap_core::{SymbolKind, WHOLE_MODULE};
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
     Class, ClassElement, Declaration, ExportDefaultDeclarationKind, Expression, Function,
@@ -34,9 +35,10 @@ pub(crate) struct ImportStatement {
     pub line: u32,
     /// `import`, or `export` for `export ... from`.
     pub note: &'static str,
-    /// The exports a named or default import takes (`default` for a
-    /// default import); empty for a namespace or side-effect import,
-    /// `import x = require()` and `export ... from`.
+    /// The names the statement takes, as the loaded module exports them:
+    /// `default` for a default import; [`WHOLE_MODULE`] for a namespace
+    /// import, `import x = require()` and `export *`; the specifiers'
+    /// local names for `export { .. } from`; empty for a side-effect import.
     pub names: Vec<String>,
 }
 
@@ -126,26 +128,29 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
                             (s.local.name.to_string(), None)
                         }
                     };
-                    names.extend(taken.clone());
+                    names.push(taken.clone().unwrap_or_else(|| WHOLE_MODULE.to_owned()));
                     bindings.insert(local, (index, taken));
                 }
                 file.imports
                     .push(load(d.source.value.to_string(), "import", names));
             }
             Statement::ExportFromDeclaration(d) => {
+                let mut names = Vec::new();
                 for s in &d.specifiers {
+                    let local = s.local.name().to_string();
                     let export = Export::Reexport {
                         import: index,
-                        name: s.local.name().to_string(),
+                        name: local.clone(),
                         line,
                     };
                     file.exports
                         .names
                         .entry(s.exported.name().to_string())
                         .or_insert(export);
+                    names.push(local);
                 }
                 file.imports
-                    .push(load(d.source.value.to_string(), "export", Vec::new()));
+                    .push(load(d.source.value.to_string(), "export", names));
             }
             Statement::ExportAllDeclaration(d) => {
                 match &d.exported {
@@ -160,13 +165,17 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
                     }
                     None => file.exports.stars.push((index, line)),
                 }
-                file.imports
-                    .push(load(d.source.value.to_string(), "export", Vec::new()));
+                file.imports.push(load(
+                    d.source.value.to_string(),
+                    "export",
+                    vec![WHOLE_MODULE.to_owned()],
+                ));
             }
             Statement::TSImportEqualsDeclaration(d) => {
                 if let Some(specifier) = required_by(d) {
                     bindings.insert(d.id.name.to_string(), (index, None));
-                    file.imports.push(load(specifier, "import", Vec::new()));
+                    file.imports
+                        .push(load(specifier, "import", vec![WHOLE_MODULE.to_owned()]));
                 }
             }
             Statement::ExportDeclaration(d) => {
@@ -178,7 +187,8 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
                                 line,
                             },
                         );
-                        file.imports.push(load(specifier, "import", Vec::new()));
+                        file.imports
+                            .push(load(specifier, "import", vec![WHOLE_MODULE.to_owned()]));
                     }
                 }
                 for symbols in source.declared(&d.declaration, start) {
@@ -235,9 +245,23 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
                     _ => Vec::new(),
                 };
                 file.symbols.extend(symbols);
-                // An expression or a declaration is the file's own.
+                // An expression is the file's own and anonymous; a named
+                // declaration lends the export its name.
                 let local = match &d.declaration {
                     ExportDefaultDeclarationKind::Identifier(i) => i.name.to_string(),
+                    ExportDefaultDeclarationKind::FunctionDeclaration(f) => {
+                        f.id.as_ref()
+                            .map(|id| id.name.to_string())
+                            .unwrap_or_default()
+                    }
+                    ExportDefaultDeclarationKind::ClassDeclaration(c) => {
+                        c.id.as_ref()
+                            .map(|id| id.name.to_string())
+                            .unwrap_or_default()
+                    }
+                    ExportDefaultDeclarationKind::TSInterfaceDeclaration(i) => {
+                        i.id.name.to_string()
+                    }
                     _ => String::new(),
                 };
                 exported.push((local, "default".to_owned(), line));
@@ -258,7 +282,13 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
             },
             None => Export::Local,
         };
-        file.exports.names.entry(name).or_insert(export);
+        if let Entry::Vacant(slot) = file.exports.names.entry(name) {
+            // the first default export lends its declared name
+            if slot.key() == "default" && export == Export::Local && !local.is_empty() {
+                file.exports.default_name = Some(local);
+            }
+            slot.insert(export);
+        }
     }
     let mut seen = BTreeSet::new();
     file.symbols.retain(|s| seen.insert(s.name.clone()));
@@ -727,7 +757,9 @@ export default limitOf;
         let file = parse(
             Path::new("x.ts"),
             "import a, { b, c as d } from 'm';\nimport * as ns from 'n';\nimport 'side';\n\
-             import e = require('e');\nexport { f } from 'f';\n",
+             import e = require('e');\nexport { f } from 'f';\nexport * from 'g';\n\
+             export * as h from 'h';\nexport { default as i, j as k } from 'i';\n\
+             export import l = require('l');\n",
         )
         .unwrap();
         let names: Vec<(&str, Vec<&str>)> = file
@@ -744,12 +776,54 @@ export default limitOf;
             names,
             [
                 ("m", vec!["default", "b", "c"]),
-                ("n", vec![]),
+                ("n", vec!["*"]),
                 ("side", vec![]),
-                ("e", vec![]),
-                ("f", vec![]),
+                ("e", vec!["*"]),
+                ("f", vec!["f"]),
+                ("g", vec!["*"]),
+                ("h", vec!["*"]),
+                ("i", vec!["default", "j"]),
+                ("l", vec!["*"]),
             ]
         );
+    }
+
+    #[test]
+    fn a_default_export_is_named_by_its_declaration() {
+        let default_name =
+            |text: &str| parse(Path::new("x.ts"), text).unwrap().exports.default_name;
+        assert_eq!(
+            default_name("export default function limitOf() {}\n").as_deref(),
+            Some("limitOf")
+        );
+        assert_eq!(
+            default_name("export default class Cart {}\n").as_deref(),
+            Some("Cart")
+        );
+        assert_eq!(
+            default_name("export default interface Shape {}\n").as_deref(),
+            Some("Shape")
+        );
+        assert_eq!(
+            default_name("function f() {}\nexport { f as default };\n").as_deref(),
+            Some("f")
+        );
+        // the first default export wins, as in the export table
+        assert_eq!(
+            default_name(
+                "export default function a() {}\nexport { b as default };\nfunction b() {}\n"
+            )
+            .as_deref(),
+            Some("a")
+        );
+        assert_eq!(default_name("export default function () {}\n"), None);
+        assert_eq!(default_name("export default 42;\n"), None);
+        // a re-exported default is declared elsewhere
+        assert_eq!(
+            default_name("import x from './x';\nexport default x;\n"),
+            None
+        );
+        assert_eq!(default_name("export { default } from './x';\n"), None);
     }
 
     const EXPORTS: &str = "export const local = 1;
@@ -806,6 +880,8 @@ export default local;
         // re-exported bindings are no symbols of this file
         let symbols: Vec<&str> = file.symbols.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(symbols, ["local", "f", "shown"]);
+        // `export default local` lends the export its declared name
+        assert_eq!(file.exports.default_name.as_deref(), Some("local"));
     }
 
     #[test]

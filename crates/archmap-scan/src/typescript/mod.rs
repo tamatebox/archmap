@@ -51,7 +51,7 @@ use std::path::{Path, PathBuf};
 
 use archmap_core::{
     Component, ComponentId, ComponentKind, Edge, EdgeKind, Evidence, Scope, Symbol, SymbolId,
-    UnmappedImport, UnmappedReason,
+    UnmappedImport, UnmappedReason, WHOLE_MODULE,
 };
 
 use crate::analyzer::AnalyzerOutput;
@@ -186,8 +186,17 @@ impl Analyzer for TypeScriptAnalyzer {
                 file: read.file,
             };
             for (import, resolved) in read.imports.iter().zip(&read.resolved) {
-                imports.emit(import, resolved, &mut output);
-                if let Resolved::File(loaded) = resolved {
+                let names: BTreeSet<String> = match resolved {
+                    Resolved::File(loaded) => import
+                        .names
+                        .iter()
+                        .map(|name| definitions.recorded(loaded, name))
+                        .collect(),
+                    _ => BTreeSet::new(),
+                };
+                imports.emit(import, resolved, &names, &mut output);
+                // a re-export passes names on without using them
+                if let (Resolved::File(loaded), "import") = (resolved, import.note) {
                     imports.emit_definitions(import, loaded, &mut definitions, &mut output);
                 }
             }
@@ -417,7 +426,13 @@ impl Imports<'_> {
         }
     }
 
-    fn emit(&self, import: &ImportStatement, resolved: &Resolved, output: &mut AnalyzerOutput) {
+    fn emit(
+        &self,
+        import: &ImportStatement,
+        resolved: &Resolved,
+        names: &BTreeSet<String>,
+        output: &mut AnalyzerOutput,
+    ) {
         let from = &self.owner.component;
         let spec = &import.specifier;
         match resolved {
@@ -440,7 +455,8 @@ impl Imports<'_> {
                     Edge::new(from.clone(), to, EdgeKind::Import).with_evidence(
                         self.evidence(import)
                             .with_note(import.note)
-                            .pointing_at(display_path(target)),
+                            .pointing_at(display_path(target))
+                            .taking(names.iter().cloned()),
                     ),
                 );
             }
@@ -536,10 +552,11 @@ impl Imports<'_> {
         }
     }
 
-    /// One edge for each file that defines a name the import takes from
-    /// `loaded` through re-exports, noted with the first re-export on the
-    /// way (`import via src/index.ts:2`). The loaded file keeps its own
-    /// edge from [`Imports::emit`].
+    /// Evidence for each file that defines a name the import takes from
+    /// `loaded` through re-exports: one per defining file and first
+    /// re-export on the way (`import via src/index.ts:2`), with the names
+    /// as the defining file declares them. The loaded file keeps its own
+    /// evidence from [`Imports::emit`].
     fn emit_definitions(
         &self,
         import: &ImportStatement,
@@ -547,22 +564,24 @@ impl Imports<'_> {
         definitions: &mut exports::Definitions,
         output: &mut AnalyzerOutput,
     ) {
-        let mut done = BTreeSet::new();
-        for name in &import.names {
+        let mut found: BTreeMap<(PathBuf, (PathBuf, u32)), BTreeSet<String>> = BTreeMap::new();
+        for name in import.names.iter().filter(|n| *n != WHOLE_MODULE) {
             let Some(definition) = definitions.of(loaded, name) else {
                 continue;
             };
-            if definition.file == self.file
-                || definition.file == loaded
-                || !done.insert(definition.file.clone())
-            {
+            if definition.file == self.file || definition.file == loaded {
                 continue;
             }
-            let Some(owner) = self.layout.owners.get(&definition.file) else {
+            found
+                .entry((definition.file, definition.via))
+                .or_default()
+                .insert(definition.name);
+        }
+        for ((file, (via, line)), names) in found {
+            let Some(owner) = self.layout.owners.get(&file) else {
                 continue;
             };
-            let (via, line) = &definition.via;
-            let note = format!("{} via {}:{line}", import.note, display_path(via));
+            let note = format!("{} via {}:{line}", import.note, display_path(&via));
             output.fragment.push_edge(
                 Edge::new(
                     self.owner.component.clone(),
@@ -572,7 +591,8 @@ impl Imports<'_> {
                 .with_evidence(
                     self.evidence(import)
                         .with_note(note)
-                        .pointing_at(display_path(&definition.file)),
+                        .pointing_at(display_path(&file))
+                        .taking(names),
                 ),
             );
         }

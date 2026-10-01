@@ -1,4 +1,10 @@
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
+
+/// The name evidence records for an import that takes a whole module: a
+/// namespace import, a glob, a module imported by itself.
+pub const WHOLE_MODULE: &str = "*";
 
 /// Why a node or edge exists in the graph.
 ///
@@ -28,6 +34,13 @@ pub struct Evidence {
     /// Where the statement sits, for languages where it matters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<Scope>,
+    /// For a dependency on a file in the repository: the names the
+    /// statement takes from `target`, as `target` exports them, and
+    /// [`WHOLE_MODULE`] for the whole module. Empty with a `target`: the
+    /// statement loads the file without taking a name, or its analyzer
+    /// does not record names.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub names: BTreeSet<String>,
 }
 
 /// Where an import statement sits in its file.
@@ -49,6 +62,7 @@ impl Evidence {
             note: None,
             target: None,
             scope: None,
+            names: BTreeSet::new(),
         }
     }
 
@@ -70,5 +84,37 @@ impl Evidence {
     pub fn in_scope(mut self, scope: Scope) -> Self {
         self.scope = Some(scope);
         self
+    }
+
+    pub fn taking<I, S>(mut self, names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.names.extend(names.into_iter().map(Into::into));
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_are_sorted_once_and_left_out_of_json_when_empty() {
+        let evidence =
+            Evidence::new("a.ts")
+                .pointing_at("b.ts")
+                .taking(["b", WHOLE_MODULE, "a", "b"]);
+        let names: Vec<&str> = evidence.names.iter().map(String::as_str).collect();
+        assert_eq!(names, ["*", "a", "b"]);
+        let json = serde_json::to_string(&evidence).unwrap();
+        assert!(json.ends_with(r#""names":["*","a","b"]}"#), "{json}");
+
+        let bare = serde_json::to_string(&Evidence::new("a.ts")).unwrap();
+        assert!(!bare.contains("names"), "{bare}");
+        // evidence written before names existed still reads
+        let old: Evidence = serde_json::from_str(r#"{"file":"a.ts","target":"b.ts"}"#).unwrap();
+        assert!(old.names.is_empty());
     }
 }

@@ -202,8 +202,8 @@ pub(crate) fn reason_label(reason: UnmappedReason) -> &'static str {
 
 #[derive(Default)]
 struct Neighbor<'a> {
-    /// One entry per import statement, with how many more files it loads.
-    imports: Vec<(&'a Evidence, usize)>,
+    /// One entry per import statement, with the other files it loads.
+    imports: Vec<(&'a Evidence, BTreeSet<Option<&'a str>>)>,
     declared: BTreeSet<&'a str>,
     other: BTreeMap<&'static str, usize>,
 }
@@ -224,16 +224,19 @@ fn neighbors<'a>(
         let n = by_id.entry(id).or_default();
         match edge.kind {
             EdgeKind::Import => {
-                // one entry per statement: a statement can point at several files
+                // one entry per statement: a statement can point at several
+                // files, and at one file through several re-exports
                 for e in &edge.evidence {
                     match n
                         .imports
                         .iter_mut()
                         .find(|(x, _)| x.file == e.file && x.line == e.line)
                     {
-                        Some((first, more)) if e.target != first.target => *more += 1,
+                        Some((first, more)) if e.target != first.target => {
+                            more.insert(e.target.as_deref());
+                        }
                         Some(_) => {}
-                        None => n.imports.push((e, 0)),
+                        None => n.imports.push((e, BTreeSet::new())),
                     }
                 }
             }
@@ -273,7 +276,7 @@ fn neighbors<'a>(
                 .imports
                 .iter()
                 .take(caps.locations)
-                .map(|(e, more)| import_location(e, *more, show_targets))
+                .map(|(e, more)| import_location(e, more.len(), show_targets))
                 .collect();
             let more = n.imports.len().saturating_sub(caps.locations);
             truncated |= more > 0;
