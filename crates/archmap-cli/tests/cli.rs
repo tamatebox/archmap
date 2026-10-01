@@ -581,7 +581,9 @@ fn query_text_is_a_compact_drill_down() {
         "Public symbols: 2\n",
         "  def notify(message: str) -> None  src/shop/integrations/slack/__init__.py:1\n",
         "Depends on: none\n",
-        "Used by: 1\n  shop  1 import: src/shop/__init__.py:3 -> src/shop/integrations/slack/__init__.py\n",
+        // the package's `__init__.py` holds its subpackage rather than
+        // depends on it, as summary counts it
+        "Used by: 1\n  shop  1 of its entry file: src/shop/__init__.py:3 -> src/shop/integrations/slack/__init__.py\n",
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
     }
@@ -1907,4 +1909,33 @@ fn symbols_are_listed_in_source_order() {
     ]
     .join("\n");
     assert!(text.contains(&listed), "{text}");
+}
+
+#[test]
+fn summary_and_query_count_a_pair_alike() {
+    // checkout.ts imports from the package's barrel five times; three
+    // statements only reach names it re-exports
+    let summary = archmap()
+        .arg("summary")
+        .arg(ts_fixture())
+        .args(["-o", "-", "--verbose"])
+        .output()
+        .unwrap();
+    let summary = String::from_utf8_lossy(&summary.stdout);
+    assert!(
+        summary.contains("\napp/checkout.ts -> ts-shop  imports: 2\n"),
+        "{summary}"
+    );
+    let query = ts_stdout(&["query", "src/app/checkout.ts"]);
+    assert!(
+        query.contains("ts-shop                2 imports, 3 through re-exports: "),
+        "{query}"
+    );
+    // a package's entry file into its own submodules: left out of the count,
+    // which next.config.ts, another file of the package, is not
+    let query = ts_stdout(&["query", "ts-shop", "--depth", "1"]);
+    assert!(
+        query.contains("1 import, 6 of its entry file: next.config.ts:1 -> src/lib/limits.ts, "),
+        "{query}"
+    );
 }

@@ -131,9 +131,13 @@ it, as in `src/shop/billing/charge.py:5 -> src/shop/users.py`, and ends in
 the function is called; the others run when their file loads. `(type)` marks
 a TS/JS statement that takes types only (`import type`), which the compiler
 erases, so it never runs, and `(test)` a statement in test code. Each
-neighbor counts its statements in production code and in tests apart (`2
-imports, 1 in tests`), lists production code first, and neighbors with more
-production statements come first. A `Not mapped`
+neighbor counts its statements as `summary` counts the pair: in production
+code and in tests apart (`2 imports, 1 in tests`), and apart from those
+statements of the component's entry file into its own submodules (`6 of its
+entry file`) and those that load a barrel only to reach names it re-exports
+(`3 through re-exports`, located `(through)`), which count for the files
+that define the names. Production code is listed first, and neighbors with
+more production statements come first. A `Not mapped`
 section then lists the imports of the component that no edge shows, one line
 per module with the reason (`local name`, `extra or dev dependency`,
 `undeclared`, or `dynamic` for a call that loads modules by name) and where

@@ -5,6 +5,7 @@
 
 mod commands;
 mod output;
+mod pairs;
 mod query_text;
 mod summary;
 mod views;

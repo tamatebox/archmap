@@ -19,8 +19,9 @@ use std::path::Path;
 
 use archmap_core::{
     ArchitectureGraph, Component, ComponentId, ComponentKind, EdgeKind, Evidence, UnmappedReason,
-    WHOLE_MODULE,
 };
+
+use crate::pairs::{Counted, Pairs};
 
 use crate::query_text::reason_label;
 
@@ -122,75 +123,46 @@ fn render_with(graph: &ArchitectureGraph, depth: usize, limits: Limits) -> Strin
         .collect();
 
     let mut dependencies: BTreeMap<(&ComponentId, &ComponentId), Dependency> = BTreeMap::new();
-    // A statement that reaches a name through a re-export counts for the
-    // file that defines it, through its `via` evidence, and for the barrel it
-    // loads only when it takes the barrel whole or a name the barrel defines.
-    let via = |e: &Evidence| e.note.as_deref().is_some_and(|n| n.contains(" via "));
-    let walked: BTreeSet<(&str, Option<u32>)> = rolled
-        .edges
-        .iter()
-        .flat_map(|edge| &edge.evidence)
-        .filter(|e| via(e))
-        .map(|e| (e.file.as_str(), e.line))
-        .collect();
-    let mut defined: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-    for symbol in graph.symbols.values() {
-        if let Some(at) = symbol.location() {
-            defined
-                .entry(at.file.as_str())
-                .or_default()
-                .insert(symbol.name.as_str());
-        }
-    }
-    let through_barrel = |e: &Evidence| {
-        let own = |name: &String| {
-            e.target
-                .as_deref()
-                .and_then(|t| defined.get(t))
-                .is_some_and(|names| names.contains(name.as_str()))
-        };
-        walked.contains(&(e.file.as_str(), e.line))
-            && !via(e)
-            && !e.names.contains(WHOLE_MODULE)
-            && !e.names.iter().any(own)
-    };
-    // A component's own entry file (an index, an `__init__.py`) that imports
-    // its submodules says what the component holds, not what it depends on.
+    // How each statement counts for its pair, as `query` counts it: entry
+    // files into their own submodules and imports that only pass through a
+    // barrel count for no pair here.
+    let pairs = Pairs::new(graph);
     let mut entry_statements: BTreeSet<(&str, Option<u32>)> = BTreeSet::new();
     for edge in &rolled.edges {
         if !internal_id(&rolled, &edge.from) || !internal_id(&rolled, &edge.to) {
             continue;
         }
-        let own_files: BTreeSet<&str> =
-            if edge.from != edge.to && rolled.containment_path(&edge.to).contains(&edge.from) {
-                graph
-                    .component(&edge.from)
-                    .into_iter()
-                    .flat_map(|c| &c.evidence)
-                    .map(|e| e.file.as_str())
-                    .collect()
-            } else {
-                BTreeSet::new()
-            };
-        let (entry, counted): (Vec<&Evidence>, Vec<&Evidence>) = edge
-            .evidence
-            .iter()
-            .partition(|e| own_files.contains(e.file.as_str()));
-        entry_statements.extend(entry.iter().map(|e| (e.file.as_str(), e.line)));
-        let counted: Vec<&Evidence> = counted.into_iter().filter(|e| !through_barrel(e)).collect();
-        if counted.is_empty() && !edge.evidence.is_empty() {
+        if edge.kind != EdgeKind::Import {
+            let dep = dependencies.entry((&edge.from, &edge.to)).or_default();
+            match edge.kind {
+                EdgeKind::Dependency => dep.declared = true,
+                other => *dep.other.entry(other.as_str()).or_default() += edge.statements().max(1),
+            }
+            continue;
+        }
+        let pair = pairs.pair(&rolled, &edge.from, &edge.to);
+        let mut statements: BTreeMap<(&str, Option<u32>), Counted> = BTreeMap::new();
+        for e in &edge.evidence {
+            let counted = pair.counted(e);
+            statements
+                .entry((e.file.as_str(), e.line))
+                .and_modify(|c| *c = (*c).min(counted))
+                .or_insert(counted);
+        }
+        let count = |kind: Counted| statements.values().filter(|c| **c == kind).count();
+        let (production, tests) = (count(Counted::Production), count(Counted::Test));
+        entry_statements.extend(
+            statements
+                .iter()
+                .filter(|(_, c)| **c == Counted::Entry)
+                .map(|(at, _)| *at),
+        );
+        if production + tests == 0 && !edge.evidence.is_empty() {
             continue;
         }
         let dep = dependencies.entry((&edge.from, &edge.to)).or_default();
-        let (production, tests) = statements(&counted);
-        match edge.kind {
-            EdgeKind::Import => {
-                dep.imports += production;
-                dep.tests += tests;
-            }
-            EdgeKind::Dependency => dep.declared = true,
-            other => *dep.other.entry(other.as_str()).or_default() += (production + tests).max(1),
-        }
+        dep.imports += production;
+        dep.tests += tests;
     }
     let externals: Vec<&Component> = rolled
         .components
@@ -1220,7 +1192,45 @@ mod tests {
         );
     }
 
-    /// `graph` with `edges` added.    /// `graph` with `edges` added.
+    #[test]
+    fn a_rust_use_that_also_reaches_through_a_re_export_still_counts() {
+        // `use crate::shapes::{area_of, Circle};`: area_of is the module's
+        // own, Circle a re-export of its submodule
+        let at = |target: &str, note: &str, name: &str| {
+            Evidence::new("src/app/mod.rs")
+                .at_line(1)
+                .with_note(note)
+                .pointing_at(target)
+                .taking([name])
+        };
+        let graph = graph(
+            vec![
+                package("p"),
+                module("app", "p"),
+                module("shapes", "p"),
+                module("shapes::circle", "shapes"),
+            ],
+            vec![
+                Edge::new("app", "shapes", EdgeKind::Import).with_evidence(at(
+                    "src/shapes/mod.rs",
+                    "use",
+                    "area_of",
+                )),
+                Edge::new("app", "shapes::circle", EdgeKind::Import).with_evidence(at(
+                    "src/shapes/circle.rs",
+                    "use via src/shapes/mod.rs:2",
+                    "Circle",
+                )),
+            ],
+        );
+        let out = render_with(&graph, 3, limits(30, 30, 20));
+        assert_eq!(
+            section(&out, "Internal dependencies"),
+            "app -> shapes  imports: 1\napp -> shapes::circle  imports: 1\n"
+        );
+    }
+
+    /// `graph` with `edges` added.
     fn graph_with(graph: &ArchitectureGraph, edges: Vec<Edge>) -> ArchitectureGraph {
         let mut graph = graph.clone();
         graph.add_edges(edges);

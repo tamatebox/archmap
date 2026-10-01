@@ -571,7 +571,7 @@ fn an_import_continued_over_lines_reaches_the_modules_it_names() {
 #[test]
 fn python_imports_record_the_names_they_take() {
     let dir = namespace_project(
-        "names",
+        "names-declared",
         "",
         &[
             ("app/__init__.py", "VERSION = 1\n"),

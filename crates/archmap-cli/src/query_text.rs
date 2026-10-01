@@ -13,6 +13,8 @@ use archmap_core::{
     Symbol, SymbolKind, UnmappedImport, UnmappedReason,
 };
 
+use crate::pairs::{Counted, Pairs};
+
 use crate::views::{ComponentView, FileView, Importer, QueryResult, SymbolView, UnmappedView};
 
 /// Default caps, lifted by `--verbose`.
@@ -56,10 +58,11 @@ pub fn render(
     verbose: bool,
 ) -> String {
     let caps = Caps::new(verbose);
+    let pairs = Pairs::new(full);
     let mut out = String::new();
     let truncated = match result {
-        QueryResult::Component(view) => component(&mut out, view, full, rolled, &caps),
-        QueryResult::File(view) => file(&mut out, view, rolled, &caps),
+        QueryResult::Component(view) => component(&mut out, view, full, rolled, &pairs, &caps),
+        QueryResult::File(view) => file(&mut out, view, rolled, &pairs, &caps),
         QueryResult::Symbols(symbols) => {
             symbol_list(&mut out, symbols, target, full, rolled, &caps)
         }
@@ -79,6 +82,7 @@ fn component(
     view: &ComponentView,
     full: &ArchitectureGraph,
     rolled: &ArchitectureGraph,
+    pairs: &Pairs,
     caps: &Caps,
 ) -> bool {
     let c = view.component;
@@ -148,8 +152,8 @@ fn component(
 
     let outgoing = view.outgoing.iter().map(|e| (&e.to, *e));
     let incoming = view.incoming.iter().map(|e| (&e.from, *e));
-    truncated |= neighbors(out, "Depends on", outgoing, rolled, true, caps);
-    truncated |= neighbors(out, "Used by", incoming, rolled, true, caps);
+    truncated |= neighbors(out, "Depends on", outgoing, rolled, pairs, true, caps);
+    truncated |= neighbors(out, "Used by", incoming, rolled, pairs, true, caps);
     if c.kind != ComponentKind::External {
         truncated |= not_mapped(out, &view.not_mapped, &view.dynamic_imports, caps);
     }
@@ -230,8 +234,9 @@ pub(crate) fn reason_label(reason: UnmappedReason) -> &'static str {
 
 #[derive(Default)]
 struct Neighbor<'a> {
-    /// One entry per import statement, with the other files it loads.
-    imports: Vec<(&'a Evidence, BTreeSet<Option<&'a str>>)>,
+    /// One entry per import statement, with the other files it loads and
+    /// how it counts for the pair, as `summary` counts it.
+    imports: Vec<(&'a Evidence, BTreeSet<Option<&'a str>>, Counted)>,
     declared: BTreeSet<&'a str>,
     other: BTreeMap<&'static str, usize>,
 }
@@ -244,6 +249,7 @@ fn neighbors<'a>(
     title: &str,
     edges: impl Iterator<Item = (&'a ComponentId, &'a Edge)>,
     rolled: &ArchitectureGraph,
+    pairs: &Pairs,
     show_targets: bool,
     caps: &Caps,
 ) -> bool {
@@ -252,22 +258,27 @@ fn neighbors<'a>(
         let n = by_id.entry(id).or_default();
         match edge.kind {
             EdgeKind::Import => {
+                let pair = pairs.pair(rolled, &edge.from, &edge.to);
                 // one entry per statement: a statement can point at several
                 // files, and at one file through several re-exports
                 for e in &edge.evidence {
+                    let counted = pair.counted(e);
                     match n
                         .imports
                         .iter_mut()
-                        .find(|(x, _)| x.file == e.file && x.line == e.line)
+                        .find(|(x, ..)| x.file == e.file && x.line == e.line)
                     {
-                        Some((first, more)) if e.target != first.target => {
-                            more.insert(e.target.as_deref());
+                        Some((first, more, c)) => {
+                            *c = (*c).min(counted);
+                            if e.target != first.target {
+                                more.insert(e.target.as_deref());
+                            } else if first.type_only && !e.type_only {
+                                // a statement that takes values and types
+                                // from one file shows as what runs
+                                *first = e;
+                            }
                         }
-                        // a statement that takes values and types from one
-                        // file shows as what runs
-                        Some((first, _)) if first.type_only && !e.type_only => *first = e,
-                        Some(_) => {}
-                        None => n.imports.push((e, BTreeSet::new())),
+                        None => n.imports.push((e, BTreeSet::new(), counted)),
                     }
                 }
             }
@@ -284,15 +295,15 @@ fn neighbors<'a>(
 
     let mut list: Vec<(&ComponentId, Neighbor)> = by_id.into_iter().collect();
     for (_, n) in &mut list {
-        // production code first; test code is listed after it
-        n.imports.sort_by_key(|(e, _)| e.test);
+        // production code first, then tests, then what counts for no pair
+        n.imports.sort_by_key(|(.., c)| *c);
     }
-    let tests = |n: &Neighbor| n.imports.iter().filter(|(e, _)| e.test).count();
+    let of_kind =
+        |n: &Neighbor, kind: Counted| n.imports.iter().filter(|(.., c)| *c == kind).count();
     list.sort_by(|a, b| {
-        let production = |n: &Neighbor| n.imports.len() - tests(n);
-        production(&b.1)
-            .cmp(&production(&a.1))
-            .then_with(|| tests(&b.1).cmp(&tests(&a.1)))
+        of_kind(&b.1, Counted::Production)
+            .cmp(&of_kind(&a.1, Counted::Production))
+            .then_with(|| of_kind(&b.1, Counted::Test).cmp(&of_kind(&a.1, Counted::Test)))
             .then_with(|| a.0.cmp(b.0))
     });
     let total = list.len();
@@ -313,19 +324,38 @@ fn neighbors<'a>(
                 .imports
                 .iter()
                 .take(caps.locations)
-                .map(|(e, more)| import_location(e, more.len(), show_targets))
+                .map(|(e, more, c)| {
+                    let mut at = import_location(e, more.len(), show_targets);
+                    if *c == Counted::Through {
+                        at.push_str(" (through)");
+                    }
+                    at
+                })
                 .collect();
             let more = n.imports.len().saturating_sub(caps.locations);
             truncated |= more > 0;
-            let in_tests = tests(n);
-            let counted = match n.imports.len() - in_tests {
-                0 => format!("{} in tests", plural(in_tests, "import")),
-                production if in_tests > 0 => {
-                    format!("{}, {in_tests} in tests", plural(production, "import"))
+            let mut counts = Vec::new();
+            let production = of_kind(n, Counted::Production);
+            if production > 0 {
+                counts.push(plural(production, "import"));
+            }
+            match of_kind(n, Counted::Test) {
+                0 => {}
+                tests if counts.is_empty() => {
+                    counts.push(format!("{} in tests", plural(tests, "import")))
                 }
-                production => plural(production, "import"),
-            };
-            let mut part = format!("{counted}: {}", locations.join(", "));
+                tests => counts.push(format!("{tests} in tests")),
+            }
+            for (kind, what) in [
+                (Counted::Through, "through re-exports"),
+                (Counted::Entry, "of its entry file"),
+            ] {
+                let k = of_kind(n, kind);
+                if k > 0 {
+                    counts.push(format!("{k} {what}"));
+                }
+            }
+            let mut part = format!("{}: {}", counts.join(", "), locations.join(", "));
             if more > 0 {
                 let _ = write!(part, ", +{more} more");
             }
@@ -345,7 +375,13 @@ fn neighbors<'a>(
 
 /// A file-level drill-down: the file's public symbols, what it imports, who
 /// imports it (where evidence records that), and its imports without an edge.
-fn file(out: &mut String, view: &FileView, rolled: &ArchitectureGraph, caps: &Caps) -> bool {
+fn file(
+    out: &mut String,
+    view: &FileView,
+    rolled: &ArchitectureGraph,
+    pairs: &Pairs,
+    caps: &Caps,
+) -> bool {
     let component = view.component.as_ref().and_then(|id| rolled.component(id));
     let mut head = format!("{} (file)", view.file);
     if let Some(c) = component {
@@ -372,7 +408,7 @@ fn file(out: &mut String, view: &FileView, rolled: &ArchitectureGraph, caps: &Ca
     }
 
     let imports = view.imports.iter().map(|e| (&e.to, e));
-    truncated |= neighbors(out, "Imports", imports, rolled, true, caps);
+    truncated |= neighbors(out, "Imports", imports, rolled, pairs, true, caps);
     match &view.importers {
         // a side-effect import can still load a script
         Some(edges) if view.script && edges.is_empty() => {
@@ -384,7 +420,7 @@ fn file(out: &mut String, view: &FileView, rolled: &ArchitectureGraph, caps: &Ca
         }
         Some(edges) => {
             let importers = edges.iter().map(|e| (&e.from, e));
-            truncated |= neighbors(out, "Imported by", importers, rolled, false, caps);
+            truncated |= neighbors(out, "Imported by", importers, rolled, pairs, false, caps);
         }
         None => {
             let language = component
