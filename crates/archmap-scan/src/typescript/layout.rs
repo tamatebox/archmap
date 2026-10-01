@@ -596,9 +596,9 @@ mod tests {
     fn test_files_follow_runner_conventions() {
         assert!(is_test_file(Path::new("src/money.test.ts")));
         assert!(is_test_file(Path::new("src/button.stories.tsx")));
-        assert!(is_test_file(Path::new("tests/e2e/cart.spec.ts")));
+        assert!(is_test_file(Path::new("tests/e2e/login.spec.ts")));
         assert!(is_test_file(Path::new("src/lib/__mocks__/money.ts")));
-        assert!(!is_test_file(Path::new("tests/e2e/cart-helpers.ts")));
+        assert!(!is_test_file(Path::new("tests/e2e/helpers.ts")));
         assert!(!is_test_file(Path::new("src/__tests__/fixtures.ts")));
         assert!(!is_test_file(Path::new("src/testing.ts")));
     }

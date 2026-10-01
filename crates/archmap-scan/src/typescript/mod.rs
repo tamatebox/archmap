@@ -346,8 +346,8 @@ impl Imports<'_> {
             return (UnmappedReason::Unresolved, note);
         }
         // A scope matches only the source root: a bundler alias reaches
-        // code there, while `supabase/` or `prisma/` beside `src/` hold the
-        // files of tools whose packages share the name.
+        // code there, while `prisma/` beside `src/` holds the files of a
+        // tool whose packages share the name.
         let scope = package.strip_prefix('@').and_then(|p| p.split('/').next());
         let local = if self.package.local_names.contains(package) {
             Some(package)

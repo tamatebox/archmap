@@ -582,14 +582,14 @@ export default limitOf;
     fn signatures_leave_out_comments() {
         let file = parse(
             Path::new("x.ts"),
-            "export type Product = {\n  image: string | null; // relative path\n  \
-             /** shown on the card */\n  status: string;\n};\nexport function make(\n  \
+            "export type Profile = {\n  avatar: string | null; // relative path\n  \
+             /** shown in the header */\n  status: string;\n};\nexport function make(\n  \
              id: string, // the id\n  /* options */ opts?: { a: number },\n): void {}\n",
         )
         .unwrap();
         assert_eq!(
-            signature_of(&file, "Product"),
-            "export type Product = { image: string | null; status: string; }"
+            signature_of(&file, "Profile"),
+            "export type Profile = { avatar: string | null; status: string; }"
         );
         assert_eq!(
             signature_of(&file, "make"),

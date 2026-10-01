@@ -153,7 +153,7 @@ can use a copy of it.
     directory; a `package.json` without a name is no package, but it declares dependencies all the same
   - every directory between a package and its code files becomes a `module` component, except the source root
     `src/`, and every code file is a `module` component of its own, named by its path from the source root with
-    its extension (`lib/supabase/server.ts`, `app/(public)/[slug]/page.tsx`); an `index.*` is its directory's own
+    its extension (`lib/money.ts`, `app/(public)/[slug]/page.tsx`); an `index.*` is its directory's own
     file, and the source root's `index.*` and the files directly in a package directory that has `src/`
     (`next.config.ts`) belong to the package
   - `dependencies` and `peerDependencies` become `dependency` edges to `ext:npm:*` components;

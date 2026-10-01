@@ -920,23 +920,23 @@ fn a_catch_all_alias_hides_no_undeclared_package() {
 
 #[test]
 fn a_scope_is_local_only_when_the_source_root_has_the_directory() {
-    // `supabase/` holds the Supabase CLI's files, not code an alias reaches.
+    // `prisma/` holds the Prisma CLI's schema, not code an alias reaches.
     let found = unmapped_of(
         "scopes",
         &[
             ("package.json", "{ \"name\": \"app\" }"),
-            ("supabase/config.toml", "project_id = \"x\"\n"),
+            ("prisma/schema.prisma", "// schema\n"),
             ("src/components/button.ts", "export const b = 1;\n"),
             (
                 "src/a.ts",
-                "import x from '@supabase/missing';\nimport b from '@components/button';\n",
+                "import x from '@prisma/missing';\nimport b from '@components/button';\n",
             ),
         ],
     );
     assert_eq!(
         found,
         BTreeSet::from([
-            ("@supabase/missing".to_owned(), UnmappedReason::Undeclared),
+            ("@prisma/missing".to_owned(), UnmappedReason::Undeclared),
             ("@components/button".to_owned(), UnmappedReason::LocalName),
         ])
     );

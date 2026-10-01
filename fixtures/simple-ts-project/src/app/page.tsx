@@ -14,7 +14,7 @@ import { createRoot } from 'react-dom/client';
 import { Button as Widget } from 'components/button';
 
 const snippet = `import fake from 'template'`;
-const quoted = "import fake from '../admin-test'";
+const quoted = "import fake from '../not-imported'";
 // import fake from "comment";
 
 export default function Page(props: { price: Money }) {

@@ -192,7 +192,7 @@ pub(crate) fn is_path(specifier: &str) -> bool {
 }
 
 /// The npm package a bare specifier names (`react` for
-/// `react/jsx-runtime`, `@supabase/ssr` for `@supabase/ssr/server`), or
+/// `react/jsx-runtime`, `@babel/core` for `@babel/core/lib/config`), or
 /// `None` when it cannot be a package name: a path, an alias such as `@/x`
 /// or `~/x`, a subpath import `#x`, a URL or `virtual:x`.
 pub(crate) fn package_name(specifier: &str) -> Option<&str> {
@@ -226,8 +226,8 @@ mod tests {
     fn package_names_of_bare_specifiers() {
         assert_eq!(package_name("react"), Some("react"));
         assert_eq!(package_name("next/cache"), Some("next"));
-        assert_eq!(package_name("@supabase/ssr"), Some("@supabase/ssr"));
-        assert_eq!(package_name("@supabase/ssr/dist/x"), Some("@supabase/ssr"));
+        assert_eq!(package_name("@babel/core"), Some("@babel/core"));
+        assert_eq!(package_name("@babel/core/lib/x"), Some("@babel/core"));
         assert_eq!(package_name("lodash.debounce"), Some("lodash.debounce"));
         for not_a_package in [
             "./a",
