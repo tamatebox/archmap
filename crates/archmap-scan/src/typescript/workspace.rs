@@ -3,27 +3,66 @@
 //! `workspaces`, `pnpm-workspace.yaml`) and the directories that `file:`,
 //! `link:` and `portal:` dependencies point at.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component as PathComponent, Path, PathBuf};
 
 use globset::{GlobSet, GlobSetBuilder};
 
 use super::package::PackageJson;
 
-/// Package name to its directory, relative to the root. The first member
-/// of a name by path wins; a package that no workspace names and no path
-/// dependency points at is never linked, so a copied example cannot take
-/// over a dependency's name.
+/// The packages an install links by name, by the directory whose
+/// `node_modules` holds the links: a workspace root links the members its
+/// patterns name, the first of a name by path, and a package the
+/// directories its `file:` dependencies point at. Code reaches the nearest
+/// link of a name above it, as Node looks, so two workspaces in one
+/// checkout keep their members apart. A package that no workspace names and
+/// no path dependency points at is never linked, so a copied example cannot
+/// take over a dependency's name. Paths are relative to the root.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct Links(BTreeMap<PathBuf, BTreeMap<String, PathBuf>>);
+
+impl Links {
+    /// The directory of the package `name` that code in `dir` reaches.
+    pub(crate) fn find(&self, dir: &Path, name: &str) -> Option<&Path> {
+        dir.ancestors()
+            .find_map(|d| self.0.get(d)?.get(name))
+            .map(PathBuf::as_path)
+    }
+
+    /// Every link: the directory whose `node_modules` holds it, the name and
+    /// the package's directory.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&Path, &str, &Path)> {
+        self.0.iter().flat_map(|(at, names)| {
+            names
+                .iter()
+                .map(move |(name, dir)| (at.as_path(), name.as_str(), dir.as_path()))
+        })
+    }
+
+    /// The directories of every linked package.
+    pub(crate) fn members(&self) -> BTreeSet<PathBuf> {
+        self.iter().map(|(_, _, dir)| dir.to_path_buf()).collect()
+    }
+}
+
+/// Links at the root, by name, as a single workspace makes them.
+#[cfg(test)]
+impl From<BTreeMap<String, PathBuf>> for Links {
+    fn from(names: BTreeMap<String, PathBuf>) -> Self {
+        Links(BTreeMap::from([(PathBuf::new(), names)]))
+    }
+}
+
 pub(crate) fn links(
     manifests: &BTreeMap<PathBuf, PackageJson>,
     pnpm: &BTreeMap<PathBuf, Vec<String>>,
-) -> BTreeMap<String, PathBuf> {
+) -> Links {
     let roots = manifests
         .iter()
         .filter(|(_, m)| !m.workspace_patterns.is_empty())
         .map(|(dir, m)| (dir, &m.workspace_patterns))
         .chain(pnpm.iter());
-    let mut links: BTreeMap<String, PathBuf> = BTreeMap::new();
+    let mut links: BTreeMap<PathBuf, BTreeMap<String, PathBuf>> = BTreeMap::new();
     for (root, patterns) in roots {
         let (include, exclude) = globs(patterns);
         for (dir, manifest) in manifests {
@@ -33,7 +72,11 @@ pub(crate) fn links(
             if below.as_os_str().is_empty() || !include.is_match(below) || exclude.is_match(below) {
                 continue;
             }
-            links.entry(name.clone()).or_insert_with(|| dir.clone());
+            links
+                .entry(root.clone())
+                .or_default()
+                .entry(name.clone())
+                .or_insert_with(|| dir.clone());
         }
     }
     for (dir, manifest) in manifests {
@@ -45,11 +88,15 @@ pub(crate) fn links(
                 continue;
             };
             if manifests.contains_key(&target) {
-                links.entry(declaration.name.clone()).or_insert(target);
+                links
+                    .entry(dir.clone())
+                    .or_default()
+                    .entry(declaration.name.clone())
+                    .or_insert(target);
             }
         }
     }
-    links
+    Links(links)
 }
 
 /// The patterns that pick members and those (`!`) that leave them out.
@@ -209,6 +256,7 @@ mod tests {
             section: Section::Dependencies,
             line: Some(3),
             path: Some("../../libs/local".into()),
+            workspace: false,
         });
         let manifests: BTreeMap<PathBuf, PackageJson> = [
             ("", root),
@@ -224,19 +272,26 @@ mod tests {
         .map(|(dir, m)| (PathBuf::from(dir), m))
         .collect();
         let links = links(&manifests, &BTreeMap::new());
-        let found: Vec<(&str, &str)> = links
+        let found: Vec<(&str, &str, &str)> = links
             .iter()
-            .map(|(name, dir)| (name.as_str(), dir.to_str().unwrap()))
+            .map(|(at, name, dir)| (at.to_str().unwrap(), name, dir.to_str().unwrap()))
             .collect();
         assert_eq!(
             found,
             [
-                ("@acme/ui", "packages/ui"),
-                ("local-lib", "libs/local"),
-                ("site", "apps/web/site"),
-                ("web", "apps/web"),
+                // the workspace root links its members
+                ("", "@acme/ui", "packages/ui"),
+                ("", "site", "apps/web/site"),
+                ("", "web", "apps/web"),
+                // a package links its path dependencies
+                ("apps/web", "local-lib", "libs/local"),
             ]
         );
+        assert_eq!(
+            links.find(Path::new("apps/web/src"), "local-lib"),
+            Some(Path::new("libs/local"))
+        );
+        assert_eq!(links.find(Path::new("packages/ui/src"), "local-lib"), None);
     }
 
     #[test]
@@ -248,13 +303,14 @@ mod tests {
             line: Some(3),
             // `shared/` beside the checkout, not the one inside it
             path: Some("../../../shared".into()),
+            workspace: false,
         });
         let manifests: BTreeMap<PathBuf, PackageJson> =
             [("apps/web", web), ("shared", named("shared"))]
                 .into_iter()
                 .map(|(dir, m)| (PathBuf::from(dir), m))
                 .collect();
-        assert_eq!(links(&manifests, &BTreeMap::new()), BTreeMap::new());
+        assert_eq!(links(&manifests, &BTreeMap::new()), Links::default());
     }
 
     #[test]
@@ -279,7 +335,10 @@ mod tests {
         let pnpm = BTreeMap::from([(PathBuf::new(), pnpm_patterns(text))]);
         assert_eq!(
             links(&manifests, &pnpm),
-            BTreeMap::from([("a".to_owned(), PathBuf::from("packages/a"))])
+            Links::from(BTreeMap::from([(
+                "a".to_owned(),
+                PathBuf::from("packages/a")
+            )]))
         );
     }
 }

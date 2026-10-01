@@ -6,13 +6,14 @@
 //! the closest one for every import below it and would fail them all, and
 //! the analyzer reports it.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Component as PathComponent, Path, PathBuf};
 use std::sync::Arc;
 
 use oxc_resolver::{FileMetadata, FileSystem, ResolveError};
 
+use super::workspace::Links;
 use crate::context::display_path;
 use crate::RepoContext;
 
@@ -27,9 +28,11 @@ struct View {
     /// tsconfig files served without the `extends` entries the view cannot
     /// load, so that their own `paths` still apply.
     served: HashMap<PathBuf, String>,
-    /// `<root>/node_modules/<name>` to the directory of the package it
+    /// `<dir>/node_modules/<name>` to the directory of the package it
     /// links, as an install links workspace members.
     links: HashMap<PathBuf, PathBuf>,
+    /// The names linked anywhere.
+    linked: HashSet<String>,
     root: PathBuf,
 }
 
@@ -37,32 +40,28 @@ impl ViewFs {
     /// The view of `ctx` without links.
     #[cfg(test)]
     pub(crate) fn new(ctx: &RepoContext, warnings: &mut Vec<String>) -> Self {
-        Self::new_linked(ctx, &BTreeMap::new(), warnings)
+        Self::new_linked(ctx, &Links::default(), warnings)
     }
 
-    /// The view of `ctx`, with each package of `links`, a name and the
-    /// package's directory relative to the root, linked as
-    /// `<root>/node_modules/<name>`. A tsconfig `extends` that names no
-    /// scanned file is left out and reported in `warnings`, once per tsconfig
-    /// and entry.
-    pub(crate) fn new_linked(
-        ctx: &RepoContext,
-        links: &BTreeMap<String, PathBuf>,
-        warnings: &mut Vec<String>,
-    ) -> Self {
+    /// The view of `ctx`, with each package of `links` linked as
+    /// `<dir>/node_modules/<name>` in the directory that links it. A
+    /// tsconfig `extends` that names no scanned file is left out and
+    /// reported in `warnings`, once per tsconfig and entry.
+    pub(crate) fn new_linked(ctx: &RepoContext, links: &Links, warnings: &mut Vec<String>) -> Self {
         let root = ctx.root();
         let mut view = View {
             root: root.to_path_buf(),
             ..View::default()
         };
-        for (name, dir) in links {
-            let link = root.join("node_modules").join(name);
+        for (at, name, dir) in links.iter() {
+            let link = root.join(at).join("node_modules").join(name);
             for parent in link.ancestors().skip(1) {
                 if !parent.starts_with(root) || !view.dirs.insert(parent.to_path_buf()) {
                     break;
                 }
             }
             view.links.insert(link, root.join(dir));
+            view.linked.insert(name.to_owned());
         }
         view.dirs.insert(root.to_path_buf());
         for rel in ctx.files() {
@@ -253,12 +252,10 @@ fn normalize(path: &Path) -> PathBuf {
 }
 
 impl ViewFs {
-    /// Whether the view links the package `name` (a workspace member, a
-    /// path dependency), the only packages whose files it holds.
+    /// Whether the view links the package `name` anywhere (a workspace
+    /// member, a path dependency), the only packages whose files it holds.
     pub(crate) fn links(&self, name: &str) -> bool {
-        self.0
-            .links
-            .contains_key(&self.0.root.join("node_modules").join(name))
+        self.0.linked.contains(name)
     }
 }
 
@@ -271,7 +268,10 @@ impl View {
         let target = if entry.starts_with('.') || entry.starts_with('/') {
             normalize(&dir.join(entry))
         } else {
-            self.through_link(&self.root.join("node_modules").join(entry))?
+            // the nearest `node_modules` above the config that links it
+            dir.ancestors()
+                .take_while(|d| d.starts_with(&self.root))
+                .find_map(|d| self.through_link(&d.join("node_modules").join(entry)))?
         };
         let mut with_json = target.clone().into_os_string();
         with_json.push(".json");
@@ -370,6 +370,7 @@ impl FileSystem for ViewFs {
 pub(crate) mod tests {
     use super::*;
     use crate::ScanOptions;
+    use std::collections::BTreeMap;
 
     /// A throwaway repository with `files`, canonicalized.
     pub(crate) fn repo(name: &str, files: &[(&str, &str)]) -> PathBuf {
@@ -463,7 +464,7 @@ pub(crate) mod tests {
             PathBuf::from("packages/tsconfig"),
         )]);
         let mut warnings = Vec::new();
-        let view = ViewFs::new_linked(&ctx, &links, &mut warnings);
+        let view = ViewFs::new_linked(&ctx, &Links::from(links.clone()), &mut warnings);
         std::fs::remove_dir_all(&root).unwrap();
         assert!(warnings.is_empty(), "{warnings:?}");
         // the resolver reads the member through the link
@@ -496,7 +497,7 @@ pub(crate) mod tests {
         let ctx = RepoContext::load(&root, ScanOptions::default()).unwrap();
         let links = BTreeMap::from([("@acme/config".to_owned(), PathBuf::from("packages/config"))]);
         let mut warnings = Vec::new();
-        let view = ViewFs::new_linked(&ctx, &links, &mut warnings);
+        let view = ViewFs::new_linked(&ctx, &Links::from(links.clone()), &mut warnings);
         std::fs::remove_dir_all(&root).unwrap();
         assert_eq!(
             warnings,

@@ -197,8 +197,10 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   as one (`export type { A } from`)
 - the packages an install links by name are linked in the resolver's view as `node_modules/<name>`: the members
   of a workspace (`workspaces` in a `package.json`, an array or `{ "packages": [..] }`, and
-  `pnpm-workspace.yaml`; `!` patterns leave members out) and the directories of `file:`, `link:` and `portal:`
-  dependencies inside the scanned root, never another package of the same name; a bare import of one resolves to its files through its
+  `pnpm-workspace.yaml`; `!` patterns leave members out) in its root's `node_modules`, and the directories of
+  `file:`, `link:` and `portal:` dependencies inside the scanned root in the declaring package's, never another
+  package of the same name; code reaches the nearest link above it, so two workspaces in one checkout keep
+  members of one name apart; a bare import of one resolves to its files through its
   `exports`, or its `main`, `types` or `typings` in that order, matching the conditions the scanned tsconfigs turn on with `customConditions`,
   themselves or through a config they extend (when a
   `types` condition leads outside the scan, the next condition answers, as it does for a package's own
@@ -206,7 +208,8 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   reads it), one whose
   entry is outside the scan (`dist/`) is an `import` edge to the package without a file, a declaration of one
   is a `dependency` edge to that package whatever its version (`workspace:*`, `^1.0.0`), and a tsconfig
-  `extends` of one loads
+  `extends` of one loads; a `workspace:` version of a name that no member has gives a warning and no
+  component, and an import of it is `unresolved`
 - a bare specifier that resolves to no file is matched by package name to the closest `package.json` above
   the importing file that declares it, so a monorepo root's dependencies count for its packages, and only
   when none declares the package itself to the closest that declares its `@types` package (an import such
@@ -288,9 +291,7 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   it, and gives nothing, even where `package.json` declares the npm package of that name for a bundler.
 - Vue, Svelte and Astro components and GraphQL documents are not code to the analyzer: an import of
   one is an import of a file, as for a stylesheet, and the imports inside them are not read.
-- The links are one map for the whole scan: two independent workspace roots that each name a
-  package of one name link it to the first, while each root installs its own. A tsconfig's
-  `customConditions` count for every file, not only those its config covers.
+- A tsconfig's `customConditions` count for every file, not only those its config covers.
 - Aliases defined only in a bundler configuration, `jsconfig.json` and Deno import maps are not
   read: an import through such an alias is `unresolved` when a tsconfig or jsconfig declares its
   pattern, `local name` when it names a top directory of the source root (`@components/button`),

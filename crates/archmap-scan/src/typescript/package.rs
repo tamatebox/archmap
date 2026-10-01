@@ -28,6 +28,8 @@ pub(crate) struct Declaration {
     /// The directory a `file:`, `link:` or `portal:` version names,
     /// relative to the `package.json`.
     pub path: Option<String>,
+    /// A `workspace:` version: the package is one of the repository.
+    pub workspace: bool,
 }
 
 /// The dependency sections of `package.json`.
@@ -106,6 +108,9 @@ pub(crate) fn parse(text: &str) -> Result<PackageJson, String> {
                     .get(&(section.key().to_owned(), name.clone()))
                     .copied(),
                 path,
+                workspace: version
+                    .as_str()
+                    .is_some_and(|v| v.starts_with("workspace:")),
             });
         }
     }

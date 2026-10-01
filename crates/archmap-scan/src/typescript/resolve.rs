@@ -326,6 +326,7 @@ mod tests {
     use super::*;
     use crate::context::display_path;
     use crate::typescript::fs::tests::repo;
+    use crate::typescript::workspace::Links;
     use crate::{RepoContext, ScanOptions};
     use std::collections::BTreeMap;
 
@@ -495,7 +496,7 @@ mod tests {
         let mut warnings = Vec::new();
         let resolver = ImportResolver::new(
             ctx.root(),
-            ViewFs::new_linked(&ctx, &links, &mut warnings),
+            ViewFs::new_linked(&ctx, &Links::from(links.clone()), &mut warnings),
             &[],
         );
         let mut problems = BTreeSet::new();
@@ -539,7 +540,7 @@ mod tests {
         let ctx = RepoContext::load(&root, ScanOptions::default()).unwrap();
         let links = BTreeMap::from([("@acme/core".to_owned(), PathBuf::from("packages/core"))]);
         let mut warnings = Vec::new();
-        let view = ViewFs::new_linked(&ctx, &links, &mut warnings);
+        let view = ViewFs::new_linked(&ctx, &Links::from(links.clone()), &mut warnings);
         let resolver =
             ImportResolver::new(ctx.root(), view.clone(), &custom_conditions(&ctx, &view));
         let mut problems = BTreeSet::new();
@@ -585,7 +586,7 @@ mod tests {
         let ctx = RepoContext::load(&root, ScanOptions::default()).unwrap();
         let links = BTreeMap::from([("@acme/core".to_owned(), PathBuf::from("packages/core"))]);
         let mut warnings = Vec::new();
-        let view = ViewFs::new_linked(&ctx, &links, &mut warnings);
+        let view = ViewFs::new_linked(&ctx, &Links::from(links.clone()), &mut warnings);
         let aliases = Aliases::collect(&ctx, &view);
         let resolver =
             ImportResolver::new(ctx.root(), view.clone(), &custom_conditions(&ctx, &view));
@@ -627,7 +628,7 @@ mod tests {
             ("@acme/core".to_owned(), PathBuf::from("packages/core")),
             ("@acme/old".to_owned(), PathBuf::from("packages/old")),
         ]);
-        let view = ViewFs::new_linked(&ctx, &links, &mut Vec::new());
+        let view = ViewFs::new_linked(&ctx, &Links::from(links.clone()), &mut Vec::new());
         let resolver = ImportResolver::new(ctx.root(), view, &[]);
         let mut problems = BTreeSet::new();
         let mut file = |specifier: &str| {

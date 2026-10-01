@@ -110,7 +110,7 @@ impl Analyzer for TypeScriptAnalyzer {
             })
             .collect();
         let links = workspace::links(&manifests, &pnpm);
-        let members: BTreeSet<PathBuf> = links.values().cloned().collect();
+        let members = links.members();
         let layout = layout::discover(
             &code,
             &manifests,
@@ -133,16 +133,14 @@ impl Analyzer for TypeScriptAnalyzer {
                 )
             });
         }
-        let linked: BTreeMap<String, ComponentId> = links
-            .iter()
-            .filter_map(|(name, dir)| {
-                let package = layout
-                    .packages
-                    .iter()
-                    .find(|p| p.manifest.as_deref() == Some(dir.as_path()))?;
-                Some((name.clone(), package.id.clone()))
-            })
-            .collect();
+        let linked = Linked {
+            links: &links,
+            ids: layout
+                .packages
+                .iter()
+                .filter_map(|p| Some((p.manifest.clone()?, p.id.clone())))
+                .collect(),
+        };
         emit_components(&layout, &manifests, &linked, &mut output);
         for file in &code {
             if let Some(language) = language_of(file) {
@@ -466,10 +464,25 @@ fn read_manifests(ctx: &RepoContext, warnings: &mut Vec<String>) -> BTreeMap<Pat
     manifests
 }
 
+/// The packages of the repository an install links by name, as the
+/// components they are.
+struct Linked<'a> {
+    links: &'a workspace::Links,
+    /// Packages by the directory of their `package.json`.
+    ids: BTreeMap<PathBuf, ComponentId>,
+}
+
+impl Linked<'_> {
+    /// The package `name` that code in `dir` reaches.
+    fn get(&self, dir: &Path, name: &str) -> Option<&ComponentId> {
+        self.ids.get(self.links.find(dir, name)?)
+    }
+}
+
 fn emit_components(
     layout: &Layout,
     manifests: &BTreeMap<PathBuf, PackageJson>,
-    linked: &BTreeMap<String, ComponentId>,
+    linked: &Linked,
     output: &mut AnalyzerOutput,
 ) {
     // The source root's `index.*` of each package: the package's own file,
@@ -512,14 +525,23 @@ fn emit_components(
         else {
             continue;
         };
-        for declaration in manifest
-            .declarations
-            .iter()
-            .filter(|d| d.section.required())
-        {
+        for declaration in &manifest.declarations {
+            let member = linked.get(dir, &declaration.name);
+            if declaration.workspace && member.is_none() {
+                output.warnings.push(format!(
+                    "{}: declares {} as a workspace package, but no workspace member is named {}",
+                    display_path(&dir.join("package.json")),
+                    declaration.name,
+                    declaration.name
+                ));
+                continue;
+            }
+            if !declaration.section.required() {
+                continue;
+            }
             let evidence = declared_at(dir, declaration);
             // a package of the repository, whatever the version says
-            if let Some(member) = linked.get(&declaration.name) {
+            if let Some(member) = member {
                 if *member != package.id {
                     output.fragment.push_edge(
                         Edge::new(package.id.clone(), member.clone(), EdgeKind::Dependency)
@@ -597,7 +619,7 @@ struct Imports<'a> {
     manifests: Vec<(&'a Path, &'a PackageJson)>,
     aliases: &'a resolve::Aliases,
     /// The packages of the repository an install links by name.
-    linked: &'a BTreeMap<String, ComponentId>,
+    linked: &'a Linked<'a>,
     file: &'a Path,
     /// The file is test code.
     test: bool,
@@ -749,7 +771,8 @@ impl Imports<'_> {
                     ));
                     return;
                 }
-                if let Some(member) = self.linked.get(package) {
+                let dir = self.file.parent().unwrap_or(Path::new(""));
+                if let Some(member) = self.linked.get(dir, package) {
                     // A package of the repository whose entry is built
                     // (`dist/`): the dependency is there, the file is not.
                     let note = format!(
@@ -774,6 +797,21 @@ impl Imports<'_> {
                 let declared =
                     declared_as(package).or_else(|| declared_as(&package::types_package(package)));
                 match declared {
+                    // declared in the repository, where no member has it
+                    Some((dir, d)) if d.workspace => {
+                        let note = format!(
+                            "{} {spec}: {} declares it as a workspace package, but no workspace \
+                             member is named {package}",
+                            import.note,
+                            self.place(dir, d)
+                        );
+                        output.fragment.push_unmapped_import(self.unmapped(
+                            import,
+                            type_only,
+                            UnmappedReason::Unresolved,
+                            note,
+                        ));
+                    }
                     Some((dir, d)) if d.section.required() => {
                         let own = self.package.manifest.as_deref() == Some(dir);
                         let note = match (d.name != package, own) {

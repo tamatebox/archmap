@@ -1877,3 +1877,82 @@ fn a_next_route_named_test_is_production_code() {
         ])
     );
 }
+
+#[test]
+fn each_workspace_links_its_own_members() {
+    // two independent workspaces in one checkout, each with a `ui`
+    let mut files = Vec::new();
+    for side in ["a", "b"] {
+        files.push((
+            format!("{side}/package.json"),
+            format!("{{ \"name\": \"{side}-root\", \"workspaces\": [\"packages/*\"] }}"),
+        ));
+        files.push((
+            format!("{side}/packages/ui/package.json"),
+            "{ \"name\": \"ui\" }".to_owned(),
+        ));
+        files.push((
+            format!("{side}/packages/ui/index.ts"),
+            "export const Button = 1;\n".to_owned(),
+        ));
+        files.push((
+            format!("{side}/packages/app/package.json"),
+            format!(
+                "{{ \"name\": \"{side}-app\", \"dependencies\": {{ \"ui\": \"workspace:*\", \
+                 \"ghost\": \"workspace:*\" }} }}"
+            ),
+        ));
+        files.push((
+            format!("{side}/packages/app/src/page.ts"),
+            "import { Button } from 'ui';\nimport { g } from 'ghost';\nexport const p = [Button, g];\n"
+                .to_owned(),
+        ));
+    }
+    let files: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(f, t)| (f.as_str(), t.as_str()))
+        .collect();
+    let root = temp_repo("two-workspaces", &files);
+    let report = scan(&root, &ScanOptions::default()).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    let graph = &report.graph;
+    let edges: BTreeSet<(&str, &str, EdgeKind)> = graph
+        .edges
+        .iter()
+        .filter(|e| e.to.as_str().starts_with("ui") || e.to.as_str().contains("ghost"))
+        .map(|e| (e.from.as_str(), e.to.as_str(), e.kind))
+        .collect();
+    let b_ui = "ui+b/packages/ui";
+    assert_eq!(
+        edges,
+        BTreeSet::from([
+            ("a-app", "ui", EdgeKind::Dependency),
+            ("a-app::src/page.ts", "ui", EdgeKind::Import),
+            ("b-app", b_ui, EdgeKind::Dependency),
+            ("b-app::src/page.ts", b_ui, EdgeKind::Import),
+        ])
+    );
+    // a workspace package that no member is: declared, never external
+    let ghosts: Vec<(UnmappedReason, &str)> = graph
+        .unmapped_imports
+        .iter()
+        .filter(|u| u.module == "ghost")
+        .map(|u| (u.reason, u.evidence.note.as_deref().unwrap_or_default()))
+        .collect();
+    assert_eq!(ghosts.len(), 2, "{ghosts:?}");
+    assert!(
+        ghosts
+            .iter()
+            .all(|(reason, note)| *reason == UnmappedReason::Unresolved
+                && note.contains("a workspace package, but no workspace member is named ghost")),
+        "{ghosts:?}"
+    );
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("ghost") && w.contains("no workspace member")),
+        "{:?}",
+        report.warnings
+    );
+}
