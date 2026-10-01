@@ -12,8 +12,8 @@ use archmap_core::{SymbolKind, WHOLE_MODULE};
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
     CallExpression, Class, ClassElement, Declaration, ExportDefaultDeclarationKind, Expression,
-    Function, ImportDeclarationSpecifier, ImportExpression, MethodDefinitionKind, Statement,
-    TSAccessibility, TSImportEqualsDeclaration, TSImportType, TSImportTypeQualifier,
+    FormalParameters, Function, ImportDeclarationSpecifier, ImportExpression, MethodDefinitionKind,
+    Statement, TSAccessibility, TSImportEqualsDeclaration, TSImportType, TSImportTypeQualifier,
     TSModuleReference,
 };
 use oxc_ast::AstKind;
@@ -371,7 +371,7 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
     // after the statements, so the indices in the export table stay valid
     let mut calls = Calls {
         lines: &lines,
-        functions: 0,
+        functions: Vec::new(),
         imports: Vec::new(),
         dynamic: Vec::new(),
     };
@@ -385,8 +385,9 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
 /// `import()` types (`typeof import('m')`, `import('m').A`).
 struct Calls<'s> {
     lines: &'s LineIndex,
-    /// Function bodies the walk is in.
-    functions: usize,
+    /// The function bodies the walk is in, each with whether it takes a
+    /// parameter named `require`, as a bundle's module wrapper does.
+    functions: Vec<bool>,
     imports: Vec<ImportStatement>,
     dynamic: Vec<DynamicCall>,
 }
@@ -411,7 +412,7 @@ impl Calls<'_> {
             note,
             names: vec![name],
             types,
-            local: self.functions > 0,
+            local: !self.functions.is_empty(),
         });
     }
 
@@ -419,18 +420,17 @@ impl Calls<'_> {
         self.dynamic.push(DynamicCall {
             call,
             line: self.lines.line(start),
-            local: self.functions > 0,
+            local: !self.functions.is_empty(),
         });
     }
 }
 
 impl<'a> Visit<'a> for Calls<'_> {
     fn enter_node(&mut self, kind: AstKind<'a>) {
-        if matches!(
-            kind,
-            AstKind::Function(_) | AstKind::ArrowFunctionExpression(_)
-        ) {
-            self.functions += 1;
+        match kind {
+            AstKind::Function(f) => self.functions.push(takes_require(&f.params)),
+            AstKind::ArrowFunctionExpression(f) => self.functions.push(takes_require(&f.params)),
+            _ => {}
         }
     }
 
@@ -439,13 +439,18 @@ impl<'a> Visit<'a> for Calls<'_> {
             kind,
             AstKind::Function(_) | AstKind::ArrowFunctionExpression(_)
         ) {
-            self.functions -= 1;
+            self.functions.pop();
         }
     }
 
     fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
         let note = match &it.callee {
-            Expression::Identifier(callee) if callee.name == "require" => Some("require"),
+            // a `require` that a function takes is the caller's, not Node's
+            Expression::Identifier(callee)
+                if callee.name == "require" && !self.functions.contains(&true) =>
+            {
+                Some("require")
+            }
             Expression::StaticMemberExpression(member) => match &member.object {
                 Expression::Identifier(object) => MODULE_CALLS.into_iter().find(|call| {
                     call.split_once('.')
@@ -501,6 +506,14 @@ impl<'a> Visit<'a> for Calls<'_> {
         );
         walk::walk_ts_import_type(self, it);
     }
+}
+
+fn takes_require(params: &FormalParameters) -> bool {
+    params.items.iter().any(|p| {
+        p.pattern
+            .get_identifier_name()
+            .is_some_and(|n| n == "require")
+    })
 }
 
 /// A specifier written out: a string, or a template without substitutions.
@@ -1245,6 +1258,25 @@ export default local;
             .map(|d| (d.call, d.line, d.local))
             .collect();
         assert_eq!(dynamic, [("require", 3, true), ("import()", 11, false)]);
+    }
+
+    #[test]
+    fn a_require_that_a_function_binds_itself_is_no_import() {
+        // bundles wrap each module in a function that takes `require`
+        let file = parse(
+            Path::new("x.js"),
+            "(function (require, module, exports) {\n\
+             \x20 require('./inner');\n\
+             \x20 const f = () => require('./deep');\n\
+             \x20 require(name);\n\
+             })();\n\
+             define(['require'], function (require) { require('./amd'); });\n\
+             require('./outer');\n",
+        )
+        .unwrap();
+        let specifiers: Vec<&str> = file.imports.iter().map(|i| i.specifier.as_str()).collect();
+        assert_eq!(specifiers, ["./outer"]);
+        assert!(file.dynamic.is_empty(), "{:?}", file.dynamic);
     }
 
     #[test]

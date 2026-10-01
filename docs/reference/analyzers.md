@@ -211,7 +211,15 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   (`const { pad } = require('./format.cjs')`) are not read, so `query` on a symbol lists them under
   `May use`. A `vi.mock` with a factory, which never loads the real module, is an edge all the same,
   noted `vi.mock`.
-- Types in JSDoc comments (`@type {import('./m').Wallet}`) are not read.
+- A `require` that a function takes as a parameter (a bundle's module wrapper, AMD's `define`) is
+  not Node's and gives nothing, but a committed UMD bundle (`module.exports =
+  factory(require('jquery'))`) reads as code that imports `jquery`; list such files in an `.ignore`
+  file, which the scan honors as it does `.gitignore`.
+- Scope follows where a call is written: a function called where it is defined runs when its file
+  loads but is `local`, and a class field initializer runs on construction but is `module`.
+- Types in JSDoc comments (`@type {import('./m').Wallet}`), `new URL('./worker.ts',
+  import.meta.url)` and `new Worker(..)`, and `import x = require()` inside a namespace are not
+  read.
 - Only `type` written in the statement marks types: the compiler also drops an import whose names
   are used only as types (`import { Money }` for an interface), which archmap counts as running.
   Under `verbatimModuleSyntax`, `import { type A } from 'm'` still loads `m`, which archmap counts
