@@ -14,6 +14,8 @@ and impact without re-reading the whole repository.
 - Small, testable changes. Add or extend a fixture under `fixtures/` for new extraction behavior.
 - Verify before claiming done: run the commands below and read the output.
 - Agent trials are a feedback loop, not a gate between phases: watch what agents still search for after using archmap on real changes, and add the smallest deterministic fact or query that would have answered it.
+- Nothing from a private repository used for dogfooding enters anything pushed or posted (code, comments, fixtures, tests, docs, commits, issues): not its name, paths, packages, counts or layout, not even in general terms. Rebuild a finding as a minimal fixture with invented names.
+- Planned work is tracked in GitHub issues; use the `backlog` skill to pick the next task, record deferred work, or close an issue with a change.
 
 ## Non-negotiable distinctions
 
