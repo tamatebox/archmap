@@ -40,20 +40,6 @@ pub(crate) struct Candidates<'g> {
     directories: Vec<String>,
 }
 
-/// The target without one pair of matching quotes around it, so an id
-/// copied from a shell-quoted candidate works where no shell removes them.
-pub(crate) fn unquote(target: &str) -> &str {
-    for quote in ['\'', '"'] {
-        if let Some(inner) = target
-            .strip_prefix(quote)
-            .and_then(|t| t.strip_suffix(quote))
-        {
-            return inner;
-        }
-    }
-    target
-}
-
 /// Resolve `target` (already unquoted and inside the root): the first kind
 /// that matches decides; several matches of it give every match of every
 /// kind as candidates.
@@ -394,8 +380,8 @@ impl Candidates<'_> {
         let components = self.components.iter().map(|c| CandidateView {
             kind: "component",
             id: Some(c.id.as_str()),
-            path: c.path.as_deref(),
-            ..blank
+            path: c.path.clone(),
+            ..blank.clone()
         });
         let symbols = self.symbols.iter().map(|s| {
             let counts = importer_counts(full, s);
@@ -407,18 +393,18 @@ impl Candidates<'_> {
                 line: s.location().and_then(|e| e.line),
                 imported_by: counts.map(|c| c.0),
                 may_use: counts.map(|c| c.1),
-                ..blank
+                ..blank.clone()
             }
         });
         let files = self.files.iter().map(|f| CandidateView {
             kind: "file",
-            path: Some(f.as_str()),
-            ..blank
+            path: Some(f.clone()),
+            ..blank.clone()
         });
         let directories = self.directories.iter().map(|d| CandidateView {
             kind: "directory",
-            path: Some(d.as_str()),
-            ..blank
+            path: Some(format!("./{d}")),
+            ..blank.clone()
         });
         components
             .chain(symbols)
@@ -436,7 +422,7 @@ struct CandidatesView<'a> {
     candidates: Vec<CandidateView<'a>>,
 }
 
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Serialize)]
 struct CandidateView<'a> {
     kind: &'static str,
     /// For a symbol: what it is (`function`, `struct`, ...).
@@ -444,8 +430,10 @@ struct CandidateView<'a> {
     symbol_kind: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     id: Option<&'a str>,
+    /// A component's path, or a file or directory as written to retry
+    /// with (`./helper` for a directory).
     #[serde(skip_serializing_if = "Option::is_none")]
-    path: Option<&'a str>,
+    path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     file: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -469,6 +457,7 @@ fn importer_counts(full: &ArchitectureGraph, symbol: &Symbol) -> Option<(usize, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::target::unquote;
 
     #[test]
     fn one_pair_of_matching_quotes_is_dropped() {

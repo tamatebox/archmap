@@ -6,6 +6,20 @@ use std::path::{Component as PathPart, Path};
 use anyhow::{bail, Context, Result};
 use archmap_core::{ArchitectureGraph, Component, ComponentId};
 
+/// The target without one pair of matching quotes around it, so an id
+/// copied from a shell-quoted candidate works where no shell removes them.
+pub(crate) fn unquote(target: &str) -> &str {
+    for quote in ['\'', '"'] {
+        if let Some(inner) = target
+            .strip_prefix(quote)
+            .and_then(|t| t.strip_suffix(quote))
+        {
+            return inner;
+        }
+    }
+    target
+}
+
 /// `target` as a file under the scanned root, relative with `/` separators.
 pub(crate) fn file_target(root: &Path, target: &str) -> Option<String> {
     let relative = root_relative(root, target)?;
@@ -45,6 +59,7 @@ fn root_relative(root: &Path, target: &str) -> Option<String> {
 /// Stop when `target` is a path outside the scanned root that exists: the
 /// graph holds nothing of it, whatever component its words would match.
 pub fn reject_outside(root: &Path, target: &str) -> Result<()> {
+    let target = unquote(target);
     let given = Path::new(target);
     let exists = if given.is_absolute() {
         given.exists()

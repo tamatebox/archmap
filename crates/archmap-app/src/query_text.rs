@@ -84,7 +84,7 @@ pub fn render(
     if truncated {
         let _ = writeln!(
             out,
-            "\nLists are capped. --verbose shows every entry; --format json adds all evidence."
+            "\nLists are capped; JSON lists every entry with all evidence."
         );
     }
     out
@@ -122,7 +122,7 @@ fn component(
         let shown = total.min(caps.neighbors);
         truncated |= shown < total;
         let hint = if full.depth_of(&c.id) >= view.depth {
-            format!(", folded at this depth: use --depth {}", view.depth + 1)
+            format!(", folded at this depth: query at depth {}", view.depth + 1)
         } else {
             String::new()
         };

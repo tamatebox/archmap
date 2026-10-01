@@ -314,7 +314,7 @@ fn summary_caps_long_lists_unless_verbose() {
     let capped = summary(&[]);
     for expected in [
         "\ncomponents: 30 shown of 37 at depth, 37 in the full graph\n",
-        "\nomitted: 7 modules  in: pkg 7  next: archmap query <component>\n",
+        "\nomitted: 7 modules  in: pkg 7  next: query <component>\n",
     ] {
         assert!(
             capped.contains(expected),
@@ -602,7 +602,7 @@ fn query_text_is_a_compact_drill_down() {
         "shop.integrations (module, python) at src/shop/integrations, depth 2\n",
         "id: shop::shop.integrations\n",
         "folded from: shop.integrations.slack\n",
-        "Children: 1, folded at this depth: use --depth 3\n  shop.integrations.slack\n",
+        "Children: 1, folded at this depth: query at depth 3\n  shop.integrations.slack\n",
         "Public symbols: 2\n",
         "  def notify(message: str) -> None  src/shop/integrations/slack/__init__.py:1\n",
         "Depends on: none\n",
@@ -647,7 +647,7 @@ fn query_text_caps_long_lists_and_verbose_lifts_the_caps() {
         ),
         "{capped}"
     );
-    assert!(capped.contains("Lists are capped."));
+    assert!(capped.contains("Lists are capped; JSON lists every entry with all evidence."));
 
     let full = query_text(&repo, &["pkg", "--verbose"]);
     assert!(full.contains("Public symbols: 40\n"));
@@ -1108,7 +1108,10 @@ fn imports_without_an_edge_of_one_name_are_capped() {
         ),
         "{capped}"
     );
-    assert!(capped.contains("Lists are capped."), "{capped}");
+    assert!(
+        capped.contains("Lists are capped; JSON lists every entry with all evidence."),
+        "{capped}"
+    );
     assert!(all.contains("pkg/m4.py:1\n"), "{all}");
 }
 

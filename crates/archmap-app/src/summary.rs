@@ -266,7 +266,7 @@ fn header(
     );
     let _ = writeln!(
         out,
-        "next: archmap query <component> --depth {depth}; archmap impact <component-or-file> --depth {depth}"
+        "next: query <component> at depth {depth}; impact <component-or-file> at depth {depth}"
     );
     out
 }
@@ -480,7 +480,7 @@ impl<'a> Tree<'a> {
         if !hidden_packages.is_empty() {
             let _ = writeln!(
                 text,
-                "omitted: {}  names: {}  next: archmap query <package>",
+                "omitted: {}  names: {}  next: query <package>",
                 count(hidden_packages.len(), "package", "packages"),
                 names(&hidden_packages, MAX_OMITTED_NAMES)
             );
@@ -504,7 +504,7 @@ impl<'a> Tree<'a> {
             let n = hidden.values().sum();
             let _ = writeln!(
                 text,
-                "omitted: {}  in: {}  next: archmap query <component>",
+                "omitted: {}  in: {}  next: query <component>",
                 count(n, "module", "modules"),
                 top_counts(rolled, hidden, MAX_OMITTED_NAMES)
             );
@@ -664,7 +664,7 @@ fn internal_dependencies(
         }
         let _ = writeln!(
             text,
-            "omitted: {}  from: {}  next: archmap query <component>",
+            "omitted: {}  from: {}  next: query <component>",
             count(omitted.len(), "dependency", "dependencies"),
             top_counts(rolled, sources, MAX_OMITTED_NAMES)
         );
@@ -770,7 +770,7 @@ fn external_dependencies(rolled: &ArchitectureGraph, ranked: &[External], cap: u
         let hidden: Vec<&str> = omitted.iter().map(|e| e.component.name.as_str()).collect();
         let _ = writeln!(
             text,
-            "omitted: {}  names: {}  next: archmap query <name>",
+            "omitted: {}  names: {}  next: query <name>",
             count(
                 omitted.len(),
                 "external dependency",
@@ -959,7 +959,7 @@ mod tests {
         assert_eq!(
             section(&out, "Components"),
             "p  package  path: p\n  p::a\nq  package  path: q\n  q::d\n\
-             omitted: 2 modules  in: p 2  next: archmap query <component>\n"
+             omitted: 2 modules  in: p 2  next: query <component>\n"
         );
         assert!(
             out.contains("\ncomponents: 4 shown of 6 at depth, 6 in the full graph\n"),
@@ -1000,14 +1000,14 @@ mod tests {
         assert_eq!(
             section(&out, "Components"),
             "p  package  path: p\n  p::y\n\
-             omitted: 2 modules  in: p 2  next: archmap query <component>\n"
+             omitted: 2 modules  in: p 2  next: query <component>\n"
         );
 
         let out = render_with(&nested(), 2, limits(3, 30, 20));
         assert_eq!(
             section(&out, "Components"),
             "p  package  path: p\n  p::x\n    p::x::deep\n\
-             omitted: 1 module  in: p 1  next: archmap query <component>\n"
+             omitted: 1 module  in: p 1  next: query <component>\n"
         );
     }
 
@@ -1027,8 +1027,8 @@ mod tests {
         assert_eq!(
             section(&out, "Components"),
             "a  package  path: a\nb  package  path: b\nc  package  path: c\n\
-             omitted: 2 packages  names: d, e  next: archmap query <package>\n\
-             omitted: 1 module  in: a 1  next: archmap query <component>\n"
+             omitted: 2 packages  names: d, e  next: query <package>\n\
+             omitted: 1 module  in: a 1  next: query <component>\n"
         );
     }
 
@@ -1055,7 +1055,7 @@ mod tests {
         assert_eq!(
             section(&out, "Internal dependencies"),
             "p::a -> r  imports: 3\np::a -> q  imports: 1\nq -> p::b  imports: 2\n\
-             omitted: 3 dependencies  from: p::b 2, p::a 1  next: archmap query <component>\n"
+             omitted: 3 dependencies  from: p::b 2, p::a 1  next: query <component>\n"
         );
     }
 
@@ -1083,7 +1083,7 @@ mod tests {
         assert_eq!(
             section(&out, "Internal dependencies"),
             "p::c -> p::b  imports: 3\np::e -> p::b  imports: 2  tests: 2\n\
-             omitted: 2 dependencies  from: p::a 1, p::d 1  next: archmap query <component>\n"
+             omitted: 2 dependencies  from: p::a 1, p::d 1  next: query <component>\n"
         );
         let out = render_with(&graph, 1, limits(30, 30, 20));
         assert!(
@@ -1342,7 +1342,7 @@ mod tests {
             section(&out, "External dependencies"),
             "x1  importers: 3  top: p::a 1, p::b 1, p::c 1\n\
              x2  importers: 2  top: p::a 2, p::b 1\n\
-             omitted: 3 external dependencies  names: x3, x5, x4  next: archmap query <name>\n"
+             omitted: 3 external dependencies  names: x3, x5, x4  next: query <name>\n"
         );
     }
 

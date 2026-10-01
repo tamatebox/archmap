@@ -7,8 +7,8 @@ use archmap_core::{
 };
 
 use crate::not_traced::{not_traced, Own, Place, Subject};
-use crate::resolve::{resolve, unquote, Resolved};
-use crate::target::{component_file, fold, namesakes, reject_outside, AtDepth};
+use crate::resolve::{resolve, Resolved};
+use crate::target::{component_file, fold, namesakes, reject_outside, unquote, AtDepth};
 use crate::views::{ComponentView, FileView, Importer, QueryResult, SymbolView, UnmappedView};
 use crate::{Answer, Format, Found, QueryRequest, Workspace};
 

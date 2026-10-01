@@ -196,7 +196,8 @@ fn candidates_in_json_say_what_each_one_is() {
     assert_eq!(value["candidates"][1]["id"], "two::src/b.ts::helper");
     assert_eq!(value["candidates"][1]["file"], "src/b.ts");
     assert_eq!(value["candidates"][1]["line"], 1);
-    assert_eq!(value["candidates"][2]["path"], "helper");
+    // the form to retry with, as the text shows it
+    assert_eq!(value["candidates"][2]["path"], "./helper");
 }
 
 #[test]
@@ -444,4 +445,35 @@ fn production_files_come_before_test_files_among_candidates() {
             "  src/__tests__/actions.test.ts  file"
         ]
     );
+}
+
+#[test]
+fn a_root_reached_through_a_symlink_answers_alike_in_every_form() {
+    let real = Repo::new(
+        "symlinked-real",
+        &[
+            ("pkg/__init__.py", "from pkg import core\n"),
+            ("pkg/core.py", "def run():\n    pass\n"),
+        ],
+    );
+    let link =
+        std::env::temp_dir().join(format!("archmap-app-symlinked-link-{}", std::process::id()));
+    let _ = std::fs::remove_file(&link);
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&real.0, &link).unwrap();
+    #[cfg(not(unix))]
+    return;
+    let via_link = scan(&link);
+    let direct = scan(&real.0);
+    let expected = query(&direct, "pkg/core.py").output;
+    let canonical = std::fs::canonicalize(real.0.join("pkg/core.py")).unwrap();
+    for (ws, target) in [
+        (&via_link, "pkg/core.py".to_owned()),
+        (&via_link, link.join("pkg/core.py").display().to_string()),
+        (&via_link, canonical.display().to_string()),
+        (&direct, canonical.display().to_string()),
+    ] {
+        assert_eq!(query(ws, &target).output, expected, "{target}");
+    }
+    let _ = std::fs::remove_file(&link);
 }

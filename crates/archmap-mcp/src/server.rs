@@ -111,7 +111,7 @@ impl Server {
         Parameters(args): Parameters<SummaryArgs>,
     ) -> Result<CallToolResult, McpError> {
         let depth = depth_or_default(args.depth);
-        self.answer(args.path, move |ws, _| Ok(ws.summary(depth, false)))
+        self.answer(args.path, None, move |ws, _| Ok(ws.summary(depth, false)))
             .await
     }
 
@@ -130,7 +130,8 @@ impl Server {
             format,
         } = args;
         let depth = depth_or_default(depth);
-        self.answer(path, move |ws, _| {
+        let outside_check = target.clone();
+        self.answer(path, Some(&outside_check), move |ws, _| {
             let answer = ws.query(&QueryRequest {
                 target: &target,
                 depth,
@@ -157,7 +158,8 @@ impl Server {
             verbose,
         } = args;
         let depth = depth_or_default(depth);
-        self.answer(path, move |ws, _| {
+        let outside_check = target.clone();
+        self.answer(path, Some(&outside_check), move |ws, _| {
             let answer = ws.impact(&ImpactRequest {
                 target: &target,
                 depth,
@@ -182,7 +184,7 @@ impl Server {
             depth,
             format,
         } = args;
-        self.answer(path, move |ws, root| {
+        self.answer(path, None, move |ws, root| {
             // read on every call, never kept: the rules may change apart from the code
             let rules = rules_in(root, config.as_deref())?;
             let answer = ws.check(
@@ -222,7 +224,12 @@ impl Server {
     /// instead of scanning it again. An error is a tool error the client
     /// sees; scan warnings follow the answer in a block of their own, so a
     /// JSON answer stays JSON.
-    async fn answer<F>(&self, path: Option<String>, ask: F) -> Result<CallToolResult, McpError>
+    async fn answer<F>(
+        &self,
+        path: Option<String>,
+        target: Option<&str>,
+        ask: F,
+    ) -> Result<CallToolResult, McpError>
     where
         F: FnOnce(&Workspace, &Path) -> anyhow::Result<String> + Send + 'static,
     {
@@ -230,6 +237,12 @@ impl Server {
             Ok(root) => root,
             Err(message) => return Ok(CallToolResult::error(vec![ContentBlock::text(message)])),
         };
+        // a path outside the root needs no scan, and must not wait for one
+        if let Some(Err(err)) = target.map(|t| archmap_app::reject_outside(&root, t)) {
+            return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                "{err:#}"
+            ))]));
+        }
         let cache = self.cache.clone();
         let done = tokio::task::spawn_blocking(move || {
             let mut cache = cache

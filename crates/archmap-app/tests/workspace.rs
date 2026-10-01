@@ -108,3 +108,48 @@ fn a_stamp_tells_whether_a_workspace_is_still_current() {
     let err = archmap_app::stamp(&dir).err().unwrap();
     assert!(format!("{err:#}").starts_with("scanning "), "{err:#}");
 }
+
+#[test]
+fn hints_name_no_flag_of_one_interface() {
+    // the CLI and the MCP server return the same text: hints must read for both
+    let ws = scanned();
+    let summary = ws.summary(DEFAULT_DEPTH, false);
+    assert!(
+        summary.contains(
+            "\nnext: query <component> at depth 2; impact <component-or-file> at depth 2\n"
+        ),
+        "{summary}"
+    );
+    let capped = ws
+        .query(&QueryRequest {
+            target: "shop",
+            depth: 0,
+            format: Format::Text,
+            verbose: false,
+        })
+        .unwrap()
+        .output;
+    for text in [&summary, &capped] {
+        assert!(!text.contains("--"), "{text}");
+        assert!(!text.contains("archmap query"), "{text}");
+    }
+    let missing = load_rules(ws.root(), Some(std::path::Path::new("no-such-rules.toml")))
+        .err()
+        .unwrap();
+    assert!(
+        format!("{missing:#}").contains("(write one, or name another rules file)"),
+        "{missing:#}"
+    );
+}
+
+#[test]
+fn a_quoted_path_outside_the_root_is_still_outside() {
+    let root = python_fixture();
+    let outside = std::fs::canonicalize(root.parent().unwrap()).unwrap();
+    let quoted = format!("'{}'", outside.display());
+    let err = archmap_app::reject_outside(&root, &quoted).err().unwrap();
+    assert!(
+        err.to_string().contains("is outside the scanned root"),
+        "{err}"
+    );
+}

@@ -78,7 +78,7 @@ External dependencies keep the 20 imported by the most components. A capped list
 says where they are and names the query that shows them:
 
 ```text
-omitted: 12 modules  in: shop.billing 7, shop 5  next: archmap query <component>
+omitted: 12 modules  in: shop.billing 7, shop 5  next: query <component>
 ```
 
 The whole summary then aims at 8 KiB: over it, the largest list gives up
@@ -289,8 +289,9 @@ code before tests), and directories as `./<path>`. A component id that is also t
 module itself, and a name with `/` that is also another path under the root,
 give candidates too. Text shows the first 10 and counts the rest; JSON
 (`query --format json`, and `impact`, which prints JSON) has every one as
-`{"requested", "total", "candidates": [{"kind", "id" or "path", ...}]}`.
-Retry with one of the ids, or with the path as `./<path>`.
+`{"requested", "total", "candidates": [{"kind", "id" or "path", ...}]}`,
+a directory's `path` written as `./<path>`. Retry with one of the ids, or
+with the path as `./<path>`.
 
 Both commands exit 0 with an answer, 1 with candidates, and 2 when they
 cannot answer (nothing has that name, a path is outside the root). Every

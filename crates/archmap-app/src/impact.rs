@@ -10,8 +10,8 @@ use archmap_core::{
 use serde::Serialize;
 
 use crate::not_traced::{not_traced, NotTraced, Own, Place, Subject};
-use crate::resolve::{resolve, unquote, Resolved};
-use crate::target::{component_file, fold, namesakes, reject_outside};
+use crate::resolve::{resolve, Resolved};
+use crate::target::{component_file, fold, namesakes, reject_outside, unquote};
 use crate::{Answer, Format, Found, ImpactRequest, Workspace};
 
 #[derive(Debug, Serialize)]

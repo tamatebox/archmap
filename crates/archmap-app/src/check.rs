@@ -66,7 +66,7 @@ pub fn load_rules(root: &Path, config: Option<&Path>) -> Result<Rules> {
 fn read_rules(path: &Path) -> Result<RuleSet> {
     let text = std::fs::read_to_string(path).with_context(|| {
         format!(
-            "reading {} (write one, or pass `--config <file>`)",
+            "reading {} (write one, or name another rules file)",
             path.display()
         )
     })?;
@@ -318,7 +318,7 @@ fn check_text(
         out.push_str("\nSignals are observations; they never change the exit code.\n");
     }
     if truncated {
-        out.push_str("\nSome entries are left out; --format json lists every one.\n");
+        out.push_str("\nSome entries are left out; JSON lists every one.\n");
     }
     out
 }

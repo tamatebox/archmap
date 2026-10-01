@@ -80,8 +80,11 @@ change time, and the `site-packages` directories of the virtualenvs the
 Python analyzer reads. When the stamp matches the one taken before the kept
 graph's scan, the graph answers; otherwise the root is scanned again, so an
 edit, a new file, a deleted or renamed file, or a package installed into
-`.venv` shows in the next answer. A failed scan keeps nothing, and the next
-call tries again. Calls run one at a time, so two calls on one root scan it
+`.venv` shows in the next answer. The stamp goes by sizes and times, so an
+edit that keeps a file's size and lands within the file system's timestamp
+resolution of the previous stamp is seen only with the next change. A
+failed scan keeps nothing, and the next call tries again; a target outside
+the root fails before any scan. Calls run one at a time, so two calls on one root scan it
 once, and a call on a very large root holds the others until its scan ends.
 Nothing is written to disk; `.archmap/graph.json` is never read.
 

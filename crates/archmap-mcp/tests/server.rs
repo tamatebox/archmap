@@ -314,7 +314,8 @@ async fn a_failed_scan_is_tried_again_on_the_next_call() {
     std::fs::remove_dir_all(&repo.0).unwrap();
     failed(&summary().await);
     std::fs::create_dir_all(repo.0.join("pkg")).unwrap();
-    repo.write("pkg/__init__.py", "def run():\n    pass\n");
+    // other bytes than before, so a coarse clock cannot hide the change
+    repo.write("pkg/__init__.py", "def run():\n    return 1\n");
     ok(&summary().await);
     assert_eq!(server.scans(), 2);
     client.cancel().await.unwrap();
@@ -351,5 +352,39 @@ async fn two_calls_at_once_on_one_root_scan_it_once() {
     ok(&a);
     ok(&b);
     assert_eq!(server.scans(), 1);
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_target_outside_the_root_fails_before_any_scan() {
+    let root = fixture("simple-python-project");
+    let outside = root.parent().unwrap().to_path_buf();
+    let server = Server::new(root);
+    let client = connect(server.clone()).await;
+    for tool in ["query", "impact"] {
+        let message = failed(&call(&client, tool, serde_json::json!({"target": outside})).await);
+        assert!(
+            message.contains("is outside the scanned root"),
+            "{tool}: {message}"
+        );
+    }
+    assert_eq!(server.scans(), 0);
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_edited_file_is_read_again() {
+    let repo = Repo::python("edited");
+    let server = Server::new(repo.0.clone());
+    let client = connect(server.clone()).await;
+    let query = || call(&client, "query", serde_json::json!({"target": "pkg"}));
+    assert!(ok(&query().await).contains("def run()"));
+    repo.write("pkg/__init__.py", "def walk():\n    pass\n");
+    let after = ok(&query().await);
+    assert!(
+        after.contains("def walk()") && !after.contains("def run()"),
+        "{after}"
+    );
+    assert_eq!(server.scans(), 2);
     client.cancel().await.unwrap();
 }
