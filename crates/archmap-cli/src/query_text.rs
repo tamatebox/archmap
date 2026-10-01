@@ -618,7 +618,7 @@ fn import_location(evidence: &Evidence, more_files: usize, show_target: bool) ->
 pub(crate) fn shell_word(word: &str) -> String {
     let plain = word
         .chars()
-        .all(|c| c.is_alphanumeric() || "_-./:@+=,%^~".contains(c));
+        .all(|c| c.is_alphanumeric() || "_-./:@+,%".contains(c));
     if plain {
         word.to_owned()
     } else {
@@ -673,6 +673,32 @@ fn symbol_kind(kind: SymbolKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn words_the_shell_would_expand_are_quoted() {
+        for plain in [
+            "a::b",
+            "ts-shop::src/lib/money.ts::formatPrice",
+            "a@b+c,d%e",
+        ] {
+            assert_eq!(shell_word(plain), plain);
+        }
+        // zsh expands these: globs, `~user`, `^` and `~` with
+        // EXTENDED_GLOB, `=cmd`
+        for (word, quoted) in [
+            (
+                "x::src/app/(public)/page.tsx::A",
+                "'x::src/app/(public)/page.tsx::A'",
+            ),
+            ("x::src/[slug]/page.tsx", "'x::src/[slug]/page.tsx'"),
+            ("~a", "'~a'"),
+            ("a^b", "'a^b'"),
+            ("=a", "'=a'"),
+            ("it's", "'it'\\''s'"),
+        ] {
+            assert_eq!(shell_word(word), quoted, "{word}");
+        }
+    }
 
     #[test]
     fn every_reason_has_a_label() {

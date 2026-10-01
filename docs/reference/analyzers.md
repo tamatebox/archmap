@@ -118,8 +118,8 @@ into the model in [graph.md](graph.md); how the commands present it is in
   through a `sys.path` entry added at runtime); a name imported from a package that an installed
   distribution provides as a module of its own (`from google.cloud import bigquery`) is recorded as
   that module, each name on its own
-- the imports and dynamic imports of test files (pytest names, `conftest.py`, and any file below a
-  `test` or `tests` directory) carry `test` in their evidence (see [graph.md](graph.md))
+- the imports and dynamic imports of test code, by the rule [graph.md](graph.md) gives for Python and
+  TS/JS alike, carry `test` in their evidence
 - calls to `import_module`, `__import__` and `spec_from_file_location` are recorded as dynamic imports,
   which no edge can follow
 - public top-level `def` / `class` / `CONSTANT` and public methods of public classes become symbols

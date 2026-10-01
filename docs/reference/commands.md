@@ -201,8 +201,9 @@ step is file by file as above, and dependencies without a target file on
 the symbol's component are kept. So a file that imports another name from
 the same file is not affected. Two things widen or narrow it:
 
-- A re-export takes the name, so the statement that re-exports it is
-  `direct`, and from there every importer of the re-exporting file is
+- A re-export takes the name, so the re-exporting file is in the first step
+  (`direct`, unless it sits in the symbol's own component, as a Python
+  `__init__.py` usually does), and from there every importer of that file is
   `transitive`, those that take other names included: a TS/JS barrel's
   `export { X } from`, and a Python `__init__.py`'s `from .m import X`, whose
   importers (`from pkg import X`) are only `transitive` (Python does not

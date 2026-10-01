@@ -140,8 +140,6 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
     let mut paths: BTreeMap<(usize, PathTarget), PathHit> = BTreeMap::new();
     // the names all paths from a file to a file take
     let mut path_names: BTreeMap<(usize, PathTarget), BTreeSet<String>> = BTreeMap::new();
-    // whether every path from a file to a target is test code
-    let mut path_tests: BTreeMap<(usize, PathTarget), bool> = BTreeMap::new();
     for (n, node) in forest.nodes.iter().enumerate() {
         let package = &packages[node.package];
         let file = display_path(&files[node.file].rel);
@@ -287,14 +285,12 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
                     .or_default()
                     .insert(name.unwrap_or_else(|| WHOLE_MODULE.to_owned()));
             }
-            let in_test = node.test || path.test;
-            // test code only when every path is
-            path_tests
-                .entry((node.file, target.clone()))
-                .and_modify(|all| *all &= in_test)
-                .or_insert(in_test);
             let hit = PathHit {
-                rank: (in_test, path.scope != Scope::Module, path.line),
+                rank: (
+                    node.test || path.test,
+                    path.scope != Scope::Module,
+                    path.line,
+                ),
                 scope: path.scope,
                 via,
             };
@@ -316,14 +312,13 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
         let names = path_names
             .remove(&(file, target.clone()))
             .unwrap_or_default();
-        let in_test = path_tests
-            .remove(&(file, target.clone()))
-            .unwrap_or_default();
         let owner = forest.owners[file].clone();
+        // test code ranks last, so the path chosen is test code only when
+        // every path is
         let evidence = Evidence::new(display_path(&files[file].rel))
             .at_line(hit.rank.2)
             .in_scope(hit.scope)
-            .in_test(in_test);
+            .in_test(hit.rank.0);
         match target {
             PathTarget::File(target_file) => output.fragment.push_edge(
                 Edge::new(owner, forest.owners[target_file].clone(), EdgeKind::Import)
