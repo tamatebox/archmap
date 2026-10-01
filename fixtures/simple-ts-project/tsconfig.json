@@ -1,0 +1,9 @@
+{
+  // `@/` is the app's alias for src/.
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": { "@/*": ["./src/*"] },
+    "jsx": "react-jsx",
+  },
+  "include": ["src", "tests", "next.config.ts"],
+}

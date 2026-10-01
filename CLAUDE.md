@@ -34,7 +34,7 @@ archmap-cli  ->  archmap-scan  ->  archmap-core
 ```
 
 - `archmap-core`: graph model (`Component`, `Symbol`, `Edge`, `Evidence`, `GraphFragment`, `ArchitectureGraph`), merge/normalize, roll-up, cycles, query and impact primitives, and declared rules (`rules`). No I/O, no language knowledge, no dependency on other workspace crates.
-- `archmap-scan`: repo walking, project detection, the `Analyzer` trait and concrete analyzers (`rust/`, `python/`). Emits `GraphFragment`s; `scan()` merges them.
+- `archmap-scan`: repo walking, project detection, the `Analyzer` trait and concrete analyzers (`rust/`, `python/`, `typescript/`). Emits `GraphFragment`s; `scan()` merges them.
 - `archmap-cli`: `clap` commands, reading `archmap.toml`, and output rendering (JSON, Markdown summary, check report) only. No analysis logic.
 
 Never add a dependency that points against the arrow. Never make `archmap-core` aware of Cargo, `syn`, files or paths beyond plain strings.
@@ -59,8 +59,8 @@ Never add a dependency that points against the arrow. Never make `archmap-core` 
 
 ## Conventions
 
-- Component ids: internal packages use the package name; sub-units use `<package>::<path>`, the dotted path of a Python package or the module path of a Rust module file (`archmap-core::graph`); external dependencies use `ext:<ecosystem>:<name>` (`ext:cargo:serde`, `ext:pypi:requests`). An id that an earlier analyzer already gave a component at another path is renamed `<id>+<analyzer>`, together with every id that starts with `<id>::`, and the scan warns; equal ids at the same path merge. `Component.name` is the short, human-typed form, the path an import writes (`shop.billing`, `archmap_core::graph`), and `query` / `impact` accept it when unique and otherwise list the candidates' ids.
-- Symbol ids: `<component>::<module path>::<name>`; methods are `Type::method` (Rust) or `Class.method` (Python).
+- Component ids: internal packages use the package name; sub-units use `<package>::<path>`, the dotted path of a Python package or the module path of a Rust module file (`archmap-core::graph`), and a TS/JS directory or file its path relative to the package directory (`ts-shop::src/lib/money.ts`); external dependencies use `ext:<ecosystem>:<name>` (`ext:cargo:serde`, `ext:pypi:requests`, `ext:npm:react`). An id that an earlier analyzer already gave a component at another path is renamed `<id>+<analyzer>`, together with every id that starts with `<id>::`, and the scan warns; equal ids at the same path merge. `Component.name` is the short, human-typed form, the path an import writes (`shop.billing`, `archmap_core::graph`); TS/JS names are paths from the source root with the file extension (`lib/money.ts`), since imports omit extensions or write `.js` for `.ts`, and `query` / `impact` accept it when unique and otherwise list the candidates' ids. Components of different analyzers may share a path (a Python package with scripts below it): a file goes to the one with evidence in it or beside it in a file of the same kind, a directory to the one with evidence directly inside, and a name they share to that owner.
+- Symbol ids: `<component>::<module path>::<name>`; methods are `Type::method` (Rust) or `Class.method` (Python and TS/JS). A TS/JS symbol is `<file component>::<name>` (`ts-shop::src/lib/money.ts::formatPrice`), with the file name between for a file the package owns directly (`ts-shop::next.config.ts::config`).
 - A `Module` component sets `parent` to its enclosing component. Containment is a field, not an edge.
 - `summary`, `query` and `impact` share `DEFAULT_DEPTH` and roll up the same way. Never let them describe different components.
 - A rule selector or declaration that matches no component is a finding, never silently skipped, so a typo cannot disable a rule.

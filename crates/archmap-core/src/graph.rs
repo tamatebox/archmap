@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
@@ -283,15 +284,16 @@ impl ArchitectureGraph {
                     .insert(Node::Component(&edge.from));
             }
         }
+        let index = PathIndex::new(self);
         let owners: BTreeMap<&str, &ComponentId> = files
             .iter()
-            .filter_map(|f| self.component_for_path(f).map(|c| (*f, &c.id)))
+            .filter_map(|f| index.owner(f).map(|c| (*f, &c.id)))
             .collect();
         let owner_of = |f: &str| {
             owners
                 .get(f)
                 .copied()
-                .or_else(|| self.component_for_path(f).map(|c| &c.id))
+                .or_else(|| index.owner(f).map(|c| &c.id))
         };
 
         let mut start: Vec<Node> = Vec::new();
@@ -490,11 +492,12 @@ impl ArchitectureGraph {
     /// the component `shop.billing`. `None` when no file or several match.
     pub fn file_for_dotted_name(&self, name: &str) -> Option<&str> {
         let (prefix, stem) = name.rsplit_once('.')?;
+        let index = PathIndex::new(self);
         let mut found = self.known_files().into_iter().filter(|file| {
             let (dir, file_name) = file.rsplit_once('/').unwrap_or((".", file));
             let file_stem = file_name.rsplit_once('.').map_or(file_name, |(s, _)| s);
             file_stem == stem
-                && self.component_for_path(file).is_some_and(|c| {
+                && index.owner(file).is_some_and(|c| {
                     c.name == prefix
                         && c.path.as_deref().map(|p| p.trim_end_matches('/')) == Some(dir)
                 })
@@ -563,17 +566,11 @@ impl ArchitectureGraph {
 
     /// Find the component that owns a file path (relative to the repo root),
     /// choosing the component with the longest matching `path` prefix.
+    /// Components of different analyzers can share a path (a Python package
+    /// that keeps scripts below it); evidence then decides (see
+    /// [`PathIndex::owner`]).
     pub fn component_for_path(&self, file: &str) -> Option<&Component> {
-        let file = file.trim_start_matches("./");
-        self.components
-            .values()
-            .filter(|c| {
-                c.path.as_deref().is_some_and(|p| {
-                    let p = p.trim_start_matches("./").trim_end_matches('/');
-                    p.is_empty() || p == "." || file == p || file.starts_with(&format!("{p}/"))
-                })
-            })
-            .max_by_key(|c| c.path.as_deref().map(str::len).unwrap_or(0))
+        PathIndex::new(self).owner(file)
     }
 }
 
@@ -688,6 +685,157 @@ pub(crate) fn strongly_connected<N: Ord + Copy>(
     }
     groups.sort();
     groups
+}
+
+/// Components by the path they cover, to find the owners of many files: a
+/// lookup walks the file's ancestors rather than every component.
+struct PathIndex<'a> {
+    graph: &'a ArchitectureGraph,
+    /// Components by [`normalized`] path, in id order.
+    by_path: BTreeMap<&'a str, Vec<&'a Component>>,
+    /// What breaks a tie, gathered on the first one.
+    ties: OnceCell<TieEvidence<'a>>,
+}
+
+impl<'a> PathIndex<'a> {
+    fn new(graph: &'a ArchitectureGraph) -> Self {
+        let mut by_path: BTreeMap<&str, Vec<&Component>> = BTreeMap::new();
+        for c in graph.components.values() {
+            if let Some(path) = c.path.as_deref() {
+                by_path.entry(normalized(path)).or_default().push(c);
+            }
+        }
+        PathIndex {
+            graph,
+            by_path,
+            ties: OnceCell::new(),
+        }
+    }
+
+    /// The component whose path is the longest prefix of `file`. Among
+    /// components that share that path, the one with evidence in `file`,
+    /// else one with evidence in a file of the same kind beside it, else
+    /// the last id; for the shared directory itself, evidence in the files
+    /// directly inside it decides.
+    fn owner(&self, file: &str) -> Option<&'a Component> {
+        let file = normalized(file);
+        let mut at = file;
+        loop {
+            if let Some(tied) = self.by_path.get(at) {
+                return match tied.as_slice() {
+                    [only] => Some(*only),
+                    _ => Some(self.owner_among(tied, file, at == file)),
+                };
+            }
+            if at.is_empty() {
+                return None;
+            }
+            at = parent_dir(at);
+        }
+    }
+
+    fn owner_among(&self, tied: &[&'a Component], file: &str, directory: bool) -> &'a Component {
+        let ties = self.ties.get_or_init(|| TieEvidence::of(self.graph));
+        let has = |set: Option<&BTreeSet<&ComponentId>>, id: &ComponentId| {
+            set.is_some_and(|s| s.contains(id))
+        };
+        let score = |c: &Component| -> u8 {
+            if directory {
+                u8::from(has(ties.in_dir.get(file), &c.id))
+            } else if has(ties.in_file.get(file), &c.id) {
+                2
+            } else {
+                let beside = match extension(file) {
+                    Some(extension) => ties.in_dir_ext.get(&(parent_dir(file), extension)),
+                    None => ties.in_dir.get(parent_dir(file)),
+                };
+                u8::from(has(beside, &c.id))
+            }
+        };
+        tied.iter()
+            .copied()
+            .max_by_key(|c| score(c))
+            .unwrap_or(tied[0])
+    }
+}
+
+/// Which components have evidence (their own, their symbols', their edges'
+/// and imports') in each file, and in the files of each directory.
+struct TieEvidence<'a> {
+    in_file: BTreeMap<&'a str, BTreeSet<&'a ComponentId>>,
+    in_dir: BTreeMap<&'a str, BTreeSet<&'a ComponentId>>,
+    in_dir_ext: BTreeMap<(&'a str, &'a str), BTreeSet<&'a ComponentId>>,
+}
+
+impl<'a> TieEvidence<'a> {
+    fn of(graph: &'a ArchitectureGraph) -> Self {
+        let mut in_file: BTreeMap<&str, BTreeSet<&ComponentId>> = BTreeMap::new();
+        let mut add = |id: &'a ComponentId, file: &'a str| {
+            in_file.entry(normalized(file)).or_default().insert(id);
+        };
+        for c in graph.components.values() {
+            for e in &c.evidence {
+                add(&c.id, &e.file);
+            }
+        }
+        for s in graph.symbols.values() {
+            for e in &s.evidence {
+                add(&s.component, &e.file);
+            }
+        }
+        for edge in &graph.edges {
+            for e in &edge.evidence {
+                add(&edge.from, &e.file);
+            }
+        }
+        for i in &graph.unmapped_imports {
+            add(&i.from, &i.evidence.file);
+        }
+        for i in &graph.dynamic_imports {
+            add(&i.from, &i.evidence.file);
+        }
+        let mut in_dir: BTreeMap<&str, BTreeSet<&ComponentId>> = BTreeMap::new();
+        let mut in_dir_ext: BTreeMap<(&str, &str), BTreeSet<&ComponentId>> = BTreeMap::new();
+        for (&file, ids) in &in_file {
+            let dir = parent_dir(file);
+            in_dir.entry(dir).or_default().extend(ids.iter().copied());
+            if let Some(extension) = extension(file) {
+                in_dir_ext
+                    .entry((dir, extension))
+                    .or_default()
+                    .extend(ids.iter().copied());
+            }
+        }
+        TieEvidence {
+            in_file,
+            in_dir,
+            in_dir_ext,
+        }
+    }
+}
+
+/// A path as `component_for_path` compares it: without `./` or a trailing
+/// `/`, and the root as `""`.
+fn normalized(path: &str) -> &str {
+    let path = path.trim_start_matches("./").trim_end_matches('/');
+    if path == "." {
+        ""
+    } else {
+        path
+    }
+}
+
+/// The directory of a `/`-separated path, `""` at the root.
+fn parent_dir(path: &str) -> &str {
+    path.rsplit_once('/').map_or("", |(dir, _)| dir)
+}
+
+/// The extension of a `/`-separated path's file name, if any.
+fn extension(path: &str) -> Option<&str> {
+    let name = path.rsplit_once('/').map_or(path, |(_, name)| name);
+    name.rsplit_once('.')
+        .map(|(_, extension)| extension)
+        .filter(|e| !e.is_empty())
 }
 
 fn merge_evidence(into: &mut Vec<Evidence>, from: Vec<Evidence>) {
@@ -822,6 +970,78 @@ mod tests {
                 .id,
             "root".into()
         );
+    }
+
+    #[test]
+    fn component_for_path_gives_a_shared_path_to_the_component_with_evidence_there() {
+        // A Python package and a TS/JS directory at one path, as when an
+        // app keeps its scripts in `myapp/static/`. The later id must not
+        // take the Python files.
+        let mut graph = ArchitectureGraph::default();
+        for id in ["py::myapp", "ts::myapp"] {
+            let mut c = component(id);
+            c.path = Some("myapp".into());
+            graph.add_component(c);
+        }
+        // a TS/JS directory names itself as its evidence
+        graph
+            .components
+            .get_mut(&ComponentId::new("ts::myapp"))
+            .unwrap()
+            .evidence
+            .push(Evidence::new("myapp").with_note("directory"));
+        let mut ts_file = component("ts::myapp/static/app.js");
+        ts_file.path = Some("myapp/static/app.js".into());
+        graph.add_component(ts_file);
+        graph.add_symbol(Symbol {
+            id: "py::myapp::index".into(),
+            name: "index".into(),
+            kind: SymbolKind::Function,
+            component: "py::myapp".into(),
+            signature: None,
+            evidence: vec![Evidence::new("myapp/views.py").at_line(1)],
+        });
+        graph.add_edge(edge("py::myapp", "ext:pypi:django", "myapp/urls.py", 1));
+        graph.add_edge(edge(
+            "ts::myapp/static/app.js",
+            "ts::myapp/static/app.js",
+            "myapp/static/app.js",
+            1,
+        ));
+        let owner = |file: &str| graph.component_for_path(file).unwrap().id.clone();
+        assert_eq!(owner("myapp/views.py"), "py::myapp".into());
+        assert_eq!(owner("myapp/urls.py"), "py::myapp".into());
+        // no evidence names it, but its neighbours of the same kind do
+        assert_eq!(owner("myapp/apps.py"), "py::myapp".into());
+        // the directory goes to the component with files directly in it
+        assert_eq!(owner("myapp"), "py::myapp".into());
+        assert_eq!(
+            owner("myapp/static/app.js"),
+            "ts::myapp/static/app.js".into()
+        );
+    }
+
+    #[test]
+    fn change_impact_gives_files_at_a_shared_path_to_the_component_with_evidence_there() {
+        let mut graph = ArchitectureGraph::default();
+        for (id, path) in [
+            ("py::myapp", "myapp"),
+            ("ts::myapp", "myapp"),
+            ("py::util", "util"),
+        ] {
+            let mut c = component(id);
+            c.path = Some(path.into());
+            graph.add_component(c);
+        }
+        graph.add_edge(
+            Edge::new("py::myapp", "py::util", EdgeKind::Import).with_evidence(
+                Evidence::new("myapp/views.py")
+                    .at_line(1)
+                    .pointing_at("util/log.py"),
+            ),
+        );
+        let reach = graph.change_impact(ChangeSeed::File("util/log.py"), 9);
+        assert_eq!(reach.direct, BTreeSet::from(["py::myapp".into()]));
     }
 
     #[test]

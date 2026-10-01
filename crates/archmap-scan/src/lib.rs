@@ -16,6 +16,7 @@ mod ids;
 mod languages;
 pub mod python;
 pub mod rust;
+pub mod typescript;
 mod walk;
 
 pub use analyzer::Analyzer;
@@ -50,6 +51,7 @@ pub fn default_analyzers() -> Vec<Box<dyn Analyzer>> {
     vec![
         Box::new(rust::RustAnalyzer),
         Box::new(python::PythonAnalyzer),
+        Box::new(typescript::TypeScriptAnalyzer),
     ]
 }
 

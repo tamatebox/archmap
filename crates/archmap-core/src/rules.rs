@@ -107,8 +107,9 @@ pub struct UndeclaredImportRule {
     /// Report imports that resolve to nothing internal, standard or declared.
     #[serde(default)]
     pub forbid: bool,
-    /// Dotted module prefixes to accept anyway: `ujson` covers `ujson` and
-    /// `ujson.*`. Useful for optional imports behind `try` / `except`.
+    /// Module prefixes to accept anyway, `.` or `/` separated: `ujson`
+    /// covers `ujson` and `ujson.*`, `lodash` covers `lodash/fp`. Useful for
+    /// optional imports behind `try` / `except`.
     #[serde(default)]
     pub ignore: Vec<String>,
 }

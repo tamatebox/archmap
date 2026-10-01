@@ -147,14 +147,49 @@ can use a copy of it.
     for files inside a regular package tree; test files (pytest conventions) and namespace trees outside
     any regular package contribute imports only
   - source files are scanned structurally line by line, not parsed; function bodies are read only for imports
+- TypeScript / JavaScript analyzer (`.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included), parsed with `oxc_parser`:
+  - a `package.json` with a `name` whose directory holds TS/JS files of its own, or that declares `workspaces`,
+    becomes a `package` component; TS/JS files that no package owns go to one root component named after the
+    directory; a `package.json` without a name is no package, but it declares dependencies all the same
+  - every directory between a package and its code files becomes a `module` component, except the source root
+    `src/`, and every code file is a `module` component of its own, named by its path from the source root with
+    its extension (`lib/supabase/server.ts`, `app/(public)/[slug]/page.tsx`); an `index.*` is its directory's own
+    file, and the source root's `index.*` and the files directly in a package directory that has `src/`
+    (`next.config.ts`) belong to the package
+  - `dependencies` and `peerDependencies` become `dependency` edges to `ext:npm:*` components;
+    `devDependencies` and `optionalDependencies` give no edge
+  - `import` (`import x = require('m')` included) and `export ... from` become `import` edges (noted
+    `import` and `export`), resolved with
+    `oxc_resolver` through each file's `tsconfig.json` (`paths`, `baseUrl`, `references`) and `.js` written for
+    `.ts`; the resolver sees only the scanned files, so `node_modules` and build output never change the graph,
+    and a tsconfig `extends` it cannot load is dropped with a warning while the file's own `paths` still apply
+  - an import of a stylesheet, image or JSON file is an edge of the importer to itself whose evidence names the
+    file, so `impact` on the file lists its importers
+  - a bare specifier that resolves to no file is matched by package name to the closest `package.json` above
+    the importing file that declares it, so a monorepo root's dependencies count for its packages (`@types/x`
+    covers `x`): a required declaration gives an edge, another an import without an edge
+    (`declared_not_required`, noting where it is declared), a directory at the top of the package or its source
+    root, a code file at the top of the source root, or a scope named like a directory there (`components/button`,
+    `App`, `@components/button`) `local_name`, and anything else `undeclared`; a path or alias that matches no file (`./gone`, `@/x` without a matching `paths` entry,
+    `~/x`) is `unresolved`, and so is a bare-looking name that a tsconfig or jsconfig declares as an alias
+    (`@ui/card` for `@ui/*`; a catch-all `*` is not taken as one); the package's own name, when its entry (`dist/`) is not scanned, is
+    `local_name`; Node built-ins (`node:fs`, `fs`, `crypto`) are left out
+  - exported declarations become symbols with signatures: functions and arrow functions, classes and their
+    public methods as `Class.method`, interfaces, type aliases (with their right-hand side), enums, namespaces
+    and constants, a named default by its declared name; test, story and mock files (`*.test.*`, `*.spec.*`,
+    `*.stories.*`, `__mocks__/`) give imports only, while helpers in `tests/` keep their symbols
 - JSON output with evidence on every node and edge, written to `<root>/.archmap/graph.json` by default
 - structural roll-up and a deterministic, line-oriented summary printed to stdout, starting with
   what the scan could not see
 - `query` on top of the rolled-up graph, for a component, a symbol or a single file, including the
-  imports no edge shows, and `impact` that follows imports file by file; both take a directory for
+  imports no edge shows, and `impact` that follows imports file by file; a component that is one file
+  (a TS/JS file, a Rust module without submodules) answers as that file, with the statements that
+  import it, even where it folds into an ancestor; both take a directory for
   the component that owns it, and `query` takes an import name that no component carries (`torch`
   declared as an extra) for the imports of it that no edge shows; a name that several components
-  share stops both commands with their ids and paths (the first 10), and an id or `./<path>` picks one
+  share stops both commands with their ids and paths (the first 10), and an id or `./<path>` picks one,
+  unless they all sit at one path (a directory that two analyzers map), which answers for the one with
+  evidence there
 - `check` compares the graph with a declared architecture in `archmap.toml`: forbidden
   dependencies, layers, allow lists, coverage, cycles, undeclared imports, and declarations
   that match nothing; it also reports structural signals, with or without `archmap.toml`
@@ -180,6 +215,18 @@ glob-import it forms a cycle with them, because only re-exports from a
 module's own subtree are not edges. Unit tests are left out of dependencies
 within their crate, so `impact` does not list them. Rust components are finer
 than Python's: a module file rather than a package directory.
+
+For TypeScript and JavaScript, only `import` and `export ... from` statements
+are read so far: `require`, `import()` and test mocks come next, and until
+then a type-only import is an ordinary edge, so `cycles.forbid` also reports
+cycles that only types close. A named import through a barrel points at the
+barrel rather than at the file that defines the name, CommonJS exports give no
+symbols, workspace packages are not linked, and two packages with one name
+merge. Aliases defined only in a bundler configuration, `jsconfig.json` and
+Deno import maps are not read: an import through such an alias is
+`unresolved` when a tsconfig or jsconfig declares its pattern, `local name`
+when it names a top directory of the source root (`@components/button`), and
+`undeclared` otherwise (`@ui/card` defined only in `vite.config.ts`).
 
 ## Usage
 
@@ -209,6 +256,10 @@ cargo run -p archmap-cli -- query shop.billing --path ../some-python-repo   # by
 cargo run -p archmap-cli -- impact src/shop/users.py --path ../some-python-repo
 cargo run -p archmap-cli -- query src/shop/users.py --path ../some-python-repo  # one file
 cargo run -p archmap-cli -- query shop.users --path ../some-python-repo         # the same file
+
+# TypeScript and JavaScript the same way
+cargo run -p archmap-cli -- query src/lib/money.ts --path fixtures/simple-ts-project
+cargo run -p archmap-cli -- query lib/money.ts --path fixtures/simple-ts-project   # the same file by name
 ```
 
 Example edge from the output:
@@ -232,7 +283,7 @@ ArchitectureGraph
 ├── components: { id -> Component { kind: package | module | external, language, path, parent?, evidence } }
 ├── symbols:    { id -> Symbol { kind: function | struct | enum | trait | ..., component, signature, evidence } }
 ├── edges:      [ Edge { from, to, kind: import | dependency | call | http | database | event | unknown, evidence } ]
-├── unmapped_imports: [ UnmappedImport { from, module, reason: undeclared | declared_not_required | local_name, provided_by?, evidence } ]
+├── unmapped_imports: [ UnmappedImport { from, module, reason: undeclared | declared_not_required | local_name | unresolved, provided_by?, evidence } ]
 └── dynamic_imports:  [ DynamicImport { from, call, evidence } ]
 
 Evidence { file, line?, note?, target?, scope?: module | local }
@@ -488,9 +539,9 @@ comes later.
 
 | Phase | Scope | Status |
 |---|---|---|
-| 0 Discovery | languages, manifests, packages; report detected languages even without an analyzer | Rust and Python; Rust targets other than `src/lib.rs` and `src/main.rs` are not discovered; other languages are counted in `summary`, not analyzed |
-| 1 Structural Facts | modules, public symbols, imports with their target file and scope, dependencies | Rust and Python, target files and scope included; Rust imports are `use` declarations and module paths in code, not code inside macro calls |
-| 2 Structural Compression & Agent Context | roll-up; `summary`, `query` and `impact` small enough for an agent and at one granularity; file and module queries whose evidence leads directly to source; full detail with `--format json` | done for Python: `impact` follows files, `query` accepts components, symbols, files and directories, direct importers point to `file:line`, `summary` caps its lists to an 8 KiB budget, and agent-facing commands say what the graph does not map; the same for Rust, except code inside macro calls |
+| 0 Discovery | languages, manifests, packages; report detected languages even without an analyzer | Rust, Python and TypeScript/JavaScript; Rust targets other than `src/lib.rs` and `src/main.rs` are not discovered; npm workspaces are not linked yet; other languages are counted in `summary`, not analyzed |
+| 1 Structural Facts | modules, public symbols, imports with their target file and scope, dependencies | Rust, Python and TypeScript/JavaScript, target files and scope included; Rust imports are `use` declarations and module paths in code, not code inside macro calls; TS/JS imports are `import` and `export ... from` statements so far |
+| 2 Structural Compression & Agent Context | roll-up; `summary`, `query` and `impact` small enough for an agent and at one granularity; file and module queries whose evidence leads directly to source; full detail with `--format json` | done for Python: `impact` follows files, `query` accepts components, symbols, files and directories, direct importers point to `file:line`, `summary` caps its lists to an 8 KiB budget, and agent-facing commands say what the graph does not map; the same for Rust, except code inside macro calls; TS/JS file by file through tsconfig paths |
 | 3 Rules & Declared Architecture | declared components and layers, cycles, forbidden dependencies, drift, CI `check` | done: deny rules, layers, allow lists, coverage, cycles with a file-level reading, undeclared imports, stale declarations; structural signals |
 | 4 Deep Static Analysis | precise symbol resolution, callers and reference graph, type relationships, selective data flow, test-to-code links; on demand for one selected area | planned; agent traces so far point first to callers and references, then selective data flow |
 | 5 Cross-system Graph | OpenAPI, Terraform, databases, HTTP, events, CI/build/deploy relationships | planned |

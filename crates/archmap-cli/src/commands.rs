@@ -107,6 +107,21 @@ fn file_target(path: &str, target: &str) -> Option<String> {
         .then(|| relative.replace('\\', "/"))
 }
 
+/// The file a component stands for: its path, when that is a file under
+/// the scanned root and no component is inside it (a TS/JS file, a Rust
+/// module without submodules). `query` and `impact` answer for such a
+/// component as for its file, even where it folds into an ancestor.
+fn component_file(full: &ArchitectureGraph, path: &str, component: &Component) -> Option<String> {
+    let has_children = full
+        .components
+        .values()
+        .any(|c| c.parent.as_ref() == Some(&component.id));
+    if has_children {
+        return None;
+    }
+    file_target(path, component.path.as_deref()?)
+}
+
 /// The component that owns `target` as a directory under the scanned root,
 /// the same for `query` and `impact`. `Err` when no component contains it.
 fn directory_target<'a>(
@@ -202,8 +217,16 @@ pub fn query(
     let rolled = full.rollup(depth);
     reject_ambiguous(full, target)?;
 
-    let result = if let Some(at) = resolve_at_depth(full, &rolled, depth, target) {
-        component_view(full, &rolled, depth, target, at)?
+    let named =
+        find_component(&rolled, full, target).or_else(|| find_component(full, full, target));
+    let result = if let Some(component) = named {
+        match component_file(full, path, component) {
+            Some(file) => QueryResult::File(file_view(full, depth, target, &file)),
+            None => {
+                let at = fold(full, depth, &component.id);
+                component_view(full, &rolled, depth, target, at)?
+            }
+        }
     } else if let Some(file) = file_target(path, target) {
         QueryResult::File(file_view(full, depth, target, &file))
     } else {
@@ -290,23 +313,7 @@ struct AtDepth {
     folded_from: Option<ComponentId>,
 }
 
-/// Find `target` among the components visible at `depth`. A component that
-/// is folded at this depth resolves to the ancestor it was folded into.
-fn resolve_at_depth(
-    full: &ArchitectureGraph,
-    rolled: &ArchitectureGraph,
-    depth: usize,
-    target: &str,
-) -> Option<AtDepth> {
-    if let Some(visible) = find_component(rolled, target) {
-        return Some(AtDepth {
-            id: visible.id.clone(),
-            folded_from: None,
-        });
-    }
-    find_component(full, target).map(|c| fold(full, depth, &c.id))
-}
-
+/// A component as seen at `depth`: the ancestor it folds into, if any.
 fn fold(full: &ArchitectureGraph, depth: usize, id: &ComponentId) -> AtDepth {
     let ancestor = full.ancestor_at(id, depth);
     let folded_from = (ancestor != *id).then(|| id.clone());
@@ -316,15 +323,39 @@ fn fold(full: &ArchitectureGraph, depth: usize, id: &ComponentId) -> AtDepth {
     }
 }
 
-/// Exact id first, then a unique match on the display name.
-fn find_component<'a>(graph: &'a ArchitectureGraph, target: &str) -> Option<&'a Component> {
+/// Exact id first, then a unique match on the display name. Components
+/// that share a name and a path, one directory that two analyzers see,
+/// resolve to the one that owns the path in `full`: roll-up moves evidence
+/// to ancestors, so only the full graph decides the owner.
+fn find_component<'a>(
+    graph: &'a ArchitectureGraph,
+    full: &ArchitectureGraph,
+    target: &str,
+) -> Option<&'a Component> {
     graph.component(&ComponentId::new(target)).or_else(|| {
-        let mut named = graph.components_named(target);
-        match (named.next(), named.next()) {
-            (Some(only), None) => Some(only),
-            _ => None,
+        let named: Vec<&Component> = graph.components_named(target).collect();
+        match named.as_slice() {
+            [] => None,
+            [only] => Some(*only),
+            several => {
+                owner_of_shared_path(full, several).and_then(|owner| graph.component(&owner.id))
+            }
         }
     })
+}
+
+/// The component of `full` that owns the path all of `named` share, if
+/// they share one.
+fn owner_of_shared_path<'a>(
+    full: &'a ArchitectureGraph,
+    named: &[&Component],
+) -> Option<&'a Component> {
+    let path = named.first()?.path.as_deref()?;
+    if named.iter().any(|c| c.path.as_deref() != Some(path)) {
+        return None;
+    }
+    full.component_for_path(path)
+        .filter(|owner| named.iter().any(|c| c.id == owner.id))
 }
 
 /// Components listed when a name is shared; the rest are counted.
@@ -338,7 +369,7 @@ fn reject_ambiguous(full: &ArchitectureGraph, target: &str) -> Result<()> {
         return Ok(());
     }
     let named: Vec<&Component> = full.components_named(target).collect();
-    if named.len() < 2 {
+    if named.len() < 2 || owner_of_shared_path(full, &named).is_some() {
         return Ok(());
     }
     let mut message = format!(
@@ -373,7 +404,8 @@ pub struct ImpactResult<'a> {
     pub direct: Vec<ComponentId>,
     /// Every component that transitively depends on the target.
     pub transitive: Vec<ComponentId>,
-    /// For a file target: the statements that import the file directly.
+    /// For a file, or a component that is one file: the statements that
+    /// import the file directly.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub importers: Option<ImportSites>,
 }
@@ -427,13 +459,14 @@ pub fn impact(path: &str, target: &str, depth: usize, format: OutputFormat) -> R
     let rolled = full.rollup(depth);
     reject_ambiguous(full, target)?;
 
-    let component = find_component(&rolled, target)
-        .or_else(|| find_component(full, target))
-        .map(|c| c.id.clone());
+    let component =
+        find_component(&rolled, full, target).or_else(|| find_component(full, full, target));
     let mut importers = None;
-    let (at, reach) = if let Some(id) = component {
-        let reach = full.change_impact(ChangeSeed::Component(&id), depth);
-        (fold(full, depth, &id), reach)
+    let (at, reach) = if let Some(component) = component {
+        let reach = full.change_impact(ChangeSeed::Component(&component.id), depth);
+        importers =
+            component_file(full, path, component).map(|file| import_sites(full, depth, &file));
+        (fold(full, depth, &component.id), reach)
     } else if let Some(file) = file_target(path, target) {
         let owner = full
             .component_for_path(&file)

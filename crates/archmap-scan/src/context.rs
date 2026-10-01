@@ -77,9 +77,13 @@ impl RepoContext {
         self.root.join(relative)
     }
 
+    /// Read a file under the root. The error names the file by its relative
+    /// path, since analyzers turn it into a warning.
     pub fn read_to_string(&self, relative: &Path) -> Result<String, ScanError> {
-        let path = self.absolute(relative);
-        std::fs::read_to_string(&path).map_err(|source| ScanError::Io { path, source })
+        std::fs::read_to_string(self.absolute(relative)).map_err(|source| ScanError::Io {
+            path: relative.to_path_buf(),
+            source,
+        })
     }
 }
 

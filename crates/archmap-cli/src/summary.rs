@@ -495,19 +495,23 @@ fn rank_dependencies<'a>(
     let within =
         |from: &ComponentId, to: &ComponentId| package_of(rolled, from) == package_of(rolled, to);
     let dependents = |id: &ComponentId| dependents.get(id).copied().unwrap_or(0);
-    let mut ranked: Vec<(&ComponentId, &ComponentId, &Dependency)> = dependencies
+    // The keys walk the containment tree, so each is computed once.
+    let mut ranked: Vec<_> = dependencies
         .iter()
-        .map(|((from, to), dep)| (*from, *to, dep))
+        .map(|((from, to), dep)| {
+            let key = (
+                within(from, to),
+                std::cmp::Reverse(dependents(to)),
+                std::cmp::Reverse(dep.imports),
+            );
+            (key, *from, *to, dep)
+        })
         .collect();
-    ranked.sort_by(|a, b| {
-        within(a.0, a.1)
-            .cmp(&within(b.0, b.1))
-            .then_with(|| dependents(b.1).cmp(&dependents(a.1)))
-            .then_with(|| b.2.imports.cmp(&a.2.imports))
-            .then_with(|| a.0.cmp(b.0))
-            .then_with(|| a.1.cmp(b.1))
-    });
+    ranked.sort_by(|a, b| (&a.0, a.1, a.2).cmp(&(&b.0, b.1, b.2)));
     ranked
+        .into_iter()
+        .map(|(_, from, to, dep)| (from, to, dep))
+        .collect()
 }
 
 /// The outermost component containing `id` at the summary's depth.

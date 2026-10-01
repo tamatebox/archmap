@@ -1266,3 +1266,169 @@ fn check_explains_external_selectors_without_an_ecosystem() {
         "stdout: {text}"
     );
 }
+
+fn ts_fixture() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/simple-ts-project")
+}
+
+fn ts_stdout(args: &[&str]) -> String {
+    let out = archmap()
+        .args(args)
+        .arg("--path")
+        .arg(ts_fixture())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn a_ts_file_query_lists_importers_through_aliases_and_re_exports() {
+    let text = ts_stdout(&["query", "src/lib/money.ts"]);
+    for expected in [
+        "Imported by:",
+        "src/app/page.tsx:1",
+        "src/index.ts:1",
+        "tests/helpers.ts:1",
+        "tests/money.test.ts:2",
+    ] {
+        assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
+    }
+}
+
+#[test]
+fn a_ts_file_component_is_queried_by_its_name_as_its_file() {
+    let text = ts_stdout(&["query", "lib/money.ts"]);
+    for expected in [
+        "src/lib/money.ts (file) in lib/money.ts (module, typescript), depth 2\n",
+        "  export function formatPrice(price: Money): string  src/lib/money.ts:8\n",
+        "\nImported by:",
+    ] {
+        assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
+    }
+}
+
+#[test]
+fn a_folded_ts_file_is_queried_as_its_file() {
+    // At depth 1 both files fold into `tests`, whose own view would show
+    // no importer.
+    let text = ts_stdout(&["query", "tests/helpers.ts", "--depth", "1"]);
+    for expected in [
+        "tests/helpers.ts (file) in tests (module, typescript), depth 1\n",
+        "\nImported by: 1\n  tests  1 import: tests/money.test.ts:3\n",
+    ] {
+        assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
+    }
+    let text = ts_stdout(&["query", "lib/money.ts", "--depth", "1"]);
+    assert!(
+        text.starts_with("src/lib/money.ts (file) in lib (module, typescript), depth 1\n"),
+        "{text}"
+    );
+}
+
+#[test]
+fn impact_of_a_ts_file_component_lists_its_importers() {
+    let text = ts_stdout(&["impact", "lib/money.ts"]);
+    assert!(text.contains("\"file\": \"src/app/page.tsx\""), "{text}");
+}
+
+#[test]
+fn a_rust_module_without_submodules_is_queried_as_its_file() {
+    let invoice = query_text(&fixture_root(), &["lib_core::billing::invoice"]);
+    assert!(
+        invoice.starts_with(
+            "crates/lib_core/src/billing/invoice.rs (file) in lib_core::billing::invoice \
+             (module, rust), depth 2\n"
+        ),
+        "{invoice}"
+    );
+    // a module with submodules stays a component
+    let billing = query_text(&fixture_root(), &["lib_core::billing"]);
+    assert!(
+        billing.starts_with("lib_core::billing (module, rust)"),
+        "{billing}"
+    );
+}
+
+#[test]
+fn impact_names_the_package_file_that_imports() {
+    let text = ts_stdout(&["impact", "src/lib/limits.ts"]);
+    assert!(text.contains("\"file\": \"next.config.ts\""), "{text}");
+    assert!(text.contains("\"file\": \"scripts/seed.mjs\""), "{text}");
+}
+
+#[test]
+fn an_undeclared_npm_import_is_found_by_its_name() {
+    let text = ts_stdout(&["query", "left-pad"]);
+    assert!(text.contains("src/app/page.tsx:11"), "{text}");
+}
+
+#[test]
+fn ts_summary_counts_both_languages_and_why_imports_have_no_edge() {
+    let out = archmap()
+        .arg("summary")
+        .arg(ts_fixture())
+        .args(["-o", "-"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    for expected in [
+        "typescript  files: 11  read: 11  imports without an edge: 7 (undeclared 1, extra or dev dependency 2, local name 1, unresolved 3)",
+        "javascript  files: 1  read: 1  imports without an edge: 0",
+    ] {
+        assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
+    }
+}
+
+#[test]
+fn a_python_package_keeps_its_files_when_scripts_sit_below_it() {
+    // A TS/JS directory component shares the package's path, and its id
+    // sorts after the package's.
+    let dir = std::env::temp_dir().join(format!("archmap-cli-django-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for (file, text) in [
+        (
+            "pyproject.toml",
+            "[project]\nname = \"app\"\ndependencies = []\n",
+        ),
+        ("myapp/__init__.py", ""),
+        (
+            "myapp/views.py",
+            "import json\n\n\ndef index():\n    return json.dumps({})\n",
+        ),
+        ("myapp/static/myapp/app.js", "export const ready = true;\n"),
+        // folds into the TS/JS `myapp` at depth 1, which must not make it
+        // the owner there
+        ("myapp/x.js", "export const x = 1;\n"),
+    ] {
+        let path = dir.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    let file = query_text(&dir, &["myapp/views.py"]);
+    let directory = query_text(&dir, &["myapp/"]);
+    // both components are named `myapp`: the one that owns the path answers
+    let named = query_text(&dir, &["myapp"]);
+    let shallow = query_text(&dir, &["myapp", "--depth", "1"]);
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(
+        file.starts_with("myapp/views.py (file) in myapp (module, python), depth 2\n"),
+        "{file}"
+    );
+    assert!(
+        directory.starts_with("myapp (module, python) at myapp, depth 2\n"),
+        "{directory}"
+    );
+    assert!(
+        named.starts_with("myapp (module, python) at myapp, depth 2\n"),
+        "{named}"
+    );
+    assert!(
+        shallow.starts_with("myapp (module, python) at myapp, depth 1\n"),
+        "{shallow}"
+    );
+}

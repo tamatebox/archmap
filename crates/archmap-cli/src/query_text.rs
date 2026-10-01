@@ -196,6 +196,7 @@ pub(crate) fn reason_label(reason: UnmappedReason) -> &'static str {
         UnmappedReason::Undeclared => "undeclared",
         UnmappedReason::DeclaredNotRequired => "extra or dev dependency",
         UnmappedReason::LocalName => "local name",
+        UnmappedReason::Unresolved => "unresolved",
     }
 }
 
@@ -528,5 +529,16 @@ fn symbol_kind(kind: SymbolKind) -> &'static str {
         SymbolKind::Constant => "constant",
         SymbolKind::Module => "module",
         SymbolKind::Other => "symbol",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_reason_has_a_label() {
+        assert_eq!(reason_label(UnmappedReason::Unresolved), "unresolved");
+        assert_eq!(reason_label(UnmappedReason::LocalName), "local name");
     }
 }

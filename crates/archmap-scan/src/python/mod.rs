@@ -882,7 +882,7 @@ fn emit_imports(
                     let note = declared_optionally(ctx.project, &ctx.optional, &looked_up, dir);
                     (Vec::new(), note)
                 }
-                UnmappedReason::LocalName => (Vec::new(), None),
+                UnmappedReason::LocalName | UnmappedReason::Unresolved => (Vec::new(), None),
             };
             output.fragment.push_unmapped_import(UnmappedImport {
                 from: owner.clone(),

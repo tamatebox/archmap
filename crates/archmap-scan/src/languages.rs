@@ -95,7 +95,12 @@ mod tests {
 
     #[test]
     fn analyzer_language_names_match_the_table() {
-        for name in [crate::python::LANGUAGE, crate::rust::LANGUAGE] {
+        for name in [
+            crate::python::LANGUAGE,
+            crate::rust::LANGUAGE,
+            crate::typescript::LANGUAGE,
+            crate::typescript::JAVASCRIPT,
+        ] {
             assert!(
                 LANGUAGES.iter().any(|(n, _)| *n == name),
                 "{name} missing from LANGUAGES"

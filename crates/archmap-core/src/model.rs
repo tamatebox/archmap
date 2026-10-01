@@ -158,7 +158,9 @@ pub struct Symbol {
 pub struct UnmappedImport {
     /// The component whose source contains the import.
     pub from: ComponentId,
-    /// Dotted module path as imported (`google.api_core.exceptions`).
+    /// The module as the import names it: a dotted module path
+    /// (`google.api_core.exceptions`) or a specifier as written
+    /// (`lodash/fp`, `@/lib/missing`).
     pub module: String,
     pub reason: UnmappedReason,
     /// Installed distributions that provide the module, when a virtualenv
@@ -169,12 +171,15 @@ pub struct UnmappedImport {
 }
 
 impl UnmappedImport {
-    /// Whether the dotted `prefix` names this import's module or a module
-    /// above it: `google.api_core` covers `google.api_core.exceptions`,
-    /// `google.api` does not.
+    /// Whether `prefix` names this import's module or a module above it,
+    /// with `.` or `/` between segments: `google.api_core` covers
+    /// `google.api_core.exceptions`, `lodash` covers `lodash/fp`,
+    /// `google.api` covers neither.
     pub fn covered_by(&self, prefix: &str) -> bool {
         let prefix = prefix.trim();
-        self.module == prefix || self.module.starts_with(&format!("{prefix}."))
+        self.module == prefix
+            || self.module.starts_with(&format!("{prefix}."))
+            || self.module.starts_with(&format!("{prefix}/"))
     }
 }
 
@@ -189,8 +194,13 @@ pub enum UnmappedReason {
     /// required dependencies become edges.
     DeclaredNotRequired,
     /// Matches no module, but a file or directory of that name exists in
-    /// the repository: probably local code reached through `sys.path`.
+    /// the project: probably local code reached through `sys.path`
+    /// (Python) or an alias the scan does not read (TS/JS).
     LocalName,
+    /// A path or alias that matches no scanned file and is no package
+    /// name: a missing or generated file, or an alias defined outside the
+    /// configuration the scan reads.
+    Unresolved,
 }
 
 /// A module loaded by a name computed at runtime (`importlib.import_module`,
@@ -289,5 +299,35 @@ impl Edge {
             .map(|e| (&e.file, e.line))
             .collect::<std::collections::BTreeSet<_>>()
             .len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn import(module: &str) -> UnmappedImport {
+        UnmappedImport {
+            from: "a".into(),
+            module: module.into(),
+            reason: UnmappedReason::Unresolved,
+            provided_by: Vec::new(),
+            evidence: Evidence::new("a.ts"),
+        }
+    }
+
+    #[test]
+    fn prefixes_cover_dotted_and_slashed_modules() {
+        assert!(import("lodash/fp").covered_by("lodash"));
+        assert!(import("@scope/pkg/sub").covered_by("@scope/pkg"));
+        assert!(!import("lodash-es").covered_by("lodash"));
+        assert!(import("google.api_core.exceptions").covered_by("google.api_core"));
+        assert!(!import("google.api_core").covered_by("google.api"));
+    }
+
+    #[test]
+    fn the_unresolved_reason_serializes_in_snake_case() {
+        let json = serde_json::to_string(&UnmappedReason::Unresolved).unwrap();
+        assert_eq!(json, "\"unresolved\"");
     }
 }
