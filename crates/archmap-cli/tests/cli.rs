@@ -1855,3 +1855,21 @@ fn test_code_is_marked_and_listed_apart() {
         ]
     );
 }
+
+#[test]
+fn symbols_are_listed_in_source_order() {
+    let text = ts_stdout(&["query", "src/lib/money.ts"]);
+    let listed = [
+        "Public symbols: 8",
+        "  export const CURRENCY: string  src/lib/money.ts:6",
+        "  export function formatPrice(price: Money): string  src/lib/money.ts:8",
+        "  export class Wallet  src/lib/money.ts:12",
+        "  Wallet.pay: pay(amount: number): void  src/lib/money.ts:13",
+        "  Wallet.open: static open(): Wallet  src/lib/money.ts:15",
+        "  export const schema = z.object(…)  src/lib/money.ts:20",
+        "  const rates = {…}  src/lib/money.ts:21",
+        "  export const read = () =>  src/lib/money.ts:23",
+    ]
+    .join("\n");
+    assert!(text.contains(&listed), "{text}");
+}

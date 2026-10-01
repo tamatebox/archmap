@@ -774,6 +774,52 @@ impl Source<'_> {
         }
     }
 
+    /// What a value is without what it holds, after its name: a literal by
+    /// its type (`: string`), anything else by its form (` = z.object(…)`).
+    /// No value reaches the output; a constant may hold a secret.
+    fn shape(&self, value: &Expression) -> String {
+        match value {
+            Expression::StringLiteral(_) | Expression::TemplateLiteral(_) => ": string".into(),
+            Expression::NumericLiteral(_) => ": number".into(),
+            Expression::BigIntLiteral(_) => ": bigint".into(),
+            Expression::BooleanLiteral(_) => ": boolean".into(),
+            Expression::NullLiteral(_) => ": null".into(),
+            Expression::RegExpLiteral(_) => ": RegExp".into(),
+            _ => format!(" = {}", self.form(value)),
+        }
+    }
+
+    /// `z.object(…).strict(…)`, `new Map(…)`, `[…] as const`,
+    /// `process.env.KEY`: calls by what they call, objects and arrays
+    /// elided, references by name, anything else `…`.
+    fn form(&self, value: &Expression) -> String {
+        let text = |span: oxc_span::Span| self.code(span.start, span.end);
+        match value {
+            Expression::Identifier(id) => id.name.to_string(),
+            Expression::ThisExpression(_) => "this".into(),
+            Expression::StaticMemberExpression(m) => {
+                format!("{}.{}", self.form(&m.object), m.property.name)
+            }
+            Expression::CallExpression(c) => format!("{}(…)", self.form(&c.callee)),
+            Expression::NewExpression(n) => format!("new {}(…)", self.form(&n.callee)),
+            Expression::ObjectExpression(_) => "{…}".into(),
+            Expression::ArrayExpression(_) => "[…]".into(),
+            Expression::ParenthesizedExpression(p) => self.form(&p.expression),
+            Expression::AwaitExpression(a) => format!("await {}", self.form(&a.argument)),
+            Expression::TSAsExpression(a) => format!(
+                "{} as {}",
+                self.form(&a.expression),
+                text(a.type_annotation.span())
+            ),
+            Expression::TSSatisfiesExpression(a) => format!(
+                "{} satisfies {}",
+                self.form(&a.expression),
+                text(a.type_annotation.span())
+            ),
+            _ => "…".into(),
+        }
+    }
+
     fn function(&self, f: &Function, start: u32) -> Option<ExportedSymbol> {
         let name = f.id.as_ref()?.name.to_string();
         let end = f.body.as_ref().map_or(f.span.end, |b| b.span.start);
@@ -854,7 +900,15 @@ impl Source<'_> {
                             Some(init) => (value_kind, init.span().start),
                             None => (value_kind, d.span.end),
                         };
-                        let declarator = self.code(d.span.start, end);
+                        let declarator = match (&d.init, &d.type_annotation) {
+                            // a value without a declared type: its shape
+                            (Some(init), None) if kind != SymbolKind::Function => format!(
+                                "{}{}",
+                                self.code(d.span.start, d.id.span().end),
+                                self.shape(init)
+                            ),
+                            _ => self.code(d.span.start, end),
+                        };
                         Some(vec![ExportedSymbol {
                             name,
                             kind,
@@ -1074,7 +1128,8 @@ export default limitOf;
             ("other", "export const other: string"),
             ("Format", r#"export type Format = "LP" | "CD""#),
             ("Priced", "export interface Priced"),
-            ("RATES", "const rates"),
+            // a value shows its shape, never what it holds
+            ("RATES", "const rates = {…}"),
             ("limitOf", "function limitOf(): number"),
         ] {
             assert_eq!(signature_of(&file, name), signature, "{name}");
@@ -1629,6 +1684,42 @@ export default local;
         for name in ["a", "b"] {
             assert_eq!(file.exports.names.get(name), Some(&Export::Local), "{name}");
         }
+    }
+
+    #[test]
+    fn a_constant_shows_its_type_or_the_shape_of_its_value() {
+        let file = parse(
+            Path::new("x.ts"),
+            "export const API_KEY = 'sk-123';\nexport const revalidate = 60;\n\
+             export const DEBUG = false;\nexport const schema = z.object({ a: z.string() }).strict();\n\
+             export const store = new Map<string, number>();\nexport const UNITS = ['g', 'kg'] as const;\n\
+             export const config = { a: 1 } satisfies Config;\nexport const typed: Limits = { max: 1 };\n\
+             export const alias = other;\nexport const sum = 1 + 2;\nexport const ref = process.env.KEY;\n\
+             export let count = 0;\n",
+        )
+        .unwrap();
+        let signatures: Vec<&str> = file
+            .symbols
+            .iter()
+            .map(|s| s.signature.as_deref().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            signatures,
+            [
+                "export const API_KEY: string",
+                "export const revalidate: number",
+                "export const DEBUG: boolean",
+                "export const schema = z.object(…).strict(…)",
+                "export const store = new Map(…)",
+                "export const UNITS = […] as const",
+                "export const config = {…} satisfies Config",
+                "export const typed: Limits",
+                "export const alias = other",
+                "export const sum = …",
+                "export const ref = process.env.KEY",
+                "export let count: number",
+            ]
+        );
     }
 
     #[test]

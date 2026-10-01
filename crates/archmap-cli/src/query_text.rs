@@ -120,7 +120,10 @@ fn component(
     let shown = total.min(caps.symbols);
     truncated |= shown < total;
     let _ = writeln!(out, "\nPublic symbols: {}", count(total, shown));
-    for symbol in view.symbols.iter().take(shown) {
+    for symbol in in_source_order(view.symbols.iter().copied())
+        .into_iter()
+        .take(shown)
+    {
         let _ = writeln!(out, "  {}", symbol_line(symbol));
     }
 
@@ -342,7 +345,10 @@ fn file(out: &mut String, view: &FileView, rolled: &ArchitectureGraph, caps: &Ca
     let shown = total.min(caps.symbols);
     let mut truncated = shown < total;
     let _ = writeln!(out, "\nPublic symbols: {}", count(total, shown));
-    for symbol in view.symbols.iter().take(shown) {
+    for symbol in in_source_order(view.symbols.iter().copied())
+        .into_iter()
+        .take(shown)
+    {
         let _ = writeln!(out, "  {}", symbol_line(symbol));
     }
 
@@ -590,6 +596,15 @@ fn sites(
 
 /// `def pay(user: User) -> Payment  src/shop/billing/charge.py:25`. The
 /// signature stands alone when it already names the symbol.
+/// Symbols as the source orders them, by file and then line; JSON keeps
+/// them by id, a stable order to diff.
+fn in_source_order<'a>(symbols: impl IntoIterator<Item = &'a Symbol>) -> Vec<&'a Symbol> {
+    let place = |s: &Symbol| s.location().map(|e| (e.file.clone(), e.line));
+    let mut sorted: Vec<&Symbol> = symbols.into_iter().collect();
+    sorted.sort_by(|a, b| place(a).cmp(&place(b)).then_with(|| a.id.cmp(&b.id)));
+    sorted
+}
+
 fn symbol_line(symbol: &Symbol) -> String {
     let qualified = symbol.name.contains('.') || symbol.name.contains("::");
     let what = match &symbol.signature {

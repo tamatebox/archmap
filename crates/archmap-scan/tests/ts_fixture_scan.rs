@@ -520,7 +520,7 @@ fn exported_declarations_of_files_that_are_not_tests_are_symbols() {
                 "ts-shop::src/lib/money.ts::CURRENCY",
                 SymbolKind::Constant,
                 "src/lib/money.ts:6",
-                "export const CURRENCY"
+                "export const CURRENCY: string"
             ),
             row(
                 "ts-shop::src/lib/money.ts::formatPrice",
@@ -550,13 +550,13 @@ fn exported_declarations_of_files_that_are_not_tests_are_symbols() {
                 "ts-shop::src/lib/money.ts::schema",
                 SymbolKind::Constant,
                 "src/lib/money.ts:20",
-                "export const schema"
+                "export const schema = z.object(…)"
             ),
             row(
                 "ts-shop::src/lib/money.ts::RATES",
                 SymbolKind::Constant,
                 "src/lib/money.ts:21",
-                "const rates"
+                "const rates = {…}"
             ),
             row(
                 "ts-shop::src/lib/money.ts::read",
@@ -586,7 +586,7 @@ fn exported_declarations_of_files_that_are_not_tests_are_symbols() {
                 "ts-shop::src/lib/limits.ts::MAX_UPLOAD",
                 SymbolKind::Constant,
                 "src/lib/limits.ts:1",
-                "const MAX_UPLOAD"
+                "const MAX_UPLOAD: number"
             ),
             row(
                 "ts-shop::src/lib/limits.ts::limitOf",
@@ -604,7 +604,7 @@ fn exported_declarations_of_files_that_are_not_tests_are_symbols() {
                 "ts-shop::src/components/button.tsx::Fragment",
                 SymbolKind::Constant,
                 "src/components/button.tsx:14",
-                "export const Fragment"
+                "export const Fragment = React.Fragment"
             ),
             // CommonJS exports
             row(
@@ -654,7 +654,7 @@ fn exported_declarations_of_files_that_are_not_tests_are_symbols() {
                 "ts-shop::src/app/lazy.tsx::Chart",
                 SymbolKind::Constant,
                 "src/app/lazy.tsx:3",
-                "export const Chart"
+                "export const Chart = lazy(…)"
             ),
             row(
                 "ts-shop::src/app/lazy.tsx::Limits",

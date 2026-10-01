@@ -197,7 +197,9 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   `local_name`; Node built-ins (`node:fs`, `fs`, `crypto`) are left out
 - exported declarations become symbols with signatures: functions and arrow functions, classes and their
   public methods as `Class.method`, interfaces, type aliases (with their right-hand side), enums, namespaces
-  and constants, a named default by its declared name; test, story and mock files (`*.test.*`, `*.spec.*`,
+  and constants, a named default by its declared name; a constant without a declared type shows the
+  shape of its value, never the value, which may be a secret (`: string` for a literal,
+  `= z.object(…)` for a call, `= […] as const`, `= {…}`); test, story and mock files (`*.test.*`, `*.spec.*`,
   `*.stories.*`, `__mocks__/`) give imports only, while helpers in `tests/` keep their symbols
 - CommonJS exports at the top level of a JavaScript file become symbols too: `exports.pad = ..` and
   `module.exports.pad = ..` as `pad`, each property of `module.exports = { .. }`, and the function,

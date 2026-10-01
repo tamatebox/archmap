@@ -122,7 +122,8 @@ shows. A component that is one file (a TS/JS file, a Rust module without
 submodules) answers as that file, with the statements that import it, even
 where it folds into an ancestor.
 
-`query` prints compact text by default: public symbols with their location,
+`query` prints compact text by default: public symbols with their location
+in source order (by file, then line; JSON keeps them by id),
 and each neighboring component with its import count and a few example
 locations. A location names the file the statement loads when archmap knows
 it, as in `src/shop/billing/charge.py:5 -> src/shop/users.py`, and ends in
