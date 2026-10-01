@@ -51,7 +51,9 @@ contains:
   statements in test code and `declared: yes` when a manifest also declares
   the dependency; N and M count distinct `file:line` statements, a pair that
   only tests make shows `tests: M` alone, and imports between files of one
-  component are not listed. Statements of a component's own entry file (an
+  component are not listed. A statement that reaches a name through a
+  re-export counts for the file that defines the name, and for the barrel it
+  loads only when it takes the barrel whole or a name the barrel declares. Statements of a component's own entry file (an
   `index.*`, an `__init__.py`) into its own submodules say what it holds
   rather than what it depends on: they are counted in a `not listed:` line
 - external dependencies with the manifests that declare them (`declared:`),

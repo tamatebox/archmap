@@ -19,6 +19,7 @@ use std::path::Path;
 
 use archmap_core::{
     ArchitectureGraph, Component, ComponentId, ComponentKind, EdgeKind, Evidence, UnmappedReason,
+    WHOLE_MODULE,
 };
 
 use crate::query_text::reason_label;
@@ -121,6 +122,38 @@ fn render_with(graph: &ArchitectureGraph, depth: usize, limits: Limits) -> Strin
         .collect();
 
     let mut dependencies: BTreeMap<(&ComponentId, &ComponentId), Dependency> = BTreeMap::new();
+    // A statement that reaches a name through a re-export counts for the
+    // file that defines it, through its `via` evidence, and for the barrel it
+    // loads only when it takes the barrel whole or a name the barrel defines.
+    let via = |e: &Evidence| e.note.as_deref().is_some_and(|n| n.contains(" via "));
+    let walked: BTreeSet<(&str, Option<u32>)> = rolled
+        .edges
+        .iter()
+        .flat_map(|edge| &edge.evidence)
+        .filter(|e| via(e))
+        .map(|e| (e.file.as_str(), e.line))
+        .collect();
+    let mut defined: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for symbol in graph.symbols.values() {
+        if let Some(at) = symbol.location() {
+            defined
+                .entry(at.file.as_str())
+                .or_default()
+                .insert(symbol.name.as_str());
+        }
+    }
+    let through_barrel = |e: &Evidence| {
+        let own = |name: &String| {
+            e.target
+                .as_deref()
+                .and_then(|t| defined.get(t))
+                .is_some_and(|names| names.contains(name.as_str()))
+        };
+        walked.contains(&(e.file.as_str(), e.line))
+            && !via(e)
+            && !e.names.contains(WHOLE_MODULE)
+            && !e.names.iter().any(own)
+    };
     // A component's own entry file (an index, an `__init__.py`) that imports
     // its submodules says what the component holds, not what it depends on.
     let mut entry_statements: BTreeSet<(&str, Option<u32>)> = BTreeSet::new();
@@ -144,6 +177,7 @@ fn render_with(graph: &ArchitectureGraph, depth: usize, limits: Limits) -> Strin
             .iter()
             .partition(|e| own_files.contains(e.file.as_str()));
         entry_statements.extend(entry.iter().map(|e| (e.file.as_str(), e.line)));
+        let counted: Vec<&Evidence> = counted.into_iter().filter(|e| !through_barrel(e)).collect();
         if counted.is_empty() && !edge.evidence.is_empty() {
             continue;
         }
@@ -856,7 +890,7 @@ fn name_of<'a>(graph: &'a ArchitectureGraph, id: &'a ComponentId) -> &'a str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use archmap_core::Edge;
+    use archmap_core::{Edge, Symbol, SymbolId};
 
     fn package(id: &str) -> Component {
         let mut c = Component::new(id, id, ComponentKind::Package);
@@ -1128,7 +1162,65 @@ mod tests {
         );
     }
 
-    /// `graph` with `edges` added.
+    #[test]
+    fn a_statement_that_reaches_through_a_barrel_counts_for_the_defining_file() {
+        let mut lib = module("lib", "p");
+        lib.evidence
+            .push(Evidence::new("lib/index.ts").with_note("index"));
+        let at = |line: u32, target: &str, note: &str, names: &[&str]| {
+            Evidence::new("app/a.ts")
+                .at_line(line)
+                .with_note(note)
+                .pointing_at(target)
+                .taking(names.iter().copied())
+        };
+        let mut graph = graph(
+            vec![
+                package("p"),
+                module("app", "p"),
+                lib,
+                module("lib::money", "lib"),
+            ],
+            vec![
+                // `import { formatPrice } from './lib'`, which lib/index.ts
+                // re-exports from lib/money.ts
+                Edge::new("app", "lib", EdgeKind::Import).with_evidence(at(
+                    1,
+                    "lib/index.ts",
+                    "import",
+                    &["formatPrice"],
+                )),
+                Edge::new("app", "lib::money", EdgeKind::Import).with_evidence(at(
+                    1,
+                    "lib/money.ts",
+                    "import via lib/index.ts:1",
+                    &["formatPrice"],
+                )),
+                // `import * as lib from './lib'` takes the barrel itself
+                Edge::new("app", "lib", EdgeKind::Import).with_evidence(at(
+                    2,
+                    "lib/index.ts",
+                    "import",
+                    &["*"],
+                )),
+            ],
+        );
+        graph.add_symbol(Symbol {
+            id: SymbolId::new("lib::money::formatPrice"),
+            name: "formatPrice".into(),
+            kind: archmap_core::SymbolKind::Function,
+            component: ComponentId::new("lib::money"),
+            signature: None,
+            evidence: vec![Evidence::new("lib/money.ts").at_line(1)],
+        });
+        let out = render_with(&graph, 2, limits(30, 30, 20));
+        assert_eq!(
+            section(&out, "Internal dependencies"),
+            "app -> lib  imports: 1\napp -> lib::money  imports: 1\n"
+        );
+    }
+
+    /// `graph` with `edges` added.    /// `graph` with `edges` added.
     fn graph_with(graph: &ArchitectureGraph, edges: Vec<Edge>) -> ArchitectureGraph {
         let mut graph = graph.clone();
         graph.add_edges(edges);
