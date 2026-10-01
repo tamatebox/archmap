@@ -629,7 +629,7 @@ fn exported_declarations_of_files_that_are_not_tests_are_symbols() {
                 "ts-shop::scripts/report.cjs::title",
                 SymbolKind::Constant,
                 "scripts/report.cjs:11",
-                "title"
+                "module.exports.title"
             ),
             // the globals of a script
             row(

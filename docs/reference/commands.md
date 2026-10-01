@@ -135,7 +135,9 @@ takes 5 KB as text and 18 KB as JSON. `--verbose` lifts the caps and
 facts behind its component: the file's public symbols, what it imports
 (`Imports`), the statements elsewhere that import it (`Imported by`), and its
 imports without an edge. Where no evidence names imported files for the
-file's language, `Imported by` says it is unknown rather than showing none.
+file's language, `Imported by` says it is unknown rather than showing none,
+and for a script, whose declarations are global, it says that what uses them
+is not traced; `query` on a symbol a script declares says the same.
 A TS/JS re-export statement (`export ... from`) is marked `(export)`
 wherever a location is shown: it passes names on rather than uses them.
 

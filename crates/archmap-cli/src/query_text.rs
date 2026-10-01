@@ -339,6 +339,14 @@ fn file(out: &mut String, view: &FileView, rolled: &ArchitectureGraph, caps: &Ca
     let imports = view.imports.iter().map(|e| (&e.to, e));
     truncated |= neighbors(out, "Imports", imports, rolled, true, caps);
     match &view.importers {
+        // a side-effect import can still load a script
+        Some(edges) if view.script && edges.is_empty() => {
+            let _ = writeln!(
+                out,
+                "\nImported by: none (a script: its declarations are global, so what uses them \
+                 is not traced)"
+            );
+        }
         Some(edges) => {
             let importers = edges.iter().map(|e| (&e.from, e));
             truncated |= neighbors(out, "Imported by", importers, rolled, false, caps);
@@ -514,7 +522,15 @@ fn importers(
         return false;
     };
     let mut truncated = false;
-    if by_name.is_empty() {
+    let script = full
+        .component(&view.symbol.component)
+        .is_some_and(|c| c.kind == ComponentKind::Script);
+    if by_name.is_empty() && script {
+        let _ = writeln!(
+            out,
+            "\nImported by: none (a script declares it globally: what uses it is not traced)"
+        );
+    } else if by_name.is_empty() {
         let _ = writeln!(
             out,
             "\nImported by: none resolved\n  (only import statements are read; code that a \

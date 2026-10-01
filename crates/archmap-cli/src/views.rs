@@ -46,6 +46,10 @@ pub struct FileView<'a> {
     pub importers: Option<Vec<Edge>>,
     pub not_mapped: Vec<&'a UnmappedImport>,
     pub dynamic_imports: Vec<&'a DynamicImport>,
+    /// The file is a script, whose declarations are global: no import
+    /// shows what uses them.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub script: bool,
 }
 
 /// What `archmap query` returns for an import name that no component

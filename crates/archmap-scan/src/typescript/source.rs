@@ -753,7 +753,7 @@ impl Source<'_> {
     }
 
     /// The symbols of a property of `module.exports = { .. }`; a value that
-    /// is no function or class goes by its key alone.
+    /// is no function or class reads as `exports.name` does.
     fn property(
         &self,
         name: &str,
@@ -763,12 +763,12 @@ impl Source<'_> {
         let start = property.span.start;
         match value_kind(&property.value) {
             (SymbolKind::Constant, _) if !matches!(property.value, Expression::Identifier(_)) => {
-                vec![self.symbol(
-                    name.to_owned(),
-                    SymbolKind::Constant,
-                    start,
-                    property.key.span().end,
-                )]
+                vec![ExportedSymbol {
+                    name: name.to_owned(),
+                    kind: SymbolKind::Constant,
+                    line: self.lines.line(start),
+                    signature: Some(format!("module.exports.{name}")),
+                }]
             }
             _ => self.assigned(name, &property.value, start, locals),
         }
@@ -1591,7 +1591,7 @@ export default local;
                 row("helper", SymbolKind::Function, 1, "function helper(a)"),
                 row("Store", SymbolKind::Struct, 4, "class Store"),
                 row("Store.get", SymbolKind::Function, 5, "get()"),
-                row("size", SymbolKind::Constant, 10, "size"),
+                row("size", SymbolKind::Constant, 10, "module.exports.size"),
                 row("run", SymbolKind::Function, 11, "run()"),
                 row("go", SymbolKind::Function, 12, "go: function ()"),
             ]

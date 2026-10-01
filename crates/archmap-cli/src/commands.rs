@@ -6,8 +6,8 @@ use anyhow::{bail, Context, Result};
 use archmap_core::rules::{external_selector_lacks_ecosystem, FileLevel, Finding, RuleSet};
 use archmap_core::signals::Signal;
 use archmap_core::{
-    ArchitectureGraph, ChangeSeed, Component, ComponentId, Edge, EdgeKind, Evidence, Scope, Symbol,
-    SymbolId, UnmappedImport,
+    ArchitectureGraph, ChangeSeed, Component, ComponentId, ComponentKind, Edge, EdgeKind, Evidence,
+    Scope, Symbol, SymbolId, UnmappedImport,
 };
 use archmap_scan::{ScanOptions, ScanReport};
 use serde::Serialize;
@@ -202,6 +202,10 @@ fn file_view<'a>(
         importers,
         not_mapped: facts.unmapped_imports,
         dynamic_imports: facts.dynamic_imports,
+        script: facts
+            .component
+            .and_then(|c| full.component(c))
+            .is_some_and(|c| c.kind == ComponentKind::Script),
     }
 }
 

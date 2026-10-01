@@ -1795,7 +1795,16 @@ fn a_script_shows_its_kind_and_globals() {
         "(script, typescript)",
         "declare const VERSION: string  src/global.d.ts:1",
         "interface Window  src/global.d.ts:3",
+        // no import names a global, which reads as unused otherwise
+        "Imported by: none (a script: its declarations are global, so what uses them is not traced)",
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
     }
+    let text = ts_stdout(&["query", "VERSION"]);
+    assert!(
+        text.contains(
+            "Imported by: none (a script declares it globally: what uses it is not traced)"
+        ),
+        "{text}"
+    );
 }
