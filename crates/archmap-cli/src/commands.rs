@@ -450,9 +450,9 @@ pub struct ImpactResult<'a> {
     pub direct: Vec<ComponentId>,
     /// Every component that transitively depends on the target.
     pub transitive: Vec<ComponentId>,
-    /// Files that reach the target only through test code: the tests to
-    /// run again, those beside production code included.
-    pub tests: Vec<String>,
+    /// Files that reach the target only through test code, and a changed
+    /// component's own test files: the tests to run again.
+    pub tests: TestFiles,
     /// For a file, or a component that is one file: the statements that
     /// import the file directly. For a symbol: those that take its name.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -464,6 +464,16 @@ pub struct ImpactResult<'a> {
 
 /// How many import sites `impact` shows for a file; the rest is counted.
 const MAX_IMPORT_SITES: usize = 5;
+
+/// How many test files `impact` shows; the rest is counted.
+const MAX_TEST_FILES: usize = 20;
+
+#[derive(Debug, Serialize)]
+pub struct TestFiles {
+    pub total: usize,
+    /// The first ones by path.
+    pub shown: Vec<String>,
+}
 
 #[derive(Debug, Serialize)]
 pub struct ImportSites {
@@ -635,7 +645,10 @@ pub fn impact(path: &str, target: &str, depth: usize, format: OutputFormat) -> R
         depth,
         direct: reach.direct.into_iter().collect(),
         transitive: reach.transitive.into_iter().collect(),
-        tests: reach.tests.into_iter().collect(),
+        tests: TestFiles {
+            total: reach.tests.len(),
+            shown: reach.tests.into_iter().take(MAX_TEST_FILES).collect(),
+        },
         target: at.id,
         folded_from: at.folded_from,
         symbol: symbol_id,

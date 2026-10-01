@@ -270,23 +270,35 @@ impl ArchitectureGraph {
     /// `tests` holds the files only test code reaches, the tests to run
     /// again.
     pub fn change_impact(&self, seed: ChangeSeed, depth: usize) -> Reach {
-        let (mut reach, production) = self.reach(seed, depth, false);
-        let (_, with_tests) = self.reach(seed, depth, true);
+        let (mut reach, production, _) = self.reach(seed, depth, false);
+        let (_, with_tests, seeds) = self.reach(seed, depth, true);
+        // files whose imports are all test code; a changed one is a test to
+        // run again too
+        let (mut tests, mut code) = (BTreeSet::new(), BTreeSet::new());
+        for e in self.edges.iter().flat_map(|edge| &edge.evidence) {
+            match e.test {
+                true => tests.insert(e.file.as_str()),
+                false => code.insert(e.file.as_str()),
+            };
+        }
+        let test_files: BTreeSet<&str> = tests.difference(&code).copied().collect();
         reach.tests = with_tests
             .difference(&production)
+            .chain(seeds.iter().filter(|f| test_files.contains(*f)))
             .map(|f| (*f).to_owned())
             .collect();
         reach
     }
 
     /// The reach of a change through production code, and through test
-    /// code too when `tests`, with the files reached.
+    /// code too when `tests`, with the files reached and the files the
+    /// change starts from.
     fn reach<'s>(
         &'s self,
         seed: ChangeSeed<'s>,
         depth: usize,
         tests: bool,
-    ) -> (Reach, BTreeSet<&'s str>) {
+    ) -> (Reach, BTreeSet<&'s str>, BTreeSet<&'s str>) {
         let mut dependents: BTreeMap<Node, BTreeSet<Node>> = BTreeMap::new();
         let mut files: BTreeSet<&str> = BTreeSet::new();
         for edge in &self.edges {
@@ -402,13 +414,15 @@ impl ArchitectureGraph {
         }
 
         let mut reach = Reach::default();
-        let files = distance
-            .iter()
-            .filter_map(|(node, d)| match node {
-                Node::File(f) if *d > 0 => Some(*f),
-                _ => None,
-            })
-            .collect();
+        let (mut files, mut seeds) = (BTreeSet::new(), BTreeSet::new());
+        for (node, d) in &distance {
+            if let Node::File(f) = node {
+                match d {
+                    0 => seeds.insert(*f),
+                    _ => files.insert(*f),
+                };
+            }
+        }
         for (node, d) in &distance {
             let component = match node {
                 Node::File(f) => owner_of(f),
@@ -426,7 +440,7 @@ impl ArchitectureGraph {
             }
             reach.transitive.insert(folded);
         }
-        (reach, files)
+        (reach, files, seeds)
     }
 
     /// Components from the containment root down to `id`, following
@@ -1746,6 +1760,9 @@ mod tests {
             reach.tests.iter().collect::<Vec<_>>(),
             ["both/a.test.ts", "spec/money.test.ts", "spec/page.test.ts"]
         );
+        // a component's own tests are what to run after changing it
+        let reach = graph.change_impact(ChangeSeed::Component(&ComponentId::new("both")), 2);
+        assert_eq!(reach.tests.iter().collect::<Vec<_>>(), ["both/a.test.ts"]);
     }
 
     #[test]

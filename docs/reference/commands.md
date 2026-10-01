@@ -209,10 +209,13 @@ file. Dependencies without a target file
 result is still reported at the roll-up depth. It does not follow the parent
 `__init__.py` that Python runs before a submodule, nor Rust code inside macro
 calls, and a path that names no component or file is an error. `direct` and
-`transitive` follow production code; `tests` lists the files that reach the
-target only through test code, the tests to run again after the change,
-those beside production code included (for Rust, the module files whose unit
-tests reach it; integration tests under `tests/` are not read). For a file target, `importers` lists the statements that
+`transitive` follow production code; `tests` counts the files that reach the
+target only through test code, and a changed component's own test files: the
+tests to run again after the change, those beside production code included,
+the first 20 by path shown. A file that production code reaches is not
+repeated there: its unit tests run with its package. For Rust, only test
+code in other crates is recorded: a crate's own unit tests are not, and
+integration tests under `tests/` are not read. For a file target, `importers` lists the statements that
 import the file directly, up to 5 with the total, production code first and
 test code marked `"test": true`, so the next read can go straight to them;
 they include statements inside the target's own component, which `direct`
