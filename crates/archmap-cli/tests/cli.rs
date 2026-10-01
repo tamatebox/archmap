@@ -1987,3 +1987,37 @@ fn impact_lists_every_importer_and_test_with_verbose() {
     assert_eq!(capped_shown, 5);
     assert_eq!(shown(&full), (total, total));
 }
+
+#[test]
+fn a_path_target_is_read_as_the_root_sees_it() {
+    let root = python_fixture().canonicalize().unwrap();
+    let absolute = root.join("src/shop/users.py");
+    let expected = fixture_json(&["impact", "src/shop/users.py"]);
+    for target in [
+        absolute.to_str().unwrap(),
+        "src/shop/../shop/./users.py",
+        // the name query also takes for the file
+        "shop.users",
+    ] {
+        let found = fixture_json(&["impact", target]);
+        assert_eq!(found["target"], expected["target"], "{target}");
+        assert_eq!(found["importers"], expected["importers"], "{target}");
+    }
+    let query = fixture_json(&["query", absolute.to_str().unwrap(), "--format", "json"]);
+    assert_eq!(query["file"], "src/shop/users.py");
+    // a path outside the root names nothing in it
+    let outside = root
+        .parent()
+        .unwrap()
+        .join("simple-ts-project/package.json");
+    for command in ["query", "impact"] {
+        let out = archmap()
+            .args([command, outside.to_str().unwrap(), "--path"])
+            .arg(&root)
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{command}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("is outside the scanned root"), "{stderr}");
+    }
+}

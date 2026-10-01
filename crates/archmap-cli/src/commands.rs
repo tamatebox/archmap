@@ -1,5 +1,5 @@
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::{Component as PathPart, Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
@@ -100,11 +100,56 @@ pub const DEFAULT_DEPTH: usize = 2;
 
 /// `target` as a file under the scanned root, relative with `/` separators.
 fn file_target(path: &str, target: &str) -> Option<String> {
-    let relative = target.trim_start_matches("./").trim_end_matches('/');
+    let relative = root_relative(path, target)?;
     Path::new(path)
-        .join(relative)
+        .join(&relative)
         .is_file()
-        .then(|| relative.replace('\\', "/"))
+        .then_some(relative)
+}
+
+/// `target` as a path relative to the scanned root at `path`, with `/`
+/// separators: an absolute path inside the root without the root, `.` and
+/// `..` resolved. `None` for a path outside the root, or an absolute one
+/// that does not exist.
+fn root_relative(path: &str, target: &str) -> Option<String> {
+    let given = Path::new(target);
+    let relative = if given.is_absolute() {
+        let root = std::fs::canonicalize(path).ok()?;
+        std::fs::canonicalize(given)
+            .ok()?
+            .strip_prefix(&root)
+            .ok()?
+            .to_path_buf()
+    } else {
+        given.to_path_buf()
+    };
+    let mut parts: Vec<String> = Vec::new();
+    for part in relative.components() {
+        match part {
+            PathPart::CurDir => {}
+            PathPart::ParentDir => {
+                parts.pop()?;
+            }
+            PathPart::Normal(name) => parts.push(name.to_string_lossy().into_owned()),
+            PathPart::RootDir | PathPart::Prefix(_) => return None,
+        }
+    }
+    Some(parts.join("/"))
+}
+
+/// Stop when `target` is a path outside the scanned root that exists: the
+/// graph holds nothing of it, whatever component its words would match.
+fn reject_outside(path: &str, target: &str) -> Result<()> {
+    let given = Path::new(target);
+    let exists = if given.is_absolute() {
+        given.exists()
+    } else {
+        Path::new(path).join(given).exists()
+    };
+    if exists && root_relative(path, target).is_none() {
+        bail!("`{target}` is outside the scanned root `{path}`");
+    }
+    Ok(())
 }
 
 /// The file a component stands for: its path, when that is a file under
@@ -129,9 +174,9 @@ fn directory_target<'a>(
     path: &str,
     target: &str,
 ) -> Option<Result<&'a Component>> {
-    let relative = target.trim_start_matches("./").trim_end_matches('/');
-    Path::new(path).join(relative).is_dir().then(|| {
-        full.component_for_path(&relative.replace('\\', "/"))
+    let relative = root_relative(path, target)?;
+    Path::new(path).join(&relative).is_dir().then(|| {
+        full.component_for_path(&relative)
             .with_context(|| format!("no component contains `{target}`"))
     })
 }
@@ -216,6 +261,7 @@ pub fn query(
     format: ReportFormat,
     verbose: bool,
 ) -> Result<ExitCode> {
+    reject_outside(path, target)?;
     let report = run_scan(path, false)?;
     let full = &report.graph;
     let rolled = full.rollup(depth);
@@ -592,6 +638,7 @@ pub fn impact(
         true => (usize::MAX, usize::MAX),
         false => (MAX_IMPORT_SITES, MAX_TEST_FILES),
     };
+    reject_outside(path, target)?;
     // Import edges come from source, so impact needs a full scan.
     let report = run_scan(path, false)?;
     let full = &report.graph;
@@ -646,6 +693,14 @@ pub fn impact(
                 (fold(full, depth, &symbol.component), reach)
             }
         }
+    } else if let Some(file) = full.file_for_dotted_name(target) {
+        // a file by its component's name and its stem, as query takes it
+        let owner = full
+            .component_for_path(file)
+            .with_context(|| format!("no component contains `{target}`"))?;
+        let reach = full.change_impact(ChangeSeed::File(file), depth);
+        importers = Some(import_sites(full, depth, file, sites_cap));
+        (fold(full, depth, &owner.id), reach)
     } else if let Some(owner) = directory_target(full, path, target).transpose()? {
         // a directory answers before names that several symbols share fail
         let reach = full.change_impact(ChangeSeed::Component(&owner.id), depth);

@@ -150,7 +150,8 @@ archmap's own repository, its busiest component (`archmap_core::graph`)
 takes 5 KB as text and 18 KB as JSON. `--verbose` lifts the caps and
 `--format json` adds every piece of evidence.
 
-`query` also takes a single file, by path (`src/shop/users.py`) or as
+`query` also takes a single file, by path (`src/shop/users.py`, relative to
+the root or absolute; a path outside the root is an error) or as
 `<component>.<file stem>` (`shop.users`), and answers with the file-level
 facts behind its component: the file's public symbols, what it imports
 (`Imports`), the statements elsewhere that import it (`Imported by`), and its
@@ -205,9 +206,9 @@ archmap impact formatPrice --path fixtures/simple-ts-project              # a sy
 file: a component is affected only when one of its files imports what
 changed, directly or through other files, not merely because it imports some
 file of the same component. A file target starts from that file; a component
-target starts from all of its files. Like `query`, it takes a directory for
-the component that owns it, and a component that is one file answers as that
-file. Dependencies without a target file
+target starts from all of its files. Like `query`, it takes a file as
+`<component>.<file stem>` too and a directory for the component that owns
+it, and a component that is one file answers as that file. Dependencies without a target file
 (manifests, external packages) are followed component by component, and the
 result is still reported at the roll-up depth. It does not follow the parent
 `__init__.py` that Python runs before a submodule, nor Rust code inside macro
