@@ -99,6 +99,7 @@ name = "archmap-scan"
 version = "0.1.0"
 dependencies = [
  "archmap-core",
+ "globset",
  "ignore",
  "json-strip-comments",
  "oxc_allocator",

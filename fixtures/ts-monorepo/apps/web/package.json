@@ -1,0 +1,8 @@
+{
+  "name": "web",
+  "dependencies": {
+    "@acme/ui": "workspace:*",
+    "@acme/core": "^1.0.0",
+    "local-lib": "file:../../libs/local"
+  }
+}

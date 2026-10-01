@@ -1,0 +1,5 @@
+{
+  // the shared options come from a workspace member
+  "extends": "@acme/tsconfig/base.json",
+  "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["./src/*"] } },
+}

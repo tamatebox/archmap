@@ -137,9 +137,6 @@ The gaps behind the marks:
   at the file that defines `name`.
 - Python `impact`: the parent `__init__.py` that Python loads before a
   submodule is not followed.
-- TS/JS packages and imports: the packages of a monorepo workspace are not
-  linked to each other, so an import of one by its package name points at
-  the npm package, not at its files.
 - TS/JS symbols: declarations inside `declare global { .. }` give none.
 - TS/JS `check`: only `type` written in an import marks it as types only,
   so a type imported without it (`import { Money }` for an interface) can

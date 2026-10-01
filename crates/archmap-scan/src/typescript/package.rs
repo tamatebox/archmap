@@ -9,6 +9,9 @@ pub(crate) struct PackageJson {
     pub name: Option<String>,
     /// Declares `workspaces`: a monorepo root, a package even without code.
     pub workspaces: bool,
+    /// The patterns of `workspaces` (an array, or yarn's `{ "packages": [] }`)
+    /// that pick the member packages below the root.
+    pub workspace_patterns: Vec<String>,
     /// `"type": "module"`: Node runs the `.js` files below it as ES modules.
     pub module: bool,
     /// In file order within each section, sections in [`Section::ALL`]
@@ -22,6 +25,9 @@ pub(crate) struct Declaration {
     pub name: String,
     pub section: Section,
     pub line: Option<u32>,
+    /// The directory a `file:`, `link:` or `portal:` version names,
+    /// relative to the `package.json`.
+    pub path: Option<String>,
 }
 
 /// The dependency sections of `package.json`.
@@ -88,13 +94,20 @@ pub(crate) fn parse(text: &str) -> Result<PackageJson, String> {
         let Some(dependencies) = value.get(section.key()).and_then(|v| v.as_object()) else {
             continue;
         };
-        for name in dependencies.keys() {
+        for (name, version) in dependencies {
+            let path = version.as_str().and_then(|v| {
+                ["file:", "link:", "portal:"]
+                    .iter()
+                    .find_map(|prefix| v.strip_prefix(prefix))
+                    .map(str::to_owned)
+            });
             declarations.push(Declaration {
                 name: name.clone(),
                 section,
                 line: lines
                     .get(&(section.key().to_owned(), name.clone()))
                     .copied(),
+                path,
             });
         }
     }
@@ -104,6 +117,13 @@ pub(crate) fn parse(text: &str) -> Result<PackageJson, String> {
             .and_then(|v| v.as_str())
             .map(str::to_owned),
         workspaces: value.get("workspaces").is_some(),
+        workspace_patterns: value
+            .get("workspaces")
+            .and_then(|w| w.as_array().or_else(|| w.get("packages")?.as_array()))
+            .into_iter()
+            .flatten()
+            .filter_map(|p| p.as_str().map(str::to_owned))
+            .collect(),
         module: value.get("type").and_then(|v| v.as_str()) == Some("module"),
         declarations,
     })
@@ -228,6 +248,35 @@ mod tests {
         assert!(parse(r#"{ "type": "module" }"#).unwrap().module);
         assert!(!parse(r#"{ "type": "commonjs" }"#).unwrap().module);
         assert!(!parse("{}").unwrap().module);
+    }
+
+    #[test]
+    fn workspaces_and_linked_paths_are_read() {
+        let p = parse(r#"{ "name": "mono", "workspaces": ["packages/*", "apps/**"] }"#).unwrap();
+        assert!(p.workspaces);
+        assert_eq!(p.workspace_patterns, ["packages/*", "apps/**"]);
+        // yarn's object form
+        let p = parse(r#"{ "workspaces": { "packages": ["libs/*"], "nohoist": ["x"] } }"#).unwrap();
+        assert_eq!(p.workspace_patterns, ["libs/*"]);
+        let p = parse(
+            r#"{ "dependencies": { "a": "file:../a", "b": "link:./b", "c": "portal:c", "d": "workspace:*", "e": "^1" } }"#,
+        )
+        .unwrap();
+        let paths: Vec<(&str, Option<&str>)> = p
+            .declarations
+            .iter()
+            .map(|d| (d.name.as_str(), d.path.as_deref()))
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                ("a", Some("../a")),
+                ("b", Some("./b")),
+                ("c", Some("c")),
+                ("d", None),
+                ("e", None)
+            ]
+        );
     }
 
     #[test]

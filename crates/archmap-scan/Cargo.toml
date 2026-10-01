@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 archmap-core = { workspace = true }
+globset = { workspace = true }
 ignore = { workspace = true }
 json-strip-comments = { workspace = true }
 oxc_allocator = { workspace = true }

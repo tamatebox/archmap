@@ -44,18 +44,24 @@ pub(crate) struct ImportResolver {
     with_tsconfig: ResolverGeneric<ViewFs>,
     /// For files whose tsconfig the resolver cannot use.
     without_tsconfig: ResolverGeneric<ViewFs>,
+    /// The same without the `types` condition, for a package whose types
+    /// lead outside the scan.
+    untyped_with_tsconfig: ResolverGeneric<ViewFs>,
+    untyped_without_tsconfig: ResolverGeneric<ViewFs>,
 }
 
 impl ImportResolver {
     pub(crate) fn new(root: &Path, view: ViewFs) -> Self {
+        let resolver = |tsconfig: Option<TsconfigDiscovery>, types: bool| {
+            ResolverGeneric::new_with_file_system(view.clone(), options(tsconfig, types))
+        };
         Self {
             root: root.to_path_buf(),
-            view: view.clone(),
-            with_tsconfig: ResolverGeneric::new_with_file_system(
-                view.clone(),
-                options(Some(TsconfigDiscovery::Auto)),
-            ),
-            without_tsconfig: ResolverGeneric::new_with_file_system(view, options(None)),
+            with_tsconfig: resolver(Some(TsconfigDiscovery::Auto), true),
+            without_tsconfig: resolver(None, true),
+            untyped_with_tsconfig: resolver(Some(TsconfigDiscovery::Auto), false),
+            untyped_without_tsconfig: resolver(None, false),
+            view,
         }
     }
 
@@ -69,13 +75,31 @@ impl ImportResolver {
         problems: &mut BTreeSet<String>,
     ) -> Resolved {
         let absolute = self.root.join(file);
-        let result = match self.with_tsconfig.resolve_file(&absolute, specifier) {
-            Err(err) if is_tsconfig_problem(&err) => {
-                problems.insert(self.tsconfig_problem(&err));
-                self.without_tsconfig.resolve_file(&absolute, specifier)
+        let attempt = |with: &ResolverGeneric<ViewFs>,
+                       without: &ResolverGeneric<ViewFs>,
+                       problems: &mut BTreeSet<String>| {
+            match with.resolve_file(&absolute, specifier) {
+                Err(err) if is_tsconfig_problem(&err) => {
+                    problems.insert(self.tsconfig_problem(&err));
+                    without.resolve_file(&absolute, specifier)
+                }
+                other => other,
             }
-            other => other,
         };
+        let mut result = attempt(&self.with_tsconfig, &self.without_tsconfig, problems);
+        // a package's `types` condition can lead to built declarations
+        // outside the scan, where its source answers to the next condition
+        if matches!(&result, Err(e) if !matches!(e, ResolveError::Builtin { .. }))
+            && !is_path(specifier)
+        {
+            if let ok @ Ok(_) = attempt(
+                &self.untyped_with_tsconfig,
+                &self.untyped_without_tsconfig,
+                problems,
+            ) {
+                result = ok;
+            }
+        }
         match result {
             Ok(found) => found
                 .path()
@@ -124,7 +148,7 @@ impl ImportResolver {
     }
 }
 
-fn options(tsconfig: Option<TsconfigDiscovery>) -> ResolveOptions {
+fn options(tsconfig: Option<TsconfigDiscovery>, types: bool) -> ResolveOptions {
     let strings = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
     ResolveOptions {
         tsconfig,
@@ -140,12 +164,16 @@ fn options(tsconfig: Option<TsconfigDiscovery>) -> ResolveOptions {
             (".mjs".to_owned(), strings(&[".mts", ".mjs"])),
             (".cjs".to_owned(), strings(&[".cts", ".cjs"])),
         ],
-        condition_names: strings(&["types", "import", "require", "node", "default"]),
+        condition_names: if types {
+            strings(&["types", "import", "require", "node", "default"])
+        } else {
+            strings(&["import", "require", "node", "default"])
+        },
         builtin_modules: true,
         // NODE_PATH would make the graph depend on the environment.
         node_path: false,
-        // The view has no links, and its root is canonical.
-        symlinks: false,
+        // The links of the view lead to the files of workspace members.
+        symlinks: true,
         ..ResolveOptions::default()
     }
 }
@@ -258,6 +286,7 @@ mod tests {
     use crate::context::display_path;
     use crate::typescript::fs::tests::repo;
     use crate::{RepoContext, ScanOptions};
+    use std::collections::BTreeMap;
 
     #[test]
     fn package_names_of_bare_specifiers() {
@@ -382,6 +411,65 @@ mod tests {
             ModuleOptions::default()
         );
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn linked_packages_resolve_by_name_to_their_files() {
+        let root = repo(
+            "linked",
+            &[
+                (
+                    "package.json",
+                    r#"{ "name": "mono", "workspaces": ["packages/*", "apps/*"] }"#,
+                ),
+                (
+                    "packages/ui/package.json",
+                    r#"{ "name": "@acme/ui", "exports": { ".": "./src/index.ts" } }"#,
+                ),
+                ("packages/ui/src/index.ts", "export const a = 1;\n"),
+                (
+                    "packages/types/package.json",
+                    r#"{ "name": "@acme/types", "exports": { ".": { "types": "./dist/index.d.ts", "import": "./src/index.ts" } } }"#,
+                ),
+                ("packages/types/src/index.ts", "export const t = 1;\n"),
+                (
+                    "packages/core/package.json",
+                    r#"{ "name": "@acme/core", "main": "./dist/index.js" }"#,
+                ),
+                ("packages/core/src/index.ts", "export const c = 1;\n"),
+                ("apps/web/package.json", r#"{ "name": "web" }"#),
+                ("apps/web/src/a.ts", "import { a } from '@acme/ui';\n"),
+            ],
+        );
+        let ctx = RepoContext::load(&root, ScanOptions::default()).unwrap();
+        let links: BTreeMap<String, PathBuf> = [
+            ("@acme/ui", "packages/ui"),
+            ("@acme/types", "packages/types"),
+            ("@acme/core", "packages/core"),
+        ]
+        .into_iter()
+        .map(|(name, dir)| (name.to_owned(), PathBuf::from(dir)))
+        .collect();
+        let mut warnings = Vec::new();
+        let resolver =
+            ImportResolver::new(ctx.root(), ViewFs::new_linked(&ctx, &links, &mut warnings));
+        let mut problems = BTreeSet::new();
+        let mut file =
+            |spec: &str| resolver.resolve(Path::new("apps/web/src/a.ts"), spec, &mut problems);
+        assert_eq!(
+            file("@acme/ui"),
+            Resolved::File(PathBuf::from("packages/ui/src/index.ts"))
+        );
+        // `types` leads into dist/, which the scan does not hold: the next
+        // condition answers
+        assert_eq!(
+            file("@acme/types"),
+            Resolved::File(PathBuf::from("packages/types/src/index.ts"))
+        );
+        // an entry outside the scan resolves to no file
+        assert_eq!(file("@acme/core"), Resolved::NotFound);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(problems.is_empty(), "{problems:?}");
     }
 
     /// Resolve `specifier` from `src/a.ts` in a repository of `files`, with

@@ -1,0 +1,4 @@
+{
+  "name": "@acme/core",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } }
+}

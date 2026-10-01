@@ -6,7 +6,7 @@
 //! the closest one for every import below it and would fail them all, and
 //! the analyzer reports it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
 use std::path::{Component as PathComponent, Path, PathBuf};
 use std::sync::Arc;
@@ -27,14 +27,43 @@ struct View {
     /// tsconfig files served without the `extends` entries the view cannot
     /// load, so that their own `paths` still apply.
     served: HashMap<PathBuf, String>,
+    /// `<root>/node_modules/<name>` to the directory of the package it
+    /// links, as an install links workspace members.
+    links: HashMap<PathBuf, PathBuf>,
+    root: PathBuf,
 }
 
 impl ViewFs {
-    /// The view of `ctx`. A tsconfig `extends` that names no scanned file is
-    /// left out and reported in `warnings`, once per tsconfig and entry.
+    /// The view of `ctx` without links.
+    #[cfg(test)]
     pub(crate) fn new(ctx: &RepoContext, warnings: &mut Vec<String>) -> Self {
+        Self::new_linked(ctx, &BTreeMap::new(), warnings)
+    }
+
+    /// The view of `ctx`, with each package of `links`, a name and the
+    /// package's directory relative to the root, linked as
+    /// `<root>/node_modules/<name>`. A tsconfig `extends` that names no
+    /// scanned file is left out and reported in `warnings`, once per tsconfig
+    /// and entry.
+    pub(crate) fn new_linked(
+        ctx: &RepoContext,
+        links: &BTreeMap<String, PathBuf>,
+        warnings: &mut Vec<String>,
+    ) -> Self {
         let root = ctx.root();
-        let mut view = View::default();
+        let mut view = View {
+            root: root.to_path_buf(),
+            ..View::default()
+        };
+        for (name, dir) in links {
+            let link = root.join("node_modules").join(name);
+            for parent in link.ancestors().skip(1) {
+                if !parent.starts_with(root) || !view.dirs.insert(parent.to_path_buf()) {
+                    break;
+                }
+            }
+            view.links.insert(link, root.join(dir));
+        }
         view.dirs.insert(root.to_path_buf());
         for rel in ctx.files() {
             let file = root.join(rel);
@@ -52,7 +81,7 @@ impl ViewFs {
                 continue;
             };
             let path = root.join(rel);
-            if let Some((served, dropped)) = without_unloadable_extends(&text, &path, &view.files) {
+            if let Some((served, dropped)) = without_unloadable_extends(&text, &path, &view) {
                 for entry in dropped {
                     warnings.push(format!(
                         "{}: extends `{entry}` is not in the scanned files; its options are \
@@ -88,7 +117,7 @@ fn is_tsconfig(file: &Path) -> bool {
 fn without_unloadable_extends(
     text: &str,
     path: &Path,
-    files: &HashSet<PathBuf>,
+    view: &View,
 ) -> Option<(String, Vec<String>)> {
     let mut stripped = text.trim_start_matches('\u{feff}').to_owned();
     json_strip_comments::strip(&mut stripped).ok()?;
@@ -98,7 +127,7 @@ fn without_unloadable_extends(
     let dir = path.parent()?;
     let (kept, dropped): (Vec<String>, Vec<String>) = entries
         .into_iter()
-        .partition(|entry| extended(dir, entry, files).is_some());
+        .partition(|entry| view.extended(dir, entry).is_some());
     if dropped.is_empty() {
         return None;
     }
@@ -118,24 +147,6 @@ fn without_unloadable_extends(
         }
     }
     Some((value.to_string(), dropped))
-}
-
-/// The tsconfig an `extends` entry names, when the view holds it. Only
-/// paths can: a package lives in `node_modules`, which the view never shows.
-fn extended(dir: &Path, entry: &str, files: &HashSet<PathBuf>) -> Option<PathBuf> {
-    if !(entry.starts_with('.') || entry.starts_with('/')) {
-        return None;
-    }
-    let target = normalize(&dir.join(entry));
-    let mut with_json = target.clone().into_os_string();
-    with_json.push(".json");
-    [
-        target.clone(),
-        PathBuf::from(with_json),
-        target.join("tsconfig.json"),
-    ]
-    .into_iter()
-    .find(|candidate| files.contains(candidate))
 }
 
 /// The `extends` entries of a tsconfig, in order.
@@ -177,7 +188,7 @@ impl ViewFs {
         }
         let dir = path.parent()?;
         extends_entries(&value)?.iter().rev().find_map(|entry| {
-            let target = extended(dir, entry, &self.0.files)?;
+            let target = self.0.extended(dir, entry)?;
             self.module_detection(&target, depth + 1)
         })
     }
@@ -198,6 +209,45 @@ fn normalize(path: &Path) -> PathBuf {
     out
 }
 
+impl View {
+    /// The tsconfig an `extends` entry names, when the view holds it: a
+    /// path, or a file of a package the view links (a workspace member that
+    /// holds configuration); other packages live in `node_modules`, which
+    /// the view never shows.
+    fn extended(&self, dir: &Path, entry: &str) -> Option<PathBuf> {
+        let target = if entry.starts_with('.') || entry.starts_with('/') {
+            normalize(&dir.join(entry))
+        } else {
+            self.through_link(&self.root.join("node_modules").join(entry))?
+        };
+        let mut with_json = target.clone().into_os_string();
+        with_json.push(".json");
+        [
+            target.clone(),
+            PathBuf::from(with_json),
+            target.join("tsconfig.json"),
+        ]
+        .into_iter()
+        .find(|candidate| self.files.contains(candidate))
+    }
+
+    /// `path` through the link it lies below, if any: what the linked
+    /// directory holds there.
+    fn through_link(&self, path: &Path) -> Option<PathBuf> {
+        path.ancestors().find_map(|link| {
+            let target = self.links.get(link)?;
+            let rest = path.strip_prefix(link).ok()?;
+            Some(target.join(rest))
+        })
+    }
+
+    /// `path` as the view holds it: through a link, or as it is.
+    fn real(&self, path: &Path) -> PathBuf {
+        self.through_link(path)
+            .unwrap_or_else(|| path.to_path_buf())
+    }
+}
+
 fn not_in_view(path: &Path) -> io::Error {
     io::Error::new(
         io::ErrorKind::NotFound,
@@ -211,53 +261,55 @@ impl FileSystem for ViewFs {
     }
 
     fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
-        if let Some(text) = self.0.served.get(path) {
-            return Ok(text.clone().into_bytes());
-        }
-        if self.0.files.contains(path) {
-            std::fs::read(path)
-        } else {
-            Err(not_in_view(path))
-        }
+        self.read_to_string(path).map(String::into_bytes)
     }
 
     fn read_to_string(&self, path: &Path) -> io::Result<String> {
-        if let Some(text) = self.0.served.get(path) {
+        let path = self.0.real(path);
+        if let Some(text) = self.0.served.get(&path) {
             return Ok(text.clone());
         }
-        if self.0.files.contains(path) {
+        if self.0.files.contains(&path) {
             std::fs::read_to_string(path)
         } else {
-            Err(not_in_view(path))
+            Err(not_in_view(&path))
         }
     }
 
     fn metadata(&self, path: &Path) -> io::Result<FileMetadata> {
-        if self.0.files.contains(path) {
+        let path = self.0.real(path);
+        if self.0.files.contains(&path) {
             Ok(FileMetadata::new(true, false, false))
-        } else if self.0.dirs.contains(path) {
+        } else if self.0.dirs.contains(&path) {
             Ok(FileMetadata::new(false, true, false))
         } else {
-            Err(not_in_view(path))
+            Err(not_in_view(&path))
         }
     }
 
     fn symlink_metadata(&self, path: &Path) -> io::Result<FileMetadata> {
-        self.metadata(path)
+        if self.0.links.contains_key(path) {
+            Ok(FileMetadata::new(false, false, true))
+        } else {
+            self.metadata(path)
+        }
     }
 
     fn read_link(&self, path: &Path) -> Result<PathBuf, ResolveError> {
-        Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("not a link: {}", path.display()),
-        )
-        .into())
+        match self.0.links.get(path) {
+            Some(target) => Ok(target.clone()),
+            None => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("not a link: {}", path.display()),
+            )
+            .into()),
+        }
     }
 
-    /// Paths stay as the scan sees them: the view has no links, and the
-    /// root is canonical already.
+    /// Paths stay as the scan sees them, through the links of the view:
+    /// the root is canonical already.
     fn canonicalize(&self, path: &Path) -> io::Result<PathBuf> {
-        Ok(path.to_path_buf())
+        Ok(self.0.real(path))
     }
 }
 
@@ -329,6 +381,41 @@ pub(crate) mod tests {
         assert_eq!(served["extends"], "./tsconfig.base.json");
         assert_eq!(served["compilerOptions"]["paths"]["@/*"][0], "./src/*");
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn an_extends_of_a_linked_package_loads() {
+        // a config-only workspace member, linked by name
+        let root = repo(
+            "linked-extends",
+            &[
+                (
+                    "packages/tsconfig/package.json",
+                    "{ \"name\": \"@acme/tsconfig\" }",
+                ),
+                (
+                    "packages/tsconfig/base.json",
+                    "{ \"compilerOptions\": { \"strict\": true } }",
+                ),
+                (
+                    "apps/web/tsconfig.json",
+                    "{ \"extends\": [\"@acme/tsconfig/base.json\", \"@acme/tsconfig/react\"] }",
+                ),
+                ("packages/tsconfig/react.json", "{}"),
+            ],
+        );
+        let ctx = RepoContext::load(&root, ScanOptions::default()).unwrap();
+        let links = BTreeMap::from([(
+            "@acme/tsconfig".to_owned(),
+            PathBuf::from("packages/tsconfig"),
+        )]);
+        let mut warnings = Vec::new();
+        let view = ViewFs::new_linked(&ctx, &links, &mut warnings);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        // the resolver reads the member through the link
+        let linked = root.join("node_modules/@acme/tsconfig/base.json");
+        assert!(view.metadata(&linked).is_ok_and(|m| m.is_file()));
     }
 
     #[test]

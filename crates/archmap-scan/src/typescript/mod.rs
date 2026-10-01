@@ -49,6 +49,7 @@ mod layout;
 mod package;
 mod resolve;
 mod source;
+mod workspace;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -103,7 +104,28 @@ impl Analyzer for TypeScriptAnalyzer {
                 display_path(renamed)
             ));
         }
-        emit_components(&layout, &manifests, &mut output);
+        // the packages an install links by name: workspace members and the
+        // targets of `file:` dependencies
+        let pnpm: BTreeMap<PathBuf, Vec<String>> = ctx
+            .files_named("pnpm-workspace.yaml")
+            .filter_map(|rel| {
+                let text = ctx.read_to_string(rel).ok()?;
+                let dir = rel.parent().unwrap_or(Path::new("")).to_path_buf();
+                Some((dir, workspace::pnpm_patterns(&text)))
+            })
+            .collect();
+        let links = workspace::links(&manifests, &pnpm);
+        let linked: BTreeMap<String, ComponentId> = links
+            .iter()
+            .filter_map(|(name, dir)| {
+                let package = layout
+                    .packages
+                    .iter()
+                    .find(|p| p.manifest.as_deref() == Some(dir.as_path()))?;
+                Some((name.clone(), package.id.clone()))
+            })
+            .collect();
+        emit_components(&layout, &manifests, &linked, &mut output);
         for file in &code {
             if let Some(language) = language_of(file) {
                 output.read.entry(language.to_owned()).or_insert(0);
@@ -113,8 +135,10 @@ impl Analyzer for TypeScriptAnalyzer {
             return Ok(output);
         }
 
-        let resolver =
-            resolve::ImportResolver::new(ctx.root(), fs::ViewFs::new(ctx, &mut output.warnings));
+        let resolver = resolve::ImportResolver::new(
+            ctx.root(),
+            fs::ViewFs::new_linked(ctx, &links, &mut output.warnings),
+        );
         let aliases = resolve::Aliases::collect(ctx);
         let mut problems = BTreeSet::new();
         // Every file is parsed and its imports resolved before any import is
@@ -228,6 +252,7 @@ impl Analyzer for TypeScriptAnalyzer {
                     .map(|(dir, m)| (dir.as_path(), m))
                     .collect(),
                 aliases: &aliases,
+                linked: &linked,
                 file: read.file,
                 test: is_test_code(read.file),
             };
@@ -383,6 +408,7 @@ fn read_manifests(ctx: &RepoContext, warnings: &mut Vec<String>) -> BTreeMap<Pat
 fn emit_components(
     layout: &Layout,
     manifests: &BTreeMap<PathBuf, PackageJson>,
+    linked: &BTreeMap<String, ComponentId>,
     output: &mut AnalyzerOutput,
 ) {
     // The source root's `index.*` of each package: the package's own file,
@@ -428,6 +454,16 @@ fn emit_components(
             .filter(|d| d.section.required())
         {
             let evidence = declared_at(dir, declaration);
+            // a package of the repository, whatever the version says
+            if let Some(member) = linked.get(&declaration.name) {
+                if *member != package.id {
+                    output.fragment.push_edge(
+                        Edge::new(package.id.clone(), member.clone(), EdgeKind::Dependency)
+                            .with_evidence(evidence),
+                    );
+                }
+                continue;
+            }
             output.fragment.push_component(external(
                 declaration,
                 package.language,
@@ -496,6 +532,8 @@ struct Imports<'a> {
     /// resolvable there.
     manifests: Vec<(&'a Path, &'a PackageJson)>,
     aliases: &'a resolve::Aliases,
+    /// The packages of the repository an install links by name.
+    linked: &'a BTreeMap<String, ComponentId>,
     file: &'a Path,
     /// The file is test code.
     test: bool,
@@ -626,6 +664,20 @@ impl Imports<'_> {
                         UnmappedReason::LocalName,
                         note,
                     ));
+                    return;
+                }
+                if let Some(member) = self.linked.get(package) {
+                    // A package of the repository whose entry is built
+                    // (`dist/`): the dependency is there, the file is not.
+                    let note = format!(
+                        "{} {spec}: a package of the repository whose entry is no scanned file",
+                        import.note
+                    );
+                    output.fragment.push_edge(
+                        Edge::new(from.clone(), member.clone(), EdgeKind::Import).with_evidence(
+                            self.evidence(import).type_only(type_only).with_note(note),
+                        ),
+                    );
                     return;
                 }
                 let declared = self

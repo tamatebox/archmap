@@ -189,6 +189,14 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   an edge records no names and gives one evidence, `type_only` when every name is a type; `via`
   evidence is `type_only` when the name is imported as a type or a re-export on the way passes it on
   as one (`export type { A } from`)
+- the packages an install links by name are linked in the resolver's view as `node_modules/<name>`: the members
+  of a workspace (`workspaces` in a `package.json`, an array or `{ "packages": [..] }`, and
+  `pnpm-workspace.yaml`; `!` patterns leave members out) and the directories of `file:`, `link:` and `portal:`
+  dependencies, never another package of the same name; a bare import of one resolves to its files through its
+  `exports` or `main` (when a `types` condition leads outside the scan, the next condition answers), one whose
+  entry is outside the scan (`dist/`) is an `import` edge to the package without a file, a declaration of one
+  is a `dependency` edge to that package whatever its version (`workspace:*`, `^1.0.0`), and a tsconfig
+  `extends` of one loads
 - a bare specifier that resolves to no file is matched by package name to the closest `package.json` above
   the importing file that declares it, so a monorepo root's dependencies count for its packages (`@types/x`
   covers `x`): a required declaration gives an edge, another an import without an edge
@@ -252,7 +260,6 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
 - Declarations inside `declare global { .. }`, triple-slash directives (`/// <reference types="vite/client" />`),
   spreads in `module.exports = { ...require('./a') }` and `Object.defineProperty(exports, 'a', ..)`
   are not read.
-- Workspace packages are not linked.
 - Aliases defined only in a bundler configuration, `jsconfig.json` and Deno import maps are not
   read: an import through such an alias is `unresolved` when a tsconfig or jsconfig declares its
   pattern, `local name` when it names a top directory of the source root (`@components/button`),
