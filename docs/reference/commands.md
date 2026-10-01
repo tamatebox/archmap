@@ -107,6 +107,15 @@ archmap scan ../some-python-repo
 commands re-scan and never read it. Where it writes and what it leaves
 alone is in [graph.md](graph.md#output).
 
+Every command reads every file below the root except hidden ones, those
+that `.gitignore` or `.ignore` leave out, `.git`, `node_modules` and
+`__pycache__`, and build output: `dist/` and `build/` beside a
+`package.json`, `pyproject.toml`, `setup.py` or `setup.cfg`, `build/` and
+`target/` beside a `pom.xml`, `build.gradle(.kts)` or `build.sbt`, and
+`target/` beside a `Cargo.toml`, unless it holds an `__init__.py`. A
+directory of those names anywhere else, such as a package named `build`,
+is read.
+
 ## query
 
 ```bash

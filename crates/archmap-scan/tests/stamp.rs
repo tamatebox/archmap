@@ -85,6 +85,8 @@ fn editing_adding_deleting_or_renaming_a_file_changes_the_stamp() {
 fn files_the_scan_skips_leave_the_stamp_alone() {
     let repo = Repo::new("skipped");
     repo.write("ignored.py", "x = 1\n");
+    // `target/` beside a `Cargo.toml` is build output
+    repo.write("Cargo.toml", "[package]\nname = \"x\"\n");
     repo.write("target/debug/out.txt", "x\n");
     repo.write(".git/HEAD", "ref: refs/heads/main\n");
     assert!(!changes(&repo, |r| {
