@@ -56,7 +56,8 @@ contains:
   loads only when it takes the barrel whole or a name the barrel declares. Statements of a component's own entry file (an
   `index.*`, an `__init__.py`) into its own submodules say what it holds
   rather than what it depends on: they are counted in a `not listed:` line
-- external dependencies with the manifests that declare them (`declared:`),
+- external dependencies with the manifests that declare them (`declared:`,
+  the first 3 and a count of the rest),
   the number of components whose production code imports them
   (`importers:`), the top importers, and `test importers: K` for components
   that import them only in test code
@@ -64,7 +65,9 @@ contains:
   `dependents`, `dependencies` and `rank`
 
 The summary is an index for choosing what to `query` next, so it stays
-small however large the repository is. The component tree lists the
+small however large the repository is. A list shows a component by its name,
+or by its id where several components share the name (`types.ts` in each
+package of a monorepo), so that every entry can be queried as written. The component tree lists the
 packages first and then the modules with the most dependents plus
 dependencies, each only when it fits with its ancestors, up to 30 lines.
 Internal dependencies keep 30: those between packages first, then those
@@ -212,7 +215,8 @@ calls, and a path that names no component or file is an error. `direct` and
 `transitive` follow production code; `tests` counts the files that reach the
 target only through test code, and a changed component's own test files: the
 tests to run again after the change, those beside production code included,
-the first 20 by path shown. A file that production code reaches is not
+the first 20 by path shown (`--verbose` lists every one, and every importer).
+A file that production code reaches is not
 repeated there: its unit tests run with its package. For Rust, only test
 code in other crates is recorded: a crate's own unit tests are not, and
 integration tests under `tests/` are not read. For a file target, `importers` lists the statements that

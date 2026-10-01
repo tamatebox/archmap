@@ -213,9 +213,9 @@ fn summary_is_deterministic_markdown() {
         "\n  shop  path: src/shop  symbols: 3\n",
         "\n    shop.billing  path: src/shop/billing  symbols: 4\n",
         "## Internal dependencies\n",
-        "\nshop.billing -> shop  imports: 2\n",
+        "\nshop.billing -> shop::shop  imports: 2\n",
         // test code is counted apart
-        "\ntests -> shop  tests: 1\n",
+        "\ntests -> shop::shop  tests: 1\n",
         // `src/shop/__init__.py` imports its own subpackage
         "\nnot listed: 1 statement of entry files into their own component's submodules\n",
         "## External dependencies\n",
@@ -223,7 +223,7 @@ fn summary_is_deterministic_markdown() {
         "\npyyaml  declared: requirements.txt  importers: 1  top: shop.billing 1\n",
         "## Most depended on\n",
         // tests make no dependents
-        "\nshop  dependents: 2  dependencies: 0  rank: 1/7\n",
+        "\nshop::shop  dependents: 2  dependencies: 0  rank: 1/7\n",
     ] {
         assert!(first.contains(expected), "missing `{expected}` in:\n{first}");
     }
@@ -243,7 +243,11 @@ fn summary_depth_controls_the_roll_up() {
         shallow.contains("\n  shop  path: src/shop  symbols: 9  folded: 3\n"),
         "{shallow}"
     );
-    assert!(shallow.contains("\ntests -> shop  tests: 3\n"), "{shallow}");
+    // the project and its package are both named `shop`: lists show the id
+    assert!(
+        shallow.contains("\ntests -> shop::shop  tests: 3\n"),
+        "{shallow}"
+    );
 
     let packages_only = summary_stdout(&["--depth", "0"]);
     assert!(
@@ -1944,4 +1948,20 @@ fn summary_and_query_count_a_pair_alike() {
         query.contains("1 import, 6 of its entry file: next.config.ts:1 -> src/lib/limits.ts, "),
         "{query}"
     );
+}
+
+#[test]
+fn impact_lists_every_importer_and_test_with_verbose() {
+    let capped = ts_stdout(&["impact", "src/lib/money.ts"]);
+    let full = ts_stdout(&["impact", "src/lib/money.ts", "--verbose"]);
+    let shown = |json: &str| -> (usize, usize) {
+        let value: serde_json::Value = serde_json::from_str(json).unwrap();
+        (
+            value["importers"]["shown"].as_array().unwrap().len(),
+            value["importers"]["total"].as_u64().unwrap() as usize,
+        )
+    };
+    let (capped_shown, total) = shown(&capped);
+    assert_eq!(capped_shown, 5);
+    assert_eq!(shown(&full), (total, total));
 }

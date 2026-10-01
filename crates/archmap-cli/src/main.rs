@@ -99,6 +99,9 @@ enum Command {
         depth: usize,
         #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
         format: OutputFormat,
+        /// List every importer and test file instead of the first few.
+        #[arg(long)]
+        verbose: bool,
     },
     /// Check the observed graph against the declared rules in `archmap.toml`.
     ///
@@ -148,7 +151,8 @@ fn main() -> ExitCode {
             path,
             depth,
             format,
-        } => commands::impact(&path, &target, depth, format),
+            verbose,
+        } => commands::impact(&path, &target, depth, format, verbose),
         Command::Check {
             path,
             config,

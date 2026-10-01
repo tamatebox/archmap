@@ -40,6 +40,10 @@ const MAX_DYNAMIC_IMPORTERS: usize = 5;
 /// How many names an `omitted:` line gives before counting the rest.
 const MAX_OMITTED_NAMES: usize = 5;
 
+/// How many manifests an external dependency's `declared:` names before
+/// counting the rest: a monorepo can declare one package in dozens.
+const MAX_DECLARATIONS: usize = 3;
+
 /// Coupling that no analyzer reads, whatever the repository contains.
 const RUNTIME_COUPLING: &str = "runtime coupling: not analyzed \
      (HTTP, databases, queues, subprocesses, configuration-driven loading)";
@@ -743,7 +747,7 @@ fn external_dependencies(rolled: &ArchitectureGraph, ranked: &[External], cap: u
         let mut line = ext.component.name.clone();
         if !ext.declared_in.is_empty() {
             let files: Vec<&str> = ext.declared_in.iter().copied().collect();
-            let _ = write!(line, "  declared: {}", files.join(", "));
+            let _ = write!(line, "  declared: {}", names(&files, MAX_DECLARATIONS));
         }
         if ext.importers.is_empty() && ext.tests == 0 {
             line.push_str("  importers: none resolved");
@@ -855,8 +859,13 @@ fn internal_id(graph: &ArchitectureGraph, id: &ComponentId) -> bool {
     graph.component(id).is_some_and(is_internal)
 }
 
+/// The name a list shows for `id`: its name, or its id when several
+/// components share the name (`types.ts` in each package of a monorepo).
 fn name_of<'a>(graph: &'a ArchitectureGraph, id: &'a ComponentId) -> &'a str {
-    graph.component(id).map_or(id.as_str(), |c| c.name.as_str())
+    match graph.component(id) {
+        Some(c) if graph.components_named(&c.name).nth(1).is_none() => c.name.as_str(),
+        _ => id.as_str(),
+    }
 }
 
 #[cfg(test)]
@@ -1227,6 +1236,57 @@ mod tests {
         assert_eq!(
             section(&out, "Internal dependencies"),
             "app -> shapes  imports: 1\napp -> shapes::circle  imports: 1\n"
+        );
+    }
+
+    #[test]
+    fn a_name_that_several_components_share_reads_as_the_id() {
+        // two packages each hold a `types.ts`
+        let named = |id: &str, parent: &str| {
+            let mut c = module(id, parent);
+            c.name = "types.ts".into();
+            c
+        };
+        let graph = graph(
+            vec![
+                package("p"),
+                package("q"),
+                named("p::types", "p"),
+                named("q::types", "q"),
+                module("p::a", "p"),
+            ],
+            vec![import("p::a", "p::types", 2), import("p::a", "q::types", 1)],
+        );
+        let out = render_with(&graph, 1, limits(30, 30, 20));
+        assert_eq!(
+            section(&out, "Internal dependencies"),
+            "p::a -> p::types  imports: 2\np::a -> q::types  imports: 1\n"
+        );
+        assert!(
+            section(&out, "Most depended on").starts_with("p::types  dependents: 1"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn an_external_dependency_names_its_first_declarations() {
+        let mut graph = graph(
+            (1..=5)
+                .map(|i| package(&format!("p{i}")))
+                .chain([external("serde")])
+                .collect(),
+            Vec::new(),
+        );
+        graph.add_edges((1..=5).map(|i| {
+            Edge::new(format!("p{i}"), "ext:cargo:serde", EdgeKind::Dependency)
+                .with_evidence(Evidence::new(format!("p{i}/Cargo.toml")))
+        }));
+        let out = render_with(&graph, 1, limits(30, 30, 20));
+        assert!(
+            section(&out, "External dependencies").starts_with(
+                "serde  declared: p1/Cargo.toml, p2/Cargo.toml, p3/Cargo.toml, +2 more  importers"
+            ),
+            "{out}"
         );
     }
 

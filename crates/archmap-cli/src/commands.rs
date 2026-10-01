@@ -495,9 +495,9 @@ pub struct ImportSite {
     pub test: bool,
 }
 
-fn import_sites(full: &ArchitectureGraph, depth: usize, file: &str) -> ImportSites {
+fn import_sites(full: &ArchitectureGraph, depth: usize, file: &str, cap: usize) -> ImportSites {
     let facts = full.file_facts(file);
-    sites_of(full, depth, &facts.importers, facts.importers_recorded)
+    sites_of(full, depth, &facts.importers, facts.importers_recorded, cap)
 }
 
 /// One site per statement, sorted by place; the first few shown.
@@ -506,6 +506,7 @@ fn sites_of(
     depth: usize,
     statements: &[(&Edge, &Evidence)],
     recorded: bool,
+    cap: usize,
 ) -> ImportSites {
     let mut sites: Vec<ImportSite> = Vec::new();
     for (edge, e) in statements {
@@ -521,7 +522,7 @@ fn sites_of(
     // production code first
     sites.sort_by(|a, b| (a.test, &a.file, a.line).cmp(&(b.test, &b.file, b.line)));
     let total = sites.len();
-    sites.truncate(MAX_IMPORT_SITES);
+    sites.truncate(cap);
     ImportSites {
         recorded,
         total,
@@ -580,7 +581,17 @@ fn ambiguous_symbols(target: &str, symbols: &[&Symbol]) -> String {
     message
 }
 
-pub fn impact(path: &str, target: &str, depth: usize, format: OutputFormat) -> Result<ExitCode> {
+pub fn impact(
+    path: &str,
+    target: &str,
+    depth: usize,
+    format: OutputFormat,
+    verbose: bool,
+) -> Result<ExitCode> {
+    let (sites_cap, tests_cap) = match verbose {
+        true => (usize::MAX, usize::MAX),
+        false => (MAX_IMPORT_SITES, MAX_TEST_FILES),
+    };
     // Import edges come from source, so impact needs a full scan.
     let report = run_scan(path, false)?;
     let full = &report.graph;
@@ -594,30 +605,42 @@ pub fn impact(path: &str, target: &str, depth: usize, format: OutputFormat) -> R
     let (mut symbol_id, mut may_use) = (None, None);
     let (at, reach) = if let Some(component) = component {
         let reach = full.change_impact(ChangeSeed::Component(&component.id), depth);
-        importers =
-            component_file(full, path, component).map(|file| import_sites(full, depth, &file));
+        importers = component_file(full, path, component)
+            .map(|file| import_sites(full, depth, &file, sites_cap));
         (fold(full, depth, &component.id), reach)
     } else if let Some(file) = file_target(path, target) {
         let owner = full
             .component_for_path(&file)
             .with_context(|| format!("no component contains `{target}`"))?;
         let reach = full.change_impact(ChangeSeed::File(&file), depth);
-        importers = Some(import_sites(full, depth, &file));
+        importers = Some(import_sites(full, depth, &file, sites_cap));
         (fold(full, depth, &owner.id), reach)
     } else if let [symbol] = symbols.as_slice() {
         match full.component(&ComponentId::new(symbol.id.as_str())) {
             // a Rust module's symbol stands for its component
             Some(module) => {
                 let reach = full.change_impact(ChangeSeed::Component(&module.id), depth);
-                importers =
-                    component_file(full, path, module).map(|file| import_sites(full, depth, &file));
+                importers = component_file(full, path, module)
+                    .map(|file| import_sites(full, depth, &file, sites_cap));
                 (fold(full, depth, &module.id), reach)
             }
             None => {
                 let reach = full.change_impact(ChangeSeed::Symbol(symbol), depth);
                 if let Some(found) = full.symbol_importers(symbol) {
-                    importers = Some(sites_of(full, depth, &found.by_name, found.recorded));
-                    may_use = Some(sites_of(full, depth, &found.may_use, found.recorded));
+                    importers = Some(sites_of(
+                        full,
+                        depth,
+                        &found.by_name,
+                        found.recorded,
+                        sites_cap,
+                    ));
+                    may_use = Some(sites_of(
+                        full,
+                        depth,
+                        &found.may_use,
+                        found.recorded,
+                        sites_cap,
+                    ));
                 }
                 symbol_id = Some(symbol.id.clone());
                 (fold(full, depth, &symbol.component), reach)
@@ -647,7 +670,7 @@ pub fn impact(path: &str, target: &str, depth: usize, format: OutputFormat) -> R
         transitive: reach.transitive.into_iter().collect(),
         tests: TestFiles {
             total: reach.tests.len(),
-            shown: reach.tests.into_iter().take(MAX_TEST_FILES).collect(),
+            shown: reach.tests.into_iter().take(tests_cap).collect(),
         },
         target: at.id,
         folded_from: at.folded_from,
