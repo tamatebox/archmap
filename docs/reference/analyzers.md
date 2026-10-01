@@ -245,12 +245,16 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   tsconfig with `"moduleDetection": "force"` (declaration files stay scripts then)
 - the imports of test code carry `test` in their evidence (see [graph.md](graph.md)): `*.test.*` and
   `*.spec.*` files (`*.test-d.*` and `*.spec-d.*` too) and any file below a `test`, `tests`, `__tests__` or `__mocks__` directory, helpers
-  included; stories are not test code
+  included; stories are not test code; below the routes of a package whose own `package.json` declares
+  `next` (`app/`, `pages/`, `src/app/`, `src/pages/`), a directory named `test` or `tests` is a URL
+  segment (`app/test/page.tsx` is the page `/test`), while test file names, `__tests__` and `__mocks__`
+  keep their meaning
 
 ### TypeScript and JavaScript known gaps
 
-- A route directory named `test` or `tests` (`app/test/page.tsx` in frameworks whose directories
-  are URLs) is test code by the rule above, so its imports carry `test`.
+- Routes are read for Next.js only: in the route directories of Remix (`app/routes/`), SvelteKit
+  (`src/routes/`), Nuxt and Astro (`pages/`), a directory named `test` or `tests` is test code by the
+  rule above, so its imports carry `test`.
 - `require`, `import()` and the mock calls take the whole module: destructured names
   (`const { pad } = require('./format.cjs')`) are not read, so `query` on a symbol lists them under
   `May use`. A `vi.mock` with a factory, which never loads the real module, is an edge all the same,

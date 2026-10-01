@@ -211,6 +211,7 @@ impl Analyzer for TypeScriptAnalyzer {
                 };
                 emit_symbols(owner, file, symbols, &mut output);
             }
+            let package = &layout.packages[owner.package];
             for call in &parsed.dynamic {
                 output.fragment.push_dynamic_import(DynamicImport {
                     from: owner.component.clone(),
@@ -218,7 +219,7 @@ impl Analyzer for TypeScriptAnalyzer {
                     evidence: Evidence::new(display_path(file))
                         .at_line(call.line)
                         .in_scope(scope(call.local))
-                        .in_test(is_test_code(file)),
+                        .in_test(test_code(file, package, &manifests)),
                 });
             }
             let own_name = layout.packages[owner.package]
@@ -276,7 +277,7 @@ impl Analyzer for TypeScriptAnalyzer {
                 aliases: &aliases,
                 linked: &linked,
                 file: read.file,
-                test: is_test_code(read.file),
+                test: test_code(read.file, package, &manifests),
             };
             for (import, resolved) in read.imports.iter().zip(&read.resolved) {
                 match resolved {
@@ -323,6 +324,44 @@ impl Analyzer for TypeScriptAnalyzer {
         output.warnings.extend(problems);
         Ok(output)
     }
+}
+
+/// The directories of a Next.js package whose subdirectories are URL
+/// segments.
+const NEXT_ROUTES: [&str; 4] = ["app", "pages", "src/app", "src/pages"];
+
+/// Whether `file`, a file of `package`, is test code: by the rule every
+/// analyzer shares, except that below the routes of a package that declares
+/// `next`, a directory named `test` or `tests` is the URL `/test`
+/// (`app/test/page.tsx`), while test file names, `__tests__` and
+/// `__mocks__` keep their meaning there.
+fn test_code(file: &Path, package: &Package, manifests: &BTreeMap<PathBuf, PackageJson>) -> bool {
+    let next = package
+        .manifest
+        .as_ref()
+        .and_then(|dir| manifests.get(dir))
+        .is_some_and(|m| m.declarations.iter().any(|d| d.name == "next"));
+    let routes = NEXT_ROUTES
+        .iter()
+        .map(|r| package.dir.join(r))
+        .find(|r| next && file.starts_with(r));
+    let Some(routes) = routes else {
+        return is_test_code(file);
+    };
+    // the directories below the routes, as segments the rule never reads
+    let mut segments = routes;
+    let below = file.strip_prefix(&segments).unwrap_or(file).to_path_buf();
+    let mut parts = below.components().peekable();
+    while let Some(part) = parts.next() {
+        let name = part.as_os_str();
+        let is_dir = parts.peek().is_some();
+        segments.push(if is_dir && (name == "test" || name == "tests") {
+            std::ffi::OsStr::new("route")
+        } else {
+            name
+        });
+    }
+    is_test_code(&segments)
 }
 
 /// Whether TypeScript reads `file`, which has no module syntax, as a script,

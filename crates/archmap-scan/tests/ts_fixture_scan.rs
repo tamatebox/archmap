@@ -1834,3 +1834,46 @@ fn a_self_import_walks_no_re_export() {
         .collect();
     assert_eq!(walked, []);
 }
+
+#[test]
+fn a_next_route_named_test_is_production_code() {
+    // in a Next.js package, `app/test/` is the URL `/test`
+    let root = temp_repo(
+        "next-routes",
+        &[
+            (
+                "package.json",
+                "{ \"name\": \"site\", \"dependencies\": { \"next\": \"15\" } }",
+            ),
+            ("lib/db.ts", "export const db = 1;\n"),
+            (
+                "app/test/page.tsx",
+                "import { db } from '../../lib/db';\nexport default function Page() { return db; }\n",
+            ),
+            ("app/tests/page.test.ts", "import { db } from '../../lib/db';\n"),
+            ("app/__tests__/page.ts", "import { db } from '../../lib/db';\n"),
+            ("tests/next/app/page.ts", "import { db } from '../../../lib/db';\n"),
+        ],
+    );
+    let report = scan(&root, &ScanOptions::default()).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    let test: BTreeMap<&str, bool> = report
+        .graph
+        .edges
+        .iter()
+        .flat_map(|e| &e.evidence)
+        .filter(|e| e.target.as_deref() == Some("lib/db.ts"))
+        .map(|e| (e.file.as_str(), e.test))
+        .collect();
+    assert_eq!(
+        test,
+        BTreeMap::from([
+            ("app/test/page.tsx", false),
+            // a test file name and `__tests__` stay test code, and so does
+            // a whole app below `tests/`
+            ("app/tests/page.test.ts", true),
+            ("app/__tests__/page.ts", true),
+            ("tests/next/app/page.ts", true),
+        ])
+    );
+}

@@ -41,7 +41,8 @@ analyzer records `names`.
 Python and TS/JS a file named `*.test.*`, `*.spec.*` (Vitest's type tests
 `*.test-d.*` and `*.spec-d.*` too), `test_*.py`, `*_test.py` or
 `conftest.py`, or any file below a directory named `test`,
-`tests`, `__tests__` or `__mocks__`; for Rust, code under `#[cfg(test)]` or
+`tests`, `__tests__` or `__mocks__` (not `test` or `tests` below the routes
+of a Next.js package, where they are URL segments); for Rust, code under `#[cfg(test)]` or
 `#[test]`, never a path. It is on the evidence of edges, imports without an
 edge and dynamic imports. Rules (`deny`, `layers`, `allow`), cycles and
 signals are about production code and leave it out (an edge counts when
