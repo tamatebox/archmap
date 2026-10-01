@@ -210,7 +210,8 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   importing file declares as an alias (`@ui/card` for `@ui/*`; a catch-all `*` is not taken as one), so another
   package's alias hides no undeclared import; the package's own name, when its entry (`dist/`) is not scanned, is
   `local_name`; Node built-ins (`node:fs`, `fs`, `crypto`) are left out
-- exported declarations become symbols with signatures, in which a parameter's default value reads `…`:
+- exported declarations become symbols with signatures, in which a parameter's default value and the
+  arguments of a call in `extends` read `…` (`extends Base(…)`) and decorators are left out, line included:
   functions and arrow functions, classes and their
   public methods as `Class.method`, interfaces, type aliases (with their right-hand side), enums, namespaces
   and constants, a named default by its declared name; a constant without a declared type shows the

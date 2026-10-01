@@ -11,11 +11,12 @@ use std::path::Path;
 use archmap_core::{SymbolKind, WHOLE_MODULE};
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    AssignmentExpression, AssignmentPattern, AssignmentTarget, CallExpression, Class, ClassElement,
-    Declaration, ExportDefaultDeclarationKind, Expression, FormalParameter, FormalParameters,
-    Function, ImportDeclarationSpecifier, ImportExpression, MethodDefinitionKind, ObjectProperty,
-    ObjectPropertyKind, Statement, TSAccessibility, TSImportEqualsDeclaration, TSImportType,
-    TSImportTypeQualifier, TSModuleReference,
+    Argument, AssignmentExpression, AssignmentPattern, AssignmentTarget, CallExpression, Class,
+    ClassElement, Declaration, Decorator, ExportDefaultDeclarationKind, Expression,
+    FormalParameter, FormalParameters, Function, ImportDeclarationSpecifier, ImportExpression,
+    MethodDefinitionKind, NewExpression, ObjectProperty, ObjectPropertyKind, Statement,
+    TSAccessibility, TSImportEqualsDeclaration, TSImportType, TSImportTypeQualifier,
+    TSModuleReference,
 };
 use oxc_ast::AstKind;
 use oxc_ast_visit::{walk, Visit};
@@ -125,14 +126,16 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
         .iter()
         .map(|c| (c.span.start, c.span.end))
         .collect();
-    let mut defaults = Defaults(Vec::new());
-    defaults.visit_program(&parsed.program);
-    defaults.0.sort_unstable();
+    let mut hidden = Hidden::default();
+    hidden.visit_program(&parsed.program);
+    hidden.values.sort_unstable();
+    hidden.decorators.sort_unstable();
     let source = Source {
         text,
         lines: &lines,
         comments: &comments,
-        defaults: &defaults.0,
+        values: &hidden.values,
+        decorators: &hidden.decorators,
     };
 
     // Top-level declarations by name, for `export { a }` and
@@ -681,20 +684,65 @@ fn within(spans: &[(u32, u32)], start: u32, end: u32) -> &[(u32, u32)] {
     &spans[first..first + inside]
 }
 
-/// The default values of parameters, destructured ones included.
-struct Defaults(Vec<(u32, u32)>);
+/// What a signature leaves out, since it can hold a secret as a constant
+/// can: the values a declaration is written with (parameter defaults,
+/// destructured ones included, and the arguments of calls in a class's
+/// `extends`) and its decorators, with what they are called with.
+#[derive(Default)]
+struct Hidden {
+    values: Vec<(u32, u32)>,
+    decorators: Vec<(u32, u32)>,
+}
 
-impl<'a> Visit<'a> for Defaults {
+impl<'a> Visit<'a> for Hidden {
     fn visit_formal_parameter(&mut self, it: &FormalParameter<'a>) {
         if let Some(value) = &it.initializer {
-            self.0.push((value.span().start, value.span().end));
+            self.values.push((value.span().start, value.span().end));
         }
         walk::walk_formal_parameter(self, it);
     }
 
     fn visit_assignment_pattern(&mut self, it: &AssignmentPattern<'a>) {
-        self.0.push((it.right.span().start, it.right.span().end));
+        self.values
+            .push((it.right.span().start, it.right.span().end));
         walk::walk_assignment_pattern(self, it);
+    }
+
+    fn visit_decorator(&mut self, it: &Decorator<'a>) {
+        self.decorators.push((it.span.start, it.span.end));
+    }
+
+    fn visit_class(&mut self, it: &Class<'a>) {
+        if let Some(heritage) = &it.heritage {
+            let mut arguments = Arguments(Vec::new());
+            arguments.visit_expression(&heritage.expression);
+            self.values.extend(arguments.0);
+        }
+        walk::walk_class(self, it);
+    }
+}
+
+/// The arguments of every call in an expression (`mixin(Base('x'))('y')`
+/// reads `mixin(…)(…)`).
+struct Arguments(Vec<(u32, u32)>);
+
+impl Arguments {
+    fn push(&mut self, arguments: &[Argument]) {
+        if let (Some(first), Some(last)) = (arguments.first(), arguments.last()) {
+            self.0.push((first.span().start, last.span().end));
+        }
+    }
+}
+
+impl<'a> Visit<'a> for Arguments {
+    fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
+        self.push(&it.arguments);
+        self.visit_expression(&it.callee);
+    }
+
+    fn visit_new_expression(&mut self, it: &NewExpression<'a>) {
+        self.push(&it.arguments);
+        self.visit_expression(&it.callee);
     }
 }
 
@@ -729,8 +777,10 @@ struct Source<'a> {
     lines: &'a LineIndex,
     /// Start and end offsets of every comment, in source order.
     comments: &'a [(u32, u32)],
-    /// Those of every parameter's default value, in source order.
-    defaults: &'a [(u32, u32)],
+    /// Those of every value a signature hides (see [`Hidden`]).
+    values: &'a [(u32, u32)],
+    /// Those of every decorator.
+    decorators: &'a [(u32, u32)],
 }
 
 impl Source<'_> {
@@ -738,16 +788,17 @@ impl Source<'_> {
         self.text.get(start as usize..end as usize).unwrap_or("")
     }
 
-    /// The text between two offsets with each comment in it replaced by a
-    /// space, since once whitespace is collapsed a `//` comment would read as
-    /// part of the code after it, and each parameter's default value by `…`,
-    /// since a default can hold a secret, as a constant can.
+    /// The text between two offsets with each comment and decorator in it
+    /// replaced by a space, since once whitespace is collapsed a `//`
+    /// comment would read as part of the code after it, and each value a
+    /// signature hides by `…`.
     fn code(&self, start: u32, end: u32) -> String {
         let mut holes: Vec<(u32, u32, &str)> = within(self.comments, start, end)
             .iter()
+            .chain(within(self.decorators, start, end))
             .map(|&(s, e)| (s, e, " "))
             .chain(
-                within(self.defaults, start, end)
+                within(self.values, start, end)
                     .iter()
                     .map(|&(s, e)| (s, e, "…")),
             )
@@ -772,8 +823,26 @@ impl Source<'_> {
         ExportedSymbol {
             name,
             kind,
-            line: self.lines.line(start),
+            line: self.lines.line(self.past_decorators(start)),
             signature: Some(signature(&self.code(start, end))),
+        }
+    }
+
+    /// Where the code at `start` begins once the decorators, comments and
+    /// whitespace before it are passed: a decorator is no part of the line
+    /// of what it decorates.
+    fn past_decorators(&self, start: u32) -> u32 {
+        let mut at = start;
+        loop {
+            let rest = self.text.get(at as usize..).unwrap_or("");
+            at += (rest.len() - rest.trim_start().len()) as u32;
+            let skipped = [self.decorators, self.comments]
+                .iter()
+                .find_map(|spans| spans.iter().find(|&&(s, _)| s == at));
+            match skipped {
+                Some(&(_, end)) => at = end,
+                None => return at,
+            }
         }
     }
 
@@ -1814,6 +1883,40 @@ export default local;
                 "export const sign = (key: string = …, { scope = … } = …) =>",
                 "export class Client",
                 "open(token = …)",
+            ]
+        );
+    }
+
+    #[test]
+    fn signatures_leave_out_decorators_and_what_extends_calls_with() {
+        let file = parse(
+            Path::new("x.ts"),
+            "export class Users {\n  @Get(':token')\n  static find(@Param('id') id: string): string {}\n}\n\
+             export @Tag('prod') class Later {}\n\
+             export class Mixed extends mixin(Base('hidden'))('more') {}\n\
+             @Injectable({ key: 'sk-1' })\nclass Svc {}\nexport { Svc };\n",
+        )
+        .unwrap();
+        let found: Vec<(&str, u32, &str)> = file
+            .symbols
+            .iter()
+            .map(|s| {
+                (
+                    s.name.as_str(),
+                    s.line,
+                    s.signature.as_deref().unwrap_or_default(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("Users", 1, "export class Users"),
+                // a decorator is no part of the line either
+                ("Users.find", 3, "static find(id: string): string"),
+                ("Later", 5, "export class Later"),
+                ("Mixed", 6, "export class Mixed extends mixin(…)(…)"),
+                ("Svc", 8, "class Svc"),
             ]
         );
     }
