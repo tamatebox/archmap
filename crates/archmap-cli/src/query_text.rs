@@ -261,10 +261,16 @@ fn neighbors<'a>(
     }
 
     let mut list: Vec<(&ComponentId, Neighbor)> = by_id.into_iter().collect();
+    for (_, n) in &mut list {
+        // production code first; test code is listed after it
+        n.imports.sort_by_key(|(e, _)| e.test);
+    }
+    let tests = |n: &Neighbor| n.imports.iter().filter(|(e, _)| e.test).count();
     list.sort_by(|a, b| {
-        b.1.imports
-            .len()
-            .cmp(&a.1.imports.len())
+        let production = |n: &Neighbor| n.imports.len() - tests(n);
+        production(&b.1)
+            .cmp(&production(&a.1))
+            .then_with(|| tests(&b.1).cmp(&tests(&a.1)))
             .then_with(|| a.0.cmp(b.0))
     });
     let total = list.len();
@@ -289,11 +295,15 @@ fn neighbors<'a>(
                 .collect();
             let more = n.imports.len().saturating_sub(caps.locations);
             truncated |= more > 0;
-            let mut part = format!(
-                "{}: {}",
-                plural(n.imports.len(), "import"),
-                locations.join(", ")
-            );
+            let in_tests = tests(n);
+            let counted = match n.imports.len() - in_tests {
+                0 => format!("{} in tests", plural(in_tests, "import")),
+                production if in_tests > 0 => {
+                    format!("{}, {in_tests} in tests", plural(production, "import"))
+                }
+                production => plural(production, "import"),
+            };
+            let mut part = format!("{counted}: {}", locations.join(", "));
             if more > 0 {
                 let _ = write!(part, ", +{more} more");
             }
@@ -628,6 +638,9 @@ fn import_location(evidence: &Evidence, more_files: usize, show_target: bool) ->
     // types only: erased before the program runs
     if evidence.type_only {
         out.push_str(" (type)");
+    }
+    if evidence.test {
+        out.push_str(" (test)");
     }
     if evidence.scope == Some(Scope::Local) {
         out.push_str(" (local)");

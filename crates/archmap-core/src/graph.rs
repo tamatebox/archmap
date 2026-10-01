@@ -266,12 +266,26 @@ impl ArchitectureGraph {
     /// import what changed, not through any file of a shared component.
     /// Dependencies without that detail (manifests, external packages,
     /// languages that do not record target files) are followed component
-    /// by component.
+    /// by component. `direct` and `transitive` follow production code;
+    /// `tests` holds what only test code reaches, the tests to run again.
     pub fn change_impact(&self, seed: ChangeSeed, depth: usize) -> Reach {
+        let mut reach = self.reach(seed, depth, false);
+        let with_tests = self.reach(seed, depth, true);
+        reach.tests = with_tests
+            .transitive
+            .difference(&reach.transitive)
+            .cloned()
+            .collect();
+        reach
+    }
+
+    /// The reach of a change through production code, and through test
+    /// code too when `tests`.
+    fn reach(&self, seed: ChangeSeed, depth: usize, tests: bool) -> Reach {
         let mut dependents: BTreeMap<Node, BTreeSet<Node>> = BTreeMap::new();
         let mut files: BTreeSet<&str> = BTreeSet::new();
         for edge in &self.edges {
-            for e in &edge.evidence {
+            for e in edge.evidence.iter().filter(|e| tests || !e.test) {
                 let importer = Node::File(e.file.as_str());
                 files.insert(e.file.as_str());
                 let target = match e.target.as_deref() {
@@ -322,6 +336,7 @@ impl ArchitectureGraph {
                             .by_name
                             .iter()
                             .chain(&found.may_use)
+                            .filter(|(_, e)| tests || !e.test)
                             .map(|(_, e)| (Node::File(e.file.as_str()), 1)),
                     );
                 }
@@ -734,6 +749,8 @@ pub struct Reach {
     pub direct: BTreeSet<ComponentId>,
     /// Every component reached, `direct` included.
     pub transitive: BTreeSet<ComponentId>,
+    /// Components that only test code reaches, directly or not.
+    pub tests: BTreeSet<ComponentId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1679,6 +1696,39 @@ mod tests {
         // the whole file reaches the other importer too
         let file = graph.change_impact(ChangeSeed::File("lib/money.ts"), 2);
         assert_eq!(ids(&file.direct), ["named", "other", "whole"]);
+    }
+
+    #[test]
+    fn change_impact_lists_apart_what_only_test_code_reaches() {
+        let mut graph = ArchitectureGraph::default();
+        for id in ["lib", "app", "spec", "both"] {
+            let mut c = Component::new(id, id, ComponentKind::Module);
+            c.path = Some(id.into());
+            graph.add_component(c);
+        }
+        let import = |from: &str, to: &str, file: &str, target: &str, test: bool| {
+            Edge::new(from, to, EdgeKind::Import).with_evidence(
+                Evidence::new(file)
+                    .at_line(1)
+                    .pointing_at(target)
+                    .in_test(test),
+            )
+        };
+        graph.add_edges([
+            import("app", "lib", "app/page.ts", "lib/money.ts", false),
+            import("spec", "lib", "spec/money.test.ts", "lib/money.ts", true),
+            // production code and a test of `both`
+            import("both", "lib", "both/a.ts", "lib/money.ts", false),
+            import("both", "lib", "both/a.test.ts", "lib/money.ts", true),
+            // a test of app, which production code reaches anyway
+            import("spec", "app", "spec/page.test.ts", "app/page.ts", true),
+        ]);
+        let reach = graph.change_impact(ChangeSeed::File("lib/money.ts"), 2);
+        let ids =
+            |set: &BTreeSet<ComponentId>| set.iter().map(|c| c.to_string()).collect::<Vec<_>>();
+        assert_eq!(ids(&reach.direct), ["app", "both"]);
+        assert_eq!(ids(&reach.transitive), ["app", "both"]);
+        assert_eq!(ids(&reach.tests), ["spec"]);
     }
 
     #[test]

@@ -381,13 +381,10 @@ fn impact_of_a_file_uses_the_summary_depth() {
     // does not use slack, so it is not reached
     assert_eq!(
         result["transitive"],
-        serde_json::json!([
-            "shop::scripts",
-            "shop::shop",
-            "shop::shop.billing",
-            "shop::tests"
-        ])
+        serde_json::json!(["shop::scripts", "shop::shop", "shop::shop.billing"])
     );
+    // only test code reaches tests
+    assert_eq!(result["tests"], serde_json::json!(["shop::tests"]));
 }
 
 #[test]
@@ -807,7 +804,7 @@ fn query_lists_imports_the_graph_does_not_map() {
     let tests = query_text(&python_fixture(), &["tests"]);
     assert!(
         tests.contains(
-            "\nNot mapped: 1\n  helpers  local name  1 import: tests/test_billing.py:3\n"
+            "\nNot mapped: 1\n  helpers  local name  1 import: tests/test_billing.py:3 (test)\n"
         ),
         "{tests}"
     );
@@ -930,7 +927,7 @@ fn query_a_rust_file_lists_the_statements_that_import_it() {
         "\nImports: 1\n  ext:cargo:serde  1 import: crates/lib_core/src/lib.rs:2\n",
         "\nImported by: 4\n",
         // a `use`, a module path in a function body, and a `use` in a test module
-        "\n  app::config                 3 imports: crates/app/src/config.rs:1, crates/app/src/config.rs:12 (local), crates/app/src/config.rs:17\n",
+        "\n  app::config                 2 imports, 1 in tests: crates/app/src/config.rs:1, crates/app/src/config.rs:12 (local), crates/app/src/config.rs:17 (test)\n",
         "\n  lib_core::billing::invoice  1 import: crates/lib_core/src/billing/invoice.rs:3\n",
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
@@ -1022,7 +1019,7 @@ fn an_import_name_without_an_edge_lists_where_it_is_imported() {
     // helpers is reached through sys.path; google covers google.api_core.*
     let helpers = query_text(&python_fixture(), &["helpers"]);
     assert!(
-        helpers.contains("\n  helpers  local name  1 import: tests/test_billing.py:3\n"),
+        helpers.contains("\n  helpers  local name  1 import: tests/test_billing.py:3 (test)\n"),
         "{helpers}"
     );
     let google = query_text(&python_fixture(), &["google"]);
@@ -1036,7 +1033,7 @@ fn an_import_name_without_an_edge_lists_where_it_is_imported() {
     let rust = query_text(&fixture_root(), &["assert_cmd"]);
     assert!(
         rust.contains(
-            "\n  assert_cmd  extra or dev dependency  1 import: crates/app/src/main.rs:14\n"
+            "\n  assert_cmd  extra or dev dependency  1 import: crates/app/src/main.rs:14 (test)\n"
         ),
         "{rust}"
     );
@@ -1330,7 +1327,7 @@ fn a_folded_ts_file_is_queried_as_its_file() {
     let text = ts_stdout(&["query", "tests/helpers.ts", "--depth", "1"]);
     for expected in [
         "tests/helpers.ts (file) in tests (module, typescript), depth 1\n",
-        "\nImported by: 1\n  tests  1 import: tests/money.test.ts:3\n",
+        "\nImported by: 1\n  tests  1 import in tests: tests/money.test.ts:3 (test)\n",
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
     }
@@ -1491,7 +1488,7 @@ fn a_symbol_query_lists_the_statements_that_import_it() {
         "\n  src/app/page.tsx:1\n",
         "\n  src/index.ts:1 (export)\n",
         "\n  src/app/checkout.ts:1 (via src/index.ts:1)\n",
-        "\n  tests/money.test.ts:2\n",
+        "\n  tests/money.test.ts:2 (test)\n",
         // a namespace re-export and an `import()` take the file whole;
         // checkout.ts:1, which also does through the re-export, is listed by
         // name already
@@ -1814,5 +1811,47 @@ fn a_script_shows_its_kind_and_globals() {
             "Imported by: none (a script declares it globally: what uses it is not traced)"
         ),
         "{text}"
+    );
+}
+
+#[test]
+fn test_code_is_marked_and_listed_apart() {
+    let text = ts_stdout(&["query", "src/lib/money.ts"]);
+    for expected in [
+        // production importers first; a test file's import is marked
+        "tests/money.test.ts  1 import in tests: tests/money.test.ts:2 (test)",
+        "tests/helpers.ts     1 import in tests: tests/helpers.ts:1 (test)",
+    ] {
+        assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
+    }
+    let json = ts_stdout(&["impact", "src/lib/money.ts"]);
+    let impact: serde_json::Value = serde_json::from_str(&json).unwrap();
+    // the tests to run again, apart from the code that depends on the file
+    assert_eq!(
+        impact["tests"],
+        serde_json::json!(["ts-shop::tests/helpers.ts", "ts-shop::tests/money.test.ts"])
+    );
+    // importers: production code first, test code marked
+    let impact = fixture_json(&["impact", "src/shop/users.py"]);
+    let sites: Vec<(String, bool)> = impact["importers"]["shown"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            (
+                s["file"].as_str().unwrap().to_owned(),
+                s.get("test").is_some(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        sites,
+        [
+            ("scripts/2024-01-migration/fix.py".to_owned(), false),
+            ("src/shop/__init__.py".to_owned(), false),
+            ("src/shop/billing/charge.py".to_owned(), false),
+            ("tests/test_billing.py".to_owned(), true),
+            ("tests/unit/factories.py".to_owned(), true),
+        ]
     );
 }

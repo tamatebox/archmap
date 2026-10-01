@@ -43,8 +43,9 @@ Python and TS/JS a file named `*.test.*`, `*.spec.*`, `test_*.py`,
 edge and dynamic imports. Rules (`deny`, `layers`, `allow`), cycles and
 signals are about production code and leave it out (an edge counts when
 some of its evidence is outside test code, or it has none, as a manifest
-dependency), and `summary` counts test statements apart; undeclared imports
-count in test code too.
+dependency), `summary` counts test statements apart, `query` marks them
+`(test)`, and `impact` lists what only test code reaches under `tests`;
+undeclared imports count in test code too.
 
 `type_only` marks a statement that takes types only, which the compiler
 erases, so it never runs: TS/JS `import type`, `export type ... from`, and

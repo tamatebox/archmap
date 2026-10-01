@@ -127,7 +127,10 @@ it, as in `src/shop/billing/charge.py:5 -> src/shop/users.py`, and ends in
 `(local)` when the import sits inside a function body and so runs only when
 the function is called; the others run when their file loads. `(type)` marks
 a TS/JS statement that takes types only (`import type`), which the compiler
-erases, so it never runs. A `Not mapped`
+erases, so it never runs, and `(test)` a statement in test code. Each
+neighbor counts its statements in production code and in tests apart (`2
+imports, 1 in tests`), lists production code first, and neighbors with more
+production statements come first. A `Not mapped`
 section then lists the imports of the component that no edge shows, one line
 per module with the reason (`local name`, `extra or dev dependency`,
 `undeclared`, or `dynamic` for a call that loads modules by name) and where
@@ -198,9 +201,15 @@ file. Dependencies without a target file
 (manifests, external packages) are followed component by component, and the
 result is still reported at the roll-up depth. It does not follow the parent
 `__init__.py` that Python runs before a submodule, nor Rust code inside macro
-calls, and a path that names no component or file is an error. For a file target, `importers`
-lists the statements that import the file directly, up to 5 with the total,
-so the next read can go straight to them. In
+calls, and a path that names no component or file is an error. `direct` and
+`transitive` follow production code; `tests` lists the components that only
+test code reaches, the tests to run again after the change (for Rust, the
+modules whose unit tests use the target; integration tests under `tests/`
+are not read). For a file target, `importers` lists the statements that
+import the file directly, up to 5 with the total, production code first and
+test code marked `"test": true`, so the next read can go straight to them;
+they include statements inside the target's own component, which `direct`
+leaves out. In
 `fixtures/mixed-utils-project`, `app.utils` and `app.core` depend on each
 other, so following components a change anywhere in `app.utils` reaches
 `app.core` and `app.models`; following files, `app/utils/log.py` reaches

@@ -442,6 +442,8 @@ pub struct ImpactResult<'a> {
     pub direct: Vec<ComponentId>,
     /// Every component that transitively depends on the target.
     pub transitive: Vec<ComponentId>,
+    /// Components that only test code reaches: the tests to run again.
+    pub tests: Vec<ComponentId>,
     /// For a file, or a component that is one file: the statements that
     /// import the file directly. For a symbol: those that take its name.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -469,6 +471,9 @@ pub struct ImportSite {
     pub line: Option<u32>,
     /// The importing component, at the roll-up depth.
     pub component: ComponentId,
+    /// The statement is test code.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub test: bool,
 }
 
 fn import_sites(full: &ArchitectureGraph, depth: usize, file: &str) -> ImportSites {
@@ -490,10 +495,12 @@ fn sites_of(
                 file: e.file.clone(),
                 line: e.line,
                 component: full.ancestor_at(&edge.from, depth),
+                test: e.test,
             });
         }
     }
-    sites.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+    // production code first
+    sites.sort_by(|a, b| (a.test, &a.file, a.line).cmp(&(b.test, &b.file, b.line)));
     let total = sites.len();
     sites.truncate(MAX_IMPORT_SITES);
     ImportSites {
@@ -591,6 +598,7 @@ pub fn impact(path: &str, target: &str, depth: usize, format: OutputFormat) -> R
         depth,
         direct: reach.direct.into_iter().collect(),
         transitive: reach.transitive.into_iter().collect(),
+        tests: reach.tests.into_iter().collect(),
         target: at.id,
         folded_from: at.folded_from,
         symbol: symbol_id,
@@ -925,9 +933,12 @@ fn location(e: &Evidence) -> String {
     if let Some(note) = &e.note {
         s.push_str(&format!("  {note}"));
     }
-    // as `query` marks them: types only, and inside a function body
+    // as `query` marks them: types only, test code, inside a function body
     if e.type_only {
         s.push_str(" (type)");
+    }
+    if e.test {
+        s.push_str(" (test)");
     }
     if e.scope == Some(Scope::Local) {
         s.push_str(" (local)");
