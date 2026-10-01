@@ -106,6 +106,9 @@ into the model in [graph.md](graph.md); how the commands present it is in
 
 - Dynamic imports are recorded but not followed, and `sys.path` changes made at runtime are not
   seen.
+- Re-exports are not followed: `from shop.billing import pay`, where `shop/billing/__init__.py`
+  re-exports `pay`, is evidence for `__init__.py` only, so `query` on the file that defines `pay`
+  does not list the importer and `impact` reaches it only as `transitive`.
 - `impact` does not follow the parent `__init__.py` that Python loads implicitly before a
   submodule.
 

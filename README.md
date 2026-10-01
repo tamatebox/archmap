@@ -98,6 +98,53 @@ configuration-driven loading) or follows a module loaded by a name computed
 at runtime, and nothing is inferred; `summary` and `query` say what the scan
 could not see.
 
+### Support by language
+
+What works today, by the [roadmap](#roadmap) phase it belongs to:
+✅ implemented, ◐ implemented with a gap that common code runs into,
+— not implemented.
+
+| Capability | Phase | Rust | Python | TS / JS |
+|---|:-:|:-:|:-:|:-:|
+| Packages and declared dependencies | 0 | ✅ | ✅ | ◐ |
+| Module and file components | 1 | ◐ | ✅ | ✅ |
+| Public symbols with signatures | 1 | ✅ | ✅ | ◐ |
+| Imports resolved to the file they load | 1 | ◐ | ✅ | ◐ |
+| Re-exports followed to the defining file | 1 | ✅ | — | ✅ |
+| Names each import takes | 1 | — | — | ✅ |
+| Imports without an edge, with the reason | 1 | ✅ | ✅ | ✅ |
+| `summary` and `query`, down to one file | 2 | ✅ | ✅ | ✅ |
+| `impact` file by file | 2 | ✅ | ◐ | ✅ |
+| `check` rules and cycles | 3 | ✅ | ✅ | ◐ |
+| Callers of a symbol | 4 | — | — | — |
+| References to a symbol | 4 | — | — | — |
+| Type relationships | 4 | — | — | — |
+| Selective data flow | 4 | — | — | — |
+| Test-to-code links | 4 | — | — | — |
+
+The gaps behind the marks:
+
+- Rust modules: only the module tree reached from `src/lib.rs` and
+  `src/main.rs`; other Cargo targets have none, and `tests/`, `benches/`,
+  `examples/` and `build.rs` are not read.
+- Rust imports: code inside macro calls (`vec![..]`, `println!(..)`) is not
+  read.
+- Python re-exports: `from pkg import name` stops at `pkg/__init__.py`, not
+  at the file that defines `name`.
+- Python `impact`: the parent `__init__.py` that Python loads before a
+  submodule is not followed.
+- TS/JS packages: the packages of a monorepo workspace are not linked to
+  each other.
+- TS/JS symbols: CommonJS exports give none.
+- TS/JS imports: `require` and `import()` are not read yet.
+- TS/JS `check`: a type-only import is an ordinary edge, so `cycles.forbid`
+  also reports cycles that only types close.
+
+The commands read one merged graph, so a gap in what an analyzer reads
+shows in all of them: an import that is not read is missing from `query`,
+`impact` and `check` alike. [analyzers.md](docs/reference/analyzers.md)
+lists every known gap.
+
 ## Core ideas
 
 1. **Code Graph is not Architecture Graph.** Nodes are components and public

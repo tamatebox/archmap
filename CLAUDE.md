@@ -49,7 +49,7 @@ Never add a dependency that points against the arrow. Never make `archmap-core` 
 3. Per-file problems go into `AnalyzerOutput::warnings`, not `Err`.
 4. Report source files read per language in `AnalyzerOutput::read`, and record every import that maps to no component (standard library aside) as an `UnmappedImport` with its reason. `summary` and `query` rely on both to say what the graph does not show.
 5. Add a fixture under `fixtures/` and an integration test in `crates/archmap-scan/tests/`.
-6. Describe what the analyzer reads and its known gaps in `docs/reference/analyzers.md`, and add its row to README's "What archmap reads".
+6. Describe what the analyzer reads and its known gaps in `docs/reference/analyzers.md`, and add its row to README's "What archmap reads" and its column to "Support by language".
 6. Do not change `archmap-core` unless a genuinely new *kind* of fact appears. Prefer a new `EdgeKind` / `SymbolKind` variant over new structs.
 
 ## Distributed plugin
@@ -58,7 +58,7 @@ Never add a dependency that points against the arrow. Never make `archmap-core` 
 - The plugin only calls the `archmap` binary. Keep the CLI vendor-neutral: nothing in `crates/` knows about any agent.
 - `archmap` on PATH is a copy from the last `cargo install`, not the working tree. Develop and verify with `cargo run`; before trying a change through the plugin, reinstall with `cargo install --path crates/archmap-cli`.
 - `plugins/archmap/skills/archmap/SKILL.md` restates CLI behavior. When a change alters commands, flags, output wording or a known gap the skill names, update the skill in the same change.
-- README is the overview; `docs/reference/` (analyzers, graph, commands, rules) is where behavior is documented. A change that alters behavior updates the page that states it in the same change. Facts shared by every language go in `graph.md` or `commands.md`, not under each language.
+- README is the overview; `docs/reference/` (analyzers, graph, commands, rules) is where behavior is documented. A change that alters behavior updates the page that states it in the same change. README's "Support by language" marks and gap notes summarize `analyzers.md`; a change that closes or opens a gap updates both. Facts shared by every language go in `graph.md` or `commands.md`, not under each language.
 - Keep the skill a short guide to reading output and choosing the next command, not a manual. Its frontmatter follows the [Agent Skills](https://agentskills.io/specification) spec, so the skill directory also works outside Claude Code.
 - `plugin.json` omits `version` on purpose so installs follow commits. After editing, run `claude plugin validate .`; it warns about the missing version and must otherwise pass.
 
