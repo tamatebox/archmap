@@ -50,6 +50,9 @@ pub(crate) struct Layout {
     pub modules: Vec<Component>,
     /// Every code file and its owner.
     pub owners: BTreeMap<PathBuf, Owner>,
+    /// Packages that share a name with an earlier one by path: the name,
+    /// the directory that keeps it, and the one that took `<name>+<dir>`.
+    pub renamed: Vec<(String, PathBuf, PathBuf)>,
 }
 
 /// Lay out `code` (TS/JS files, relative to the root) by the `package.json`
@@ -76,6 +79,9 @@ pub(crate) fn discover(
 
     let mut packages = Vec::new();
     let mut index: BTreeMap<Option<&PathBuf>, usize> = BTreeMap::new();
+    // the first package of a name by path keeps it as its id
+    let mut named: BTreeMap<&str, &PathBuf> = BTreeMap::new();
+    let mut renamed = Vec::new();
     for (dir, manifest) in manifests {
         let Some(name) = &manifest.name else {
             continue;
@@ -84,14 +90,18 @@ pub(crate) fn discover(
         if own.is_empty() && !manifest.workspaces {
             continue;
         }
+        let id = match named.get(name.as_str()) {
+            Some(first) => {
+                renamed.push((name.clone(), (*first).clone(), dir.clone()));
+                ComponentId::new(format!("{name}+{}", display_path(dir)))
+            }
+            None => {
+                named.insert(name, dir);
+                ComponentId::new(name)
+            }
+        };
         index.insert(Some(dir), packages.len());
-        packages.push(package(
-            ComponentId::new(name),
-            dir,
-            Some(dir.clone()),
-            own,
-            files,
-        ));
+        packages.push(package(id, dir, Some(dir.clone()), own, files));
     }
     if let Some(own) = owned.get(&None) {
         index.insert(None, packages.len());
@@ -106,6 +116,7 @@ pub(crate) fn discover(
 
     let mut layout = Layout {
         packages,
+        renamed,
         ..Layout::default()
     };
     let mut dirs: BTreeMap<PathBuf, usize> = BTreeMap::new();
@@ -379,6 +390,41 @@ mod tests {
             .iter()
             .find(|c| c.id.as_str() == id)
             .unwrap_or_else(|| panic!("no component {id}"))
+    }
+
+    #[test]
+    fn packages_that_share_a_name_stay_apart() {
+        // a copied example keeps the name of the package it copies
+        let layout = lay_out(
+            &[
+                "examples/dup/package.json",
+                "examples/dup/index.ts",
+                "packages/dup/package.json",
+                "packages/dup/src/index.ts",
+                "packages/dup/src/a.ts",
+            ],
+            &[
+                ("examples/dup", manifest(Some("dup"), false)),
+                ("packages/dup", manifest(Some("dup"), false)),
+            ],
+        );
+        let ids: Vec<&str> = layout.packages.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["dup", "dup+packages/dup"]);
+        // the files of each belong to their own package
+        assert_eq!(
+            layout.owners[Path::new("packages/dup/src/a.ts")]
+                .component
+                .as_str(),
+            "dup+packages/dup::src/a.ts"
+        );
+        assert_eq!(
+            layout.renamed,
+            [(
+                "dup".to_owned(),
+                PathBuf::from("examples/dup"),
+                PathBuf::from("packages/dup")
+            )]
+        );
     }
 
     #[test]

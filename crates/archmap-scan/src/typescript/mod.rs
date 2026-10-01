@@ -95,6 +95,14 @@ impl Analyzer for TypeScriptAnalyzer {
             .collect();
         let manifests = read_manifests(ctx, &mut output.warnings);
         let layout = layout::discover(&code, &manifests, ctx.files(), &root_name(ctx.root()));
+        for (name, kept, renamed) in &layout.renamed {
+            output.warnings.push(format!(
+                "two packages are named {name}: {} keeps the id, {} is {name}+{}",
+                display_path(&kept.join("package.json")),
+                display_path(&renamed.join("package.json")),
+                display_path(renamed)
+            ));
+        }
         emit_components(&layout, &manifests, &mut output);
         for file in &code {
             if let Some(language) = language_of(file) {

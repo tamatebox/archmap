@@ -1610,3 +1610,33 @@ fn a_package_names_its_own_index_file() {
         ]
     );
 }
+
+#[test]
+fn packages_that_share_a_name_stay_apart_with_a_warning() {
+    let root = temp_repo(
+        "samename",
+        &[
+            ("examples/dup/package.json", "{ \"name\": \"dup\" }\n"),
+            ("examples/dup/index.ts", "export const a = 1;\n"),
+            ("packages/dup/package.json", "{ \"name\": \"dup\" }\n"),
+            ("packages/dup/index.ts", "export const b = 1;\n"),
+        ],
+    );
+    let report = scan(&root, &ScanOptions::default()).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    let packages: Vec<&str> = report
+        .graph
+        .components
+        .values()
+        .filter(|c| c.kind == ComponentKind::Package)
+        .map(|c| c.id.as_str())
+        .collect();
+    assert_eq!(packages, ["dup", "dup+packages/dup"]);
+    assert_eq!(
+        report.warnings,
+        [
+            "two packages are named dup: examples/dup/package.json keeps the id, \
+          packages/dup/package.json is dup+packages/dup"
+        ]
+    );
+}

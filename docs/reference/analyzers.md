@@ -143,7 +143,9 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
 
 - a `package.json` with a `name` whose directory holds TS/JS files of its own, or that declares `workspaces`,
   becomes a `package` component; TS/JS files that no package owns go to one root component named after the
-  directory; a `package.json` without a name is no package, but it declares dependencies all the same
+  directory; a `package.json` without a name is no package, but it declares dependencies all the same;
+  of packages that share a name, the first by path keeps it as its id and the others become
+  `<name>+<directory>` (`dup+packages/dup`), with a warning
 - every directory between a package and its code files becomes a `module` component, except the source root
   `src/`, and every code file is a `module` component of its own, named by its path from the source root with
   its extension (`lib/money.ts`, `app/(public)/[slug]/page.tsx`); an `index.*` is its directory's own
@@ -248,7 +250,7 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
 - Declarations inside `declare global { .. }`, triple-slash directives (`/// <reference types="vite/client" />`),
   spreads in `module.exports = { ...require('./a') }` and `Object.defineProperty(exports, 'a', ..)`
   are not read.
-- Workspace packages are not linked, and two packages with one name merge.
+- Workspace packages are not linked.
 - Aliases defined only in a bundler configuration, `jsconfig.json` and Deno import maps are not
   read: an import through such an alias is `unresolved` when a tsconfig or jsconfig declares its
   pattern, `local name` when it names a top directory of the source root (`@components/button`),
