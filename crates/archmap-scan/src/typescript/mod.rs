@@ -675,7 +675,15 @@ impl Imports<'_> {
                         ));
                     }
                     None => {
-                        let (reason, note) = self.undeclared(import, package);
+                        let (reason, mut note) = self.undeclared(import, package);
+                        // a package of types may be what is missing
+                        if reason == UnmappedReason::Undeclared && type_only {
+                            note = format!(
+                                "{note}, types only: declare {package}, or {} if it ships no \
+                                 types",
+                                package::types_package(package)
+                            );
+                        }
                         output
                             .fragment
                             .push_unmapped_import(self.unmapped(import, type_only, reason, note));

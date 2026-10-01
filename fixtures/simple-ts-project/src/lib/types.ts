@@ -10,3 +10,4 @@ export enum Unit {
 }
 
 import type { Wallet } from './money';
+import type { Request } from '@acme/http';

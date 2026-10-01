@@ -1386,7 +1386,7 @@ fn ts_summary_counts_both_languages_and_why_imports_have_no_edge() {
     let text = String::from_utf8_lossy(&out.stdout);
     for expected in [
         // vitest, imported by a test
-        "typescript  files: 14  read: 14  imports without an edge: 7 (undeclared 1, extra or dev dependency 2 (1 in tests), local name 1, unresolved 3)",
+        "typescript  files: 14  read: 14  imports without an edge: 8 (undeclared 2, extra or dev dependency 2 (1 in tests), local name 1, unresolved 3)",
         "javascript  files: 3  read: 3  imports without an edge: 0",
         // src/global.d.ts
         "scripts: 1 (no import or export: what uses their declarations is not traced)",

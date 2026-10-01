@@ -485,6 +485,8 @@ fn imports_without_an_edge_say_why() {
             row("~/thing", UnmappedReason::Unresolved, "src/app/page.tsx:9", "import ~/thing: neither a file nor a package name"),
             row("./gone", UnmappedReason::Unresolved, "src/app/page.tsx:10", "import ./gone: no file matches"),
             row("left-pad", UnmappedReason::Undeclared, "src/app/page.tsx:11", "import"),
+            // types only: a `@types` package may be what is missing
+            row("@acme/http", UnmappedReason::Undeclared, "src/lib/types.ts:13", "import, types only: declare @acme/http, or @types/acme__http if it ships no types"),
             row("aws-lambda", UnmappedReason::DeclaredNotRequired, "src/app/page.tsx:12", "import aws-lambda, declared as @types/aws-lambda in package.json:13 (devDependencies)"),
             row("components/button", UnmappedReason::LocalName, "src/app/page.tsx:14", "import components/button: no file matches, but the package has a file or directory named components"),
             row("vitest", UnmappedReason::DeclaredNotRequired, "tests/money.test.ts:1", "import vitest, declared as vitest in package.json:14 (devDependencies)"),

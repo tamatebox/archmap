@@ -191,7 +191,8 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   covers `x`): a required declaration gives an edge, another an import without an edge
   (`declared_not_required`, noting where it is declared), a directory at the top of the package or its source
   root, a code file at the top of the source root, or a scope named like a directory there (`components/button`,
-  `App`, `@components/button`) `local_name`, and anything else `undeclared`; a path or alias that matches no file (`./gone`, `@/x` without a matching `paths` entry,
+  `App`, `@components/button`) `local_name`, and anything else `undeclared` (for an import of types only, the note
+  says to declare the package, or its `@types` package if it ships no types); a path or alias that matches no file (`./gone`, `@/x` without a matching `paths` entry,
   `~/x`) is `unresolved`, and so is a bare-looking name that a tsconfig or jsconfig declares as an alias
   (`@ui/card` for `@ui/*`; a catch-all `*` is not taken as one); the package's own name, when its entry (`dist/`) is not scanned, is
   `local_name`; Node built-ins (`node:fs`, `fs`, `crypto`) are left out
