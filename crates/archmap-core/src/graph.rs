@@ -1,4 +1,5 @@
 use std::cell::OnceCell;
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
@@ -296,11 +297,28 @@ impl ArchitectureGraph {
                 .or_else(|| index.owner(f).map(|c| &c.id))
         };
 
-        let mut start: Vec<Node> = Vec::new();
+        // where the walk starts, and at what distance
+        let mut start: Vec<(Node, usize)> = Vec::new();
         let target = match seed {
             ChangeSeed::File(file) => {
-                start.push(Node::File(file));
+                start.push((Node::File(file), 0));
                 owner_of(file).map(|c| self.ancestor_at(c, depth))
+            }
+            ChangeSeed::Symbol(symbol) => {
+                // the first step goes only through the statements that take
+                // the symbol by name or take its file whole; dependencies
+                // without file detail on its component stay, like the latter
+                start.push((Node::Component(&symbol.component), 0));
+                if let Some(found) = self.symbol_importers(symbol) {
+                    start.extend(
+                        found
+                            .by_name
+                            .iter()
+                            .chain(&found.may_use)
+                            .map(|(_, e)| (Node::File(e.file.as_str()), 1)),
+                    );
+                }
+                Some(self.ancestor_at(&symbol.component, depth))
             }
             ChangeSeed::Component(component) => {
                 let subtree: BTreeSet<&ComponentId> = self
@@ -308,12 +326,12 @@ impl ArchitectureGraph {
                     .keys()
                     .filter(|id| self.containment_path(id).contains(component))
                     .collect();
-                start.extend(subtree.iter().map(|id| Node::Component(id)));
+                start.extend(subtree.iter().map(|id| (Node::Component(id), 0)));
                 start.extend(
                     owners
                         .iter()
                         .filter(|(_, owner)| subtree.contains(*owner))
-                        .map(|(file, _)| Node::File(file)),
+                        .map(|(file, _)| (Node::File(file), 0)),
                 );
                 Some(self.ancestor_at(component, depth))
             }
@@ -322,8 +340,10 @@ impl ArchitectureGraph {
         // 0-1 BFS: a reached file puts its component in reach at no cost.
         let mut distance: BTreeMap<Node, usize> = BTreeMap::new();
         let mut queue: VecDeque<Node> = VecDeque::new();
-        for node in start {
-            if distance.insert(node, 0).is_none() {
+        start.sort_by_key(|(_, d)| *d);
+        for (node, d) in start {
+            if let Entry::Vacant(slot) = distance.entry(node) {
+                slot.insert(d);
                 queue.push_back(node);
             }
         }
@@ -686,6 +706,10 @@ pub enum ChangeSeed<'a> {
     Component(&'a ComponentId),
     /// One file, relative to the repository root.
     File(&'a str),
+    /// A symbol: its first step goes only through the statements that take
+    /// it by name or take its file whole (see
+    /// [`ArchitectureGraph::symbol_importers`]), then file by file.
+    Symbol(&'a Symbol),
 }
 
 /// Components that may be affected by a change.
@@ -1561,6 +1585,54 @@ mod tests {
         assert!(graph
             .symbol_importers(&symbol("b::g", "g", Vec::new()))
             .is_none());
+    }
+
+    #[test]
+    fn change_impact_from_a_symbol_starts_at_the_statements_that_take_it() {
+        let mut graph = ArchitectureGraph::default();
+        for id in ["named", "whole", "other", "next", "lib"] {
+            let mut c = Component::new(id, id, ComponentKind::Module);
+            c.path = Some(id.into());
+            graph.add_component(c);
+        }
+        let import = |from: &str, file: &str, target: &str, names: &[&str]| {
+            Edge::new(
+                from,
+                if target.starts_with("lib") {
+                    "lib"
+                } else {
+                    "named"
+                },
+                EdgeKind::Import,
+            )
+            .with_evidence(
+                Evidence::new(file)
+                    .at_line(1)
+                    .pointing_at(target)
+                    .taking(names.iter().copied()),
+            )
+        };
+        graph.add_edges([
+            import("named", "named/a.ts", "lib/money.ts", &["formatPrice"]),
+            import("whole", "whole/b.ts", "lib/money.ts", &["*"]),
+            // another name of the same file: not affected
+            import("other", "other/c.ts", "lib/money.ts", &["Wallet"]),
+            // from there on, file by file
+            import("next", "next/d.ts", "named/a.ts", &["total"]),
+        ]);
+        let price = symbol(
+            "lib::formatPrice",
+            "formatPrice",
+            vec![Evidence::new("lib/money.ts").at_line(8)],
+        );
+        let reach = graph.change_impact(ChangeSeed::Symbol(&price), 2);
+        let ids =
+            |set: &BTreeSet<ComponentId>| set.iter().map(|c| c.to_string()).collect::<Vec<_>>();
+        assert_eq!(ids(&reach.direct), ["named", "whole"]);
+        assert_eq!(ids(&reach.transitive), ["named", "next", "whole"]);
+        // the whole file reaches the other importer too
+        let file = graph.change_impact(ChangeSeed::File("lib/money.ts"), 2);
+        assert_eq!(ids(&file.direct), ["named", "other", "whole"]);
     }
 
     #[test]

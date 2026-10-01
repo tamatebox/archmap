@@ -431,14 +431,20 @@ pub struct ImpactResult<'a> {
     /// at this depth.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub folded_from: Option<ComponentId>,
+    /// For a symbol: its id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<SymbolId>,
     /// Components that directly depend on the target.
     pub direct: Vec<ComponentId>,
     /// Every component that transitively depends on the target.
     pub transitive: Vec<ComponentId>,
     /// For a file, or a component that is one file: the statements that
-    /// import the file directly.
+    /// import the file directly. For a symbol: those that take its name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub importers: Option<ImportSites>,
+    /// For a symbol: the statements that take its file whole.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub may_use: Option<ImportSites>,
 }
 
 /// How many import sites `impact` shows for a file; the rest is counted.
@@ -463,8 +469,18 @@ pub struct ImportSite {
 
 fn import_sites(full: &ArchitectureGraph, depth: usize, file: &str) -> ImportSites {
     let facts = full.file_facts(file);
+    sites_of(full, depth, &facts.importers, facts.importers_recorded)
+}
+
+/// One site per statement, sorted by place; the first few shown.
+fn sites_of(
+    full: &ArchitectureGraph,
+    depth: usize,
+    statements: &[(&Edge, &Evidence)],
+    recorded: bool,
+) -> ImportSites {
     let mut sites: Vec<ImportSite> = Vec::new();
-    for (edge, e) in &facts.importers {
+    for (edge, e) in statements {
         if !sites.iter().any(|s| s.file == e.file && s.line == e.line) {
             sites.push(ImportSite {
                 file: e.file.clone(),
@@ -477,10 +493,34 @@ fn import_sites(full: &ArchitectureGraph, depth: usize, file: &str) -> ImportSit
     let total = sites.len();
     sites.truncate(MAX_IMPORT_SITES);
     ImportSites {
-        recorded: facts.importers_recorded,
+        recorded,
         total,
         shown: sites,
     }
+}
+
+/// The one symbol `target` names, by id or by name; an error that lists the
+/// candidates when several share the name.
+fn single_symbol<'a>(full: &'a ArchitectureGraph, target: &str) -> Result<Option<&'a Symbol>> {
+    if let Some(symbol) = full.symbol(&SymbolId::new(target)) {
+        return Ok(Some(symbol));
+    }
+    let named: Vec<&Symbol> = full.symbols_named(target).collect();
+    if named.len() < 2 {
+        return Ok(named.first().copied());
+    }
+    let mut message = format!("`{target}` names {} symbols; give an id:", named.len());
+    for symbol in named.iter().take(MAX_CANDIDATES) {
+        let at = symbol
+            .location()
+            .map(|e| format!("{}:{}", e.file, e.line.unwrap_or(0)))
+            .unwrap_or_default();
+        let _ = write!(message, "\n  {}  {at}", symbol.id);
+    }
+    if named.len() > MAX_CANDIDATES {
+        let _ = write!(message, "\n  +{} more", named.len() - MAX_CANDIDATES);
+    }
+    bail!(message)
 }
 
 pub fn impact(path: &str, target: &str, depth: usize, format: OutputFormat) -> Result<ExitCode> {
@@ -493,6 +533,7 @@ pub fn impact(path: &str, target: &str, depth: usize, format: OutputFormat) -> R
     let component =
         find_component(&rolled, full, target).or_else(|| find_component(full, full, target));
     let mut importers = None;
+    let (mut symbol_id, mut may_use) = (None, None);
     let (at, reach) = if let Some(component) = component {
         let reach = full.change_impact(ChangeSeed::Component(&component.id), depth);
         importers =
@@ -505,11 +546,19 @@ pub fn impact(path: &str, target: &str, depth: usize, format: OutputFormat) -> R
         let reach = full.change_impact(ChangeSeed::File(&file), depth);
         importers = Some(import_sites(full, depth, &file));
         (fold(full, depth, &owner.id), reach)
+    } else if let Some(symbol) = single_symbol(full, target)? {
+        let reach = full.change_impact(ChangeSeed::Symbol(symbol), depth);
+        if let Some(found) = full.symbol_importers(symbol) {
+            importers = Some(sites_of(full, depth, &found.by_name, found.recorded));
+            may_use = Some(sites_of(full, depth, &found.may_use, found.recorded));
+        }
+        symbol_id = Some(symbol.id.clone());
+        (fold(full, depth, &symbol.component), reach)
     } else if let Some(owner) = directory_target(full, path, target).transpose()? {
         let reach = full.change_impact(ChangeSeed::Component(&owner.id), depth);
         (fold(full, depth, &owner.id), reach)
     } else {
-        bail!("no component or file `{target}` in graph");
+        bail!("no component, file or symbol `{target}` in graph");
     };
 
     let result = ImpactResult {
@@ -519,7 +568,9 @@ pub fn impact(path: &str, target: &str, depth: usize, format: OutputFormat) -> R
         transitive: reach.transitive.into_iter().collect(),
         target: at.id,
         folded_from: at.folded_from,
+        symbol: symbol_id,
         importers,
+        may_use,
     };
     println!("{}", render(&result, format)?);
     Ok(ExitCode::SUCCESS)

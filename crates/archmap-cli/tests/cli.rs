@@ -1532,9 +1532,9 @@ fn a_python_symbol_is_imported_from_the_file_that_defines_it() {
     );
 }
 
-#[test]
-fn several_symbols_of_one_name_count_their_importers() {
-    let dir = std::env::temp_dir().join(format!("archmap-cli-helpers-{}", std::process::id()));
+/// A TS package with two functions named `helper`, one of them imported.
+fn two_helpers(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("archmap-cli-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     for (file, text) in [
         ("package.json", "{\"name\": \"two\"}\n"),
@@ -1555,6 +1555,12 @@ fn several_symbols_of_one_name_count_their_importers() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, text).unwrap();
     }
+    dir
+}
+
+#[test]
+fn several_symbols_of_one_name_count_their_importers() {
+    let dir = two_helpers("helpers");
     let text = query_text(&dir, &["helper"]);
     std::fs::remove_dir_all(&dir).unwrap();
     for expected in [
@@ -1564,5 +1570,52 @@ fn several_symbols_of_one_name_count_their_importers() {
         "Query one by its id, such as `two::src/a.ts::helper`, for the statements that import it.",
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
+    }
+}
+
+#[test]
+fn impact_of_a_symbol_starts_at_the_statements_that_take_it() {
+    let symbol = ts_stdout(&["impact", "formatPrice"]);
+    let file = ts_stdout(&["impact", "src/lib/money.ts"]);
+    // tests/helpers.ts takes another name from money.ts: the file reaches
+    // it, the symbol does not
+    assert!(file.contains("\"ts-shop::tests/helpers.ts\""), "{file}");
+    assert!(
+        !symbol.contains("\"ts-shop::tests/helpers.ts\""),
+        "{symbol}"
+    );
+    for expected in [
+        "\"symbol\": \"ts-shop::src/lib/money.ts::formatPrice\"",
+        "\"ts-shop::src/app/page.tsx\"",
+        "\"file\": \"src/app/page.tsx\"",
+        "\"may_use\"",
+    ] {
+        assert!(
+            symbol.contains(expected),
+            "missing {expected} in:\n{symbol}"
+        );
+    }
+}
+
+#[test]
+fn impact_of_a_name_several_symbols_share_lists_their_ids() {
+    let dir = two_helpers("impact-helpers");
+    let out = archmap()
+        .args(["impact", "helper", "--path"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    for expected in [
+        "`helper` names 2 symbols",
+        "two::src/a.ts::helper",
+        "two::src/b.ts::helper",
+    ] {
+        assert!(
+            stderr.contains(expected),
+            "missing {expected} in:\n{stderr}"
+        );
     }
 }

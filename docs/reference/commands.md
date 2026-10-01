@@ -164,6 +164,7 @@ the lists miss:
 archmap impact archmap-core
 archmap impact crates/archmap-scan/src/lib.rs
 archmap impact src/shop/users.py --path ../some-python-repo
+archmap impact formatPrice --path fixtures/simple-ts-project              # a symbol
 ```
 
 `impact` follows imports file by file where the evidence names the imported
@@ -183,6 +184,21 @@ so the next read can go straight to them. In
 other, so following components a change anywhere in `app.utils` reaches
 `app.core` and `app.models`; following files, `app/utils/log.py` reaches
 both and `app/utils/registry.py` reaches neither.
+
+`impact` also takes a symbol, looked up after components and files and
+before directories, by name or by id; a name that several symbols share is
+an error that lists their ids. Its first step goes only through the
+statements that `query` lists for the symbol: those that take its name
+(`importers`) and those that take its file whole (`may_use`); every later
+step is file by file as above, and dependencies without a target file on
+the symbol's component are kept. So a file that imports another name from
+the same file is not affected. Two things widen or narrow it:
+
+- A TS/JS barrel's `export { X } from` takes `X` by name, so the barrel is
+  `direct`, and from there every importer of the barrel is `transitive`,
+  those that take other names included.
+- A statement that only loads the file (a side-effect import) is not in the
+  first step, although code that runs on load may call the symbol.
 
 ## Names that several components share
 
