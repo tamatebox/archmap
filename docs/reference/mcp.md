@@ -18,7 +18,11 @@ stdin, and exits 2 at once when `--path` is not a directory.
 
 The [plugin](../../plugins/archmap/) declares the server in
 `plugins/archmap/.mcp.json`, started as
-`archmap mcp --path ${CLAUDE_PROJECT_DIR:-.}`. The plugin ships no binary:
+`archmap mcp --path ${CLAUDE_PROJECT_DIR:-.}`, with `alwaysLoad: true` so
+that Claude Code keeps the four tools' descriptions in context instead of
+deferring them behind its tool search: a deferred tool shows by name only,
+and an agent that sees only names tends to search the code by hand instead.
+The cost is the four definitions in every session. The plugin ships no binary:
 install archmap first (see [README](../../README.md#install)). Without the
 binary, Claude Code shows the server as failed in `/mcp` and the plugin's
 skill still loads; the skill tells the agent how to install archmap. An
@@ -47,8 +51,9 @@ favor of tool parameters and server configuration. Targets are paths
 | `check` | `path?`, `config?`, `depth?`, `format?` |
 
 The parameters mirror the CLI's flags, and their defaults are the CLI's:
-`depth` is 2 for every tool, as `DEFAULT_DEPTH`, so an agent need not keep
-one value; text answers are capped and `format: json` (for `impact`, which
+`depth` is 2 for every tool, as `DEFAULT_DEPTH`, so an agent that never
+sets it always reads the same components (one that sets it should keep the
+value across calls); text answers are capped and `format: json` (for `impact`, which
 answers in JSON, `verbose`) gives every entry. `summary --verbose` and
 `query --verbose` have no parameter: JSON carries everything, and summary's
 `omitted:` lines name the query for the rest. `check`'s `config` is a rules
@@ -77,4 +82,9 @@ graph's scan, the graph answers; otherwise the root is scanned again, so an
 edit, a new file, a deleted or renamed file, or a package installed into
 `.venv` shows in the next answer. A failed scan keeps nothing, and the next
 call tries again. Calls run one at a time, so two calls on one root scan it
-once. Nothing is written to disk; `.archmap/graph.json` is never read.
+once, and a call on a very large root holds the others until its scan ends.
+Nothing is written to disk; `.archmap/graph.json` is never read.
+
+On a synthetic tree of 20,000 Python files, the first call takes about
+1.1 s and a call that reuses the graph about 0.1 s, almost all of it the
+stamp's walk; the CLI, which scans on every command, takes about 1 s each.

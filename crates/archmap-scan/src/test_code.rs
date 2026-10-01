@@ -8,7 +8,7 @@ use std::path::Path;
 /// `*.test-d.*` and `*.spec-d.*`, `test_*.py`, `*_test.py`, `conftest.py`),
 /// or a file below a directory named `test`, `tests`, `__tests__` or
 /// `__mocks__`.
-pub(crate) fn is_test_code(path: &Path) -> bool {
+pub fn is_test_code(path: &Path) -> bool {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     let named = [".test.", ".spec.", ".test-d.", ".spec-d."]
         .iter()

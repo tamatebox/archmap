@@ -284,8 +284,8 @@ for the one with evidence there.
 
 When the deciding kind has several matches, the answer lists every match of
 every kind as candidates instead: components with their path and kind,
-symbols with their location, kind and importer counts, files, and
-directories as `./<path>`. A component id that is also the id of a symbol other than the
+symbols with their location, kind and importer counts, files (production
+code before tests), and directories as `./<path>`. A component id that is also the id of a symbol other than the
 module itself, and a name with `/` that is also another path under the root,
 give candidates too. Text shows the first 10 and counts the rest; JSON
 (`query --format json`, and `impact`, which prints JSON) has every one as

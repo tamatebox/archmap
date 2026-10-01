@@ -415,3 +415,33 @@ fn a_missing_file_under_a_python_package_is_no_package_subpath() {
         "no component, file, symbol or import named `app/nowhere.py`"
     );
 }
+
+#[test]
+fn production_files_come_before_test_files_among_candidates() {
+    let repo = Repo::new(
+        "test-files-last",
+        &[
+            ("package.json", "{\"name\": \"web\"}\n"),
+            (
+                "src/__tests__/actions.test.ts",
+                "import { b } from '../b/actions';\nexport const t = b;\n",
+            ),
+            ("src/b/actions.ts", "export const b = 2;\n"),
+        ],
+    );
+    let ws = scan(&repo.0);
+    let answer = query(&ws, "actions");
+    assert_eq!(answer.found, Found::Candidates, "{}", answer.output);
+    let files: Vec<&str> = answer
+        .output
+        .lines()
+        .filter(|l| l.ends_with("  file"))
+        .collect();
+    assert_eq!(
+        files,
+        [
+            "  src/b/actions.ts  file",
+            "  src/__tests__/actions.test.ts  file"
+        ]
+    );
+}

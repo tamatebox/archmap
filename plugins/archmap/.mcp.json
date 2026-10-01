@@ -2,7 +2,8 @@
   "mcpServers": {
     "archmap": {
       "command": "archmap",
-      "args": ["mcp", "--path", "${CLAUDE_PROJECT_DIR:-.}"]
+      "args": ["mcp", "--path", "${CLAUDE_PROJECT_DIR:-.}"],
+      "alwaysLoad": true
     }
   }
 }

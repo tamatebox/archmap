@@ -25,6 +25,7 @@ pub use analyzer::Analyzer;
 pub use context::RepoContext;
 pub use error::ScanError;
 pub use stamp::{stamp, Stamp};
+pub use test_code::is_test_code;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

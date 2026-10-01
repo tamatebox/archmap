@@ -248,7 +248,8 @@ fn files_named(full: &ArchitectureGraph, target: &str) -> Vec<String> {
     if target.is_empty() || target.contains('/') {
         return Vec::new();
     }
-    full.known_files()
+    let mut files: Vec<String> = full
+        .known_files()
         .into_iter()
         .filter(|file| {
             let name = file.rsplit('/').next().unwrap_or(file);
@@ -256,7 +257,18 @@ fn files_named(full: &ArchitectureGraph, target: &str) -> Vec<String> {
             name == target || stem == target
         })
         .map(str::to_owned)
-        .collect()
+        .collect();
+    production_first(&mut files);
+    files
+}
+
+/// Production files before test files, each by path, so a capped list of
+/// candidates shows the code first.
+fn production_first(files: &mut [String]) {
+    files.sort_by(|a, b| {
+        let test = |f: &str| archmap_scan::is_test_code(Path::new(f));
+        (test(a), a).cmp(&(test(b), b))
+    });
 }
 
 /// Every match of every kind, for a target whose deciding kind has several.
@@ -271,10 +283,12 @@ fn every_match<'g>(
     let directory = directory_target(full, root, target)
         .is_some()
         .then(|| target.trim_end_matches('/').to_owned());
+    let mut files: Vec<String> = files.into_iter().collect();
+    production_first(&mut files);
     Ok(Candidates {
         components: full.components_named(target).collect(),
         symbols: full.symbols_named(target).collect(),
-        files: files.into_iter().collect(),
+        files,
         directories: directory.into_iter().collect(),
     })
 }
