@@ -1,10 +1,11 @@
 //! Finding what a target names: a file or directory under the scanned root,
 //! a component, a symbol. `query` and `impact` share these lookups.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component as PathPart, Path};
 
 use anyhow::{bail, Context, Result};
-use archmap_core::{ArchitectureGraph, Component, ComponentId};
+use archmap_core::{ArchitectureGraph, Component, ComponentId, EdgeKind};
 
 /// The target without one pair of matching quotes around it, so an id
 /// copied from a shell-quoted candidate works where no shell removes them.
@@ -178,4 +179,97 @@ pub(crate) fn namesakes<'a>(
         .map(|c| &c.id)
         .collect();
     (named, at_path)
+}
+
+/// The files among `files` that are test code: those whose statements all
+/// carry the `test` mark their analyzer gave them, the statements being the
+/// imports, imports without an edge and dynamic imports written in the file.
+/// A file without any recorded statement goes by the analyzers' shared path
+/// rule.
+pub(crate) fn test_files<'a>(
+    full: &ArchitectureGraph,
+    files: impl IntoIterator<Item = &'a str>,
+) -> BTreeSet<&'a str> {
+    // per file: a statement is recorded in it, one of them is production code
+    let mut marks: BTreeMap<&'a str, (bool, bool)> = files
+        .into_iter()
+        .map(|file| (file, (false, false)))
+        .collect();
+    let statements = full
+        .edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Import)
+        .flat_map(|e| &e.evidence)
+        .chain(full.unmapped_imports.iter().map(|i| &i.evidence))
+        .chain(full.dynamic_imports.iter().map(|d| &d.evidence));
+    for evidence in statements {
+        if let Some((recorded, production)) = marks.get_mut(evidence.file.as_str()) {
+            *recorded = true;
+            *production |= !evidence.test;
+        }
+    }
+    marks
+        .into_iter()
+        .filter(|(file, (recorded, production))| {
+            if *recorded {
+                !production
+            } else {
+                archmap_scan::is_test_code(Path::new(file))
+            }
+        })
+        .map(|(file, _)| file)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use archmap_core::{
+        ArchitectureGraph, ComponentId, DynamicImport, Edge, EdgeKind, Evidence, UnmappedImport,
+        UnmappedReason,
+    };
+
+    use super::test_files;
+
+    #[test]
+    fn a_file_is_test_code_when_every_statement_recorded_in_it_is() {
+        let statement = |file: &str, test: bool| Evidence::new(file).at_line(1).in_test(test);
+        let full = ArchitectureGraph {
+            edges: vec![
+                Edge::new("a", "b", EdgeKind::Import)
+                    .with_evidence(statement("tests/mixed.ts", true)),
+                Edge::new("a", "c", EdgeKind::Import)
+                    .with_evidence(statement("tests/mixed.ts", false)),
+                Edge::new("a", "b", EdgeKind::Import).with_evidence(statement("src/all.ts", true)),
+            ],
+            unmapped_imports: vec![UnmappedImport {
+                from: ComponentId::new("a"),
+                module: "left-pad".into(),
+                reason: UnmappedReason::Undeclared,
+                provided_by: vec![],
+                evidence: statement("tests/unmapped.ts", false),
+            }],
+            dynamic_imports: vec![DynamicImport {
+                from: ComponentId::new("a"),
+                call: "import".into(),
+                evidence: statement("app/test/page.tsx", false),
+            }],
+            ..Default::default()
+        };
+        let files = [
+            "tests/mixed.ts",
+            "src/all.ts",
+            "tests/unmapped.ts",
+            "app/test/page.tsx",
+            "tests/none.ts",
+            "src/none.ts",
+        ];
+        // a statement in production code makes its file production code;
+        // a file with none goes by its path
+        assert_eq!(
+            test_files(&full, files),
+            BTreeSet::from(["src/all.ts", "tests/none.ts"])
+        );
+    }
 }

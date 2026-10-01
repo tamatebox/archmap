@@ -6,6 +6,8 @@
 use archmap_core::{ArchitectureGraph, ComponentId, ComponentKind, UnmappedImport, UnmappedReason};
 use serde::Serialize;
 
+use crate::target::test_files;
+
 /// What could not be traced to a target.
 #[derive(Debug, Default, Serialize)]
 pub struct NotTraced {
@@ -142,7 +144,7 @@ pub(crate) fn not_traced(
             file: d.evidence.file.clone(),
             line: d.evidence.line,
             call: d.call.clone(),
-            test: d.evidence.test || is_test_file(&d.evidence.file),
+            test: d.evidence.test,
         })
         .collect();
     // production code first
@@ -205,7 +207,7 @@ pub(crate) fn not_traced(
 
     // a test runner loads a test file: that nothing imports it is no news
     let test_file = match subject.own {
-        Own::File(file) => is_test_file(file),
+        Own::File(file) => test_files(full, [file]).contains(file),
         Own::Component(..) => false,
     };
     let found = NotTraced {
@@ -222,11 +224,6 @@ pub(crate) fn not_traced(
         && found.script.is_none()
         && found.no_importers.is_none();
     (!empty).then_some(found)
-}
-
-/// Test code by the shared path rule of the analyzers.
-fn is_test_file(file: &str) -> bool {
-    archmap_scan::is_test_code(std::path::Path::new(file))
 }
 
 /// One analyzer reads TypeScript and JavaScript, and either can load the
@@ -325,6 +322,8 @@ fn package_of<'g>(full: &'g ArchitectureGraph, component: &ComponentId) -> Optio
 
 #[cfg(test)]
 mod tests {
+    use archmap_core::{Component, DynamicImport, Edge, EdgeKind, Evidence};
+
     use super::*;
 
     #[test]
@@ -349,5 +348,77 @@ mod tests {
             segments_of(&Place::Directory("src/shop/billing")),
             ["src", "shop", "billing"]
         );
+    }
+
+    /// One TypeScript package, `web`, with the given statements.
+    fn web(edges: Vec<Edge>, dynamic_imports: Vec<DynamicImport>) -> ArchitectureGraph {
+        let mut full = ArchitectureGraph {
+            edges,
+            dynamic_imports,
+            ..Default::default()
+        };
+        let mut web = Component::new("web", "web", ComponentKind::Package);
+        web.language = Some("typescript".into());
+        full.add_component(web);
+        full
+    }
+
+    #[test]
+    fn a_dynamic_call_is_test_code_only_when_its_analyzer_marked_it() {
+        let call = |file: &str, test: bool| DynamicImport {
+            from: ComponentId::new("web"),
+            call: "import".into(),
+            evidence: Evidence::new(file).at_line(1).in_test(test),
+        };
+        // a Next.js route below app/test/, which the path rule alone calls test code
+        let full = web(
+            vec![],
+            vec![
+                call("app/test/page.tsx", false),
+                call("src/load.test.ts", true),
+            ],
+        );
+        let subject = Subject {
+            language: Some("typescript"),
+            place: None,
+            own: Own::File("src/target.ts"),
+            script: false,
+            unreached: false,
+        };
+        let dynamic = not_traced(&full, &subject, 10)
+            .and_then(|found| found.dynamic)
+            .unwrap();
+        let marks: Vec<(&str, bool)> = dynamic
+            .shown
+            .iter()
+            .map(|c| (c.file.as_str(), c.test))
+            .collect();
+        assert_eq!(
+            marks,
+            [("app/test/page.tsx", false), ("src/load.test.ts", true)]
+        );
+    }
+
+    #[test]
+    fn the_statements_recorded_in_a_file_decide_whether_it_is_test_code() {
+        let full = web(
+            vec![Edge::new("web", "ext:npm:react", EdgeKind::Import)
+                .with_evidence(Evidence::new("app/test/page.tsx").at_line(1))],
+            vec![],
+        );
+        let no_importers = |file: &'static str| {
+            let subject = Subject {
+                language: Some("typescript"),
+                place: Some(Place::File(file)),
+                own: Own::File(file),
+                script: false,
+                unreached: true,
+            };
+            not_traced(&full, &subject, 10).and_then(|found| found.no_importers)
+        };
+        // its analyzer read the route's import as production code
+        assert_eq!(no_importers("app/test/page.tsx"), Some(NO_IMPORTERS));
+        // nothing recorded in it: its path decides
+        assert_eq!(no_importers("tests/helper.ts"), None);
     }
 }

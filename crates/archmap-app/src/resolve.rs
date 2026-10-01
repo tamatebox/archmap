@@ -12,7 +12,9 @@ use archmap_core::{
 use serde::Serialize;
 
 use crate::query_text::{component_kind, shell_word, symbol_kind};
-use crate::target::{directory_target, file_target, find_component, owner_of_shared_path};
+use crate::target::{
+    directory_target, file_target, find_component, owner_of_shared_path, test_files,
+};
 use crate::Format;
 
 /// What a target names.
@@ -244,17 +246,18 @@ fn files_named(full: &ArchitectureGraph, target: &str) -> Vec<String> {
         })
         .map(str::to_owned)
         .collect();
-    production_first(&mut files);
+    production_first(full, &mut files);
     files
 }
 
 /// Production files before test files, each by path, so a capped list of
 /// candidates shows the code first.
-fn production_first(files: &mut [String]) {
-    files.sort_by(|a, b| {
-        let test = |f: &str| archmap_scan::is_test_code(Path::new(f));
-        (test(a), a).cmp(&(test(b), b))
-    });
+fn production_first(full: &ArchitectureGraph, files: &mut [String]) {
+    let tests: BTreeSet<String> = test_files(full, files.iter().map(String::as_str))
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    files.sort_by(|a, b| (tests.contains(a), a).cmp(&(tests.contains(b), b)));
 }
 
 /// Every match of every kind, for a target whose deciding kind has several.
@@ -270,7 +273,7 @@ fn every_match<'g>(
         .is_some()
         .then(|| target.trim_end_matches('/').to_owned());
     let mut files: Vec<String> = files.into_iter().collect();
-    production_first(&mut files);
+    production_first(full, &mut files);
     Ok(Candidates {
         components: full.components_named(target).collect(),
         symbols: full.symbols_named(target).collect(),
@@ -456,8 +459,27 @@ fn importer_counts(full: &ArchitectureGraph, symbol: &Symbol) -> Option<(usize, 
 
 #[cfg(test)]
 mod tests {
+    use archmap_core::{Edge, EdgeKind, Evidence};
+
     use super::*;
     use crate::target::unquote;
+
+    #[test]
+    fn candidates_list_files_their_analyzer_read_as_production_first() {
+        // a Next.js route below app/test/, which the path rule alone calls test code
+        let full = ArchitectureGraph {
+            edges: vec![Edge::new("web", "ext:npm:react", EdgeKind::Import)
+                .with_evidence(Evidence::new("app/test/page.tsx").at_line(1))],
+            ..Default::default()
+        };
+        let mut files =
+            ["tests/page.test.tsx", "src/page.tsx", "app/test/page.tsx"].map(str::to_owned);
+        production_first(&full, &mut files);
+        assert_eq!(
+            files,
+            ["app/test/page.tsx", "src/page.tsx", "tests/page.test.tsx"]
+        );
+    }
 
     #[test]
     fn one_pair_of_matching_quotes_is_dropped() {
