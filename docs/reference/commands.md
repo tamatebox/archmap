@@ -39,7 +39,8 @@ contains:
   the `source` of the facts and the `next` commands
 - `## Coverage`, before the map: for each analyzed language `files`, `read`
   and `imports without an edge`, counted in statements per reason with those
-  in test code (`extra or dev dependency 2 (1 in tests)`); the languages no analyzer reads, such as
+  in test code (`extra or dev dependency 2 (1 in tests)`), each under the
+  language of the file that writes it; the languages no analyzer reads, such as
   `not analyzed  sql: 145  notebook: 68`; the number of TS/JS `scripts`, files
   without imports or exports whose declarations are used without an import;
   the number of `dynamic imports` and

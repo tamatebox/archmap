@@ -2272,3 +2272,35 @@ fn archmap_mcp_refuses_a_root_that_is_not_there() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+#[test]
+fn coverage_counts_an_import_under_the_language_of_its_file() {
+    // a JavaScript config file that a TypeScript package owns directly
+    let repo = temp_repo("coverage-language");
+    std::fs::create_dir_all(repo.join("web/src")).unwrap();
+    std::fs::write(repo.join("web/package.json"), "{ \"name\": \"web\" }").unwrap();
+    std::fs::write(repo.join("web/src/a.ts"), "export const a = 1;\n").unwrap();
+    std::fs::write(
+        repo.join("web/eslint.config.js"),
+        "import pad from 'left-pad';\nexport default [pad];\n",
+    )
+    .unwrap();
+    let out = archmap()
+        .arg("summary")
+        .arg(&repo)
+        .args(["-o", "-"])
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(&repo).unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains(
+            "\njavascript  files: 1  read: 1  imports without an edge: 1 (undeclared 1)\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("\ntypescript  files: 1  read: 1  imports without an edge: 0\n"),
+        "{text}"
+    );
+}

@@ -283,10 +283,15 @@ fn coverage(out: &mut String, graph: &ArchitectureGraph, rolled: &ArchitectureGr
     type Statements<'a> = BTreeSet<(&'a str, Option<u32>, bool)>;
     let mut without_edge: BTreeMap<&str, BTreeMap<UnmappedReason, Statements>> = BTreeMap::new();
     for import in &graph.unmapped_imports {
-        if let Some(language) = graph
-            .component(&import.from)
-            .and_then(|c| c.language.as_deref())
-        {
+        // the language of the importing file, as Coverage counts files: a
+        // package's own `eslint.config.js` is JavaScript in a TypeScript
+        // package
+        let file = archmap_scan::language_of(std::path::Path::new(&import.evidence.file));
+        if let Some(language) = file.or_else(|| {
+            graph
+                .component(&import.from)
+                .and_then(|c| c.language.as_deref())
+        }) {
             without_edge
                 .entry(language)
                 .or_default()
