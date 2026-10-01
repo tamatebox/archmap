@@ -4,6 +4,8 @@
 use archmap_core::{Component, ComponentId, DynamicImport, Edge, Evidence, Symbol, UnmappedImport};
 use serde::Serialize;
 
+use crate::not_traced::NotTraced;
+
 /// What `archmap query` returns for a component.
 #[derive(Debug, Serialize)]
 pub struct ComponentView<'a> {
@@ -37,6 +39,9 @@ pub struct ComponentView<'a> {
     pub not_mapped: Vec<&'a UnmappedImport>,
     /// Modules the component loads by names computed at runtime.
     pub dynamic_imports: Vec<&'a DynamicImport>,
+    /// What could reach the target unseen, from what analyzers record.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub not_traced: Option<NotTraced>,
 }
 
 /// What `archmap query` returns for a file: the file-level facts behind a
@@ -69,6 +74,9 @@ pub struct FileView<'a> {
     /// shows what uses them.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub script: bool,
+    /// What could reach the target unseen, from what analyzers record.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub not_traced: Option<NotTraced>,
 }
 
 /// What `archmap query` returns for an import name that no component
@@ -107,6 +115,9 @@ pub struct SymbolView<'a> {
     /// Statements that take that file whole, the others aside.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub may_use: Option<Vec<Importer<'a>>>,
+    /// What could reach the target unseen, from what analyzers record.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub not_traced: Option<NotTraced>,
 }
 
 /// An importing statement: the component it is in, and its evidence.

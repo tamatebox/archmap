@@ -11,6 +11,7 @@
 
 mod check;
 mod impact;
+mod not_traced;
 mod pairs;
 mod query;
 mod query_text;

@@ -6,6 +6,7 @@ use archmap_core::{
     ArchitectureGraph, ComponentId, ComponentKind, Edge, EdgeKind, Evidence, Symbol,
 };
 
+use crate::not_traced::{component_name, file_name, not_traced, Own, Subject};
 use crate::resolve::{resolve, unquote, Resolved};
 use crate::target::{component_file, fold, namesakes, reject_outside, AtDepth};
 use crate::views::{ComponentView, FileView, Importer, QueryResult, SymbolView, UnmappedView};
@@ -70,6 +71,18 @@ fn file_view<'a>(
     // the component the file is, or that holds it, before roll-up
     let own = facts.component.and_then(|c| full.component(c));
     let (also_named, also_at_path) = own.map(|c| namesakes(full, c)).unwrap_or_default();
+    let script = own.is_some_and(|c| c.kind == ComponentKind::Script);
+    let not_traced = not_traced(
+        full,
+        &Subject {
+            language: own.and_then(|c| c.language.as_deref()),
+            name: Some(file_name(&facts.file)),
+            own: Own::File(&facts.file),
+            script,
+            unreached: importers.as_ref().is_some_and(Vec::is_empty),
+        },
+        usize::MAX,
+    );
     FileView {
         requested,
         depth,
@@ -82,7 +95,8 @@ fn file_view<'a>(
         importers,
         not_mapped: facts.unmapped_imports,
         dynamic_imports: facts.dynamic_imports,
-        script: own.is_some_and(|c| c.kind == ComponentKind::Script),
+        script,
+        not_traced,
     }
 }
 
@@ -165,17 +179,32 @@ fn symbol_view<'a>(full: &'a ArchitectureGraph, symbol: &'a Symbol) -> SymbolVie
         list.sort_by_key(|i| (i.evidence.test, &i.evidence.file, i.evidence.line));
         list
     };
-    match importers {
-        Some(found) => SymbolView {
-            symbol,
-            imported_by: Some(list(found.by_name)),
-            may_use: Some(list(found.may_use)),
+    let (imported_by, may_use) = match importers {
+        Some(found) => (Some(list(found.by_name)), Some(list(found.may_use))),
+        None => (None, None),
+    };
+    // the component that declares it, before roll-up
+    let declared = full
+        .symbol(&symbol.id)
+        .and_then(|s| full.component(&s.component));
+    let location = symbol.location().map(|e| e.file.as_str()).unwrap_or("");
+    let not_traced = not_traced(
+        full,
+        &Subject {
+            language: declared.and_then(|c| c.language.as_deref()),
+            name: None,
+            own: Own::File(location),
+            script: declared.is_some_and(|c| c.kind == ComponentKind::Script),
+            unreached: imported_by.as_ref().is_some_and(Vec::is_empty)
+                && may_use.as_ref().is_some_and(Vec::is_empty),
         },
-        None => SymbolView {
-            symbol,
-            imported_by: None,
-            may_use: None,
-        },
+        usize::MAX,
+    );
+    SymbolView {
+        symbol,
+        imported_by,
+        may_use,
+        not_traced,
     }
 }
 
@@ -192,6 +221,17 @@ fn component_view<'a>(
         .component(&at.id)
         .with_context(|| format!("`{}` is missing after roll-up", at.id))?;
     let (also_named, also_at_path) = namesakes(full, component);
+    let not_traced = not_traced(
+        full,
+        &Subject {
+            language: component.language.as_deref(),
+            name: Some(component_name(&component.name)),
+            own: Own::Component(&component.id, depth),
+            script: component.kind == ComponentKind::Script,
+            unreached: false,
+        },
+        usize::MAX,
+    );
     Ok(QueryResult::Component(ComponentView {
         requested,
         depth,
@@ -219,5 +259,6 @@ fn component_view<'a>(
             .iter()
             .filter(|i| i.from == component.id)
             .collect(),
+        not_traced,
     }))
 }

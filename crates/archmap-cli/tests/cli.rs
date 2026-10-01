@@ -618,7 +618,8 @@ fn query_text_is_a_compact_drill_down() {
     assert_eq!(
         symbols,
         "Symbols matching `greet`: 1\n  pub fn greet(user: &User) -> String  crates/lib_core/src/lib.rs:28  in lib_core\n\
-         \nImported by: 2\n  crates/app/src/config.rs:12 (local)\n  crates/app/src/main.rs:2\n"
+         \nImported by: 2\n  crates/app/src/config.rs:12 (local)\n  crates/app/src/main.rs:2\n\
+         \nNot traced:\n  not read: 1 of 9 rust files\n"
     );
 }
 

@@ -104,8 +104,8 @@ Other languages are counted in `summary`, not analyzed. Each analyzer's
 behavior and known gaps are in [analyzers.md](docs/reference/analyzers.md).
 No analyzer sees runtime coupling (HTTP, databases, queues, subprocesses,
 configuration-driven loading) or follows a module loaded by a name computed
-at runtime, and nothing is inferred; `summary` and `query` say what the scan
-could not see.
+at runtime, and nothing is inferred; `summary`, `query` and `impact` say what
+the scan could not see.
 
 ### Support by language
 

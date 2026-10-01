@@ -13,6 +13,7 @@ use archmap_core::{
     Symbol, SymbolKind, UnmappedImport, UnmappedReason,
 };
 
+use crate::not_traced::NotTraced;
 use crate::pairs::{Counted, Pairs};
 
 use crate::views::{ComponentView, FileView, Importer, QueryResult, SymbolView, UnmappedView};
@@ -60,7 +61,7 @@ pub fn render(
     let caps = Caps::new(verbose);
     let pairs = Pairs::new(full);
     let mut out = String::new();
-    let truncated = match result {
+    let mut truncated = match result {
         QueryResult::Component(view) => component(&mut out, view, full, rolled, &pairs, &caps),
         QueryResult::File(view) => file(&mut out, view, rolled, &pairs, &caps),
         QueryResult::Symbols(symbols) => {
@@ -68,6 +69,15 @@ pub fn render(
         }
         QueryResult::NotMapped(view) => unmapped_name(&mut out, view, full, rolled, &caps),
     };
+    let not_traced = match result {
+        QueryResult::Component(view) => view.not_traced.as_ref(),
+        QueryResult::File(view) => view.not_traced.as_ref(),
+        QueryResult::Symbols(symbols) => symbols.first().and_then(|v| v.not_traced.as_ref()),
+        QueryResult::NotMapped(_) => None,
+    };
+    if let Some(not_traced) = not_traced {
+        truncated |= self::not_traced(&mut out, not_traced, caps.locations);
+    }
     if truncated {
         let _ = writeln!(
             out,
@@ -802,6 +812,81 @@ pub(crate) fn symbol_kind(kind: SymbolKind) -> &'static str {
         SymbolKind::Module => "module",
         SymbolKind::Other => "symbol",
     }
+}
+
+/// The `Not traced` section at the end of `query`. A script and a file
+/// nothing imports are said where the text shows importers, so not again
+/// here. Shows `cap` locations per kind; returns whether some were left out.
+pub(crate) fn not_traced(out: &mut String, found: &NotTraced, cap: usize) -> bool {
+    let mut lines = Vec::new();
+    let mut truncated = false;
+    if let Some(d) = &found.dynamic {
+        let what = if d.total == 1 {
+            "1 call loads a module by a computed name".to_owned()
+        } else {
+            format!("{} calls load modules by computed names", d.total)
+        };
+        let places: Vec<String> = d
+            .shown
+            .iter()
+            .take(cap)
+            .map(|c| place(&c.file, c.line))
+            .collect();
+        truncated |= places.len() < d.total;
+        lines.push(format!(
+            "  dynamic: {what}, which may be this: {}",
+            with_more(&places, d.total)
+        ));
+    }
+    if let Some(n) = &found.named_like {
+        let what = if n.total == 1 {
+            format!("1 import of `{}` maps to no file", n.name)
+        } else {
+            format!("{} imports of `{}` map to no file", n.total, n.name)
+        };
+        let places: Vec<String> = n
+            .shown
+            .iter()
+            .take(cap)
+            .map(|i| format!("{} ({})", place(&i.file, i.line), reason_label(i.reason)))
+            .collect();
+        truncated |= places.len() < n.total;
+        lines.push(format!(
+            "  named like it: {what}: {}",
+            with_more(&places, n.total)
+        ));
+    }
+    if let Some(r) = &found.not_read {
+        lines.push(format!(
+            "  not read: {} of {} {} files",
+            r.files - r.read,
+            r.files,
+            r.language
+        ));
+    }
+    if !lines.is_empty() {
+        let _ = writeln!(out, "\nNot traced:");
+        for line in lines {
+            let _ = writeln!(out, "{line}");
+        }
+    }
+    truncated
+}
+
+fn place(file: &str, line: Option<u32>) -> String {
+    match line {
+        Some(line) => format!("{file}:{line}"),
+        None => file.to_owned(),
+    }
+}
+
+/// `a, b, +N more`: the shown entries, and how many of `total` were left out.
+fn with_more(shown: &[String], total: usize) -> String {
+    let mut out = shown.join(", ");
+    if total > shown.len() {
+        let _ = write!(out, ", +{} more", total - shown.len());
+    }
+    out
 }
 
 #[cfg(test)]

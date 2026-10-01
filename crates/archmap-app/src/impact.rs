@@ -4,10 +4,12 @@ use std::collections::BTreeSet;
 
 use anyhow::{Context, Result};
 use archmap_core::{
-    ArchitectureGraph, ChangeSeed, ComponentId, Edge, Evidence, SymbolId, UnmappedImport,
+    ArchitectureGraph, ChangeSeed, Component, ComponentId, ComponentKind, Edge, Evidence, Symbol,
+    SymbolId, UnmappedImport,
 };
 use serde::Serialize;
 
+use crate::not_traced::{component_name, file_name, not_traced, NotTraced, Own, Subject};
 use crate::resolve::{resolve, unquote, Resolved};
 use crate::target::{component_file, fold, namesakes, reject_outside};
 use crate::{Answer, Format, Found, ImpactRequest, Workspace};
@@ -53,6 +55,17 @@ pub struct ImpactResult<'a> {
     /// For a symbol: the statements that take its file whole.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub may_use: Option<ImportSites>,
+    /// What could reach the target unseen, from what analyzers record.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub not_traced: Option<NotTraced>,
+}
+
+/// What a resolved target is, for what could not be traced to it.
+enum Traced<'g> {
+    Component(&'g Component),
+    /// A file, with the component it is or that holds it.
+    File(String, Option<&'g Component>),
+    Symbol(&'g Symbol),
 }
 
 /// How many import sites `impact` shows for a file; the rest is counted.
@@ -155,6 +168,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
 
     let mut importers = None;
     let (mut symbol_id, mut may_use, mut subpath) = (None, None, None);
+    let traced: Traced;
     let (at, reach) = match resolve(full, &rolled, root, target)? {
         Resolved::Candidates(candidates) => {
             return Ok(Answer {
@@ -170,8 +184,13 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
         }
         Resolved::Component(component) => {
             let reach = full.change_impact(ChangeSeed::Component(&component.id), depth);
-            importers = component_file(full, root, component)
-                .map(|file| import_sites(full, depth, &file, caps.sites));
+            traced = match component_file(full, root, component) {
+                Some(file) => {
+                    importers = Some(import_sites(full, depth, &file, caps.sites));
+                    Traced::File(file, Some(component))
+                }
+                None => Traced::Component(component),
+            };
             (fold(full, depth, &component.id), reach)
         }
         Resolved::Package {
@@ -179,6 +198,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
             subpath: after,
         } => {
             subpath = Some(after);
+            traced = Traced::Component(component);
             let reach = full.change_impact(ChangeSeed::Component(&component.id), depth);
             (fold(full, depth, &component.id), reach)
         }
@@ -188,14 +208,21 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
                 .with_context(|| format!("no component contains `{target}`"))?;
             let reach = full.change_impact(ChangeSeed::File(&file), depth);
             importers = Some(import_sites(full, depth, &file, caps.sites));
-            (fold(full, depth, &owner.id), reach)
+            let at = fold(full, depth, &owner.id);
+            traced = Traced::File(file, Some(owner));
+            (at, reach)
         }
         Resolved::Symbol(symbol) => match full.component(&ComponentId::new(symbol.id.as_str())) {
             // a Rust module's symbol stands for its component
             Some(module) => {
                 let reach = full.change_impact(ChangeSeed::Component(&module.id), depth);
-                importers = component_file(full, root, module)
-                    .map(|file| import_sites(full, depth, &file, caps.sites));
+                traced = match component_file(full, root, module) {
+                    Some(file) => {
+                        importers = Some(import_sites(full, depth, &file, caps.sites));
+                        Traced::File(file, Some(module))
+                    }
+                    None => Traced::Component(module),
+                };
                 (fold(full, depth, &module.id), reach)
             }
             None => {
@@ -217,10 +244,41 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
                     ));
                 }
                 symbol_id = Some(symbol.id.clone());
+                traced = Traced::Symbol(symbol);
                 (fold(full, depth, &symbol.component), reach)
             }
         },
     };
+
+    let none_found =
+        |sites: &Option<ImportSites>| sites.as_ref().is_some_and(|s| s.recorded && s.total == 0);
+    let subject = match &traced {
+        Traced::Component(component) => Subject {
+            language: component.language.as_deref(),
+            name: Some(component_name(&component.name)),
+            own: Own::Component(&at.id, depth),
+            script: component.kind == ComponentKind::Script,
+            unreached: false,
+        },
+        Traced::File(file, owner) => Subject {
+            language: owner.and_then(|c| c.language.as_deref()),
+            name: Some(file_name(file)),
+            own: Own::File(file),
+            script: owner.is_some_and(|c| c.kind == ComponentKind::Script),
+            unreached: none_found(&importers),
+        },
+        Traced::Symbol(symbol) => {
+            let declared = full.component(&symbol.component);
+            Subject {
+                language: declared.and_then(|c| c.language.as_deref()),
+                name: None,
+                own: Own::File(symbol.location().map_or("", |e| e.file.as_str())),
+                script: declared.is_some_and(|c| c.kind == ComponentKind::Script),
+                unreached: none_found(&importers) && none_found(&may_use),
+            }
+        }
+    };
+    let not_traced = not_traced(full, &subject, caps.sites);
 
     let (also_named, also_at_path) = full
         .component(&at.id)
@@ -245,6 +303,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
         subpath,
         importers,
         may_use,
+        not_traced,
     };
     Ok(Answer {
         output: crate::json(&result)?,
@@ -326,6 +385,7 @@ fn import_name_impact(
             shown: sites,
         }),
         may_use: None,
+        not_traced: None,
     };
     crate::json(&result)
 }
