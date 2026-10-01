@@ -58,7 +58,7 @@ use std::path::{Path, PathBuf};
 
 use archmap_core::{
     Component, ComponentId, ComponentKind, DynamicImport, Edge, EdgeKind, Evidence, Scope, Symbol,
-    SymbolId, UnmappedImport, UnmappedReason,
+    SymbolId, UnmappedImport, UnmappedReason, WHOLE_MODULE,
 };
 
 use crate::analyzer::AnalyzerOutput;
@@ -741,12 +741,15 @@ fn emit_imports(
             None => continue,
         };
 
-        let mut candidates: Vec<String> = import
-            .names
+        // `*`, from a star import or a list that could not be read, is no
+        // name to look up: it takes the statement's module whole
+        let star = import.names.iter().any(|n| n == WHOLE_MODULE);
+        let named: Vec<&String> = import.names.iter().filter(|n| *n != WHOLE_MODULE).collect();
+        let mut candidates: Vec<String> = named
             .iter()
             .map(|n| {
                 if full.is_empty() {
-                    n.clone()
+                    (*n).clone()
                 } else {
                     format!("{full}.{n}")
                 }
@@ -767,19 +770,46 @@ fn emit_imports(
                 .in_scope(scope)
         };
 
-        // Internal module -> the files the statement loads in it. The
-        // trailing `full` candidate only contributes a file when no imported
-        // name resolved into the same module (`from pkg import VERSION`).
-        let mut internal: BTreeMap<ComponentId, BTreeSet<Option<String>>> = BTreeMap::new();
+        // Internal module -> the files the statement loads in it, with the
+        // names it takes from each: an attribute of the statement's module by
+        // name, a submodule whole, and nothing from a package it only passes.
+        // The trailing `full` candidate only contributes a file when no
+        // imported name resolved into the same module (`from pkg import
+        // VERSION`), or when the statement takes the module whole.
+        let mut internal: BTreeMap<ComponentId, BTreeMap<Option<String>, BTreeSet<String>>> =
+            BTreeMap::new();
+        let own = own_file(&full, modules, by_dotted, ctx.known_files);
         for (i, candidate) in candidates.iter().enumerate() {
             let Some(idx) = longest_known_prefix(candidate, by_dotted) else {
                 continue;
             };
             let module = &modules[idx];
-            let is_full = i == import.names.len();
+            let is_full = i == named.len();
             let files = internal.entry(module.id.clone()).or_default();
-            if !is_full || files.is_empty() {
-                files.insert(target_file(module, candidate, ctx.known_files));
+            if is_full && !files.is_empty() {
+                // a list that could not be read may take more from the
+                // module's own file, but adds no file to the statement
+                if star && own.is_some() {
+                    if let Some(names) = files.get_mut(&own) {
+                        names.insert(WHOLE_MODULE.to_owned());
+                    }
+                }
+                continue;
+            }
+            let (target, fallback) = target_file(module, candidate, ctx.known_files);
+            let names = files.entry(target.clone()).or_default();
+            if is_full {
+                // `import m` and `from m import *` take the whole module; the
+                // package a `from` import passes on the way, or the one left
+                // for a module the scan did not read, gives no name
+                if (import.names.is_empty() || star) && !fallback {
+                    names.insert(WHOLE_MODULE.to_owned());
+                }
+            } else if target.is_some() && target == own {
+                names.insert(named[i].clone());
+            } else if !fallback {
+                // a submodule, taken whole
+                names.insert(WHOLE_MODULE.to_owned());
             }
         }
 
@@ -789,7 +819,7 @@ fn emit_imports(
             "import"
         };
         for (target, files) in &internal {
-            for target_file in files {
+            for (target_file, names) in files {
                 // Imports between files of one component are kept as a
                 // self-edge: roll-up hides them, but impact needs them to
                 // follow a change through the component.
@@ -799,7 +829,7 @@ fn emit_imports(
                 }
                 let mut e = evidence().with_note(note);
                 if let Some(t) = target_file {
-                    e = e.pointing_at(t);
+                    e = e.pointing_at(t).taking(names.iter().cloned());
                 }
                 output.fragment.push_edge(
                     Edge::new(owner.clone(), target.clone(), EdgeKind::Import).with_evidence(e),
@@ -837,7 +867,7 @@ fn emit_imports(
         // distribution provides as a module of its own (`from google.cloud
         // import bigquery, storage`), and the statement's module for the
         // other names. Without a virtualenv every name is one of the others.
-        let names = &candidates[..import.names.len()];
+        let names = &candidates[..named.len()];
         let (modules, others): (Vec<&String>, Vec<&String>) =
             names.iter().partition(|c| ctx.installed.is_module(c));
         let mut uncovered: Vec<(&str, Vec<&String>)> = modules
@@ -999,8 +1029,14 @@ fn declared_at(declaration: &Declaration) -> String {
 
 /// The file a dotted import path loads inside `module`: `pkg/sub.py` for
 /// `pkg.sub` or `pkg.sub.name`, otherwise the package's own `__init__.py`.
-/// `None` for a namespace package, which has no file of its own.
-fn target_file(module: &Module, candidate: &str, known: &BTreeSet<&Path>) -> Option<String> {
+/// `None` for a namespace package, which has no file of its own. The flag
+/// says that the path named something below the package that is no file
+/// the scan read, so the `__init__.py` is only loaded on the way.
+fn target_file(
+    module: &Module,
+    candidate: &str,
+    known: &BTreeSet<&Path>,
+) -> (Option<String>, bool) {
     let rest = candidate
         .strip_prefix(module.dotted.as_str())
         .unwrap_or_default()
@@ -1008,11 +1044,38 @@ fn target_file(module: &Module, candidate: &str, known: &BTreeSet<&Path>) -> Opt
     if let Some(first) = rest.split('.').next().filter(|s| !s.is_empty()) {
         let file = module.dir.join(format!("{first}.py"));
         if known.contains(file.as_path()) {
-            return Some(display_path(&file));
+            return (Some(display_path(&file)), false);
         }
     }
     let init = module.dir.join("__init__.py");
-    known.contains(init.as_path()).then(|| display_path(&init))
+    (
+        known.contains(init.as_path()).then(|| display_path(&init)),
+        !rest.is_empty(),
+    )
+}
+
+/// The file of module `dotted` itself, when the scan read it: the
+/// `__init__.py` of the package it names, or `<name>.py` one level below the
+/// package it resolves into. `None` for a module without a file of its own.
+fn own_file(
+    dotted: &str,
+    modules: &[Module],
+    by_dotted: &BTreeMap<&str, usize>,
+    known: &BTreeSet<&Path>,
+) -> Option<String> {
+    let module = &modules[longest_known_prefix(dotted, by_dotted)?];
+    let rest = dotted
+        .strip_prefix(module.dotted.as_str())
+        .unwrap_or_default()
+        .trim_start_matches('.');
+    let file = if rest.is_empty() {
+        module.dir.join("__init__.py")
+    } else if !rest.contains('.') {
+        module.dir.join(format!("{rest}.py"))
+    } else {
+        return None;
+    };
+    known.contains(file.as_path()).then(|| display_path(&file))
 }
 
 /// Directory -> the names importable from it: `.py` file stems and

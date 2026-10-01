@@ -1,5 +1,6 @@
 //! End-to-end scan of `fixtures/simple-rust-workspace`.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use archmap_core::rules::{CycleRule, FileLevel, Finding, RuleSet};
@@ -268,6 +269,23 @@ fn every_use_and_module_path_names_the_file_it_imports() {
                 "path",
                 module
             ),
+            // `self` beside an item, and a glob of an enum
+            row(
+                "lib_core::api::v1",
+                "lib_core::billing",
+                "crates/lib_core/src/api/v1.rs:15",
+                &billing,
+                "use",
+                module
+            ),
+            row(
+                "lib_core::api::v1",
+                "lib_core::billing",
+                "crates/lib_core/src/api/v1.rs:16",
+                &billing,
+                "use",
+                module
+            ),
             // a path in `#[derive(..)]`; the one in test code is left out
             row(
                 "lib_core::billing",
@@ -356,6 +374,7 @@ fn only_public_items_become_symbols() {
     assert_eq!(
         names("lib_core"),
         vec![
+            "Invoice::total",
             "User",
             "User::new",
             "api",
@@ -367,13 +386,13 @@ fn only_public_items_become_symbols() {
     );
     assert_eq!(
         names("lib_core::billing"),
-        vec!["CURRENCY", "Charge", "Receipt", "invoice"]
+        vec!["CURRENCY", "Charge", "Receipt", "Status", "invoice"]
     );
     // a private module's public items are still part of the crate's code
     assert_eq!(names("lib_core::store"), vec!["Ledger", "open"]);
     assert_eq!(
         names("lib_core::api::v1"),
-        vec!["charge", "currency", "lookup"]
+        vec!["charge", "currency", "lookup", "receipt"]
     );
 
     let greet = graph.symbol(&"lib_core::greet".into()).unwrap();
@@ -549,4 +568,130 @@ fn a_dev_dependency_used_under_src_is_an_import_without_an_edge() {
         }]
     );
     assert!(graph.component(&id("ext:cargo:assert_cmd")).is_none());
+}
+
+/// For the evidence of the statement at `at` (`file:line`) that points at
+/// `target`: its note and the names it takes.
+fn names_taken(graph: &ArchitectureGraph, at: &str, target: &str) -> BTreeMap<String, Vec<String>> {
+    graph
+        .edges
+        .iter()
+        .flat_map(|e| &e.evidence)
+        .filter(|e| {
+            format!("{}:{}", e.file, e.line.unwrap_or(0)) == at
+                && e.target.as_deref() == Some(target)
+        })
+        .map(|e| {
+            (
+                e.note.clone().unwrap_or_default(),
+                e.names.iter().cloned().collect(),
+            )
+        })
+        .collect()
+}
+
+fn noted(rows: &[(&str, &[&str])]) -> BTreeMap<String, Vec<String>> {
+    rows.iter()
+        .map(|(note, names)| {
+            (
+                (*note).to_owned(),
+                names.iter().map(|n| (*n).to_owned()).collect(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn rust_evidence_names_what_each_use_and_path_takes() {
+    let graph = scan_fixture();
+    let lib = "crates/lib_core/src/lib.rs";
+    let billing = "crates/lib_core/src/billing.rs";
+    let v1 = "crates/lib_core/src/api/v1.rs";
+    // leaves of one declaration share their evidence
+    assert_eq!(
+        names_taken(&graph, "crates/app/src/main.rs:2", lib),
+        noted(&[("use", &["User", "greet"])])
+    );
+    assert_eq!(
+        names_taken(&graph, "crates/app/src/main.rs:1", billing),
+        noted(&[("use", &["CURRENCY"])])
+    );
+    // through a `pub use`, the defining file and name
+    assert_eq!(
+        names_taken(
+            &graph,
+            "crates/app/src/config.rs:1",
+            "crates/lib_core/src/billing/invoice.rs"
+        ),
+        noted(&[("use via crates/lib_core/src/lib.rs:7", &["Invoice"])])
+    );
+    // a path in code
+    assert_eq!(
+        names_taken(&graph, "crates/app/src/config.rs:12", lib),
+        noted(&[("path", &["greet"])])
+    );
+    // two paths from one file to one target: one evidence, both names
+    assert_eq!(
+        names_taken(&graph, &format!("{v1}:11"), billing),
+        noted(&[("path", &["CURRENCY", "Charge"])])
+    );
+    // `self` takes the module whole; a glob of an enum takes the enum
+    assert_eq!(
+        names_taken(&graph, &format!("{v1}:15"), billing),
+        noted(&[("use", &["*", "Receipt"])])
+    );
+    assert_eq!(
+        names_taken(&graph, &format!("{v1}:16"), billing),
+        noted(&[("use", &["Status"])])
+    );
+}
+
+#[test]
+fn no_rust_edge_holds_evidence_that_differs_only_in_names() {
+    let graph = scan_fixture();
+    for edge in &graph.edges {
+        let mut seen = BTreeSet::new();
+        for e in &edge.evidence {
+            let key = (&e.file, e.line, &e.note, &e.target, e.scope);
+            assert!(
+                seen.insert(key),
+                "{} -> {}: {key:?} twice",
+                edge.from,
+                edge.to
+            );
+        }
+    }
+}
+
+#[test]
+fn a_method_whose_type_is_in_another_file_says_where_the_type_is() {
+    let graph = scan_fixture();
+    let total = graph.symbol(&"lib_core::Invoice::total".into()).unwrap();
+    let at = total.location().map(|e| (e.file.as_str(), e.line));
+    assert_eq!(at, Some(("crates/lib_core/src/lib.rs", Some(43))));
+    let reached: Vec<_> = total
+        .evidence
+        .iter()
+        .filter(|e| e.target.is_some())
+        .map(|e| {
+            (
+                e.line,
+                e.note.as_deref(),
+                e.target.as_deref(),
+                e.names.iter().cloned().collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        reached,
+        [(
+            Some(42),
+            Some("impl"),
+            Some("crates/lib_core/src/billing/invoice.rs"),
+            vec!["Invoice".to_owned()]
+        )]
+    );
+    // a method beside its type needs none
+    let new = graph.symbol(&"lib_core::User::new".into()).unwrap();
+    assert!(new.evidence.iter().all(|e| e.target.is_none()));
 }

@@ -18,3 +18,8 @@ mod tests {
 
 #[derive(serde::Serialize)]
 pub struct Receipt;
+
+pub enum Status {
+    Open,
+    Paid,
+}

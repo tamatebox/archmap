@@ -5,7 +5,7 @@
 //! `def` / `class`, public methods, `CONSTANT = ...`) and ignores everything
 //! else. It can be swapped for a real parser behind the same functions.
 
-use archmap_core::SymbolKind;
+use archmap_core::{SymbolKind, WHOLE_MODULE};
 
 /// One `import` or `from ... import` statement.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,7 +14,8 @@ pub struct PyImport {
     pub module: String,
     /// Number of leading dots in a relative import (0 = absolute).
     pub level: usize,
-    /// Names imported by a `from` statement (may be submodules).
+    /// Names imported by a `from` statement (may be submodules); `*` for a
+    /// star import or a list that could not be read whole.
     pub names: Vec<String>,
     pub line: u32,
     /// Inside a function body, so it runs only when the function is called.
@@ -144,10 +145,10 @@ pub fn scan_source(text: &str) -> PyFile {
         let is_import = code.starts_with("import ") || code.starts_with("from ");
         // An import continued over lines (in brackets, or after a
         // backslash) is read whole, and its other lines are no statements.
-        let (joined, extra) = if is_import {
+        let (joined, extra, open) = if is_import {
             continued(&lines, i, code)
         } else {
-            (String::new(), 0)
+            (String::new(), 0, false)
         };
         i += extra;
         let code = if is_import { joined.as_str() } else { code };
@@ -173,16 +174,20 @@ pub fn scan_source(text: &str) -> PyFile {
                 let target = target.trim();
                 let level = target.chars().take_while(|c| *c == '.').count();
                 let module = target[level..].to_owned();
-                let names = names
+                let mut names: Vec<String> = names
                     .trim()
                     .trim_start_matches('(')
                     .trim_end_matches(')')
                     .trim_end_matches('\\')
                     .split(',')
                     .filter_map(|n| n.split_whitespace().next())
-                    .filter(|n| *n != "*" && !n.is_empty())
+                    .filter(|n| !n.is_empty())
                     .map(str::to_owned)
                     .collect();
+                // a list that could not be read whole may take anything
+                if open && !names.iter().any(|n| n == WHOLE_MODULE) {
+                    names.push(WHOLE_MODULE.to_owned());
+                }
                 out.imports.push(PyImport {
                     module,
                     level,
@@ -358,9 +363,10 @@ fn collect_header(lines: &[&str], start: usize) -> (String, usize) {
 /// The statement that `first` starts, joined with the lines that continue
 /// it, at most 50 as for headers: while a bracket is open, or after a
 /// trailing backslash, up to a `;`, which an import never holds. Returns
-/// it and how many lines after the first it took; `next` is the index of
-/// the line after the first.
-fn continued(lines: &[&str], next: usize, first: &str) -> (String, usize) {
+/// it, how many lines after the first it took (`next` is the index of the
+/// line after the first), and whether it was still open where the reading
+/// stopped.
+fn continued(lines: &[&str], next: usize, first: &str) -> (String, usize, bool) {
     let (first, mut ended) = before_semicolon(first);
     let mut joined = first.trim_end().to_owned();
     let mut depth = bracket_depth(&joined);
@@ -380,7 +386,8 @@ fn continued(lines: &[&str], next: usize, first: &str) -> (String, usize) {
         joined.push(' ');
         joined.push_str(line.trim_end());
     }
-    (joined, extra)
+    let open = depth > 0 || joined.ends_with('\\');
+    (joined, extra, open)
 }
 
 /// `code` up to its first `;`, and whether it had one.
@@ -759,12 +766,25 @@ import_module("inside the string")
     }
 
     #[test]
-    fn an_import_whose_brackets_never_close_stops_at_the_end() {
+    fn a_name_list_that_cannot_be_read_takes_the_whole_module() {
+        // open at the end of the file
         let file = scan_source("from a import (\n    b,\n");
         assert_eq!(file.imports.len(), 1);
-        assert_eq!(file.imports[0].names, ["b"]);
+        assert_eq!(file.imports[0].names, ["b", "*"]);
+        // still open after 50 lines
+        let names: String = (0..60).map(|i| format!("    n{i},\n")).collect();
+        let file = scan_source(&format!("from a import (\n{names})\n"));
+        assert_eq!(file.imports[0].names.len(), 51);
+        assert_eq!(file.imports[0].names.last().map(String::as_str), Some("*"));
         let file = scan_source("import a, \\");
         let modules: Vec<&str> = file.imports.iter().map(|i| i.module.as_str()).collect();
         assert_eq!(modules, ["a"]);
+        // `import` after a backslash on the line before
+        let file = scan_source("from a.b \\\n    import c\n");
+        assert_eq!(file.imports[0].module, "a.b");
+        assert_eq!(file.imports[0].names, ["c"]);
+        // a star import takes the whole module
+        let file = scan_source("from a import *\n");
+        assert_eq!(file.imports[0].names, ["*"]);
     }
 }

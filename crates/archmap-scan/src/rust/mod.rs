@@ -37,7 +37,7 @@ use std::path::{Path, PathBuf};
 
 use archmap_core::{
     Component, ComponentId, ComponentKind, Edge, EdgeKind, Evidence, Scope, Symbol, SymbolId,
-    UnmappedImport, UnmappedReason,
+    UnmappedImport, UnmappedReason, WHOLE_MODULE,
 };
 
 use crate::analyzer::AnalyzerOutput;
@@ -138,6 +138,8 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
 
     let resolver = tree::Resolver::new(&forest, &files, packages);
     let mut paths: BTreeMap<(usize, PathTarget), PathHit> = BTreeMap::new();
+    // the names all paths from a file to a file take
+    let mut path_names: BTreeMap<(usize, PathTarget), BTreeSet<String>> = BTreeMap::new();
     for (n, node) in forest.nodes.iter().enumerate() {
         let package = &packages[node.package];
         let file = display_path(&files[node.file].rel);
@@ -152,22 +154,47 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
                     .map(String::as_str)
                     .collect::<Vec<_>>()
                     .join("::");
+                let mut evidence = vec![Evidence::new(&file).at_line(symbol.line)];
+                // a method is reached through its type, which an inherent impl
+                // may take from another file of its crate
+                let reached = symbol.owner.as_ref().and_then(|ty| {
+                    let found = resolver.resolve_type(n, &ty.segments, ty.leading_colon)?;
+                    Some((ty.line, found))
+                });
+                if let Some((line, (type_file, name))) = reached {
+                    if type_file != node.file {
+                        evidence.push(
+                            Evidence::new(&file)
+                                .at_line(line)
+                                .with_note("impl")
+                                .pointing_at(display_path(&files[type_file].rel))
+                                .taking([name]),
+                        );
+                    }
+                }
                 output.fragment.push_symbol(Symbol {
                     id: SymbolId::new(id),
                     name: symbol.name.clone(),
                     kind: symbol.kind,
                     component: owner.clone(),
                     signature: symbol.signature.clone(),
-                    evidence: vec![Evidence::new(&file).at_line(symbol.line)],
+                    evidence,
                 });
             }
         }
 
+        // the leaves of a declaration that reach one file (`use a::{X, Y}`)
+        // share one piece of evidence, with the names they take together
+        let mut taken: BTreeMap<(u32, Scope, String, usize), BTreeSet<String>> = BTreeMap::new();
         for decl in &facts.uses {
             let evidence = Evidence::new(&file).at_line(decl.line).in_scope(decl.scope);
             let note = |via| note(decl.note, via, &files);
             match resolver.resolve(n, decl) {
-                Resolved::Module { node: target, via } => {
+                Resolved::Module {
+                    node: target,
+                    via,
+                    name,
+                } => {
                     let target_file = forest.nodes[target].file;
                     let within_file = target_file == node.file;
                     // what the file's module re-exports from its own subtree
@@ -180,17 +207,10 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
                     if within_file || reexport || test {
                         continue;
                     }
-                    let evidence = evidence
-                        .with_note(note(via))
-                        .pointing_at(display_path(&files[target_file].rel));
-                    output.fragment.push_edge(
-                        Edge::new(
-                            owner.clone(),
-                            forest.owners[target_file].clone(),
-                            EdgeKind::Import,
-                        )
-                        .with_evidence(evidence),
-                    );
+                    taken
+                        .entry((decl.line, decl.scope, note(via), target_file))
+                        .or_default()
+                        .insert(name.unwrap_or_else(|| WHOLE_MODULE.to_owned()));
                 }
                 Resolved::Crate { id, via } => {
                     if id != package.id {
@@ -214,22 +234,51 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
                 Resolved::Nothing => {}
             }
         }
+        for ((line, scope, note, target_file), names) in taken {
+            output.fragment.push_edge(
+                Edge::new(
+                    owner.clone(),
+                    forest.owners[target_file].clone(),
+                    EdgeKind::Import,
+                )
+                .with_evidence(
+                    Evidence::new(&file)
+                        .at_line(line)
+                        .in_scope(scope)
+                        .with_note(note)
+                        .pointing_at(display_path(&files[target_file].rel))
+                        .taking(names),
+                ),
+            );
+        }
 
         for path in &facts.paths {
-            let (target, via) = match resolver.resolve_path(n, path) {
-                Resolved::Module { node: target, via } => {
+            let (target, via, name) = match resolver.resolve_path(n, path) {
+                Resolved::Module {
+                    node: target,
+                    via,
+                    name,
+                } => {
                     let target_file = forest.nodes[target].file;
                     let test =
                         (node.test || path.test) && forest.nodes[target].package == node.package;
                     if target_file == node.file || test {
                         continue;
                     }
-                    (PathTarget::File(target_file), via)
+                    (PathTarget::File(target_file), via, name)
                 }
-                Resolved::Crate { id, via } if id != package.id => (PathTarget::Crate(id), via),
-                Resolved::DevOnly(module) => (PathTarget::DevOnly(module), None),
+                Resolved::Crate { id, via } if id != package.id => {
+                    (PathTarget::Crate(id), via, None)
+                }
+                Resolved::DevOnly(module) => (PathTarget::DevOnly(module), None, None),
                 Resolved::Crate { .. } | Resolved::Nothing => continue,
             };
+            if let PathTarget::File(_) = target {
+                path_names
+                    .entry((node.file, target.clone()))
+                    .or_default()
+                    .insert(name.unwrap_or_else(|| WHOLE_MODULE.to_owned()));
+            }
             let hit = PathHit {
                 rank: (path.scope != Scope::Module, path.line),
                 scope: path.scope,
@@ -248,7 +297,11 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
     }
 
     // however many paths lead from a file to a target, one piece of evidence
+    // with the names they take together
     for ((file, target), hit) in paths {
+        let names = path_names
+            .remove(&(file, target.clone()))
+            .unwrap_or_default();
         let owner = forest.owners[file].clone();
         let evidence = Evidence::new(display_path(&files[file].rel))
             .at_line(hit.rank.1)
@@ -259,7 +312,8 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
                     .with_evidence(
                         evidence
                             .with_note(note("path", hit.via, &files))
-                            .pointing_at(display_path(&files[target_file].rel)),
+                            .pointing_at(display_path(&files[target_file].rel))
+                            .taking(names),
                     ),
             ),
             PathTarget::Crate(id) => output.fragment.push_edge(

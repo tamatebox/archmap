@@ -459,7 +459,7 @@ fn symbol_line(symbol: &Symbol) -> String {
         Some(signature) => format!("{}: {signature}", symbol.name),
         None => format!("{} {}", symbol_kind(symbol.kind), symbol.name),
     };
-    match symbol.evidence.first() {
+    match symbol.location() {
         Some(evidence) => format!("{what}  {}", location(evidence)),
         None => what,
     }

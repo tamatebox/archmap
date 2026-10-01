@@ -34,6 +34,16 @@ into the model in [graph.md](graph.md); how the commands present it is in
   else the first), added to the edge a `use` may already give; a path whose first name a `use`
   brought in is that `use`'s dependency and adds nothing, and what a module does with the names it
   imported (calls, references) is not recorded
+- import evidence records the names a statement takes from the file it points at (see
+  [graph.md](graph.md)): the item it reaches, by the name its defining module gives it (`Invoice`
+  through `pub use billing::invoice::Invoice`, the name before any `as`), `*` for a module itself
+  (`use crate::graph;`, `self` in `use crate::graph::{self, Edge}`) or a glob of a module, and the
+  enum for a glob of an enum (`use crate::model::EdgeKind::*` takes `EdgeKind`); the leaves of one
+  `use` that reach one file share one piece of evidence, and path evidence takes the names of all
+  paths from its file to its target
+- a `pub` method of an inherent `impl` whose type another file of the crate defines has, besides its
+  location, evidence noted `impl` that points at the type's file with the type's name, resolved as a
+  `use` path from the `impl`'s module
 - a re-export from the subtree of the file's own module (`pub use graph::ArchitectureGraph` in
   `lib.rs`, also inside an inline `pub mod prelude { .. }` there) is how the module presents what it
   contains, a relation other than an import: it is followed when resolving and never becomes an
@@ -58,6 +68,10 @@ into the model in [graph.md](graph.md); how the commands present it is in
   with them, because only re-exports from a module's own subtree are not edges.
 - Unit tests are left out of dependencies within their crate, so `impact` does not list them.
 - Rust components are finer than Python's: a module file rather than a package directory.
+- A function called through a module that a `use` brought in (`use crate::graph;`, then
+  `graph::build()`) adds no name: the `use` takes the module whole (`*`).
+- Path evidence keeps one line per file and target, the first path's, whatever names the other
+  paths take.
 
 ## Python
 
@@ -82,6 +96,12 @@ into the model in [graph.md](graph.md); how the commands present it is in
 - the evidence of each import names the file it loads (`pkg/sub.py`, otherwise `pkg/__init__.py`)
   and its scope: `local` inside a function body, `module` elsewhere (including under `if`, `try` and
   `class`); imports between files of one component are kept as self edges, which roll-up hides
+- the evidence also records the names the statement takes from that file (see [graph.md](graph.md)):
+  an attribute of the statement's module by name (`VERSION` in `from pkg import VERSION`), `*` for a
+  submodule (`from pkg import sub`), for `import pkg.sub` and for `from pkg import *`, and nothing for
+  a package the statement only passes on the way (the parent `__init__.py` of a subpackage, or what is
+  left of a module the scan did not read); when a name list cannot be read whole, the module's own
+  file, if the statement points at it, also gets `*`
 - a bare import that matches no module but a `.py` file next to the importing file (`import helpers`
   beside `helpers.py`) loads that file, as it does when the directory is on `sys.path` for a script run
   directly or a function deployed from it; its evidence note says so

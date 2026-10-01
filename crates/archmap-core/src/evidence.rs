@@ -37,8 +37,7 @@ pub struct Evidence {
     /// For a dependency on a file in the repository: the names the
     /// statement takes from `target`, as `target` exports them, and
     /// [`WHOLE_MODULE`] for the whole module. Empty with a `target`: the
-    /// statement loads the file without taking a name, or its analyzer
-    /// does not record names.
+    /// statement loads the file without taking a name.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub names: BTreeSet<String>,
 }

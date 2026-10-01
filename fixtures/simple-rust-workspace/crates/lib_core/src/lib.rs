@@ -38,3 +38,9 @@ mod internal {
 pub mod prelude {
     pub use crate::billing::invoice::issue;
 }
+
+impl Invoice {
+    pub fn total(&self) -> u64 {
+        0
+    }
+}

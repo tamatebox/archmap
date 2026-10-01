@@ -569,6 +569,86 @@ fn an_import_continued_over_lines_reaches_the_modules_it_names() {
 }
 
 #[test]
+fn python_imports_record_the_names_they_take() {
+    let dir = namespace_project(
+        "names",
+        "",
+        &[
+            ("app/__init__.py", "VERSION = 1\n"),
+            ("app/sub.py", "thing = 1\n"),
+            ("app/pkg/__init__.py", ""),
+            (
+                "app/main.py",
+                "from app import VERSION, sub\nfrom app.sub import thing\nimport app.sub\n\
+                 from app import *\nfrom app import pkg\nfrom app.missing import Thing\n\
+                 from . import sub\nimport app.missing\nfrom app.missing import *\n",
+            ),
+            // lists still open at the end of their files
+            ("app/tail_sub.py", "from app import (\n    sub,\n"),
+            ("app/tail_attr.py", "from app import (\n    VERSION,\n"),
+        ],
+    );
+    let graph = scan(&dir, &ScanOptions::default()).unwrap().graph;
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    let taken: BTreeSet<(u32, &str, Vec<&str>)> = graph
+        .edges
+        .iter()
+        .flat_map(|e| &e.evidence)
+        .filter(|e| e.file == "app/main.py")
+        .filter_map(|e| {
+            Some((
+                e.line?,
+                e.target.as_deref()?,
+                e.names.iter().map(String::as_str).collect(),
+            ))
+        })
+        .collect();
+    assert_eq!(
+        taken,
+        BTreeSet::from([
+            // an attribute by name, a submodule whole
+            (1, "app/__init__.py", vec!["VERSION"]),
+            (1, "app/sub.py", vec!["*"]),
+            (2, "app/sub.py", vec!["thing"]),
+            (3, "app/sub.py", vec!["*"]),
+            (4, "app/__init__.py", vec!["*"]),
+            // a subpackage whole; its parent only loaded on the way
+            (5, "app/__init__.py", vec![]),
+            (5, "app/pkg/__init__.py", vec!["*"]),
+            // a module the scan did not read: the package is only loaded
+            (6, "app/__init__.py", vec![]),
+            (7, "app/sub.py", vec!["*"]),
+            // modules the scan did not read, taken whole: still only loaded
+            (8, "app/__init__.py", vec![]),
+            (9, "app/__init__.py", vec![]),
+        ])
+    );
+    // a list that could not be read adds `*` to the module's own file when
+    // the statement points at it, and adds no file
+    let tail = |file: &str| -> BTreeSet<(String, Vec<String>)> {
+        graph
+            .edges
+            .iter()
+            .flat_map(|e| &e.evidence)
+            .filter(|e| e.file == file)
+            .filter_map(|e| Some((e.target.clone()?, e.names.iter().cloned().collect())))
+            .collect()
+    };
+    assert_eq!(
+        tail("app/tail_sub.py"),
+        BTreeSet::from([("app/sub.py".to_owned(), vec!["*".to_owned()])])
+    );
+    assert_eq!(
+        tail("app/tail_attr.py"),
+        BTreeSet::from([(
+            "app/__init__.py".to_owned(),
+            vec!["*".to_owned(), "VERSION".to_owned()]
+        )])
+    );
+}
+
+#[test]
 fn a_declared_name_does_not_hide_an_undeclared_one_beside_it() {
     let dir = namespace_project(
         "partial",

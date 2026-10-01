@@ -417,8 +417,13 @@ pub(super) fn module_path(pkg_dir: &Path, file: &Path) -> Option<Vec<String>> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Resolved {
     /// A module in the repository: the one that defines the name, or the
-    /// deepest one the path reached.
-    Module { node: usize, via: Option<Via> },
+    /// deepest one the path reached. `name` is the item reached there, as
+    /// that module defines it; `None` when the path names the module itself.
+    Module {
+        node: usize,
+        via: Option<Via>,
+        name: Option<String>,
+    },
     /// A component without a module tree: an external crate, or a package
     /// without a library.
     Crate { id: ComponentId, via: Option<Via> },
@@ -453,9 +458,9 @@ enum GlobLookup {
 enum Pos {
     /// A module; the next segment is looked up inside it.
     Module(usize),
-    /// Something defined in (or not found in) a module; later segments,
-    /// such as enum variants, stay there.
-    Item(usize),
+    /// Something defined in (or not found in) a module, by its name there;
+    /// later segments, such as enum variants, stay there.
+    Item(usize, String),
     Crate(ComponentId),
     DevOnly(String),
     Nothing,
@@ -512,6 +517,23 @@ impl<'a> Resolver<'a> {
         };
         let pos = self.rest(pos, rest, node, &mut via, &mut walk);
         resolved(pos, via)
+    }
+
+    /// The type an `impl` in module `node` is for, as the file that defines
+    /// it and its name there. `None` when the path reaches no item of the
+    /// repository.
+    pub fn resolve_type(
+        &self,
+        node: usize,
+        segments: &[String],
+        leading_colon: bool,
+    ) -> Option<(usize, String)> {
+        let mut walk = self.walk(node);
+        let mut via = None;
+        match self.path(node, segments, leading_colon, &mut via, &mut walk) {
+            Pos::Item(m, name) => Some((self.forest.nodes[m].file, name)),
+            _ => None,
+        }
     }
 
     fn walk(&self, node: usize) -> Walk {
@@ -639,7 +661,7 @@ impl<'a> Resolver<'a> {
             _ => self
                 .local(m, name, from, via, walk)
                 .or_else(|| self.glob(m, name, from, via, walk))
-                .unwrap_or(Pos::Item(m)),
+                .unwrap_or_else(|| Pos::Item(m, name.to_owned())),
         }
     }
 
@@ -684,7 +706,7 @@ impl<'a> Resolver<'a> {
             return Some(pos);
         }
         if facts.items.contains(name) {
-            return Some(Pos::Item(m));
+            return Some(Pos::Item(m, name.to_owned()));
         }
         if node.root != Some(m) {
             return None;
@@ -692,7 +714,7 @@ impl<'a> Resolver<'a> {
         self.forest
             .macros
             .get(&(m, name.to_owned()))
-            .map(|&defined| Pos::Item(defined))
+            .map(|&defined| Pos::Item(defined, name.to_owned()))
     }
 
     /// A name that a glob import in `m` brings in, for a path written in
@@ -752,7 +774,7 @@ impl<'a> Resolver<'a> {
             match &found {
                 None => found = Some((pos, this)),
                 Some((earlier, _)) if *earlier == pos => {}
-                Some(_) => return Some((Pos::Item(m), None)),
+                Some(_) => return Some((Pos::Item(m, name.to_owned()), None)),
             }
         }
         found
@@ -800,7 +822,16 @@ impl<'a> Resolver<'a> {
 
 fn resolved(pos: Pos, via: Option<Via>) -> Resolved {
     match pos {
-        Pos::Module(m) | Pos::Item(m) => Resolved::Module { node: m, via },
+        Pos::Module(m) => Resolved::Module {
+            node: m,
+            via,
+            name: None,
+        },
+        Pos::Item(m, name) => Resolved::Module {
+            node: m,
+            via,
+            name: Some(name),
+        },
         Pos::Crate(id) => Resolved::Crate { id, via },
         Pos::DevOnly(name) => Resolved::DevOnly(name),
         Pos::Nothing => Resolved::Nothing,
@@ -847,7 +878,7 @@ mod tests {
 
     fn describe(forest: &Forest, files: &[SourceFile], resolved: Resolved) -> String {
         match resolved {
-            Resolved::Module { node, via } => {
+            Resolved::Module { node, via, .. } => {
                 let mut to = display_path(&files[forest.nodes[node].file].rel);
                 if let Some((f, line)) = via {
                     to.push_str(&format!(" via {}:{line}", display_path(&files[f].rel)));
@@ -1126,6 +1157,74 @@ pub use self::Loop2 as Loop;
             resolved(&forest, &files, &packages, "a/src/x.rs"),
             vec![row("super::fmt::Write", "nothing")]
         );
+    }
+
+    /// The item name each `use` of `file` reaches (`None`: a module itself).
+    fn names(
+        forest: &Forest,
+        files: &[SourceFile],
+        packages: &[ResolvedPackage],
+        file: &str,
+    ) -> Vec<(String, Option<String>)> {
+        let resolver = Resolver::new(forest, files, packages);
+        let mut out = Vec::new();
+        for (n, node) in forest.nodes.iter().enumerate() {
+            let source = &files[node.file];
+            if source.rel != Path::new(file) {
+                continue;
+            }
+            for decl in &source.parsed.modules[node.module].uses {
+                if let Resolved::Module { name, .. } = resolver.resolve(n, decl) {
+                    out.push((decl.path.join("::"), name));
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn a_use_names_the_item_it_reaches_where_the_item_is_defined() {
+        let packages = [package("a", "a", &[])];
+        let files = files(
+            &[
+                ("a/src/lib.rs", "mod model;\nmod user;\n"),
+                (
+                    "a/src/model.rs",
+                    "pub enum Kind { A }\npub struct Real;\npub use self::Real as Renamed;\n",
+                ),
+                (
+                    "a/src/user.rs",
+                    "use crate::model::Kind;\nuse crate::model::Kind::*;\n\
+                     use crate::model::{self, Renamed};\n",
+                ),
+            ],
+            &packages,
+        );
+        let forest = forest(&files, &packages);
+        let named = |path: &str, name: Option<&str>| (path.to_owned(), name.map(str::to_owned));
+        assert_eq!(
+            names(&forest, &files, &packages, "a/src/user.rs"),
+            vec![
+                // `self` names the module itself
+                named("crate::model", None),
+                // a use and a glob of an enum both take the enum
+                named("crate::model::Kind", Some("Kind")),
+                named("crate::model::Kind", Some("Kind")),
+                // a rename resolves to the defining name
+                named("crate::model::Renamed", Some("Real")),
+            ]
+        );
+        let resolver = Resolver::new(&forest, &files, &packages);
+        let root = forest
+            .nodes
+            .iter()
+            .position(|n| files[n.file].rel == Path::new("a/src/lib.rs") && n.path.is_empty())
+            .unwrap();
+        let ty = resolver
+            .resolve_type(root, &["model".into(), "Renamed".into()], false)
+            .map(|(file, name)| (display_path(&files[file].rel), name));
+        assert_eq!(ty, Some(("a/src/model.rs".to_owned(), "Real".to_owned())));
     }
 
     #[test]

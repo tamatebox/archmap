@@ -149,6 +149,15 @@ pub struct Symbol {
     pub evidence: Vec<Evidence>,
 }
 
+impl Symbol {
+    /// Where the symbol is defined: its first evidence without a `target`.
+    /// Evidence with a `target` says how the symbol is reached instead (a
+    /// Rust method whose type another file defines).
+    pub fn location(&self) -> Option<&Evidence> {
+        self.evidence.iter().find(|e| e.target.is_none())
+    }
+}
+
 /// An import that maps to no component, standard-library imports aside.
 ///
 /// It is an observation, not a dependency: it never becomes an edge, and
@@ -314,6 +323,27 @@ mod tests {
             provided_by: Vec::new(),
             evidence: Evidence::new("a.ts"),
         }
+    }
+
+    #[test]
+    fn a_symbol_is_where_its_evidence_names_no_target() {
+        let symbol = Symbol {
+            id: SymbolId::new("a::T::m"),
+            name: "T::m".into(),
+            kind: SymbolKind::Function,
+            component: "a".into(),
+            signature: None,
+            evidence: vec![
+                // how it is reached comes first here, on purpose
+                Evidence::new("src/impls.rs")
+                    .at_line(3)
+                    .with_note("impl")
+                    .pointing_at("src/t.rs")
+                    .taking(["T"]),
+                Evidence::new("src/impls.rs").at_line(4),
+            ],
+        };
+        assert_eq!(symbol.location().and_then(|e| e.line), Some(4));
     }
 
     #[test]

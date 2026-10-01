@@ -112,6 +112,18 @@ pub(super) struct SymbolDecl {
     pub kind: SymbolKind,
     pub signature: Option<String>,
     pub line: u32,
+    /// For a method: the self type of its inherent `impl`.
+    pub owner: Option<SelfType>,
+}
+
+/// The self type of an inherent `impl` as written, without generics:
+/// `Wrapper` for `impl<T> Wrapper<T>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SelfType {
+    pub segments: Vec<String>,
+    pub leading_colon: bool,
+    /// The line of the `impl`.
+    pub line: u32,
 }
 
 pub(super) fn parse_file(text: &str) -> syn::Result<RustFile> {
@@ -258,6 +270,7 @@ fn collect(items: &[Item], module: usize, file: &mut RustFile) {
             }
             Item::Impl(imp) => {
                 let self_ty = render(imp.self_ty.to_token_stream());
+                let owner = self_type(&imp.self_ty, line_of(imp.impl_token.span));
                 for impl_item in &imp.items {
                     let ImplItem::Fn(method) = impl_item else {
                         continue;
@@ -270,6 +283,9 @@ fn collect(items: &[Item], module: usize, file: &mut RustFile) {
                             Some(render(quote::quote!(#vis #msig))),
                             line_of(method.sig.ident.span()),
                         );
+                        if let Some(symbol) = facts.module.symbols.last_mut() {
+                            symbol.owner = owner.clone();
+                        }
                     }
                     local_uses(&method.block, facts.module, test || cfg_test(&method.attrs));
                 }
@@ -307,6 +323,7 @@ impl Facts<'_> {
             kind,
             signature,
             line,
+            owner: None,
         });
     }
 }
@@ -474,6 +491,21 @@ fn name(ident: &Ident) -> String {
     ident.unraw().to_string()
 }
 
+/// The path of an `impl`'s self type, for a plain path type.
+fn self_type(ty: &syn::Type, line: u32) -> Option<SelfType> {
+    let syn::Type::Path(p) = ty else {
+        return None;
+    };
+    if p.qself.is_some() {
+        return None;
+    }
+    Some(SelfType {
+        segments: p.path.segments.iter().map(|s| name(&s.ident)).collect(),
+        leading_colon: p.path.leading_colon.is_some(),
+        line,
+    })
+}
+
 fn line_of(span: proc_macro2::Span) -> u32 {
     span.start().line as u32
 }
@@ -588,6 +620,33 @@ mod tests {
             path.iter().map(|s| s.to_string()).collect(),
             binds.map(str::to_owned),
         )
+    }
+
+    #[test]
+    fn methods_keep_the_path_of_their_type() {
+        let file = parse_file(
+            "impl<T> Wrapper<T> {\n    pub fn new() {}\n}\nimpl crate::model::Edge {\n    pub fn kind() {}\n}\n",
+        )
+        .unwrap();
+        let owners: Vec<(Vec<&str>, bool, u32)> = file.modules[0]
+            .symbols
+            .iter()
+            .filter_map(|s| s.owner.as_ref())
+            .map(|o| {
+                (
+                    o.segments.iter().map(String::as_str).collect(),
+                    o.leading_colon,
+                    o.line,
+                )
+            })
+            .collect();
+        assert_eq!(
+            owners,
+            [
+                (vec!["Wrapper"], false, 1),
+                (vec!["crate", "model", "Edge"], false, 4)
+            ]
+        );
     }
 
     #[test]
