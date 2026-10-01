@@ -141,8 +141,19 @@ pub fn scan_source(text: &str) -> PyFile {
         }
 
         let code = strip_comment(trimmed);
+        let is_import = code.starts_with("import ") || code.starts_with("from ");
+        // An import continued over lines (in brackets, or after a
+        // backslash) is read whole, and its other lines are no statements.
+        let (joined, extra) = if is_import {
+            continued(&lines, i, code)
+        } else {
+            (String::new(), 0)
+        };
+        i += extra;
+        let code = if is_import { joined.as_str() } else { code };
         if let Some(rest) = code.strip_prefix("import ") {
-            for module in rest.split(',') {
+            // a backslash on the last line of the file is left at the end
+            for module in rest.trim_end_matches('\\').split(',') {
                 let module = module.split_whitespace().next().unwrap_or("");
                 if !module.is_empty() {
                     out.imports.push(PyImport {
@@ -344,6 +355,53 @@ fn collect_header(lines: &[&str], start: usize) -> (String, usize) {
     )
 }
 
+/// The statement that `first` starts, joined with the lines that continue
+/// it, at most 50 as for headers: while a bracket is open, or after a
+/// trailing backslash, up to a `;`, which an import never holds. Returns
+/// it and how many lines after the first it took; `next` is the index of
+/// the line after the first.
+fn continued(lines: &[&str], next: usize, first: &str) -> (String, usize) {
+    let (first, mut ended) = before_semicolon(first);
+    let mut joined = first.trim_end().to_owned();
+    let mut depth = bracket_depth(&joined);
+    let mut extra = 0;
+    while !ended && extra < 50 && next + extra < lines.len() {
+        let backslash = joined.ends_with('\\');
+        if depth <= 0 && !backslash {
+            break;
+        }
+        if backslash {
+            joined.pop();
+        }
+        let (line, end) = before_semicolon(strip_comment(lines[next + extra]).trim());
+        ended = end;
+        extra += 1;
+        depth += bracket_depth(line);
+        joined.push(' ');
+        joined.push_str(line.trim_end());
+    }
+    (joined, extra)
+}
+
+/// `code` up to its first `;`, and whether it had one.
+fn before_semicolon(code: &str) -> (&str, bool) {
+    match code.split_once(';') {
+        Some((before, _)) => (before, true),
+        None => (code, false),
+    }
+}
+
+/// Brackets opened minus brackets closed in `code`.
+fn bracket_depth(code: &str) -> i32 {
+    code.chars()
+        .map(|c| match c {
+            '(' | '[' | '{' => 1,
+            ')' | ']' | '}' => -1,
+            _ => 0,
+        })
+        .sum()
+}
+
 /// `line` up to its comment: the first `#` outside string literals.
 fn strip_comment(line: &str) -> &str {
     line.match_indices('#')
@@ -454,7 +512,11 @@ CURRENCY = "JPY"
                 ("requests".into(), 0, vec![]),
                 ("".into(), 1, vec!["sibling".into()]),
                 ("users".into(), 2, vec!["User".into(), "Role".into()]),
-                ("shop.billing.charge".into(), 0, vec![]),
+                (
+                    "shop.billing.charge".into(),
+                    0,
+                    vec!["Payment".into(), "refund".into()],
+                ),
                 ("json".into(), 0, vec![]),
             ]
         );
@@ -640,9 +702,69 @@ import_module("inside the string")
     }
 
     #[test]
-    fn multiline_from_import_keeps_module_only() {
-        let file = scan_source("from a.b import (\n    x,\n    y,\n)\n");
+    fn imports_continued_over_lines_keep_their_names() {
+        let file = scan_source(
+            "from a.b import (\n    x,\n    y,  # why\n)\nfrom c import d, \\\n    e\n\
+             import f, \\\n    g\n\ndef h():\n    pass\n",
+        );
+        let imports: Vec<(&str, Vec<&str>, u32)> = file
+            .imports
+            .iter()
+            .map(|i| {
+                (
+                    i.module.as_str(),
+                    i.names.iter().map(String::as_str).collect(),
+                    i.line,
+                )
+            })
+            .collect();
+        assert_eq!(
+            imports,
+            [
+                ("a.b", vec!["x", "y"], 1),
+                ("c", vec!["d", "e"], 5),
+                ("f", vec![], 7),
+                ("g", vec![], 7),
+            ]
+        );
+        // the lines after them are read as before
+        let defs: Vec<(&str, u32)> = file
+            .defs
+            .iter()
+            .map(|d| (d.name.as_str(), d.line))
+            .collect();
+        assert_eq!(defs, [("h", 10)]);
+    }
+
+    #[test]
+    fn an_import_ends_at_a_semicolon() {
+        let file = scan_source(
+            "import a; x = (\n    b,\n)\nfrom c import d; values = (\n    1,\n    e,\n)\n\
+             import os; y = (\n    importlib.import_module(n)\n)\n",
+        );
+        let imports: Vec<(&str, Vec<&str>)> = file
+            .imports
+            .iter()
+            .map(|i| {
+                (
+                    i.module.as_str(),
+                    i.names.iter().map(String::as_str).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(imports, [("a", vec![]), ("c", vec!["d"]), ("os", vec![])]);
+        // the lines after a semicolon are read as before
+        let calls: Vec<u32> = file.dynamic_imports.iter().map(|d| d.line).collect();
+        assert_eq!(calls, [9]);
+    }
+
+    #[test]
+    fn an_import_whose_brackets_never_close_stops_at_the_end() {
+        let file = scan_source("from a import (\n    b,\n");
         assert_eq!(file.imports.len(), 1);
-        assert_eq!(file.imports[0].module, "a.b");
+        assert_eq!(file.imports[0].names, ["b"]);
+        let file = scan_source("import a, \\");
+        let modules: Vec<&str> = file.imports.iter().map(|i| i.module.as_str()).collect();
+        assert_eq!(modules, ["a"]);
     }
 }

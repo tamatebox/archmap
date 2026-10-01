@@ -1,5 +1,6 @@
 //! End-to-end scan of `fixtures/simple-python-project`.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use archmap_core::{
@@ -534,6 +535,36 @@ fn names_imported_from_a_package_that_are_modules_count_on_their_own() {
             ),
             ("app/c.py", "yaml", vec!["pyyaml"]),
         ]
+    );
+}
+
+#[test]
+fn an_import_continued_over_lines_reaches_the_modules_it_names() {
+    let dir = namespace_project(
+        "continued",
+        "",
+        &[
+            ("app/__init__.py", ""),
+            ("app/sub.py", ""),
+            (
+                "app/main.py",
+                "from app import (\n    sub,\n)\nfrom app import helper, \\\n    sub\n",
+            ),
+        ],
+    );
+    let graph = scan(&dir, &ScanOptions::default()).unwrap().graph;
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    let targets: BTreeSet<(u32, &str)> = graph
+        .edges
+        .iter()
+        .flat_map(|e| &e.evidence)
+        .filter(|e| e.file == "app/main.py")
+        .filter_map(|e| Some((e.line?, e.target.as_deref()?)))
+        .collect();
+    assert_eq!(
+        targets,
+        BTreeSet::from([(1, "app/sub.py"), (4, "app/__init__.py"), (4, "app/sub.py"),])
     );
 }
 
