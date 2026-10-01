@@ -78,15 +78,18 @@ pub(crate) fn discover(
         owned.entry(manifest).or_default().push(file);
     }
 
-    // The packages, and their ids: of packages that share a name, the
-    // workspace member (or path dependency) keeps it, then the first by
-    // path; the others become `<name>+<dir>`.
+    // The packages: those with code, workspace roots, and the members
+    // (and path dependencies) a dependency names whatever files they hold,
+    // a JSON or config package included. Of packages that share a name, the
+    // member keeps it, then the first by path; the others become
+    // `<name>+<dir>`.
     let made: Vec<(&PathBuf, &String, &[&Path])> = manifests
         .iter()
         .filter_map(|(dir, manifest)| {
             let name = manifest.name.as_ref()?;
             let own = owned.get(&Some(dir)).map(Vec::as_slice).unwrap_or_default();
-            (!own.is_empty() || manifest.workspaces).then_some((dir, name, own))
+            (!own.is_empty() || manifest.workspaces || members.contains(dir))
+                .then_some((dir, name, own))
         })
         .collect();
     let mut named: BTreeMap<&str, &PathBuf> = BTreeMap::new();
@@ -230,6 +233,15 @@ pub(crate) fn discover(
         layout.modules.push(c);
     }
     layout
+}
+
+impl Layout {
+    /// The package whose directory holds `file`, the innermost one.
+    pub(crate) fn package_holding(&self, file: &Path) -> Option<usize> {
+        (0..self.packages.len())
+            .filter(|&p| file.starts_with(&self.packages[p].dir))
+            .max_by_key(|&p| self.packages[p].dir.components().count())
+    }
 }
 
 fn package(

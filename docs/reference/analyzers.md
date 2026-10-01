@@ -142,7 +142,8 @@ into the model in [graph.md](graph.md); how the commands present it is in
 
 Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `oxc_parser`:
 
-- a `package.json` with a `name` whose directory holds TS/JS files of its own, or that declares `workspaces`,
+- a `package.json` with a `name` whose directory holds TS/JS files of its own, that declares `workspaces`,
+  or that is a workspace member or a path dependency (a package of JSON or configuration included),
   becomes a `package` component; TS/JS files that no package owns go to one root component named after the
   directory; a `package.json` without a name is no package, but it declares dependencies all the same;
   of packages that share a name, a workspace member (or path dependency) keeps it as its id, else the first by
@@ -168,7 +169,8 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
 - an `import()` type (`typeof import('./m')`, `import('./m').Wallet`) is an `import` edge that takes types
   only: `*`, or the first name after it
 - an import of a stylesheet, image or JSON file is an edge of the importer to itself whose evidence names the
-  file, so `impact` on the file lists its importers
+  file, so `impact` on the file lists its importers, or to the package that holds the file when that is
+  another package
 - a named or default import that reaches a name through re-exports (`export { a } from`, `export *`,
   `export * as ns`, `import { a } from 'm'; export { a }`) also has evidence for the file that defines the
   name, noted `import via <file>:<line>` with the first re-export on the way, so `query` and `impact` on the

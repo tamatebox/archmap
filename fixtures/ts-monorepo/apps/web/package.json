@@ -3,6 +3,10 @@
   "dependencies": {
     "@acme/ui": "workspace:*",
     "@acme/core": "^1.0.0",
+    "@acme/i18n": "workspace:*",
     "local-lib": "file:../../libs/local"
+  },
+  "devDependencies": {
+    "@acme/tsconfig": "workspace:*"
   }
 }

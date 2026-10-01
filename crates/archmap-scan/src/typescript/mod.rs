@@ -638,14 +638,18 @@ impl Imports<'_> {
                     return;
                 }
                 // A stylesheet, image or JSON file is no component: the
-                // importer depends on it as a file.
+                // importer depends on it as a file, or on the other package
+                // that holds it.
                 let to = if is_code(target) {
                     self.layout
                         .owners
                         .get(target)
                         .map_or_else(|| from.clone(), |owner| owner.component.clone())
                 } else {
-                    from.clone()
+                    match self.layout.package_holding(target) {
+                        Some(p) if p != self.owner.package => self.layout.packages[p].id.clone(),
+                        _ => from.clone(),
+                    }
                 };
                 output.fragment.push_edge(
                     Edge::new(from.clone(), to, EdgeKind::Import).with_evidence(

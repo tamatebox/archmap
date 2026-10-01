@@ -1,3 +1,5 @@
+import en from '@acme/i18n/en.json';
+
 export function format(n: number): string {
-  return String(n);
+  return `${en.hello} ${n}`;
 }

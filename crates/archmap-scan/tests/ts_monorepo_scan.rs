@@ -4,7 +4,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use archmap_core::{ArchitectureGraph, ComponentKind, EdgeKind};
+use archmap_core::{ArchitectureGraph, ComponentId, ComponentKind, EdgeKind};
 use archmap_scan::{scan, ScanOptions};
 
 fn scan_fixture() -> (ArchitectureGraph, Vec<String>) {
@@ -23,6 +23,8 @@ fn members_and_path_dependencies_are_linked_by_name() {
         ("web", "@acme/ui"),
         ("web", "@acme/core"),
         ("web", "local-lib"),
+        // a member with no code, only a JSON file
+        ("web", "@acme/i18n"),
     ] {
         assert!(
             graph.edges.iter().any(|e| e.from.as_str() == from
@@ -60,6 +62,25 @@ fn members_and_path_dependencies_are_linked_by_name() {
             "missing {expected:?} in {imports:?}"
         );
     }
+    // so is a member that only holds a tsconfig, which web's devDependency
+    // names
+    assert_eq!(
+        graph
+            .component(&ComponentId::new("@acme/tsconfig"))
+            .map(|c| c.kind),
+        Some(ComponentKind::Package)
+    );
+    // a member's file that is no code goes to that member
+    assert!(
+        graph
+            .edges
+            .iter()
+            .any(|e| e.from.as_str() == "web::src/lib/format.ts"
+                && e.to.as_str() == "@acme/i18n"
+                && e.kind == EdgeKind::Import
+                && e.evidence[0].target.as_deref() == Some("packages/i18n/en.json")),
+        "no import of the member's JSON file"
+    );
     // no member points at npm, and the example named react takes over no
     // dependency of that name
     let externals: BTreeSet<&str> = graph
