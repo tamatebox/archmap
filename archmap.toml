@@ -1,20 +1,26 @@
 # Declared architecture of archmap itself, enforced by `archmap check`.
-# The dependency direction is cli -> app -> scan -> core (see CLAUDE.md).
+# The dependency direction is {cli, mcp} -> app -> scan -> core, and cli
+# starts mcp (see CLAUDE.md).
 
 [components]
 cli = ["crates/archmap-cli"]
+mcp = ["crates/archmap-mcp"]
 app = ["crates/archmap-app"]
 scan = ["crates/archmap-scan"]
 core = ["crates/archmap-core"]
 
 # Top to bottom: a layer may depend on the layers below it, never above.
 [layers]
-order = ["cli", "app", "scan", "core"]
+order = ["cli", "mcp", "app", "scan", "core"]
 
 # What each crate is expected to depend on. An interface asks archmap-app
 # for everything; core depends on no other crate.
 [[allow]]
 from = "cli"
+to = ["app"]
+
+[[allow]]
+from = "mcp"
 to = ["app"]
 
 [[allow]]
