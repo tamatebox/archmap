@@ -261,7 +261,8 @@ all sit at one path (a directory that two analyzers map), which answers for
 the one with evidence there. When an id or a path answers for one component
 while others share its name (`dup` and `dup+typescript` after an id
 collision) or its path, `query` names them on `also named:` and `also at
-this path:` lines, and `impact` in `also_named` and `also_at_path`.
+this path:` lines (for a file, those of the component it is), and `impact`
+in `also_named` and `also_at_path`.
 
 ## check
 

@@ -2047,3 +2047,27 @@ fn a_symbol_query_lists_production_importers_first() {
         "{text}"
     );
 }
+
+#[test]
+fn a_file_query_names_the_components_that_share_its_name() {
+    let repo = temp_repo("file-namesakes");
+    for package in ["a", "b"] {
+        std::fs::create_dir_all(repo.join(format!("{package}/src"))).unwrap();
+        std::fs::write(
+            repo.join(format!("{package}/package.json")),
+            format!("{{ \"name\": \"{package}\" }}"),
+        )
+        .unwrap();
+        std::fs::write(
+            repo.join(format!("{package}/src/types.ts")),
+            "export type T = 1;\n",
+        )
+        .unwrap();
+    }
+    let text = query_text(&repo, &["a/src/types.ts"]);
+    let json = query_text(&repo, &["a::src/types.ts", "--format", "json"]);
+    std::fs::remove_dir_all(&repo).unwrap();
+    assert!(text.contains("\nalso named: b::src/types.ts\n"), "{text}");
+    let json: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(json["also_named"], serde_json::json!(["b::src/types.ts"]));
+}

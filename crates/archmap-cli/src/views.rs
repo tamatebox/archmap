@@ -45,6 +45,13 @@ pub struct FileView<'a> {
     pub file: String,
     /// The component that contains the file, at this depth.
     pub component: Option<ComponentId>,
+    /// Other components with the name of the file's own component (a TS
+    /// file, a Rust module without submodules), as for a component.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub also_named: Vec<&'a ComponentId>,
+    /// Other components at its path.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub also_at_path: Vec<&'a ComponentId>,
     pub symbols: Vec<&'a Symbol>,
     /// The file's import statements, one edge per imported component.
     pub imports: Vec<Edge>,

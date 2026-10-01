@@ -237,20 +237,22 @@ fn file_view<'a>(
             },
         )
     });
+    // the component the file is, or that holds it, before roll-up
+    let own = facts.component.and_then(|c| full.component(c));
+    let (also_named, also_at_path) = own.map(|c| namesakes(full, c)).unwrap_or_default();
     FileView {
         requested,
         depth,
         file: facts.file,
         component: owner,
+        also_named,
+        also_at_path,
         symbols: facts.symbols,
         imports,
         importers,
         not_mapped: facts.unmapped_imports,
         dynamic_imports: facts.dynamic_imports,
-        script: facts
-            .component
-            .and_then(|c| full.component(c))
-            .is_some_and(|c| c.kind == ComponentKind::Script),
+        script: own.is_some_and(|c| c.kind == ComponentKind::Script),
     }
 }
 

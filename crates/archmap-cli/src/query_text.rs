@@ -99,26 +99,7 @@ fn component(
     if let Some(from) = &view.folded_from {
         let _ = writeln!(out, "folded from: {}", display(full, from));
     }
-    let mut truncated = false;
-    for (label, ids) in [
-        ("also named", &view.also_named),
-        ("also at this path", &view.also_at_path),
-    ] {
-        if ids.is_empty() {
-            continue;
-        }
-        let shown: Vec<String> = ids
-            .iter()
-            .take(caps.neighbors)
-            .map(|id| shell_word(id.as_str()))
-            .collect();
-        let mut line = format!("{label}: {}", shown.join(", "));
-        if ids.len() > shown.len() {
-            truncated = true;
-            let _ = write!(line, ", +{} more", ids.len() - shown.len());
-        }
-        let _ = writeln!(out, "{line}");
-    }
+    let mut truncated = namesakes(out, &view.also_named, &view.also_at_path, caps);
 
     if !view.children.is_empty() {
         let total = view.children.len();
@@ -395,10 +376,11 @@ fn file(
     if let Some(c) = component {
         let _ = writeln!(out, "id: {}", c.id);
     }
+    let mut truncated = namesakes(out, &view.also_named, &view.also_at_path, caps);
 
     let total = view.symbols.len();
     let shown = total.min(caps.symbols);
-    let mut truncated = shown < total;
+    truncated |= shown < total;
     let _ = writeln!(out, "\nPublic symbols: {}", count(total, shown));
     for symbol in in_source_order(view.symbols.iter().copied())
         .into_iter()
@@ -673,6 +655,38 @@ fn symbol_line(symbol: &Symbol) -> String {
         Some(evidence) => format!("{what}  {}", location(evidence)),
         None => what,
     }
+}
+
+/// The `also named:` and `also at this path:` lines: the other components
+/// that share the name or the path of the one answered for. Whether a list
+/// was cut.
+fn namesakes(
+    out: &mut String,
+    also_named: &[&ComponentId],
+    also_at_path: &[&ComponentId],
+    caps: &Caps,
+) -> bool {
+    let mut truncated = false;
+    for (label, ids) in [
+        ("also named", also_named),
+        ("also at this path", also_at_path),
+    ] {
+        if ids.is_empty() {
+            continue;
+        }
+        let shown: Vec<String> = ids
+            .iter()
+            .take(caps.neighbors)
+            .map(|id| shell_word(id.as_str()))
+            .collect();
+        let mut line = format!("{label}: {}", shown.join(", "));
+        if ids.len() > shown.len() {
+            truncated = true;
+            let _ = write!(line, ", +{} more", ids.len() - shown.len());
+        }
+        let _ = writeln!(out, "{line}");
+    }
+    truncated
 }
 
 /// How a list names a component, in `query` and `summary` alike: an
