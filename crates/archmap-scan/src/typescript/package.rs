@@ -64,14 +64,12 @@ impl Section {
 }
 
 impl PackageJson {
-    /// The declaration that covers an import of `package`: the package
-    /// itself or its `@types` package, a required one first.
-    pub(crate) fn declaration_of(&self, package: &str) -> Option<&Declaration> {
-        let types = types_package(package);
+    /// The declaration of the package `name`, a required one first.
+    pub(crate) fn declaration_of(&self, name: &str) -> Option<&Declaration> {
         self.declarations
             .iter()
-            .filter(|d| d.name == package || d.name == types)
-            .min_by_key(|d| (!d.section.required(), d.name != package, d.section))
+            .filter(|d| d.name == name)
+            .min_by_key(|d| (!d.section.required(), d.section))
     }
 }
 
@@ -213,17 +211,14 @@ mod tests {
     }
 
     #[test]
-    fn a_required_declaration_wins_and_types_packages_count() {
+    fn a_required_declaration_wins() {
         let p = parse(PACKAGE).unwrap();
         assert_eq!(
             p.declaration_of("react").map(|d| d.section),
             Some(Section::Dependencies)
         );
-        let lambda = p.declaration_of("aws-lambda").unwrap();
-        assert_eq!(
-            (lambda.name.as_str(), lambda.section),
-            ("@types/aws-lambda", Section::DevDependencies)
-        );
+        // a package of types declares only itself
+        assert!(p.declaration_of("aws-lambda").is_none());
         assert!(p.declaration_of("left-pad").is_none());
         // scripts are no declarations
         assert!(p.declaration_of("test").is_none());

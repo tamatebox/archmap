@@ -202,8 +202,10 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   is a `dependency` edge to that package whatever its version (`workspace:*`, `^1.0.0`), and a tsconfig
   `extends` of one loads
 - a bare specifier that resolves to no file is matched by package name to the closest `package.json` above
-  the importing file that declares it, so a monorepo root's dependencies count for its packages (`@types/x`
-  covers `x`): a required declaration gives an edge, another an import without an edge
+  the importing file that declares it, so a monorepo root's dependencies count for its packages, and only
+  when none declares the package itself to the closest that declares its `@types` package (an import such
+  as `import { Handler } from 'aws-lambda'` takes types without saying so): a required declaration gives an
+  edge, another an import without an edge
   (`declared_not_required`, noting where it is declared, `the enclosing package.json:6` above the package's own), a directory at the top of the package or its source
   root, a code file at the top of the source root, or a scope named like a directory there (`components/button`,
   `App`, `@components/button`) `local_name`, and anything else `undeclared` (for an import of types only, the note

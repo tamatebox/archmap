@@ -1683,3 +1683,76 @@ fn an_alias_counts_only_where_its_tsconfig_does() {
         ])
     );
 }
+
+#[test]
+fn a_package_is_found_before_its_types_package() {
+    let root = temp_repo(
+        "types-stand-in",
+        &[
+            (
+                "package.json",
+                "{ \"name\": \"root\", \"workspaces\": [\"apps/*\"], \
+                 \"dependencies\": { \"hoisted\": \"1\" } }",
+            ),
+            (
+                "apps/site/package.json",
+                "{ \"name\": \"site\", \"dependencies\": { \"@types/both\": \"1\" }, \
+                 \"devDependencies\": { \"@types/hoisted\": \"1\", \"both\": \"1\", \
+                 \"@types/lambda\": \"1\" } }",
+            ),
+            (
+                "apps/site/src/a.ts",
+                "import { h } from 'hoisted';\nimport { b } from 'both';\n\
+                 import type { T } from 'both';\nimport { Handler } from 'lambda';\n\
+                 export const a = [h, b];\n",
+            ),
+        ],
+    );
+    let report = scan(&root, &ScanOptions::default()).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    let graph = &report.graph;
+    // a value needs the package itself: the root declares `hoisted`, and
+    // `both` is a devDependency, whatever `@types` package is declared
+    let edges: Vec<(&str, &str)> = graph
+        .edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Import)
+        .map(|e| (e.from.as_str(), e.to.as_str()))
+        .collect();
+    assert_eq!(edges, [("site::src/a.ts", "ext:npm:hoisted")]);
+    let unmapped: Vec<(u32, UnmappedReason, &str)> = graph
+        .unmapped_imports
+        .iter()
+        .map(|u| {
+            (
+                u.evidence.line.unwrap(),
+                u.reason,
+                u.evidence.note.as_deref().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        unmapped,
+        [
+            (
+                2,
+                UnmappedReason::DeclaredNotRequired,
+                "import both, declared as both in apps/site/package.json:1 (devDependencies)"
+            ),
+            // an import of types finds `both` itself too
+            (
+                3,
+                UnmappedReason::DeclaredNotRequired,
+                "import both, declared as both in apps/site/package.json:1 (devDependencies)"
+            ),
+            // a package that only its types declare takes only types,
+            // whatever the statement says
+            (
+                4,
+                UnmappedReason::DeclaredNotRequired,
+                "import lambda, declared as @types/lambda in apps/site/package.json:1 \
+                 (devDependencies)"
+            ),
+        ]
+    );
+}

@@ -714,10 +714,16 @@ impl Imports<'_> {
                     );
                     return;
                 }
-                let declared = self
-                    .manifests
-                    .iter()
-                    .find_map(|(dir, m)| m.declaration_of(package).map(|d| (*dir, d)));
+                // the package itself in any manifest, nearest first, then
+                // its `@types` package: `import { Handler } from 'aws-lambda'`
+                // takes only types without saying so
+                let declared_as = |name: &str| {
+                    self.manifests
+                        .iter()
+                        .find_map(|(dir, m)| m.declaration_of(name).map(|d| (*dir, d)))
+                };
+                let declared =
+                    declared_as(package).or_else(|| declared_as(&package::types_package(package)));
                 match declared {
                     Some((dir, d)) if d.section.required() => {
                         let own = self.package.manifest.as_deref() == Some(dir);
