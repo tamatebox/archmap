@@ -159,7 +159,8 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   `import` and `export`), resolved with
   `oxc_resolver` through each file's `tsconfig.json` (`paths`, `baseUrl`, `references`) and `.js` written for
   `.ts`; the resolver sees only the scanned files, so `node_modules` and build output never change the graph,
-  and a tsconfig `extends` it cannot load is dropped with a warning while the file's own `paths` still apply
+  and an `extends` it cannot load, in a tsconfig or in a config one extends, is dropped with a warning while
+  the file's own `paths` still apply
 - calls with a written-out specifier (a string, or a template without substitutions) anywhere in a file
   become `import` edges too, noted with the call: `require`, `import()`, and the module calls of Vitest
   and Jest (`vi.mock`, `vi.doMock`, `vi.unmock`, `vi.importActual`, `vi.importMock`, `jest.mock`,
@@ -195,7 +196,8 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   of a workspace (`workspaces` in a `package.json`, an array or `{ "packages": [..] }`, and
   `pnpm-workspace.yaml`; `!` patterns leave members out) and the directories of `file:`, `link:` and `portal:`
   dependencies inside the scanned root, never another package of the same name; a bare import of one resolves to its files through its
-  `exports` or `main`, matching the conditions the scanned tsconfigs turn on with `customConditions` (when a
+  `exports` or `main`, matching the conditions the scanned tsconfigs turn on with `customConditions`,
+  themselves or through a config they extend (when a
   `types` condition leads outside the scan, the next condition answers; a declaration file the scan holds is
   what the import points at, as tsc reads it), one whose
   entry is outside the scan (`dist/`) is an `import` edge to the package without a file, a declaration of one
@@ -211,7 +213,8 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   `App`, `@components/button`) `local_name`, and anything else `undeclared` (for an import of types only, the note
   says to declare the package, or its `@types` package if it ships no types); a path or alias that matches no file (`./gone`, `@/x` without a matching `paths` entry,
   `~/x`) is `unresolved`, and so is a bare-looking name that a tsconfig or jsconfig in a directory above the
-  importing file declares as an alias (`@ui/card` for `@ui/*`; a catch-all `*` is not taken as one), so another
+  importing file declares as an alias, itself or through a config it extends (`@ui/card` for `@ui/*`; a
+  catch-all `*` is not taken as one), so another
   package's alias hides no undeclared import; the package's own name, when its entry (`dist/`) is not scanned, is
   `local_name`; Node built-ins (`node:fs`, `fs`, `crypto`) are left out
 - exported declarations become symbols with signatures, in which a parameter's default value and the
@@ -263,8 +266,10 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
 - A JavaScript file that Node runs is a module of its own even without `require` or exports;
   archmap follows how TypeScript reads it, so such a file is a script, and so is a TypeScript file
   whose only module code is `require`.
-- `moduleDetection` is read from the tsconfig of a file and the ones it extends by a path; one it
-  extends from a package is not in the scan.
+- A config that a tsconfig extends from a package is read only when the package is a workspace
+  member or a path dependency, by its path in the package (`@acme/tsconfig/base.json`, or
+  `@acme/tsconfig/react` for `react.json`), not through `exports` that map it elsewhere; a config of
+  any other package is not in the scan.
 - Declarations inside `declare global { .. }`, triple-slash directives (`/// <reference types="vite/client" />`),
   spreads in `module.exports = { ...require('./a') }` and `Object.defineProperty(exports, 'a', ..)`
   are not read.

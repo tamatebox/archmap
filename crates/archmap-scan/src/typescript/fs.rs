@@ -76,22 +76,47 @@ impl ViewFs {
                 view.files.insert(file);
             }
         }
-        for rel in ctx.files().iter().filter(|f| is_tsconfig(f)) {
+        // every tsconfig, and every config one extends, a shared `base.json`
+        // included: an entry the view cannot load fails the whole chain
+        let mut queue: Vec<PathBuf> = ctx
+            .files()
+            .iter()
+            .filter(|f| is_tsconfig(f))
+            .map(|rel| root.join(rel))
+            .collect();
+        let mut seen: HashSet<PathBuf> = queue.iter().cloned().collect();
+        let mut dropped_entries = Vec::new();
+        while let Some(path) = queue.pop() {
+            let Some(rel) = path.strip_prefix(root).ok() else {
+                continue;
+            };
             let Ok(text) = ctx.read_to_string(rel) else {
                 continue;
             };
-            let path = root.join(rel);
             if let Some((served, dropped)) = without_unloadable_extends(&text, &path, &view) {
                 for entry in dropped {
-                    warnings.push(format!(
+                    dropped_entries.push(format!(
                         "{}: extends `{entry}` is not in the scanned files; its options are \
                          not applied",
                         display_path(rel)
                     ));
                 }
-                view.served.insert(path, served);
+                view.served.insert(path.clone(), served);
+            }
+            let extended = config(&text)
+                .and_then(|value| extends_entries(&value))
+                .into_iter()
+                .flatten()
+                .filter_map(|entry| view.extended(path.parent()?, &entry));
+            for target in extended {
+                if seen.insert(target.clone()) {
+                    queue.push(target);
+                }
             }
         }
+        // in path order, whatever order the queue took
+        dropped_entries.sort();
+        warnings.extend(dropped_entries);
         ViewFs(Arc::new(view))
     }
 }
@@ -119,9 +144,7 @@ fn without_unloadable_extends(
     path: &Path,
     view: &View,
 ) -> Option<(String, Vec<String>)> {
-    let mut stripped = text.trim_start_matches('\u{feff}').to_owned();
-    json_strip_comments::strip(&mut stripped).ok()?;
-    let mut value: serde_json::Value = serde_json::from_str(&stripped).ok()?;
+    let mut value = config(text)?;
     let entries = extends_entries(&value)?;
     let object = value.as_object_mut()?;
     let dir = path.parent()?;
@@ -149,6 +172,14 @@ fn without_unloadable_extends(
     Some((value.to_string(), dropped))
 }
 
+/// A tsconfig's text as JSON: comments, trailing commas and a byte order
+/// mark allowed.
+fn config(text: &str) -> Option<serde_json::Value> {
+    let mut text = text.trim_start_matches('\u{feff}').to_owned();
+    json_strip_comments::strip(&mut text).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
 /// The `extends` entries of a tsconfig, in order.
 fn extends_entries(value: &serde_json::Value) -> Option<Vec<String>> {
     match value.get("extends")? {
@@ -164,32 +195,44 @@ fn extends_entries(value: &serde_json::Value) -> Option<Vec<String>> {
 }
 
 impl ViewFs {
-    /// Whether the tsconfig at `path` sets `moduleDetection` to `force`,
-    /// itself or through a tsconfig it extends that the view holds: its own
-    /// setting wins, then the last of its `extends` entries.
+    /// Whether the tsconfig at `path` sets `moduleDetection` to `force`.
     pub(crate) fn module_detection_forced(&self, path: &Path) -> bool {
-        self.module_detection(path, 0) == Some(true)
+        self.setting(path, "/compilerOptions/moduleDetection")
+            .and_then(|(value, _)| value.as_str().map(|v| v.eq_ignore_ascii_case("force")))
+            == Some(true)
     }
 
-    fn module_detection(&self, path: &Path, depth: usize) -> Option<bool> {
+    /// What the config at `path` (absolute) sets at `pointer`
+    /// (`/compilerOptions/paths`), and the config that sets it: itself, or
+    /// a config it extends that the view holds, its own setting first, then
+    /// the last of its `extends` entries, as TypeScript merges them.
+    pub(crate) fn setting(
+        &self,
+        path: &Path,
+        pointer: &str,
+    ) -> Option<(serde_json::Value, PathBuf)> {
+        self.setting_at(path, pointer, 0)
+    }
+
+    fn setting_at(
+        &self,
+        path: &Path,
+        pointer: &str,
+        depth: usize,
+    ) -> Option<(serde_json::Value, PathBuf)> {
         // `extends` cycles end here; the resolver reports them
         if depth > 8 {
             return None;
         }
-        let mut text = self.read_to_string(path).ok()?;
-        text = text.trim_start_matches('\u{feff}').to_owned();
-        json_strip_comments::strip(&mut text).ok()?;
-        let value: serde_json::Value = serde_json::from_str(&text).ok()?;
-        if let Some(setting) = value
-            .pointer("/compilerOptions/moduleDetection")
-            .and_then(|v| v.as_str())
-        {
-            return Some(setting.eq_ignore_ascii_case("force"));
+        let path = self.0.real(path);
+        let value = config(&self.read_to_string(&path).ok()?)?;
+        if let Some(setting) = value.pointer(pointer) {
+            return Some((setting.clone(), path));
         }
         let dir = path.parent()?;
         extends_entries(&value)?.iter().rev().find_map(|entry| {
             let target = self.0.extended(dir, entry)?;
-            self.module_detection(&target, depth + 1)
+            self.setting_at(&target, pointer, depth + 1)
         })
     }
 }
@@ -426,6 +469,50 @@ pub(crate) mod tests {
         // the resolver reads the member through the link
         let linked = root.join("node_modules/@acme/tsconfig/base.json");
         assert!(view.metadata(&linked).is_ok_and(|m| m.is_file()));
+    }
+
+    #[test]
+    fn an_unloadable_extends_of_a_shared_config_is_dropped_too() {
+        // the tsconfig loads a member's config, which extends a package
+        // that only an install would bring
+        let root = repo(
+            "shared-extends",
+            &[
+                (
+                    "packages/config/package.json",
+                    "{ \"name\": \"@acme/config\" }",
+                ),
+                (
+                    "packages/config/base.json",
+                    "{ \"extends\": \"@tsconfig/strictest/tsconfig.json\", \
+                     \"compilerOptions\": { \"jsx\": \"react-jsx\" } }",
+                ),
+                (
+                    "apps/web/tsconfig.json",
+                    "{ \"extends\": \"@acme/config/base.json\" }",
+                ),
+            ],
+        );
+        let ctx = RepoContext::load(&root, ScanOptions::default()).unwrap();
+        let links = BTreeMap::from([("@acme/config".to_owned(), PathBuf::from("packages/config"))]);
+        let mut warnings = Vec::new();
+        let view = ViewFs::new_linked(&ctx, &links, &mut warnings);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            warnings,
+            [
+                "packages/config/base.json: extends `@tsconfig/strictest/tsconfig.json` is not in \
+                 the scanned files; its options are not applied"
+            ]
+        );
+        let served: serde_json::Value = serde_json::from_str(
+            &view
+                .read_to_string(&root.join("node_modules/@acme/config/base.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(served.get("extends").is_none(), "{served}");
+        assert_eq!(served["compilerOptions"]["jsx"], "react-jsx");
     }
 
     #[test]

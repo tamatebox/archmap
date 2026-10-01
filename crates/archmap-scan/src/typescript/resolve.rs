@@ -207,25 +207,23 @@ fn is_tsconfig_problem(err: &ResolveError) -> bool {
 pub(crate) struct Aliases(Vec<(String, String, PathBuf)>);
 
 impl Aliases {
-    pub(crate) fn collect(ctx: &RepoContext) -> Self {
+    /// The aliases of every scanned config, its own `paths` or those of a
+    /// config it extends, as TypeScript reads them: each covers the files
+    /// below the scanned config, under the config that declares it.
+    pub(crate) fn collect(ctx: &RepoContext, view: &ViewFs) -> Self {
         let mut found = Vec::new();
         for rel in ctx.files().iter().filter(|f| is_config(f)) {
-            let Ok(text) = ctx.read_to_string(rel) else {
-                continue;
-            };
-            let mut text = text.trim_start_matches('\u{feff}').to_owned();
-            if json_strip_comments::strip(&mut text).is_err() {
-                continue;
-            }
-            let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
-                continue;
-            };
-            let Some(paths) = value
-                .pointer("/compilerOptions/paths")
-                .and_then(|v| v.as_object())
+            let Some((paths, declared_in)) =
+                view.setting(&ctx.root().join(rel), "/compilerOptions/paths")
             else {
                 continue;
             };
+            let Some(paths) = paths.as_object() else {
+                continue;
+            };
+            let declared_in = declared_in
+                .strip_prefix(ctx.root())
+                .map_or_else(|_| display_path(rel), display_path);
             // `*` alone matches every bare name and would hide every
             // undeclared package.
             let dir = rel.parent().unwrap_or(Path::new("")).to_path_buf();
@@ -233,7 +231,7 @@ impl Aliases {
                 .keys()
                 .filter(|p| !p.is_empty() && !p.starts_with('*'))
             {
-                found.push((pattern.clone(), display_path(rel), dir.clone()));
+                found.push((pattern.clone(), declared_in.clone(), dir.clone()));
             }
         }
         Aliases(found)
@@ -260,28 +258,17 @@ impl Aliases {
 }
 
 /// The `customConditions` that the scanned tsconfig and jsconfig files turn
-/// on, sorted. A condition counts for every file, not only those its config
-/// covers: oxc_resolver reads no `customConditions`, and one resolver serves
-/// the whole scan.
-pub(crate) fn custom_conditions(ctx: &RepoContext) -> Vec<String> {
+/// on, themselves or through a config they extend, sorted. A condition
+/// counts for every file, not only those its config covers: oxc_resolver
+/// reads no `customConditions`, and one resolver serves the whole scan.
+pub(crate) fn custom_conditions(ctx: &RepoContext, view: &ViewFs) -> Vec<String> {
     let mut found = BTreeSet::new();
     for rel in ctx.files().iter().filter(|f| is_config(f)) {
-        let Ok(text) = ctx.read_to_string(rel) else {
-            continue;
-        };
-        let mut text = text.trim_start_matches('\u{feff}').to_owned();
-        if json_strip_comments::strip(&mut text).is_err() {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
-            continue;
-        };
-        let conditions = value
-            .pointer("/compilerOptions/customConditions")
-            .and_then(|v| v.as_array());
+        let conditions = view.setting(&ctx.root().join(rel), "/compilerOptions/customConditions");
         found.extend(
             conditions
-                .into_iter()
+                .iter()
+                .filter_map(|(value, _)| value.as_array())
                 .flatten()
                 .filter_map(|c| c.as_str().map(str::to_owned)),
         );
@@ -541,17 +528,63 @@ mod tests {
         let ctx = RepoContext::load(&root, ScanOptions::default()).unwrap();
         let links = BTreeMap::from([("@acme/core".to_owned(), PathBuf::from("packages/core"))]);
         let mut warnings = Vec::new();
-        let resolver = ImportResolver::new(
-            ctx.root(),
-            ViewFs::new_linked(&ctx, &links, &mut warnings),
-            &custom_conditions(&ctx),
-        );
+        let view = ViewFs::new_linked(&ctx, &links, &mut warnings);
+        let resolver =
+            ImportResolver::new(ctx.root(), view.clone(), &custom_conditions(&ctx, &view));
         let mut problems = BTreeSet::new();
         let found = resolver.resolve(Path::new("apps/web/src/a.ts"), "@acme/core", &mut problems);
         std::fs::remove_dir_all(&root).unwrap();
         assert_eq!(
             found,
             Resolved::File(PathBuf::from("packages/core/src/index.ts"))
+        );
+    }
+
+    #[test]
+    fn conditions_and_aliases_count_through_extends() {
+        // the options live in shared configs that the tsconfigs extend
+        let root = repo(
+            "extended-options",
+            &[
+                (
+                    "config/base.json",
+                    r#"{ "compilerOptions": { "customConditions": ["@acme/source"] } }"#,
+                ),
+                (
+                    "config/tsconfig.paths.json",
+                    r#"{ "extends": "./base.json", "compilerOptions": { "baseUrl": "..", "paths": { "@shared/*": ["web/src/common/*"] } } }"#,
+                ),
+                (
+                    "web/tsconfig.json",
+                    r#"{ "extends": "../config/tsconfig.paths.json" }"#,
+                ),
+                (
+                    "packages/core/package.json",
+                    r#"{ "name": "@acme/core", "exports": { ".": { "@acme/source": "./src/index.ts", "import": "./dist/index.js" } } }"#,
+                ),
+                ("packages/core/src/index.ts", "export const c = 1;\n"),
+                ("web/src/a.ts", "import { c } from '@acme/core';\n"),
+            ],
+        );
+        let ctx = RepoContext::load(&root, ScanOptions::default()).unwrap();
+        let links = BTreeMap::from([("@acme/core".to_owned(), PathBuf::from("packages/core"))]);
+        let mut warnings = Vec::new();
+        let view = ViewFs::new_linked(&ctx, &links, &mut warnings);
+        let aliases = Aliases::collect(&ctx, &view);
+        let resolver =
+            ImportResolver::new(ctx.root(), view.clone(), &custom_conditions(&ctx, &view));
+        let mut problems = BTreeSet::new();
+        let found = resolver.resolve(Path::new("web/src/a.ts"), "@acme/core", &mut problems);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            found,
+            Resolved::File(PathBuf::from("packages/core/src/index.ts"))
+        );
+        // an alias web's tsconfig inherits covers web's files, under the
+        // config that declares it
+        assert_eq!(
+            aliases.matching("@shared/gone", Path::new("web/src/a.ts")),
+            Some(("@shared/*", "config/tsconfig.paths.json"))
         );
     }
 

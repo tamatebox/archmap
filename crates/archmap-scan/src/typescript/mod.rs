@@ -149,12 +149,10 @@ impl Analyzer for TypeScriptAnalyzer {
             return Ok(output);
         }
 
-        let resolver = resolve::ImportResolver::new(
-            ctx.root(),
-            fs::ViewFs::new_linked(ctx, &links, &mut output.warnings),
-            &resolve::custom_conditions(ctx),
-        );
-        let aliases = resolve::Aliases::collect(ctx);
+        let view = fs::ViewFs::new_linked(ctx, &links, &mut output.warnings);
+        let aliases = resolve::Aliases::collect(ctx, &view);
+        let conditions = resolve::custom_conditions(ctx, &view);
+        let resolver = resolve::ImportResolver::new(ctx.root(), view, &conditions);
         let mut problems = BTreeSet::new();
         // Every file is parsed and its imports resolved before any import is
         // emitted: a walk through re-exports reads the files it passes.
