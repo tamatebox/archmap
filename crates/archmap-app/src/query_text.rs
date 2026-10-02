@@ -226,7 +226,9 @@ struct Neighbor<'a> {
     /// One entry per import statement, with the other files it loads and
     /// how it counts for the pair, as `summary` counts it.
     imports: Vec<(&'a Evidence, BTreeSet<Option<&'a str>>, Counted)>,
-    declared: BTreeSet<&'a str>,
+    /// Where manifests declare the dependency, as `file:line` when the
+    /// declaration has a line.
+    declared: BTreeSet<String>,
     other: BTreeMap<&'static str, usize>,
 }
 
@@ -273,7 +275,10 @@ fn neighbors<'a>(
             }
             EdgeKind::Dependency => n
                 .declared
-                .extend(edge.evidence.iter().map(|e| e.file.as_str())),
+                .extend(edge.evidence.iter().map(|e| match e.line {
+                    Some(line) => format!("{}:{line}", e.file),
+                    None => e.file.clone(),
+                })),
             kind => *n.other.entry(kind.as_str()).or_default() += edge.evidence.len().max(1),
         }
     }
@@ -351,8 +356,8 @@ fn neighbors<'a>(
             parts.push(part);
         }
         if !n.declared.is_empty() {
-            let files: Vec<&str> = n.declared.iter().copied().collect();
-            parts.push(format!("declared in {}", files.join(", ")));
+            let places: Vec<&str> = n.declared.iter().map(String::as_str).collect();
+            parts.push(format!("declared in {}", places.join(", ")));
         }
         for (kind, n) in &n.other {
             parts.push(format!("{n} {kind}"));

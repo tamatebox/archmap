@@ -957,7 +957,7 @@ fn query_locations_name_the_imported_file_and_mark_local_imports() {
     }
     let lib_core = query_text(&fixture_root(), &["lib_core"]);
     assert!(
-        lib_core.contains("  1 import: crates/app/src/main.rs:2 -> crates/lib_core/src/lib.rs; declared in crates/app/Cargo.toml\n"),
+        lib_core.contains("  1 import: crates/app/src/main.rs:2 -> crates/lib_core/src/lib.rs; declared in crates/app/Cargo.toml:7\n"),
         "{lib_core}"
     );
 }
