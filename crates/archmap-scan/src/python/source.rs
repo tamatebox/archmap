@@ -5,6 +5,8 @@
 //! `def` / `class`, public methods, `CONSTANT = ...`) and ignores everything
 //! else. It can be swapped for a real parser behind the same functions.
 
+use std::collections::BTreeSet;
+
 use archmap_core::{SymbolKind, WHOLE_MODULE};
 
 /// One `import` or `from ... import` statement.
@@ -17,11 +19,20 @@ pub struct PyImport {
     /// Names imported by a `from` statement (may be submodules); `*` for a
     /// star import or a list that could not be read whole.
     pub names: Vec<String>,
+    /// What the statement binds in the importing file: for `from`, the
+    /// name each of `names` is bound to (its own, or the one after `as`);
+    /// for `import`, the module's top-level name, or the one after `as`.
+    pub bound: Vec<String>,
     pub line: u32,
     /// Inside a function body, so it runs only when the function is called.
     pub local: bool,
     /// Under `if TYPE_CHECKING:`, which only type checkers enter.
     pub type_only: bool,
+    /// Inside a class body, where it binds names of the class.
+    pub in_class: bool,
+    /// The name list could not be read whole: `*` in `names` stands for
+    /// what else it may take, and what it binds is unknown.
+    pub unread: bool,
 }
 
 /// One public definition.
@@ -45,11 +56,27 @@ pub struct PyDynamicImport {
     pub local: bool,
 }
 
+/// The module-level `__all__`: the names a star import of the file takes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DunderAll {
+    /// A list or tuple of string literals.
+    Listed(Vec<String>),
+    /// Built or changed by code the scan does not run.
+    Built,
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct PyFile {
     pub imports: Vec<PyImport>,
     pub defs: Vec<PyDef>,
     pub dynamic_imports: Vec<PyDynamicImport>,
+    pub all: Option<DunderAll>,
+    /// The names that module-level statements other than imports bind when
+    /// the module runs, as the scan reads them: targets of `x = …` and
+    /// `x: T = …`, and `def` and `class` names, in `if`, `try` and `else`
+    /// blocks too and private ones included, but not under `if
+    /// TYPE_CHECKING:`.
+    pub module_names: BTreeSet<String>,
 }
 
 struct ClassCtx {
@@ -70,6 +97,11 @@ pub fn scan_source(text: &str) -> PyFile {
     let mut functions: Vec<usize> = Vec::new();
     // Indentation of the enclosing `if TYPE_CHECKING:` headers.
     let mut type_checking: Vec<usize> = Vec::new();
+    // Indentation of the enclosing `class` headers, of any class.
+    let mut classes: Vec<usize> = Vec::new();
+    // Brackets that a statement other than an import or a header left
+    // open: the lines inside them go on with it, as a call's arguments.
+    let mut brackets: i32 = 0;
     let mut i = 0;
 
     while i < lines.len() {
@@ -85,6 +117,7 @@ pub fn scan_source(text: &str) -> PyFile {
                 let rest = &raw[end + delim.len()..];
                 let reopened = opens_multiline_string(rest);
                 let code = reopened.map_or(rest, |(_, at)| &rest[..at]);
+                brackets = (brackets + code_brackets(code)).max(0);
                 if let Some(call) = dynamic_call(code) {
                     out.dynamic_imports.push(PyDynamicImport {
                         call,
@@ -110,13 +143,21 @@ pub fn scan_source(text: &str) -> PyFile {
             // it does not close functions.
             let local = functions.first().is_some_and(|&d| indent > d);
             in_string = Some((open, local));
-            if let Some(call) = dynamic_call(&trimmed[..at]) {
+            let before = &trimmed[..at];
+            if let Some(call) = dynamic_call(before) {
                 out.dynamic_imports.push(PyDynamicImport {
                     call,
                     line: line_no,
                     local,
                 });
             }
+            // `DOC = """`, at module level
+            let inside = |headers: &[usize]| headers.first().is_some_and(|&d| indent > d);
+            if brackets == 0 && !local && !inside(&classes) && !inside(&type_checking) {
+                out.module_names
+                    .extend(assigned_names(before).into_iter().map(str::to_owned));
+            }
+            brackets = (brackets + code_brackets(before)).max(0);
             continue;
         }
 
@@ -129,6 +170,10 @@ pub fn scan_source(text: &str) -> PyFile {
             type_checking.pop();
         }
         let type_only = !type_checking.is_empty();
+        while classes.last().is_some_and(|&d| indent <= d) {
+            classes.pop();
+        }
+        let in_class = !classes.is_empty();
 
         // Leaving a class body.
         if let Some(ctx) = &class {
@@ -151,11 +196,16 @@ pub fn scan_source(text: &str) -> PyFile {
         }
 
         let code = strip_comment(trimmed);
+        let continuing = brackets > 0;
         if is_type_checking(code) {
+            brackets = 0;
             type_checking.push(indent);
             continue;
         }
         let is_import = code.starts_with("import ") || code.starts_with("from ");
+        if is_import {
+            brackets = 0;
+        }
         // An import continued over lines (in brackets, or after a
         // backslash) is read whole, and its other lines are no statements.
         let (joined, extra, open) = if is_import {
@@ -167,16 +217,24 @@ pub fn scan_source(text: &str) -> PyFile {
         let code = if is_import { joined.as_str() } else { code };
         if let Some(rest) = code.strip_prefix("import ") {
             // a backslash on the last line of the file is left at the end
-            for module in rest.trim_end_matches('\\').split(',') {
-                let module = module.split_whitespace().next().unwrap_or("");
+            for item in rest.trim_end_matches('\\').split(',') {
+                let mut words = item.split_whitespace();
+                let module = words.next().unwrap_or("");
                 if !module.is_empty() {
+                    let bound = match (words.next(), words.next()) {
+                        (Some("as"), Some(alias)) => alias,
+                        _ => module.split('.').next().unwrap_or(module),
+                    };
                     out.imports.push(PyImport {
                         module: module.to_owned(),
                         level: 0,
                         names: Vec::new(),
+                        bound: vec![bound.to_owned()],
                         line: line_no,
                         local,
                         type_only,
+                        in_class,
+                        unread: false,
                     });
                 }
             }
@@ -188,35 +246,58 @@ pub fn scan_source(text: &str) -> PyFile {
                 let target = target.trim();
                 let level = target.chars().take_while(|c| *c == '.').count();
                 let module = target[level..].to_owned();
-                let mut names: Vec<String> = names
+                let (mut names, mut bound): (Vec<String>, Vec<String>) = names
                     .trim()
                     .trim_start_matches('(')
                     .trim_end_matches(')')
                     .trim_end_matches('\\')
                     .split(',')
-                    .filter_map(|n| n.split_whitespace().next())
-                    .filter(|n| !n.is_empty())
-                    .map(str::to_owned)
-                    .collect();
+                    .filter_map(|item| {
+                        let mut words = item.split_whitespace();
+                        let name = words.next()?;
+                        let alias = match (words.next(), words.next()) {
+                            (Some("as"), Some(alias)) => alias,
+                            _ => name,
+                        };
+                        Some((name.to_owned(), alias.to_owned()))
+                    })
+                    .unzip();
                 // a list that could not be read whole may take anything
                 if open && !names.iter().any(|n| n == WHOLE_MODULE) {
                     names.push(WHOLE_MODULE.to_owned());
+                    bound.push(WHOLE_MODULE.to_owned());
                 }
                 out.imports.push(PyImport {
                     module,
                     level,
                     names,
+                    bound,
                     line: line_no,
                     local,
                     type_only,
+                    in_class,
+                    unread: open,
                 });
             }
+            continue;
+        }
+
+        if !local && !in_class && is_dunder_all(code) {
+            brackets = 0;
+            let (joined, extra, _) = continued(&lines, i, code);
+            i += extra;
+            let listed = (indent == 0).then(|| listed_names(&joined)).flatten();
+            out.all = Some(match (&out.all, listed) {
+                (Some(DunderAll::Built), _) | (_, None) => DunderAll::Built,
+                (_, Some(names)) => DunderAll::Listed(names),
+            });
             continue;
         }
 
         let is_def = trimmed.starts_with("def ") || trimmed.starts_with("async def ");
         let is_class = trimmed.starts_with("class ");
         if is_def || is_class {
+            brackets = 0;
             let (header, consumed) = collect_header(&lines, i - 1);
             let header = if is_def {
                 without_defaults(&header)
@@ -227,9 +308,15 @@ pub fn scan_source(text: &str) -> PyFile {
             if is_def {
                 functions.push(indent);
             }
+            if is_class {
+                classes.push(indent);
+            }
             let Some(name) = def_name(&header) else {
                 continue;
             };
+            if !local && !in_class && !type_only {
+                out.module_names.insert(name.clone());
+            }
 
             if indent == 0 {
                 // Methods are only interface when their class is public.
@@ -265,6 +352,11 @@ pub fn scan_source(text: &str) -> PyFile {
             continue;
         }
 
+        if !continuing && !local && !in_class && !type_only {
+            out.module_names
+                .extend(assigned_names(code).into_iter().map(str::to_owned));
+        }
+        brackets = (brackets + code_brackets(code)).max(0);
         if indent == 0 {
             if let Some(constant) = constant_name(trimmed) {
                 out.defs.push(PyDef {
@@ -516,6 +608,101 @@ fn is_type_checking(code: &str) -> bool {
             .is_some_and(|m| !m.is_empty() && m.chars().all(|c| c.is_alphanumeric() || c == '_')),
         None => false,
     }
+}
+
+/// A statement that sets or changes `__all__`.
+fn is_dunder_all(code: &str) -> bool {
+    code.strip_prefix("__all__")
+        .is_some_and(|rest| !rest.starts_with(|c: char| c.is_alphanumeric() || c == '_'))
+}
+
+/// The names of `__all__ = [...]` (or a tuple, or annotated), when every
+/// item is a string literal.
+fn listed_names(statement: &str) -> Option<Vec<String>> {
+    let rest = statement.strip_prefix("__all__")?.trim_start();
+    let rest = match rest.strip_prefix(':') {
+        Some(annotated) => annotated.split_once('=')?.1,
+        None => rest.strip_prefix('=')?,
+    };
+    let value = rest.trim();
+    let inner = value
+        .strip_prefix('[')
+        .and_then(|v| v.strip_suffix(']'))
+        .or_else(|| value.strip_prefix('(').and_then(|v| v.strip_suffix(')')))?;
+    inner
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(|item| {
+            let quote = item.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+            let name = item.strip_prefix(quote)?.strip_suffix(quote)?;
+            (!name.contains(['"', '\''])).then(|| name.to_owned())
+        })
+        .collect()
+}
+
+/// The names a simple assignment binds: `x = …`, `x: T = …` and each
+/// target of `x = y = …`; not an annotation alone, a tuple, an attribute
+/// or an item.
+fn assigned_names(code: &str) -> Vec<&str> {
+    let mut names = Vec::new();
+    let mut rest = code;
+    while let Some((name, value)) = assignment(rest) {
+        names.push(name);
+        rest = value;
+    }
+    names
+}
+
+/// The target of the assignment `code` starts with, and the code after its
+/// `=`.
+fn assignment(code: &str) -> Option<(&str, &str)> {
+    let end = code
+        .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .unwrap_or(code.len());
+    let name = &code[..end];
+    if name.is_empty() || name.starts_with(|c: char| c.is_ascii_digit()) || is_keyword(name) {
+        return None;
+    }
+    let rest = code[end..].trim_start();
+    let value = match rest.strip_prefix(':') {
+        Some(annotated) => annotated.split_once('=')?.1,
+        None => rest.strip_prefix('=')?,
+    };
+    (!value.starts_with('=')).then(|| (name, value.trim_start()))
+}
+
+/// The keywords that start a statement and may be followed by `:` or `=`
+/// in what the scan reads.
+fn is_keyword(word: &str) -> bool {
+    matches!(
+        word,
+        "if" | "elif"
+            | "else"
+            | "try"
+            | "except"
+            | "finally"
+            | "for"
+            | "while"
+            | "with"
+            | "lambda"
+            | "async"
+            | "class"
+            | "def"
+    )
+}
+
+/// Brackets opened minus brackets closed in `code`, outside string
+/// literals.
+fn code_brackets(code: &str) -> i32 {
+    code.char_indices()
+        .filter(|(at, _)| is_code(code, *at))
+        .map(|(_, c)| match c {
+            '(' | '[' | '{' => 1,
+            ')' | ']' | '}' => -1,
+            _ => 0,
+        })
+        .sum()
 }
 
 fn def_name(header: &str) -> Option<String> {
@@ -783,6 +970,159 @@ if TYPE_CHECKING_EXTRA:
     }
 
     #[test]
+    fn imports_in_class_bodies_bind_no_module_name() {
+        let text = "class C:\n    from x import y\nclass _P:\n    import z\nif flag:\n    \
+                    class D:\n        from a import b\n    from c import d\nfrom m import n\n";
+        let file = scan_source(text);
+        let marks: Vec<(&str, bool)> = file
+            .imports
+            .iter()
+            .map(|i| (i.module.as_str(), i.in_class))
+            .collect();
+        assert_eq!(
+            marks,
+            [
+                ("x", true),
+                ("z", true),
+                ("a", true),
+                ("c", false),
+                ("m", false)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_literal_dunder_all_lists_what_a_star_import_takes() {
+        let listed = |names: &[&str]| {
+            Some(DunderAll::Listed(
+                names.iter().map(|n| n.to_string()).collect(),
+            ))
+        };
+        assert_eq!(
+            scan_source("__all__ = ['pay', \"Refund\"]\n").all,
+            listed(&["pay", "Refund"])
+        );
+        // over lines, annotated, as a tuple; the lines in it are no statements
+        let file = scan_source("__all__: list[str] = (\n    'pay',\n    'post',\n)\nPOST = 1\n");
+        assert_eq!(file.all, listed(&["pay", "post"]));
+        assert_eq!(file.defs.len(), 1);
+        // built at runtime
+        for text in [
+            "__all__ = ['pay']\n__all__ += other.__all__\n",
+            "__all__ = base + ['pay']\n",
+            "__all__ = ['pay']\n__all__.extend(['post'])\n",
+            "__all__ = [name for name in dir() if name.isupper()]\n",
+        ] {
+            assert_eq!(scan_source(text).all, Some(DunderAll::Built), "{text}");
+        }
+        assert_eq!(scan_source("x = 1\n").all, None);
+    }
+
+    #[test]
+    fn module_level_assignments_and_definitions_name_the_module() {
+        let text = "\
+pay = make_pay()
+_cache: dict = {}
+count: int
+if flag:
+    def helper():
+        inner = 1
+    refund = 2
+else:
+    Foo = Any
+try:
+    from .fast import speed
+except ImportError:
+    speed = None
+class _Private:
+    attr = 1
+    def method(self):
+        pass
+if TYPE_CHECKING:
+    Lazy = int
+x.y = 1
+a, b = 1, 2
+if x == 1:
+    pass
+";
+        let file = scan_source(text);
+        let names: Vec<&str> = file.module_names.iter().map(String::as_str).collect();
+        // an annotation alone, a function's, a class's and a type checker's
+        // names are none of the module's when it runs
+        assert_eq!(
+            names,
+            ["Foo", "_Private", "_cache", "helper", "pay", "refund", "speed"]
+        );
+
+        // the lines inside a call's brackets are its arguments, a string's
+        // brackets open none, and a string can be the value
+        let text = "\
+registry.register(
+    pay=pay,
+    level=1,
+)
+app = FastAPI(
+    title=\"x\",
+)
+paren = \"(\"
+after = 1
+DOC = \"\"\"
+text = 1
+\"\"\"
+first = second = 0
+match = None
+";
+        let file = scan_source(text);
+        let names: Vec<&str> = file.module_names.iter().map(String::as_str).collect();
+        assert_eq!(
+            names,
+            ["DOC", "after", "app", "first", "match", "paren", "second"]
+        );
+    }
+
+    #[test]
+    fn a_string_that_closes_a_call_closes_its_brackets() {
+        let file = scan_source(
+            "parser.add_argument(\"--x\", help=\"\"\"\nSome help.\n\"\"\")\n\nMAX_RETRIES = 3\nlimit = 2\n",
+        );
+        let defs: Vec<&str> = file.defs.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(defs, ["MAX_RETRIES"]);
+        assert!(
+            file.module_names.contains("limit"),
+            "{:?}",
+            file.module_names
+        );
+    }
+
+    #[test]
+    fn from_imports_record_the_names_they_bind() {
+        let file = scan_source(
+            "from .charge import charge as pay, refund\nfrom shop import (\n    Payment as P,\n)\n\
+             import os as system\nfrom x import *\n",
+        );
+        let bound: Vec<(Vec<&str>, Vec<&str>)> = file
+            .imports
+            .iter()
+            .map(|i| {
+                (
+                    i.names.iter().map(String::as_str).collect(),
+                    i.bound.iter().map(String::as_str).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            bound,
+            [
+                (vec!["charge", "refund"], vec!["pay", "refund"]),
+                (vec!["Payment"], vec!["P"]),
+                // `import` binds the module itself
+                (vec![], vec!["system"]),
+                (vec!["*"], vec!["*"]),
+            ]
+        );
+    }
+
+    #[test]
     fn calls_that_load_modules_by_name_are_dynamic_imports() {
         let text = "\
 import importlib
@@ -969,6 +1309,9 @@ import_module("inside the string")
         let file = scan_source("from a import (\n    b,\n");
         assert_eq!(file.imports.len(), 1);
         assert_eq!(file.imports[0].names, ["b", "*"]);
+        // what else it binds is unknown, unlike a star import
+        assert!(file.imports[0].unread);
+        assert!(!scan_source("from a import *\n").imports[0].unread);
         // still open after 50 lines
         let names: String = (0..60).map(|i| format!("    n{i},\n")).collect();
         let file = scan_source(&format!("from a import (\n{names})\n"));

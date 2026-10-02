@@ -123,7 +123,7 @@ What works today, by the [roadmap](#roadmap) phase it belongs to:
 | Module and file components | 1 | ◐ | ✅ | ✅ |
 | Public symbols with signatures | 1 | ✅ | ✅ | ◐ |
 | Imports resolved to the file they load | 1 | ◐ | ✅ | ◐ |
-| Re-exports followed to the defining file | 1 | ✅ | — | ✅ |
+| Re-exports followed to the defining file | 1 | ✅ | ✅ | ✅ |
 | Names each import takes | 1 | ✅ | ✅ | ✅ |
 | Imports without an edge, with the reason | 1 | ✅ | ✅ | ✅ |
 | `summary` and `query`, down to one file | 2 | ✅ | ✅ | ✅ |
@@ -144,8 +144,10 @@ The gaps behind the marks:
   `examples/` and `build.rs` are not read.
 - Rust imports: code inside macro calls (`vec![..]`, `println!(..)`) is not
   read.
-- Python re-exports: `from pkg import name` stops at `pkg/__init__.py`, not
-  at the file that defines `name`.
+- Python symbols: a statement that takes a package whole (`import pkg`,
+  then `pkg.name()`) does not reach a name its `__init__.py` imports from
+  another file, and `impact` goes on from that `__init__.py` to every file
+  that imports it.
 - Python `impact`: the parent `__init__.py` that Python loads before a
   submodule is not followed.
 - TS/JS imports: aliases defined only in a bundler configuration or a

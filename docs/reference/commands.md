@@ -207,9 +207,10 @@ Rust module (`pub mod invoice;`) is also a symbol of the file that declares
 it, but its imports name its own file, so `query` points at its component
 instead, and `impact` answers for that component. What the lists miss:
 
-- Python does not follow re-exports: `from pkg import pay`, where
-  `pkg/__init__.py` re-exports `pay`, is listed for `__init__.py`, not for
-  the file that defines `pay`.
+- A Python `__init__.py` may use what it imports as well as pass it on, so
+  no statement of it is a barrel: a statement that takes the package whole
+  (`import pkg`, then `pkg.pay()`) is in neither list for `pay` when
+  `pkg/__init__.py` imports it from another file.
 - Rust path evidence shows the first path from its file to the target, not
   always one that names the symbol.
 - Code that runs when a file loads (a side-effect import) is listed for
@@ -332,9 +333,9 @@ name from the same file is not affected. Two things widen or narrow it:
   name on goes no further than the statements `query` lists through it,
   which are in the first step too; a Python `__init__.py`'s
   `from .m import X` leads to every importer of the `__init__.py` as a
-  transitive dependent, those that take other names included, and its
-  importers (`from pkg import X`) are only transitive dependents (Python
-  does not follow re-exports).
+  transitive dependent, those that take other names included, while those
+  that take `X` from it (`from pkg import X`) are in the first step through
+  their `via` evidence.
 - A statement that only loads the file (a side-effect import) is not in the
   first step, although code that runs on load may call the symbol.
 

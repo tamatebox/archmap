@@ -1629,11 +1629,15 @@ fn a_rust_method_is_imported_through_its_type() {
 fn a_python_symbol_is_imported_from_the_file_that_defines_it() {
     let user = query_text(&python_fixture(), &["User"]);
     assert!(user.contains("Imported by: 5\n"), "{user}");
-    // `from shop.billing import pay` stops at the package's `__init__.py`,
-    // which re-exports `pay`: only that re-export imports it from charge.py
+    // `from shop.billing import pay` goes through the package's
+    // `__init__.py`, which binds `pay` from charge.py
     let pay = query_text(&python_fixture(), &["pay"]);
     assert!(
-        pay.contains("Imported by: 1\n  src/shop/billing/__init__.py:1\n"),
+        pay.contains(
+            "Imported by: 3\n  scripts/backfill.py:1 (via src/shop/billing/__init__.py:1)\n  \
+             src/shop/billing/__init__.py:1\n  \
+             tests/test_billing.py:1 (via src/shop/billing/__init__.py:1) (test)\n"
+        ),
         "{pay}"
     );
 }
@@ -1963,6 +1967,78 @@ fn symbols_are_listed_in_source_order() {
     ]
     .join("\n");
     assert!(text.contains(&listed), "{text}");
+}
+
+#[test]
+fn a_relative_import_through_a_package_counts_as_an_absolute_one() {
+    let repo = temp_repo("relative-through");
+    for (file, text) in [
+        ("shop/__init__.py", "from shop.billing.charge import pay\n"),
+        ("shop/billing/__init__.py", ""),
+        ("shop/billing/charge.py", "def pay():\n    pass\n"),
+        ("app/__init__.py", "from shop import pay\n"),
+        ("shop/orders/__init__.py", "from .. import pay\n"),
+    ] {
+        let path = repo.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    let summary = archmap()
+        .arg("summary")
+        .arg(&repo)
+        .args(["-o", "-", "--verbose"])
+        .output()
+        .unwrap();
+    let summary = String::from_utf8_lossy(&summary.stdout);
+    // both statements count for the file that defines `pay`, not the package
+    for expected in [
+        "\napp -> shop.billing  imports: 1\n",
+        "\nshop.orders -> shop.billing  imports: 1\n",
+    ] {
+        assert!(summary.contains(expected), "{summary}");
+    }
+    assert!(!summary.contains("shop.orders -> shop  "), "{summary}");
+    let query = query_text(&repo, &["shop.orders"]);
+    std::fs::remove_dir_all(&repo).unwrap();
+    assert!(
+        query.contains(
+            "  shop          1 through re-exports: shop/orders/__init__.py:1 -> shop/__init__.py (through)\n"
+        ),
+        "{query}"
+    );
+}
+
+#[test]
+fn a_statement_counts_for_each_file_it_loads_apart() {
+    let repo = temp_repo("through-apart");
+    for (file, text) in [
+        ("shop/__init__.py", "from .core.charge import pay\n"),
+        ("shop/core/__init__.py", ""),
+        ("shop/core/charge.py", "def pay():\n    pass\n"),
+        ("shop/sub/__init__.py", ""),
+        ("app/__init__.py", "from shop import pay, sub\n"),
+    ] {
+        let path = repo.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    let summary = archmap()
+        .arg("summary")
+        .arg(&repo)
+        .args(["-o", "-", "--verbose"])
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(&repo).unwrap();
+    let summary = String::from_utf8_lossy(&summary.stdout);
+    // `pay` goes through `shop/__init__.py` to shop.core, whatever the
+    // statement takes from the other file it loads
+    for expected in [
+        "\napp -> shop.core  imports: 1\n",
+        "\napp -> shop.sub  imports: 1\n",
+    ] {
+        assert!(summary.contains(expected), "{summary}");
+    }
+    assert!(!summary.contains("app -> shop  "), "{summary}");
 }
 
 #[test]

@@ -109,6 +109,21 @@ into the model in [graph.md](graph.md); how the commands present it is in
   a package the statement only passes on the way (the parent `__init__.py` of a subpackage, or what is
   left of a module the scan did not read); when a name list cannot be read whole, the module's own
   file, if the statement points at it, also gets `*`
+- a name taken from a file that binds it by importing it from another (`from shop.billing import pay`,
+  where `shop/billing/__init__.py` has `from .charge import pay`) also gets evidence for the file that
+  defines it, noted `import via <file>:<line>` with the first binding on the way, by the name that
+  file gives it (`as` followed); the walk goes through the module-level `from` imports of any file and
+  through star imports, by what their sources export (a literal `__all__`, else every name without a
+  leading `_`), and when a file it reaches shows nothing more of the name, the evidence points at that
+  file; the evidence is `type_only` when the statement or a binding on the way is under
+  `if TYPE_CHECKING:`. A `from` import binds a name its own file may use as well as pass on, so it is
+  never noted `export`
+- a statement keeps only the evidence for the file it loads when a file on the way shows the name in
+  ways that lead to more than one definition (its definitions, assignments, `from` imports and star
+  imports; only those that run count, when any does), binds it in a way the walk does not follow
+  (`import a.b as c`, a module outside the scan), may bind it through a name list that could not be
+  read or a star import of a module outside the scan and shows it no other way, or passes it on from a
+  source whose `__all__` is built at runtime, or when the walk meets a cycle or more than 32 bindings
 - a bare import that matches no module but a `.py` file next to the importing file (`import helpers`
   beside `helpers.py`) loads that file, as it does when the directory is on `sys.path` for a script run
   directly or a function deployed from it; its evidence note says so
@@ -136,9 +151,17 @@ into the model in [graph.md](graph.md); how the commands present it is in
 
 - Dynamic imports are recorded but not followed, and `sys.path` changes made at runtime are not
   seen.
-- Re-exports are not followed: `from shop.billing import pay`, where `shop/billing/__init__.py`
-  re-exports `pay`, is evidence for `__init__.py` only, so `query` on the file that defines `pay`
-  does not list the importer and `impact` reaches it only as `transitive`.
+- An `__init__.py` is no barrel, since it may use what it imports: a statement that takes a package
+  whole (`import shop.billing`, then `shop.billing.pay()`) is in neither of `query`'s lists for `pay`
+  when `shop/billing/__init__.py` imports it from another file, and `impact` goes on from the
+  `__init__.py` file by file, to every importer of it.
+- A file that binds a name twice, such as `from .x import pay` and then `pay = wrap(pay)`, ends the
+  walk whichever runs last, so a statement that reaches it keeps only the evidence for the file it
+  loads.
+- A name bound by a statement the scan does not read as an assignment (`a, b = …`, `for`, `with … as`)
+  is unseen, so a star import whose source binds a name that way may lead to another source of it.
+- `from pkg import name` where `pkg/name.py` exists takes that submodule whole, even when
+  `pkg/__init__.py` has `from .name import name`, which makes `pkg.name` the object it imports.
 - `impact` does not follow the parent `__init__.py` that Python loads implicitly before a
   submodule.
 - Only `if TYPE_CHECKING:` and `if <module>.TYPE_CHECKING:` mark imports as types only: an import

@@ -845,6 +845,188 @@ fn imports_in_test_code_are_marked() {
 }
 
 #[test]
+fn names_a_package_passes_on_reach_the_file_that_defines_them() {
+    let dir = namespace_project(
+        "reexports",
+        "",
+        &[
+            ("app/__init__.py", ""),
+            (
+                "app/billing/__init__.py",
+                "from .charge import charge as pay, Refund\nfrom .ledger import *\n",
+            ),
+            (
+                "app/billing/charge.py",
+                "def charge(amount):\n    return amount\n\n\nclass Refund:\n    pass\n",
+            ),
+            ("app/billing/ledger.py", "def post():\n    pass\n"),
+            (
+                "app/orders.py",
+                "from app.billing import pay, Refund, post\n",
+            ),
+        ],
+    );
+    let graph = scan(&dir, &ScanOptions::default()).unwrap().graph;
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    let rows: BTreeSet<(&str, Vec<&str>, &str)> = graph
+        .edges
+        .iter()
+        .flat_map(|e| &e.evidence)
+        .filter(|e| e.file == "app/orders.py")
+        .map(|e| {
+            (
+                e.target.as_deref().unwrap_or_default(),
+                e.names.iter().map(String::as_str).collect(),
+                e.note.as_deref().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        BTreeSet::from([
+            (
+                "app/billing/__init__.py",
+                vec!["Refund", "pay", "post"],
+                "import"
+            ),
+            // by the names the defining files give them
+            (
+                "app/billing/charge.py",
+                vec!["Refund", "charge"],
+                "import via app/billing/__init__.py:1"
+            ),
+            (
+                "app/billing/ledger.py",
+                vec!["post"],
+                "import via app/billing/__init__.py:2"
+            ),
+        ])
+    );
+}
+
+#[test]
+fn evidence_through_bindings_keeps_the_marks_of_its_statement() {
+    let dir = namespace_project(
+        "binding-marks",
+        "",
+        &[
+            ("app/__init__.py", ""),
+            (
+                "app/billing/__init__.py",
+                "from typing import TYPE_CHECKING\nfrom .charge import pay\nfrom requests import *\n\
+                 from .ledger import *\nif TYPE_CHECKING:\n    from .charge import Receipt\n",
+            ),
+            (
+                "app/billing/charge.py",
+                "def pay():\n    pass\n\n\nclass Receipt:\n    pass\n",
+            ),
+            ("app/billing/ledger.py", "def post():\n    pass\n"),
+            ("app/shop/__init__.py", "from app.billing import pay\n"),
+            (
+                "app/books/__init__.py",
+                "class Book:\n    from app.billing.charge import pay\n",
+            ),
+            // a name list left open at the end of the file
+            (
+                "app/legacy/__init__.py",
+                "from app.billing.ledger import *\nfrom app.billing.charge import (\n    pay,\n",
+            ),
+            (
+                "app/orders.py",
+                "from app.billing import Receipt, post\ndef checkout():\n    \
+                 from app.shop import pay\nfrom app.books import pay\n\
+                 from app.legacy import pay, post\n",
+            ),
+        ],
+    );
+    let graph = scan(&dir, &ScanOptions::default()).unwrap().graph;
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    type Row<'g> = (u32, &'g str, Vec<&'g str>, &'g str, Option<Scope>, bool);
+    let rows: BTreeSet<Row> = graph
+        .edges
+        .iter()
+        .flat_map(|e| &e.evidence)
+        .filter(|e| e.file == "app/orders.py" && e.via().is_some())
+        .map(|e| {
+            (
+                e.line.unwrap_or_default(),
+                e.target.as_deref().unwrap_or_default(),
+                e.names.iter().map(String::as_str).collect(),
+                e.note.as_deref().unwrap_or_default(),
+                e.scope,
+                e.type_only,
+            )
+        })
+        .collect();
+    let charge = "app/billing/charge.py";
+    assert_eq!(
+        rows,
+        BTreeSet::from([
+            // bound under TYPE_CHECKING, so only a type travels; `post` may
+            // come from the star import of a module outside the scan as well
+            // as from ledger.py
+            (
+                1,
+                charge,
+                vec!["Receipt"],
+                "import via app/billing/__init__.py:6",
+                Some(Scope::Module),
+                true
+            ),
+            // through two packages, from the first binding on the way
+            (
+                3,
+                charge,
+                vec!["pay"],
+                "import via app/shop/__init__.py:1",
+                Some(Scope::Local),
+                false
+            ),
+            // a class body binds no name of the module (line 4); a list that
+            // could not be read may bind `post` too
+            (
+                5,
+                charge,
+                vec!["pay"],
+                "import via app/legacy/__init__.py:2",
+                Some(Scope::Module),
+                false
+            ),
+        ])
+    );
+}
+
+#[test]
+fn a_name_a_package_assigns_reaches_no_other_file() {
+    // which of the two `pay` runs depends on the order, so neither is followed
+    let dir = namespace_project(
+        "assigned",
+        "",
+        &[
+            ("app/__init__.py", ""),
+            (
+                "app/pkg/__init__.py",
+                "from .base import *\n\nif ready:\n    pay = make_pay()\n",
+            ),
+            ("app/pkg/base.py", "def pay():\n    pass\n"),
+            ("app/main.py", "from app.pkg import pay\n"),
+        ],
+    );
+    let graph = scan(&dir, &ScanOptions::default()).unwrap().graph;
+    std::fs::remove_dir_all(&dir).unwrap();
+    let targets: Vec<&str> = graph
+        .edges
+        .iter()
+        .flat_map(|e| &e.evidence)
+        .filter(|e| e.file == "app/main.py")
+        .filter_map(|e| e.target.as_deref())
+        .collect();
+    assert_eq!(targets, ["app/pkg/__init__.py"]);
+}
+
+#[test]
 fn imports_under_type_checking_close_no_cycle() {
     let dir = namespace_project(
         "type-checking",

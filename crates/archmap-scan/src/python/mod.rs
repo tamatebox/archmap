@@ -25,6 +25,10 @@
 //! - `import` / `from ... import` statements become `Import` edges between
 //!   modules, or to a required external dependency (see [`resolve`] for how
 //!   import names are matched to distributions)
+//! - a name taken from a file that binds it by importing it from another
+//!   (`pkg/__init__.py` with `from .charge import pay`) also gets evidence
+//!   for the file that defines it, noted `import via <file>:<line>` with the
+//!   first binding on the way (see [`reexports`])
 //! - a bare import that matches no module but a `.py` file next to the
 //!   importing file (`import helpers` beside `helpers.py`) loads that file,
 //!   as it does when the directory is on `sys.path` for a script run
@@ -49,6 +53,7 @@
 //! parsed.
 
 mod manifest;
+mod reexports;
 mod resolve;
 mod source;
 mod stdlib;
@@ -170,6 +175,7 @@ impl Analyzer for PythonAnalyzer {
             .collect();
 
         let known_files: BTreeSet<&Path> = py_files.iter().copied().collect();
+        let mut reads: Vec<ReadFile> = Vec::new();
         for file in py_files {
             let (owner, project_idx, base_dotted, in_package_tree) =
                 match owning_module(&modules_by_dir, file) {
@@ -239,7 +245,7 @@ impl Analyzer for PythonAnalyzer {
                 local_names: &local_names[project_idx],
                 known_files: &known_files,
             };
-            emit_imports(
+            let resolved = emit_imports(
                 &owner,
                 base_dotted,
                 &scope,
@@ -249,7 +255,19 @@ impl Analyzer for PythonAnalyzer {
                 &scanned,
                 &mut output,
             );
+            reads.push(ReadFile {
+                file: file.to_path_buf(),
+                display: file_display,
+                owner,
+                scanned,
+                resolved,
+            });
         }
+        let tables: BTreeMap<String, reexports::Table> = reads
+            .iter()
+            .map(|read| (read.display.clone(), binding_table(read)))
+            .collect();
+        emit_definitions(&reads, &tables, &mut output);
 
         Ok(output)
     }
@@ -724,6 +742,27 @@ struct ImportScope<'a> {
     known_files: &'a BTreeSet<&'a Path>,
 }
 
+/// Where each name of one import statement comes from, as `emit_imports`
+/// placed it: where the walk through re-exports starts and what it follows.
+#[derive(Debug, Default)]
+struct Resolved {
+    /// For each name other than `*`, in order: its file and its name there,
+    /// [`WHOLE_MODULE`] for a submodule taken whole; `None` for a name the
+    /// scan did not place in a file it read.
+    names: Vec<Option<(String, String)>>,
+    /// The file of the statement's own module, when the scan read it.
+    own: Option<String>,
+}
+
+/// A Python file once read, with how its imports resolved.
+struct ReadFile {
+    file: PathBuf,
+    display: String,
+    owner: ComponentId,
+    scanned: PyFile,
+    resolved: Vec<Resolved>,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_imports(
     owner: &ComponentId,
@@ -734,13 +773,17 @@ fn emit_imports(
     file: &Path,
     scanned: &PyFile,
     output: &mut AnalyzerOutput,
-) {
+) -> Vec<Resolved> {
     let file_display = display_path(file);
     let test = is_test_code(file);
+    let mut resolved = Vec::with_capacity(scanned.imports.len());
     for import in &scanned.imports {
         let full = match resolve_base(base_dotted, import) {
             Some(full) => full,
-            None => continue,
+            None => {
+                resolved.push(Resolved::default());
+                continue;
+            }
         };
 
         // `*`, from a star import or a list that could not be read, is no
@@ -761,15 +804,10 @@ fn emit_imports(
             candidates.push(full.clone());
         }
 
-        let scope = if import.local {
-            Scope::Local
-        } else {
-            Scope::Module
-        };
         let evidence = || {
             Evidence::new(&file_display)
                 .at_line(import.line)
-                .in_scope(scope)
+                .in_scope(scope(import.local))
                 .in_test(test)
                 .type_only(import.type_only)
         };
@@ -783,6 +821,7 @@ fn emit_imports(
         let mut internal: BTreeMap<ComponentId, BTreeMap<Option<String>, BTreeSet<String>>> =
             BTreeMap::new();
         let own = own_file(&full, modules, by_dotted, ctx.known_files);
+        let mut placed: Vec<Option<(String, String)>> = vec![None; named.len()];
         for (i, candidate) in candidates.iter().enumerate() {
             let Some(idx) = longest_known_prefix(candidate, by_dotted) else {
                 continue;
@@ -811,11 +850,17 @@ fn emit_imports(
                 }
             } else if target.is_some() && target == own {
                 names.insert(named[i].clone());
+                placed[i] = target.map(|t| (t, named[i].clone()));
             } else if !fallback {
                 // a submodule, taken whole
                 names.insert(WHOLE_MODULE.to_owned());
+                placed[i] = target.map(|t| (t, WHOLE_MODULE.to_owned()));
             }
         }
+        resolved.push(Resolved {
+            names: placed,
+            own: own.clone(),
+        });
 
         let note = if import.level > 0 {
             "relative import"
@@ -939,19 +984,154 @@ fn emit_imports(
     }
 
     for dynamic in &scanned.dynamic_imports {
-        let scope = if dynamic.local {
-            Scope::Local
-        } else {
-            Scope::Module
-        };
         output.fragment.push_dynamic_import(DynamicImport {
             from: owner.clone(),
             call: dynamic.call.to_owned(),
             evidence: Evidence::new(&file_display)
                 .at_line(dynamic.line)
-                .in_scope(scope)
+                .in_scope(scope(dynamic.local))
                 .in_test(test),
         });
+    }
+    resolved
+}
+
+fn scope(local: bool) -> Scope {
+    if local {
+        Scope::Local
+    } else {
+        Scope::Module
+    }
+}
+
+/// What `read` binds at module level, for the walk through re-exports:
+/// the names it defines, and those its `from` imports bind, from the files
+/// they resolved to, apart from names bound in a way the walk does not
+/// follow (`import a.b as c`, a module outside the scan, a file next to
+/// the importer).
+fn binding_table(read: &ReadFile) -> reexports::Table {
+    let scanned = &read.scanned;
+    let mut table = reexports::Table {
+        defined: scanned
+            .defs
+            .iter()
+            .filter(|d| !d.name.contains('.'))
+            .map(|d| d.name.clone())
+            .chain(scanned.module_names.iter().cloned())
+            .collect(),
+        exported: match &scanned.all {
+            None => reexports::Exported::Public,
+            Some(source::DunderAll::Listed(names)) => {
+                reexports::Exported::Listed(names.iter().cloned().collect())
+            }
+            Some(source::DunderAll::Built) => reexports::Exported::Built,
+        },
+        ..reexports::Table::default()
+    };
+    for (import, resolved) in scanned.imports.iter().zip(&read.resolved) {
+        // what a function or a class body binds is no name of the module
+        if import.local || import.in_class {
+            continue;
+        }
+        let mut unfollowed = |name: &String| {
+            *table.unfollowed.entry(name.clone()).or_insert(true) &= import.type_only;
+        };
+        if import.names.is_empty() {
+            import.bound.iter().for_each(&mut unfollowed);
+            continue;
+        }
+        let bound = import
+            .names
+            .iter()
+            .zip(&import.bound)
+            .filter(|(name, _)| *name != WHOLE_MODULE)
+            .map(|(_, bound)| bound);
+        for (i, bound) in bound.enumerate() {
+            match resolved.names.get(i).cloned().flatten() {
+                Some((file, name)) => {
+                    table
+                        .bound
+                        .entry(bound.clone())
+                        .or_default()
+                        .push(reexports::Binding {
+                            file,
+                            name,
+                            line: import.line,
+                            type_only: import.type_only,
+                        })
+                }
+                None => unfollowed(bound),
+            }
+        }
+        if import.names.iter().any(|n| n == WHOLE_MODULE) {
+            match (&resolved.own, import.unread) {
+                (Some(own), false) => table.stars.push(reexports::Binding {
+                    file: own.clone(),
+                    name: WHOLE_MODULE.to_owned(),
+                    line: import.line,
+                    type_only: import.type_only,
+                }),
+                _ => table.opaque = true,
+            }
+        }
+    }
+    table
+}
+
+/// Evidence for the files that define the names each statement takes from
+/// a file that binds them by importing them, by the names those files give
+/// them. The loaded file keeps its own evidence from [`emit_imports`].
+fn emit_definitions(
+    reads: &[ReadFile],
+    tables: &BTreeMap<String, reexports::Table>,
+    output: &mut AnalyzerOutput,
+) {
+    let owners: BTreeMap<&str, &ComponentId> = reads
+        .iter()
+        .map(|read| (read.display.as_str(), &read.owner))
+        .collect();
+    let mut definitions = reexports::Definitions::new(tables);
+    for read in reads {
+        let test = is_test_code(&read.file);
+        for (import, resolved) in read.scanned.imports.iter().zip(&read.resolved) {
+            // by defining file, first binding and whether only types travel
+            let mut found: BTreeMap<(String, (String, u32), bool), BTreeSet<String>> =
+                BTreeMap::new();
+            for (loaded, name) in resolved.names.iter().flatten() {
+                if name == WHOLE_MODULE || *loaded == read.display {
+                    continue;
+                }
+                let Some(definition) = definitions.of(loaded, name) else {
+                    continue;
+                };
+                if definition.file == read.display || definition.file == *loaded {
+                    continue;
+                }
+                let type_only = import.type_only || definition.type_only;
+                found
+                    .entry((definition.file, definition.via, type_only))
+                    .or_default()
+                    .insert(definition.name);
+            }
+            for ((file, (via, line), type_only), names) in found {
+                let Some(owner) = owners.get(file.as_str()) else {
+                    continue;
+                };
+                output.fragment.push_edge(
+                    Edge::new(read.owner.clone(), (*owner).clone(), EdgeKind::Import)
+                        .with_evidence(
+                            Evidence::new(&read.display)
+                                .at_line(import.line)
+                                .in_scope(scope(import.local))
+                                .in_test(test)
+                                .type_only(type_only)
+                                .with_note(format!("import via {via}:{line}"))
+                                .pointing_at(file)
+                                .taking(names),
+                        ),
+                );
+            }
+        }
     }
 }
 
@@ -1204,9 +1384,12 @@ mod tests {
             module: module.into(),
             level,
             names: names.iter().map(|s| s.to_string()).collect(),
+            bound: names.iter().map(|s| s.to_string()).collect(),
             line: 1,
             local: false,
             type_only: false,
+            in_class: false,
+            unread: false,
         }
     }
 
