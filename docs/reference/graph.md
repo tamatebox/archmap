@@ -45,8 +45,12 @@ defining file declares; a note that only contains ` via `, as a specifier
 written with it does, is no such evidence. Such evidence belongs to an edge
 to the component of the defining file, which `deny`, `layers` and `allow`
 count like any other. A statement noted `export`
-passes the names it takes on, as a TS/JS re-export does: a symbol is
-followed through such barrels to the statements that take them. A statement gives one piece of evidence per file
+passes the names it takes on, as a TS/JS re-export does: `impact` follows a
+changed file or symbol through such barrels only to the statements that may
+take what they pass on. A TS/JS re-export of a package, or of a path that
+matches no file, keeps `export` as the first word of its note (`export
+react-aria, declared in web/package.json:4`): the file passes on names that
+the graph does not list. A statement gives one piece of evidence per file
 it points at and re-export it goes through, with all of its names. Every
 analyzer records `names`.
 

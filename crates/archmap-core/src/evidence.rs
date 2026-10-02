@@ -121,6 +121,18 @@ impl Evidence {
         self.note.as_deref() == Some("export")
     }
 
+    /// A statement that re-exports (`export ... from`): noted `export`, or,
+    /// where it loads no file of the scan, noted with what it names after
+    /// that word (`export react-aria, declared in web/package.json:4`).
+    pub fn re_exports(&self) -> bool {
+        self.passes_on()
+            || self.via().is_none()
+                && self
+                    .note
+                    .as_deref()
+                    .is_some_and(|n| n.starts_with("export "))
+    }
+
     /// A component's evidence for an entry file that runs before any file of
     /// the component, or of a module below it, is loaded: a graph
     /// convention, the note `package` (a Python package's `__init__.py`).
@@ -214,6 +226,19 @@ mod tests {
         assert_eq!(plain, r#"{"file":"a.ts"}"#);
         let old: Evidence = serde_json::from_str(r#"{"file":"a.ts"}"#).unwrap();
         assert!(!old.type_only);
+    }
+
+    #[test]
+    fn a_re_export_keeps_its_word_when_it_loads_nothing_of_the_scan() {
+        let noted = |note: &str| Evidence::new("a.ts").with_note(note).re_exports();
+        assert!(noted("export"));
+        assert!(noted("export react-aria, declared in web/package.json:4"));
+        assert!(noted("export ./gone: no file matches"));
+        // a walk through re-exports, another statement, another word
+        assert!(!noted("export via src/index.ts:2"));
+        assert!(!noted("import"));
+        assert!(!noted("exports.a"));
+        assert!(!Evidence::new("a.ts").re_exports());
     }
 
     #[test]

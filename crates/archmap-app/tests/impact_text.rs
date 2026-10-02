@@ -291,3 +291,62 @@ fn a_test_file_marks_itself_among_the_tests_to_run_again() {
         ]
     );
 }
+
+#[test]
+fn a_barrel_leads_on_only_to_what_may_take_the_files_names() {
+    let ws = scan(&fixture("ts-reexports"));
+    // a module that re-exports one name beside its own code
+    let url = text(&ws, "src/url.ts");
+    assert_eq!(
+        section(&url, "Direct dependents: 2"),
+        ["  app/link.ts", "  storage.ts"]
+    );
+    assert!(
+        url.contains("\nTransitive dependents: none beyond the direct ones\n"),
+        "{url}"
+    );
+    assert_eq!(
+        section(&url, "Tests to run again: 1"),
+        ["  tests/link.test.ts"]
+    );
+    // a barrel that re-exports two files and a package whole: what takes it
+    // whole or only loads it, a name both files define, and what uses the
+    // file; not the other file's names, nor the package's
+    let money = text(&ws, "src/money.ts");
+    let transitive = section(&money, "Transitive dependents: 5 more (9 in all)");
+    assert_eq!(
+        transitive,
+        [
+            "  ts-reexports",
+            "  app/boot.ts",
+            "  app/cart.ts",
+            "  app/report.ts",
+            "  app/tag.ts"
+        ]
+    );
+    for other in [
+        "app/agenda.ts",
+        "app/calendar.ts",
+        "app/home.ts",
+        "app/press.ts",
+    ] {
+        assert!(
+            !money.contains(&format!("  {other}\n")),
+            "{other} in:\n{money}"
+        );
+    }
+    assert!(money.contains("\nTests to run again: none\n"), "{money}");
+    // the barrel itself changed: whatever takes names through it
+    let shop = text(&ws, "src/shop/index.ts");
+    for reached in [
+        "app/calendar.ts",
+        "app/home.ts",
+        "app/press.ts",
+        "app/sale.ts",
+    ] {
+        assert!(
+            shop.contains(&format!("  {reached}\n")),
+            "{reached} in:\n{shop}"
+        );
+    }
+}

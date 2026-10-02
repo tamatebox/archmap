@@ -341,6 +341,10 @@ impl ArchitectureGraph {
                 .or_default() |= production;
         };
         let mut files: BTreeSet<&str> = BTreeSet::new();
+        // the statements that pass on the names they take from a file, by
+        // that file: what loads a barrel of a changed file is followed only
+        // where it may take those names
+        let mut passing: BTreeMap<&str, BTreeMap<&str, bool>> = BTreeMap::new();
         // a declaration says a package is installed, not that a symbol of it
         // is used
         let symbol = matches!(seed, ChangeSeed::Symbol(_));
@@ -359,8 +363,18 @@ impl ArchitectureGraph {
                     }
                     None => Node::Component(&edge.to),
                 };
-                if importer != target {
-                    depend(target, importer, !e.test);
+                if importer == target {
+                    continue;
+                }
+                match target {
+                    Node::File(t) if e.passes_on() => {
+                        *passing
+                            .entry(t)
+                            .or_default()
+                            .entry(e.file.as_str())
+                            .or_default() |= !e.test;
+                    }
+                    _ => depend(target, importer, !e.test),
                 }
             }
             if edge.evidence.is_empty() && edge.from != edge.to {
@@ -406,12 +420,12 @@ impl ArchitectureGraph {
         // the files reached through production code, which stand for their
         // components; a seed does when it is no test
         let mut production: BTreeSet<Node> = BTreeSet::new();
-        // barrels the walk reaches a symbol through: they only pass it on,
-        // and the statements that reach it through them are in the start
-        let mut barrels: BTreeSet<&str> = BTreeSet::new();
+        // the files that changed, whose barrels pass their names on
+        let mut changed: BTreeSet<&str> = BTreeSet::new();
         let target = match seed {
             ChangeSeed::File(file) => {
                 start.push((Node::File(file), 0));
+                changed.insert(file);
                 if !test_code.contains(file) {
                     production.insert(Node::File(file));
                 }
@@ -420,6 +434,7 @@ impl ArchitectureGraph {
             ChangeSeed::Files(files) => {
                 for &file in files {
                     start.push((Node::File(file), 0));
+                    changed.insert(file);
                     if !test_code.contains(file) {
                         production.insert(Node::File(file));
                     }
@@ -439,24 +454,19 @@ impl ArchitectureGraph {
                         .map(|(_, e)| *e)
                         .filter(|e| tests || !e.test)
                         .collect();
-                    start.extend(statements.iter().map(|e| (Node::File(e.file.as_str()), 1)));
-                    production.extend(
-                        statements
-                            .iter()
-                            .filter(|e| !e.test)
-                            .map(|e| Node::File(e.file.as_str())),
-                    );
                     // a file whose every such statement passes the name on
+                    // is a barrel, whose statements that may take the name
+                    // are in the start already
                     let mut only_passes: BTreeMap<&str, bool> = BTreeMap::new();
                     for e in &statements {
                         *only_passes.entry(e.file.as_str()).or_insert(true) &= e.passes_on();
                     }
-                    barrels.extend(
-                        only_passes
-                            .into_iter()
-                            .filter(|(_, only)| *only)
-                            .map(|(file, _)| file),
-                    );
+                    let node = |e: &&'s Evidence| match only_passes[e.file.as_str()] {
+                        true => Node::Passes(e.file.as_str()),
+                        false => Node::File(e.file.as_str()),
+                    };
+                    start.extend(statements.iter().map(|e| (node(e), 1)));
+                    production.extend(statements.iter().filter(|e| !e.test).map(node));
                 }
                 Some(self.ancestor_at(&symbol.component, depth))
             }
@@ -473,6 +483,7 @@ impl ArchitectureGraph {
                     .map(|(file, _)| *file)
                     .collect();
                 start.extend(own.iter().map(|file| (Node::File(file), 0)));
+                changed.extend(own.iter().copied());
                 production.extend(
                     own.iter()
                         .filter(|file| !test_code.contains(*file))
@@ -481,6 +492,8 @@ impl ArchitectureGraph {
                 Some(self.ancestor_at(component, depth))
             }
         };
+        // what the barrels of the changed files lead to
+        let passed = self.passed_on(&changed, tests);
 
         // 0-1 BFS: a file reached through production code puts its component
         // in reach at no cost. One reached through test code alone (a test,
@@ -499,28 +512,62 @@ impl ArchitectureGraph {
         while let Some(node) = queue.pop_front() {
             let d = distance[&node];
             let mut next: Vec<(Node, usize)> = Vec::new();
-            let mut barrel = false;
-            if let Node::File(f) = node {
+            if let Node::File(f) | Node::Passes(f) = node {
                 let stands =
                     |owner: &&ComponentId| production.contains(&node) && stands_for(f, owner);
                 if let Some(owner) = owner_of(f).filter(stands) {
                     next.push((Node::Component(owner), d));
                 }
-                barrel = barrels.contains(f);
             }
-            if !barrel {
-                for (&n, &through_production) in dependents.get(&node).into_iter().flatten() {
-                    // reached through production code only now: it stands for
-                    // its component from where it was reached before
-                    if through_production && production.insert(n) {
-                        if let (Node::File(f), Some(&at)) = (n, distance.get(&n)) {
-                            if let Some(owner) = owner_of(f).filter(|c| stands_for(f, c)) {
-                                next.push((Node::Component(owner), at));
-                            }
+            let mut links: Vec<(Node, bool)> = Vec::new();
+            match node {
+                Node::Passes(barrel) => {
+                    links.extend(
+                        passed
+                            .get(barrel)
+                            .into_iter()
+                            .flatten()
+                            .map(|(n, p)| (*n, *p)),
+                    );
+                }
+                _ => {
+                    links.extend(
+                        dependents
+                            .get(&node)
+                            .into_iter()
+                            .flatten()
+                            .map(|(n, p)| (*n, *p)),
+                    );
+                    // a barrel of a changed file passes its names on, and
+                    // any other barrel the names of what it loads
+                    if let Node::File(f) = node {
+                        let pass = |importer: &'s str| match changed.contains(f)
+                            && !changed.contains(importer)
+                        {
+                            true => Node::Passes(importer),
+                            false => Node::File(importer),
+                        };
+                        links.extend(
+                            passing
+                                .get(f)
+                                .into_iter()
+                                .flatten()
+                                .map(|(importer, p)| (pass(importer), *p)),
+                        );
+                    }
+                }
+            }
+            for (n, through_production) in links {
+                // reached through production code only now: it stands for
+                // its component from where it was reached before
+                if through_production && production.insert(n) {
+                    if let (Node::File(f) | Node::Passes(f), Some(&at)) = (n, distance.get(&n)) {
+                        if let Some(owner) = owner_of(f).filter(|c| stands_for(f, c)) {
+                            next.push((Node::Component(owner), at));
                         }
                     }
-                    next.push((n, d + 1));
                 }
+                next.push((n, d + 1));
             }
             for (n, nd) in next {
                 if distance.get(&n).is_none_or(|&old| nd < old) {
@@ -537,7 +584,7 @@ impl ArchitectureGraph {
         let mut reach = Reach::default();
         let (mut files, mut seeds) = (BTreeSet::new(), BTreeSet::new());
         for (node, d) in &distance {
-            if let Node::File(f) = node {
+            if let Node::File(f) | Node::Passes(f) = node {
                 match d {
                     0 => seeds.insert(*f),
                     _ => files.insert(*f),
@@ -546,7 +593,7 @@ impl ArchitectureGraph {
         }
         for (node, d) in &distance {
             let component = match node {
-                Node::File(f) => owner_of(f),
+                Node::File(f) | Node::Passes(f) => owner_of(f),
                 Node::Component(c) => Some(*c),
             };
             let Some(component) = component else {
@@ -562,6 +609,214 @@ impl ArchitectureGraph {
             reach.transitive.insert(folded);
         }
         (reach, files, seeds)
+    }
+
+    /// For each barrel of the files in `changed` (a file that re-exports
+    /// from one, or from another such barrel), what loads it and may take
+    /// their names through it: the statements that take the barrel whole or
+    /// only load it, that take a name it passes on from them, or whose first
+    /// re-export on the way loads one of them. Each leads to its file as one
+    /// that uses what it takes, or as a barrel that passes it on again, with
+    /// whether a statement is production code; test code counts when
+    /// `tests`. The other statements take the barrel's own names or names
+    /// defined elsewhere; one that takes a name a changed file defines
+    /// points at the file through its `via` evidence anyway.
+    fn passed_on<'s>(
+        &'s self,
+        changed: &BTreeSet<&'s str>,
+        tests: bool,
+    ) -> BTreeMap<&'s str, BTreeMap<Node<'s>, bool>> {
+        let mut links: BTreeMap<&str, BTreeMap<Node, bool>> = BTreeMap::new();
+        if changed.is_empty() {
+            return links;
+        }
+        // the statements that load each file, and the `via` evidence of each
+        // statement
+        let mut loading: BTreeMap<&str, Vec<&Evidence>> = BTreeMap::new();
+        let mut via: BTreeMap<(&str, Option<u32>), Vec<&Evidence>> = BTreeMap::new();
+        for e in self
+            .edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::Import)
+            .flat_map(|e| &e.evidence)
+            .filter(|e| tests || !e.test)
+        {
+            let Some(target) = e.target.as_deref() else {
+                continue;
+            };
+            match e.via() {
+                Some(_) => via.entry((e.file.as_str(), e.line)).or_default().push(e),
+                None => loading.entry(target).or_default().push(e),
+            }
+        }
+        // the names each file defines
+        let mut own: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        for s in self.symbols.values() {
+            if let Some(at) = s.location() {
+                own.entry(at.file.as_str())
+                    .or_default()
+                    .insert(reached_name(&s.name));
+            }
+        }
+        let exported = self.exports_of(changed, &own);
+        // the re-exports that load a changed file, and the names each file
+        // re-exports from a file by name
+        let mut into_changed: BTreeSet<(&str, u32)> = BTreeSet::new();
+        let mut by_name: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        for e in loading.values().flatten().filter(|e| e.passes_on()) {
+            if let (Some(target), Some(line)) = (e.target.as_deref(), e.line) {
+                if changed.contains(target) {
+                    into_changed.insert((e.file.as_str(), line));
+                }
+            }
+            if !e.names.contains(WHOLE_MODULE) {
+                by_name
+                    .entry(e.file.as_str())
+                    .or_default()
+                    .extend(e.names.iter().map(String::as_str));
+            }
+        }
+
+        let mut passes: BTreeMap<&str, Passed> = BTreeMap::new();
+        let mut queue: VecDeque<&str> = VecDeque::new();
+        for e in changed
+            .iter()
+            .flat_map(|file| loading.get(file).into_iter().flatten())
+            .filter(|e| e.passes_on() && !changed.contains(e.file.as_str()))
+        {
+            let mut taken = Passed::default();
+            match e.names.contains(WHOLE_MODULE) {
+                true => taken.any = true,
+                false => taken.exact.extend(e.names.iter().map(String::as_str)),
+            }
+            if passes.entry(e.file.as_str()).or_default().extend(taken) {
+                queue.push_back(e.file.as_str());
+            }
+        }
+        while let Some(barrel) = queue.pop_front() {
+            let passed = passes[barrel].clone();
+            let defined = own.get(barrel);
+            let defines = |name: &str| defined.is_some_and(|names| names.contains(name));
+            let elsewhere = |name: &str| by_name.get(barrel).is_some_and(|n| n.contains(name));
+            // a name the barrel may pass on from a changed file: one it takes
+            // from a barrel that passes them whole, or that its own
+            // `export *` of one may pass, which never passes a default on
+            let possible = |name: &str| {
+                passed.possible.contains(name)
+                    || passed.any && name != "default" && !defines(name) && !elsewhere(name)
+            };
+            for e in loading.get(barrel).into_iter().flatten() {
+                let file = e.file.as_str();
+                if file == barrel || changed.contains(file) {
+                    continue;
+                }
+                let walked = via.get(&(file, e.line)).into_iter().flatten();
+                // the names a walk through re-exports found defined
+                let found: BTreeSet<&str> = walked
+                    .clone()
+                    .flat_map(|v| &v.names)
+                    .map(String::as_str)
+                    .collect();
+                let mut taken = Passed::default();
+                if e.names.contains(WHOLE_MODULE) {
+                    taken = passed.clone();
+                }
+                for name in e.names.iter().map(String::as_str) {
+                    if passed.exact.contains(name) {
+                        taken.exact.insert(name);
+                        continue;
+                    }
+                    // where the walk found it defined, a changed file
+                    // passes it on itself; where it found nothing, it may
+                    // be any name of theirs, or one the barrel renames
+                    let theirs = match found.contains(name) {
+                        true => possible(name) && exported.names.contains(name),
+                        false => {
+                            name != WHOLE_MODULE
+                                && name != "default"
+                                && !defines(name)
+                                && !elsewhere(name)
+                                && (exported.open
+                                    || possible(name) && exported.names.contains(name))
+                        }
+                    };
+                    if theirs {
+                        taken.possible.insert(name);
+                    }
+                }
+                // a statement that only loads the barrel runs what it loads
+                let loads = e.names.is_empty() && !e.passes_on();
+                let first = walked
+                    .filter_map(|v| v.via())
+                    .filter_map(|place| {
+                        let (file, line) = place.rsplit_once(':')?;
+                        Some((file, line.parse().ok()?))
+                    })
+                    .any(|place| into_changed.contains(&place));
+                if taken.is_empty() && !loads && !first {
+                    continue;
+                }
+                let node = match e.passes_on() {
+                    true => Node::Passes(file),
+                    false => Node::File(file),
+                };
+                *links.entry(barrel).or_default().entry(node).or_default() |= !e.test;
+                if e.passes_on() && passes.entry(file).or_default().extend(taken) {
+                    queue.push_back(file);
+                }
+            }
+        }
+        links
+    }
+
+    /// The names the files in `changed` may export: those they define,
+    /// re-export by name and that a statement takes from them, and those of
+    /// the files they re-export whole; `open` when one re-exports from
+    /// outside the scan (a package, a path that matches no file), whose
+    /// names the graph does not know.
+    fn exports_of<'s>(
+        &'s self,
+        changed: &BTreeSet<&'s str>,
+        own: &BTreeMap<&'s str, BTreeSet<&'s str>>,
+    ) -> Exported<'s> {
+        let mut taken: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        let mut written: BTreeMap<&str, Vec<&Evidence>> = BTreeMap::new();
+        let imports = self
+            .edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::Import)
+            .flat_map(|e| &e.evidence)
+            .chain(self.unmapped_imports.iter().map(|i| &i.evidence));
+        for e in imports {
+            if let Some(target) = e.target.as_deref() {
+                taken
+                    .entry(target)
+                    .or_default()
+                    .extend(e.names.iter().map(String::as_str));
+            }
+            if e.re_exports() {
+                written.entry(e.file.as_str()).or_default().push(e);
+            }
+        }
+        let mut exported = Exported::default();
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        let mut stack: Vec<&str> = changed.iter().copied().collect();
+        while let Some(file) = stack.pop() {
+            if !seen.insert(file) {
+                continue;
+            }
+            exported.names.extend(own.get(file).into_iter().flatten());
+            exported.names.extend(taken.get(file).into_iter().flatten());
+            for e in written.get(file).into_iter().flatten() {
+                match e.target.as_deref() {
+                    Some(target) if e.names.contains(WHOLE_MODULE) => stack.push(target),
+                    Some(_) => exported.names.extend(e.names.iter().map(String::as_str)),
+                    None => exported.open = true,
+                }
+            }
+        }
+        exported.names.remove(WHOLE_MODULE);
+        exported
     }
 
     /// Components from the containment root down to `id`, following
@@ -1051,6 +1306,46 @@ pub struct Reach {
 enum Node<'a> {
     File(&'a str),
     Component(&'a ComponentId),
+    /// A file reached only as a barrel that passes names of what changed
+    /// on: what loads it is followed only through the statements that may
+    /// take those names. Reached otherwise, it is a [`Node::File`] too.
+    Passes(&'a str),
+}
+
+/// What a barrel passes on of the changed files, by the names it exports
+/// them under.
+#[derive(Debug, Clone, Default)]
+struct Passed<'a> {
+    /// Names it re-exports from them by name.
+    exact: BTreeSet<&'a str>,
+    /// Names that may be theirs: it takes them by name from a barrel that
+    /// passes them on whole.
+    possible: BTreeSet<&'a str>,
+    /// It passes them on whole (`export *`): any name it does not define.
+    any: bool,
+}
+
+/// What the changed files may export, by name.
+#[derive(Debug, Default)]
+struct Exported<'a> {
+    names: BTreeSet<&'a str>,
+    /// One re-exports from outside the scan, whose names are not known.
+    open: bool,
+}
+
+impl<'a> Passed<'a> {
+    fn is_empty(&self) -> bool {
+        self.exact.is_empty() && self.possible.is_empty() && !self.any
+    }
+
+    /// Adds `other`; whether anything was new.
+    fn extend(&mut self, other: Passed<'a>) -> bool {
+        let before = (self.exact.len(), self.possible.len(), self.any);
+        self.exact.extend(other.exact);
+        self.possible.extend(other.possible);
+        self.any |= other.any;
+        before != (self.exact.len(), self.possible.len(), self.any)
+    }
 }
 
 /// Strongly connected groups of at least two nodes, each sorted, in sorted
@@ -2205,6 +2500,364 @@ mod tests {
         // a component's own tests are what to run after changing it
         let reach = graph.change_impact(ChangeSeed::Component(&ComponentId::new("both")), 2);
         assert_eq!(reach.tests.iter().collect::<Vec<_>>(), ["both/a.test.ts"]);
+    }
+
+    /// Files that define names (`money.ts`, `date.ts`, `url.ts`), a barrel
+    /// that re-exports two of them whole, one name renamed and a package
+    /// (`index.ts`), a barrel of that barrel (`all.ts`), a module that
+    /// re-exports one name beside its own code (`storage.ts`), one that
+    /// imports what it re-exports (`cart.ts`), and an importer per way of
+    /// taking names through them, each file a component of its own.
+    fn behind_re_exports() -> ArchitectureGraph {
+        let mut graph = ArchitectureGraph::default();
+        let files = [
+            "lib/money.ts",
+            "lib/date.ts",
+            "lib/url.ts",
+            "lib/storage.ts",
+            "lib/index.ts",
+            "lib/all.ts",
+            "lib/cart.ts",
+            "app/sale.ts",
+            "app/calendar.ts",
+            "app/press.ts",
+            "app/tag.ts",
+            "app/whole.ts",
+            "app/boot.ts",
+            "app/price.ts",
+            "app/deep.ts",
+            "app/far.ts",
+            "app/upload.ts",
+            "app/link.ts",
+            "app/basket.ts",
+            "spec/upload.test.ts",
+            "spec/link.test.ts",
+        ];
+        for file in files {
+            let mut c = Component::new(file, file, ComponentKind::Module);
+            c.path = Some(file.into());
+            graph.add_component(c);
+        }
+        graph.add_component(Component::new(
+            "ext:npm:aria",
+            "aria",
+            ComponentKind::External,
+        ));
+        let statement = |file: &str, note: &str, target: &str, names: &[&str]| {
+            Edge::new(file, target, EdgeKind::Import).with_evidence(
+                Evidence::new(file)
+                    .at_line(1)
+                    .with_note(note)
+                    .pointing_at(target)
+                    .taking(names.iter().copied())
+                    .in_test(file.starts_with("spec/")),
+            )
+        };
+        // a statement at another line of a barrel
+        let at = |line: u32, edge: Edge| {
+            let mut edge = edge;
+            edge.evidence[0].line = Some(line);
+            edge
+        };
+        graph.add_edges([
+            statement("lib/storage.ts", "export", "lib/url.ts", &["getUrl"]),
+            statement("lib/index.ts", "export", "lib/money.ts", &["*"]),
+            at(
+                2,
+                statement("lib/index.ts", "export", "lib/date.ts", &["*"]),
+            ),
+            at(
+                4,
+                statement("lib/index.ts", "export", "lib/money.ts", &["formatPrice"]),
+            ),
+            statement("lib/all.ts", "export", "lib/index.ts", &["*"]),
+            statement("lib/cart.ts", "import", "lib/money.ts", &["formatPrice"]),
+            // the names a changed file defines, through a barrel
+            statement("app/sale.ts", "import", "lib/index.ts", &["formatPrice"]),
+            statement(
+                "app/sale.ts",
+                "import via lib/index.ts:1",
+                "lib/money.ts",
+                &["formatPrice"],
+            ),
+            statement("app/price.ts", "import", "lib/index.ts", &["price"]),
+            statement(
+                "app/price.ts",
+                "import via lib/index.ts:4",
+                "lib/money.ts",
+                &["formatPrice"],
+            ),
+            statement("app/deep.ts", "import", "lib/all.ts", &["formatPrice"]),
+            statement(
+                "app/deep.ts",
+                "import via lib/all.ts:1",
+                "lib/money.ts",
+                &["formatPrice"],
+            ),
+            // another file's names
+            statement("app/calendar.ts", "import", "lib/index.ts", &["formatDate"]),
+            statement(
+                "app/calendar.ts",
+                "import via lib/index.ts:2",
+                "lib/date.ts",
+                &["formatDate"],
+            ),
+            statement("app/far.ts", "import", "lib/all.ts", &["formatDate"]),
+            statement(
+                "app/far.ts",
+                "import via lib/all.ts:1",
+                "lib/date.ts",
+                &["formatDate"],
+            ),
+            // a name of the package, and one both files define, whose walks
+            // found nothing
+            statement("app/press.ts", "import", "lib/index.ts", &["useButton"]),
+            statement("app/tag.ts", "import", "lib/index.ts", &["label"]),
+            // the barrel whole, or only loaded
+            statement("app/whole.ts", "import", "lib/index.ts", &["*"]),
+            statement("app/boot.ts", "import", "lib/index.ts", &[]),
+            // the module's own name, and the one it re-exports
+            statement("app/upload.ts", "import", "lib/storage.ts", &["save"]),
+            statement("app/link.ts", "import", "lib/storage.ts", &["getUrl"]),
+            statement(
+                "app/link.ts",
+                "import via lib/storage.ts:1",
+                "lib/url.ts",
+                &["getUrl"],
+            ),
+            statement("spec/upload.test.ts", "import", "lib/storage.ts", &["save"]),
+            statement("spec/link.test.ts", "import", "lib/storage.ts", &["getUrl"]),
+            statement(
+                "spec/link.test.ts",
+                "import via lib/storage.ts:1",
+                "lib/url.ts",
+                &["getUrl"],
+            ),
+            statement("app/basket.ts", "import", "lib/cart.ts", &["total"]),
+            // the package the barrel re-exports whole
+            Edge::new("lib/index.ts", "ext:npm:aria", EdgeKind::Import)
+                .with_evidence(Evidence::new("lib/index.ts").at_line(3).with_note("export")),
+        ]);
+        for (file, name) in [
+            ("lib/money.ts", "formatPrice"),
+            ("lib/money.ts", "label"),
+            ("lib/date.ts", "formatDate"),
+            ("lib/date.ts", "label"),
+            ("lib/url.ts", "getUrl"),
+            ("lib/storage.ts", "save"),
+            ("lib/cart.ts", "total"),
+        ] {
+            graph.add_symbol(symbol(
+                &format!("{file}::{name}"),
+                name,
+                vec![Evidence::new(file).at_line(1)],
+            ));
+        }
+        graph
+    }
+
+    fn reached(set: &BTreeSet<ComponentId>) -> Vec<&str> {
+        set.iter().map(|c| c.as_str()).collect()
+    }
+
+    #[test]
+    fn a_barrel_is_followed_only_where_it_may_pass_a_changed_files_names_on() {
+        let graph = behind_re_exports();
+        let reach = graph.change_impact(ChangeSeed::File("lib/money.ts"), 9);
+        // the barrel itself, what takes the file's names through it, and
+        // what uses them
+        assert_eq!(
+            reached(&reach.direct),
+            [
+                "app/deep.ts",
+                "app/price.ts",
+                "app/sale.ts",
+                "lib/cart.ts",
+                "lib/index.ts"
+            ]
+        );
+        // through the barrel: what takes it whole or only loads it, a name
+        // the file defines that the walk could not place, and the barrel
+        // above it; not another file's names, nor the package's
+        assert_eq!(
+            reached(&reach.transitive),
+            [
+                "app/basket.ts",
+                "app/boot.ts",
+                "app/deep.ts",
+                "app/price.ts",
+                "app/sale.ts",
+                "app/tag.ts",
+                "app/whole.ts",
+                "lib/all.ts",
+                "lib/cart.ts",
+                "lib/index.ts"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_module_passes_on_only_the_name_it_re_exports() {
+        let graph = behind_re_exports();
+        let reach = graph.change_impact(ChangeSeed::File("lib/url.ts"), 9);
+        assert_eq!(reached(&reach.direct), ["app/link.ts", "lib/storage.ts"]);
+        assert_eq!(
+            reached(&reach.transitive),
+            ["app/link.ts", "lib/storage.ts"]
+        );
+        // not the test of the module's own code
+        assert_eq!(
+            reach.tests.iter().collect::<Vec<_>>(),
+            ["spec/link.test.ts"]
+        );
+    }
+
+    #[test]
+    fn a_changed_barrel_reaches_what_takes_names_through_it() {
+        let graph = behind_re_exports();
+        let reach = graph.change_impact(ChangeSeed::File("lib/index.ts"), 9);
+        // what loads the barrel, whatever it takes; through the barrel
+        // above it, what a walk led through the changed one
+        for file in [
+            "app/calendar.ts",
+            "app/press.ts",
+            "app/far.ts",
+            "app/deep.ts",
+        ] {
+            assert!(reach.transitive.contains(&ComponentId::new(file)), "{file}");
+        }
+        assert!(!reach
+            .transitive
+            .contains(&ComponentId::new("app/upload.ts")));
+    }
+
+    #[test]
+    fn a_name_a_changed_file_passes_on_is_followed_through_barrels_above() {
+        let mut graph = behind_re_exports();
+        // the barrel re-exports a name it does not define, below two others
+        let mut top = Component::new("lib/top.ts", "lib/top.ts", ComponentKind::Module);
+        top.path = Some("lib/top.ts".into());
+        graph.add_component(top);
+        let mut far = Component::new("app/top.ts", "app/top.ts", ComponentKind::Module);
+        far.path = Some("app/top.ts".into());
+        graph.add_component(far);
+        let statement = |file: &str, note: &str, target: &str, names: &[&str]| {
+            Edge::new(file, target, EdgeKind::Import).with_evidence(
+                Evidence::new(file)
+                    .at_line(1)
+                    .with_note(note)
+                    .pointing_at(target)
+                    .taking(names.iter().copied()),
+            )
+        };
+        graph.add_edges([
+            statement("lib/top.ts", "export", "lib/all.ts", &["*"]),
+            statement(
+                "app/top.ts",
+                "import",
+                "lib/top.ts",
+                &["formatPrice", "formatDate"],
+            ),
+            statement(
+                "app/top.ts",
+                "import via lib/top.ts:1",
+                "lib/money.ts",
+                &["formatPrice"],
+            ),
+            statement(
+                "app/top.ts",
+                "import via lib/top.ts:1",
+                "lib/date.ts",
+                &["formatDate"],
+            ),
+        ]);
+        let reach = graph.change_impact(ChangeSeed::File("lib/index.ts"), 9);
+        assert!(reach.transitive.contains(&ComponentId::new("app/top.ts")));
+        // the file whose name it takes, but not the other one's
+        let reach = graph.change_impact(ChangeSeed::File("lib/date.ts"), 9);
+        assert!(reach.transitive.contains(&ComponentId::new("app/top.ts")));
+        assert!(!reach.transitive.contains(&ComponentId::new("app/sale.ts")));
+    }
+
+    #[test]
+    fn a_barrel_that_uses_what_it_re_exports_is_followed_whole() {
+        let mut graph = behind_re_exports();
+        graph.add_edge(
+            Edge::new("lib/storage.ts", "lib/url.ts", EdgeKind::Import).with_evidence(
+                Evidence::new("lib/storage.ts")
+                    .at_line(2)
+                    .with_note("import")
+                    .pointing_at("lib/url.ts")
+                    .taking(["getUrl"]),
+            ),
+        );
+        let reach = graph.change_impact(ChangeSeed::File("lib/url.ts"), 9);
+        assert!(reach
+            .transitive
+            .contains(&ComponentId::new("app/upload.ts")));
+        assert_eq!(
+            reach.tests.iter().collect::<Vec<_>>(),
+            ["spec/link.test.ts", "spec/upload.test.ts"]
+        );
+    }
+
+    #[test]
+    fn a_barrel_of_a_file_that_re_exports_a_package_passes_any_name_on() {
+        let mut graph = behind_re_exports();
+        // the changed file re-exports a package, whose names nothing lists
+        graph.add_edge(
+            Edge::new("lib/money.ts", "ext:npm:aria", EdgeKind::Import).with_evidence(
+                Evidence::new("lib/money.ts")
+                    .at_line(9)
+                    .with_note("export aria, declared in package.json:4"),
+            ),
+        );
+        let reach = graph.change_impact(ChangeSeed::File("lib/money.ts"), 9);
+        assert!(reach.transitive.contains(&ComponentId::new("app/press.ts")));
+        // a name a walk placed in another file still is that file's
+        assert!(!reach
+            .transitive
+            .contains(&ComponentId::new("app/calendar.ts")));
+    }
+
+    #[test]
+    fn a_barrel_a_symbol_passes_through_is_followed_whole_where_code_uses_it() {
+        let price = symbol(
+            "lib/money.ts::formatPrice",
+            "formatPrice",
+            vec![Evidence::new("lib/money.ts").at_line(1)],
+        );
+        let mut graph = behind_re_exports();
+        // through the barrel alone, only what may take the name
+        let reach = graph.change_impact(ChangeSeed::Symbol(&price), 9);
+        assert!(!reach
+            .transitive
+            .contains(&ComponentId::new("app/calendar.ts")));
+        // the barrel's own code uses what the symbol's importer gives it
+        let mut pay = Component::new("app/pay.ts", "app/pay.ts", ComponentKind::Module);
+        pay.path = Some("app/pay.ts".into());
+        graph.add_component(pay);
+        graph.add_edges([
+            Edge::new("lib/index.ts", "lib/cart.ts", EdgeKind::Import).with_evidence(
+                Evidence::new("lib/index.ts")
+                    .at_line(5)
+                    .with_note("import")
+                    .pointing_at("lib/cart.ts")
+                    .taking(["total"]),
+            ),
+            Edge::new("app/pay.ts", "lib/index.ts", EdgeKind::Import).with_evidence(
+                Evidence::new("app/pay.ts")
+                    .at_line(1)
+                    .with_note("import")
+                    .pointing_at("lib/index.ts")
+                    .taking(["checkout"]),
+            ),
+        ]);
+        let reach = graph.change_impact(ChangeSeed::Symbol(&price), 9);
+        assert!(reach.transitive.contains(&ComponentId::new("app/pay.ts")));
+        assert!(reach
+            .transitive
+            .contains(&ComponentId::new("app/calendar.ts")));
     }
 
     #[test]

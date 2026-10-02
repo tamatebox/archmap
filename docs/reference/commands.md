@@ -250,7 +250,22 @@ load (a Rust package by its library's root, a TS/JS package by what its
 `package.json` names and its source root's `index.*`) is stood for by those
 and its manifest only, so a binary, a build script or a configuration file
 reaches none of the packages that declare it; one that names none (a Python
-package, a Rust package without a library) still is by every file it owns. It does not follow the arguments of a Rust macro call
+package, a Rust package without a library) still is by every file it owns.
+A TS/JS file that only passes a changed file's names on (a barrel, or a
+module that re-exports one of them beside its own code, `export { getUrl }
+from './url'`) leads on only through the statements that may take those
+names: those that take it whole or only load it, that take a name it
+re-exports from the changed file, that a walk through re-exports led
+through the changed file, or that take a name the walk could not place and
+the changed file may export (any name, when it re-exports a package). A
+statement that takes the barrel's own names, or names defined elsewhere,
+does not, although loading the barrel runs the changed file too; one that
+takes a name the changed file defines points at it through its `via`
+evidence anyway. A barrel that also imports the changed file for its own
+use, or that code depending on the change imports, leads on through every
+statement that loads it. An `export * as ns` reads like `export *` there,
+and a named re-export of a package like one of all its names, so such a
+barrel leads on to what takes any name it may pass on. It does not follow the arguments of a Rust macro call
 that are no expressions (`json!`), and a path that
 names no component or file is an error. Direct and
 transitive dependents follow production code; the tests to run again are the
@@ -358,7 +373,8 @@ name from the same file is not affected. Two things widen or narrow it:
   (a direct dependent, unless it sits in the symbol's own component, as a
   Python `__init__.py` usually does). A TS/JS barrel that only passes the
   name on goes no further than the statements `query` lists through it,
-  which are in the first step too; a Python `__init__.py`'s
+  which are in the first step too, unless code that depends on the symbol
+  imports it as well; a Python `__init__.py`'s
   `from .m import X` leads to every importer of the `__init__.py`, and to
   whatever imports a module below it, as transitive dependents, those that
   take other names included, while those
