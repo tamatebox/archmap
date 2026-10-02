@@ -268,7 +268,12 @@ impl ArchitectureGraph {
     /// `tests` holds the files only test code reaches, the tests to run
     /// again.
     pub fn change_impact(&self, seed: ChangeSeed, depth: usize) -> Reach {
-        let test_code = self.test_code_files();
+        let test_code: BTreeSet<&str> = self
+            .test_code()
+            .into_iter()
+            .filter(|(_, test)| *test)
+            .map(|(file, _)| file)
+            .collect();
         let (mut reach, production, _) = self.reach(seed, depth, false, &test_code);
         let (_, with_tests, seeds) = self.reach(seed, depth, true, &test_code);
         // a changed test is a test to run again too
@@ -280,25 +285,29 @@ impl ArchitectureGraph {
         reach
     }
 
-    /// The files whose recorded statements (imports, with an edge or
-    /// without, and dynamic imports) all carry `test`.
-    fn test_code_files(&self) -> BTreeSet<&str> {
-        // per file: one of its statements is production code
+    /// For every file the graph records something in (an import, with an
+    /// edge or without, a dynamic import, a symbol it defines), whether it
+    /// is test code: everything recorded in it carries `test`. A file that
+    /// defines a symbol of production code is production code, whatever
+    /// its imports, since a Rust `#[cfg(test)]` module marks only the
+    /// statements inside it.
+    pub fn test_code(&self) -> BTreeMap<&str, bool> {
+        // per file: something recorded in it is production code
         let mut production: BTreeMap<&str, bool> = BTreeMap::new();
-        let statements = self
+        let recorded = self
             .edges
             .iter()
             .filter(|e| e.kind == EdgeKind::Import)
             .flat_map(|e| &e.evidence)
             .chain(self.unmapped_imports.iter().map(|i| &i.evidence))
-            .chain(self.dynamic_imports.iter().map(|d| &d.evidence));
-        for e in statements {
+            .chain(self.dynamic_imports.iter().map(|d| &d.evidence))
+            .chain(self.symbols.values().flat_map(|s| &s.evidence));
+        for e in recorded {
             *production.entry(e.file.as_str()).or_default() |= !e.test;
         }
         production
             .into_iter()
-            .filter(|(_, production)| !production)
-            .map(|(file, _)| file)
+            .map(|(file, production)| (file, !production))
             .collect()
     }
 
@@ -2176,6 +2185,33 @@ mod tests {
         let reach = graph.change_impact(ChangeSeed::File("kiosk/billing.test.ts"), 2);
         assert!(reach.direct.is_empty(), "{:?}", reach.direct);
         assert!(reach.transitive.is_empty(), "{:?}", reach.transitive);
+    }
+
+    #[test]
+    fn a_file_that_defines_production_code_is_no_test() {
+        // a Rust module whose only recorded import is in its unit tests
+        let mut graph = ArchitectureGraph::default();
+        let mut module = Component::new("leaf::a", "leaf::a", ComponentKind::Module);
+        module.path = Some("src/a.rs".into());
+        graph.add_component(module);
+        graph.add_symbol(Symbol {
+            id: SymbolId::new("leaf::a::f"),
+            name: "f".into(),
+            kind: SymbolKind::Function,
+            component: ComponentId::new("leaf::a"),
+            signature: None,
+            evidence: vec![Evidence::new("src/a.rs").at_line(1)],
+        });
+        graph.unmapped_imports.push(UnmappedImport {
+            from: ComponentId::new("leaf::a"),
+            module: "pretty_assertions".into(),
+            reason: UnmappedReason::DeclaredNotRequired,
+            provided_by: vec![],
+            evidence: Evidence::new("src/a.rs").at_line(5).in_test(true),
+        });
+        assert_eq!(graph.test_code().get("src/a.rs"), Some(&false));
+        let reach = graph.change_impact(ChangeSeed::File("src/a.rs"), 2);
+        assert!(reach.tests.is_empty(), "{:?}", reach.tests);
     }
 
     #[test]

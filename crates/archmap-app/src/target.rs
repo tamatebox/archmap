@@ -1,11 +1,11 @@
 //! Finding what a target names: a file or directory under the scanned root,
 //! a component, a symbol. `query` and `impact` share these lookups.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::{Component as PathPart, Path};
 
 use anyhow::{bail, Context, Result};
-use archmap_core::{ArchitectureGraph, Component, ComponentId, EdgeKind};
+use archmap_core::{ArchitectureGraph, Component, ComponentId};
 
 /// The target without one pair of matching quotes around it, so an id
 /// copied from a shell-quoted candidate works where no shell removes them.
@@ -181,43 +181,24 @@ pub(crate) fn namesakes<'a>(
     (named, at_path)
 }
 
-/// The files among `files` that are test code: those whose statements all
-/// carry the `test` mark their analyzer gave them, the statements being the
-/// imports, imports without an edge and dynamic imports written in the file.
-/// A file without any recorded statement goes by the analyzers' shared path
-/// rule.
+/// The files among `files` that are test code: those where everything
+/// recorded (imports, with an edge or without, dynamic imports, the symbols
+/// a file defines) carries the `test` mark its analyzer gave it, as `impact`
+/// tells them apart. A file with nothing recorded goes by the analyzers'
+/// shared path rule.
 pub(crate) fn test_files<'a>(
     full: &ArchitectureGraph,
     files: impl IntoIterator<Item = &'a str>,
 ) -> BTreeSet<&'a str> {
-    // per file: a statement is recorded in it, one of them is production code
-    let mut marks: BTreeMap<&'a str, (bool, bool)> = files
+    let marks = full.test_code();
+    files
         .into_iter()
-        .map(|file| (file, (false, false)))
-        .collect();
-    let statements = full
-        .edges
-        .iter()
-        .filter(|e| e.kind == EdgeKind::Import)
-        .flat_map(|e| &e.evidence)
-        .chain(full.unmapped_imports.iter().map(|i| &i.evidence))
-        .chain(full.dynamic_imports.iter().map(|d| &d.evidence));
-    for evidence in statements {
-        if let Some((recorded, production)) = marks.get_mut(evidence.file.as_str()) {
-            *recorded = true;
-            *production |= !evidence.test;
-        }
-    }
-    marks
-        .into_iter()
-        .filter(|(file, (recorded, production))| {
-            if *recorded {
-                !production
-            } else {
-                archmap_scan::is_test_code(Path::new(file))
-            }
+        .filter(|file| {
+            marks
+                .get(file)
+                .copied()
+                .unwrap_or_else(|| archmap_scan::is_test_code(Path::new(file)))
         })
-        .map(|(file, _)| file)
         .collect()
 }
 
