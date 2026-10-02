@@ -380,6 +380,16 @@ impl ArchitectureGraph {
                 .copied()
                 .or_else(|| index.owner(f).map(|c| &c.id))
         };
+        // a component that names the files its dependents load stands for
+        // them and the other files of its evidence (its manifest) only
+        let named: BTreeMap<&ComponentId, BTreeSet<&str>> = self
+            .components
+            .values()
+            .filter(|c| c.evidence.iter().any(Evidence::is_entry))
+            .map(|c| (&c.id, c.evidence.iter().map(|e| e.file.as_str()).collect()))
+            .collect();
+        let stands_for =
+            |f: &str, c: &ComponentId| named.get(c).is_none_or(|files| files.contains(f));
 
         // where the walk starts, and at what distance
         let mut start: Vec<(Node, usize)> = Vec::new();
@@ -472,7 +482,9 @@ impl ArchitectureGraph {
             let mut next: Vec<(Node, usize)> = Vec::new();
             let mut barrel = false;
             if let Node::File(f) = node {
-                if let Some(owner) = owner_of(f).filter(|_| production.contains(&node)) {
+                let stands =
+                    |owner: &&ComponentId| production.contains(&node) && stands_for(f, owner);
+                if let Some(owner) = owner_of(f).filter(stands) {
                     next.push((Node::Component(owner), d));
                 }
                 barrel = barrels.contains(f);
@@ -483,7 +495,7 @@ impl ArchitectureGraph {
                     // its component from where it was reached before
                     if through_production && production.insert(n) {
                         if let (Node::File(f), Some(&at)) = (n, distance.get(&n)) {
-                            if let Some(owner) = owner_of(f) {
+                            if let Some(owner) = owner_of(f).filter(|c| stands_for(f, c)) {
                                 next.push((Node::Component(owner), at));
                             }
                         }
@@ -2259,6 +2271,59 @@ mod tests {
             ["kiosk/src/main.rs"]
         );
         assert!(reach.direct.is_empty(), "{:?}", reach.direct);
+    }
+
+    #[test]
+    fn only_the_files_dependents_load_stand_for_a_package() {
+        // the library's root is the entry; the binary beside it is not
+        let mut graph = ArchitectureGraph::default();
+        for (id, kind, path, parent) in [
+            ("kiosk", ComponentKind::Package, "kiosk", None),
+            (
+                "kiosk::till",
+                ComponentKind::Module,
+                "kiosk/src/till.rs",
+                Some("kiosk"),
+            ),
+            (
+                "kiosk::clock",
+                ComponentKind::Module,
+                "kiosk/src/clock.rs",
+                Some("kiosk"),
+            ),
+            ("depot", ComponentKind::Package, "depot", None),
+        ] {
+            let mut c = Component::new(id, id, kind);
+            c.path = Some(path.into());
+            c.parent = parent.map(ComponentId::new);
+            if id == "kiosk" {
+                c.evidence = vec![
+                    Evidence::new("kiosk/Cargo.toml").with_note("[package]"),
+                    Evidence::new("kiosk/src/lib.rs").with_note("entry"),
+                ];
+            }
+            graph.add_component(c);
+        }
+        let import = |from_file: &str, to: &str, target: &str| {
+            Edge::new("kiosk", to, EdgeKind::Import)
+                .with_evidence(Evidence::new(from_file).at_line(1).pointing_at(target))
+        };
+        graph.add_edges([
+            import("kiosk/src/lib.rs", "kiosk::till", "kiosk/src/till.rs"),
+            import("kiosk/src/main.rs", "kiosk::clock", "kiosk/src/clock.rs"),
+            Edge::new("depot", "kiosk", EdgeKind::Dependency)
+                .with_evidence(Evidence::new("depot/Cargo.toml").with_note("[dependencies]")),
+        ]);
+        let ids =
+            |set: &BTreeSet<ComponentId>| set.iter().map(|c| c.to_string()).collect::<Vec<_>>();
+        // through the library's root, depot, which links it, is reached
+        let till = graph.change_impact(ChangeSeed::File("kiosk/src/till.rs"), 2);
+        assert_eq!(ids(&till.transitive), ["depot", "kiosk"]);
+        // through the binary, which no dependent loads, it is not
+        let clock = graph.change_impact(ChangeSeed::File("kiosk/src/clock.rs"), 2);
+        assert_eq!(ids(&clock.transitive), ["kiosk"]);
+        let binary = graph.change_impact(ChangeSeed::File("kiosk/src/main.rs"), 2);
+        assert!(binary.direct.is_empty(), "{:?}", binary.direct);
     }
 
     #[test]

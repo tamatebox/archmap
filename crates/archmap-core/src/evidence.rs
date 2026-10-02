@@ -128,6 +128,14 @@ impl Evidence {
         self.note.as_deref() == Some("package")
     }
 
+    /// A component's evidence for a file its dependents load (a Rust
+    /// library's root): a graph convention, the note `entry`. Of the files a
+    /// component with such evidence owns, only those its evidence names (its
+    /// entries, its manifest) stand for it in `impact`.
+    pub fn is_entry(&self) -> bool {
+        self.note.as_deref() == Some("entry")
+    }
+
     /// The re-export this evidence went through to the file that defines a
     /// name, when its note says so (see [`via_place`]).
     pub fn via(&self) -> Option<&str> {

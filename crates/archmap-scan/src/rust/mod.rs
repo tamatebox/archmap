@@ -146,6 +146,17 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
     };
     let files = sources.files;
     output.warnings.extend(forest.warnings.iter().cloned());
+    // the library's root is what the package's dependents link
+    for (package, own) in packages.iter().zip(&targets) {
+        if let Some(lib) = own.iter().find(|t| t.kind == TargetKind::Lib) {
+            let mut component =
+                Component::new(package.id.clone(), &package.name, ComponentKind::Package);
+            component
+                .evidence
+                .push(Evidence::new(display_path(&lib.root)).with_note("entry"));
+            output.fragment.push_component(component);
+        }
+    }
     for module in &forest.modules {
         let mut component = Component::new(module.id.clone(), &module.name, ComponentKind::Module);
         component.language = Some(LANGUAGE.to_owned());

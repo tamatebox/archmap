@@ -55,7 +55,11 @@ package's `__init__.py`), unlike one noted `index` (a TS/JS `index.*`):
 `impact` reaches such a file from the statements outside the component and
 the modules below it that import a file below it, and from the files below
 it that import something or define a public name (see
-[commands.md](commands.md#impact)).
+[commands.md](commands.md#impact)). Evidence noted `entry` names a file the
+component's dependents load (a Rust library's root): of the files such a
+component owns directly, only those its evidence names (its entries, its
+manifest) stand for it in `impact`, so a binary or a build script reaches
+none of the packages that declare it.
 
 `test` marks a statement in test code, which runs only for tests: for
 Python and TS/JS a file named `*.test.*`, `*.spec.*` (Vitest's type tests

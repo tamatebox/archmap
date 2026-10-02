@@ -399,3 +399,20 @@ fn targets_the_manifest_cannot_give_are_reported() {
     // the package and its default targets stay
     assert!(report.graph.component(&ComponentId::new("odd")).is_some());
 }
+
+#[test]
+fn only_the_library_stands_for_its_package_toward_dependents() {
+    let graph = fixture();
+    let ids = |set: &std::collections::BTreeSet<ComponentId>| {
+        set.iter().map(|c| c.to_string()).collect::<Vec<_>>()
+    };
+    // depot links the library, so a change the library's root reaches
+    // reaches depot
+    let till = graph.change_impact(ChangeSeed::File("kiosk/src/till.rs"), 2);
+    assert!(ids(&till.transitive).contains(&"depot".to_owned()));
+    // a module only a binary uses, and the binary itself, do not
+    let clock = graph.change_impact(ChangeSeed::File("kiosk/src/clock.rs"), 2);
+    assert_eq!(ids(&clock.transitive), ["kiosk"]);
+    let report = graph.change_impact(ChangeSeed::File("kiosk/src/bin/report.rs"), 2);
+    assert!(report.direct.is_empty() && report.transitive.is_empty());
+}

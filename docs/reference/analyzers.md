@@ -39,6 +39,9 @@ into the model in [graph.md](graph.md); how the commands present it is in
   and apart from any module of the library (a binary's `src/bin/tool/util.rs` and the library's
   `src/util.rs`); binaries, tests, examples and benches name the library by its crate name, the
   build script does not
+- the package names its library's root as the file its dependents link (evidence noted `entry`), so
+  in `impact` a binary, a build script or a test of the package reaches none of the packages that
+  declare it
 - `pub` items and `pub` inherent methods become symbols with signatures; one that only tests compile
   (`#[cfg(test)]` on it, its `impl` or a module around it, or a file of a test, example or bench)
   carries `test`. In the files of targets other than the library and `src/main.rs`, a symbol's id
@@ -94,7 +97,8 @@ into the model in [graph.md](graph.md); how the commands present it is in
   (`vec![Box::new(rust::RustAnalyzer)]`, `write!(out, "{}", crate::query_text::shell_word(..))`) is not
   read, and neither is a module's own use of what it re-exports, so `query` and `impact` miss
   those dependents.
-- `#[path]` modules belong to their package without a module tree.
+- `#[path]` modules belong to their package without a module tree, and a target whose root lies
+  outside its package directory (`path = "../shared/tool.rs"`) is not read.
 - Edition 2015's rule that one declared target of a kind turns off finding the others of that kind
   is not followed, so a file Cargo would not build may be read as a target. A `package.build` list
   reads as no setting, and a manifest with a target table archmap cannot read (a `path` that is no
