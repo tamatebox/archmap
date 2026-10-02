@@ -97,39 +97,50 @@ impl Analyzer for RustAnalyzer {
 /// `src/` is read: what no target reaches there is test data or input.
 fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut AnalyzerOutput) {
     let on_disk: BTreeSet<&Path> = ctx.files_with_extension("rs").collect();
+    // the package that owns each file, found once
+    let owner: BTreeMap<&Path, usize> = on_disk
+        .iter()
+        .filter_map(|rel| owning_package(packages, rel).map(|p| (*rel, p)))
+        .collect();
+    let mut owned: Vec<Vec<&Path>> = vec![Vec::new(); packages.len()];
+    for (rel, &p) in &owner {
+        owned[p].push(rel);
+    }
     let targets: Vec<Vec<Target>> = packages
         .iter()
-        .enumerate()
-        .map(|(p, package)| {
-            let own = on_disk
-                .iter()
-                .copied()
-                .filter(|f| owning_package(packages, f) == Some(p));
-            tree::default_targets(&package.dir, own)
-        })
+        .zip(&owned)
+        .map(|(package, own)| tree::default_targets(&package.dir, own.iter().copied()))
         .collect();
 
-    let mut files = Vec::new();
-    let mut unreadable = BTreeSet::new();
+    let mut sources = Sources::default();
     let roots = targets.iter().flatten().map(|t| t.root.as_path());
-    let under_src = on_disk.iter().copied().filter(|rel| {
-        owning_package(packages, rel)
-            .is_some_and(|p| tree::module_path(&packages[p].dir, rel).is_some())
-    });
+    let under_src = owner
+        .iter()
+        .filter(|(rel, &p)| tree::module_path(&packages[p].dir, rel).is_some())
+        .map(|(rel, _)| *rel);
     for rel in under_src.chain(roots) {
-        read_source(ctx, packages, rel, &mut files, &mut unreadable, output);
+        sources.read(ctx, rel, owner[rel], output);
     }
     // the modules outside `src/` that roots reach, read as the trees grow
     let forest = loop {
-        let forest = tree::build(&files, &unreadable, packages, &targets, &on_disk);
-        let before = files.len() + unreadable.len();
+        let forest = tree::build(
+            &sources.files,
+            &sources.unreadable,
+            packages,
+            &targets,
+            &on_disk,
+        );
+        let before = sources.tried.len();
         for rel in &forest.missing {
-            read_source(ctx, packages, rel, &mut files, &mut unreadable, output);
+            if let Some(&p) = owner.get(rel.as_path()) {
+                sources.read(ctx, rel, p, output);
+            }
         }
-        if files.len() + unreadable.len() == before {
+        if sources.tried.len() == before {
             break forest;
         }
     };
+    let files = sources.files;
     output.warnings.extend(forest.warnings.iter().cloned());
     for module in &forest.modules {
         let mut component = Component::new(module.id.clone(), &module.name, ComponentKind::Module);
@@ -449,40 +460,42 @@ fn same_crate(forest: &tree::Forest, node: usize, target: usize) -> bool {
     a.package == b.package && a.root == b.root
 }
 
-/// Read and parse `rel` once into `files`, or warn and keep it among the
-/// `unreadable` files.
-fn read_source(
-    ctx: &RepoContext,
-    packages: &[ResolvedPackage],
-    rel: &Path,
-    files: &mut Vec<SourceFile>,
-    unreadable: &mut BTreeSet<PathBuf>,
-    output: &mut AnalyzerOutput,
-) {
-    let Some(package) = owning_package(packages, rel) else {
-        return;
-    };
-    if unreadable.contains(rel) || files.iter().any(|f| f.rel == rel) {
-        return;
-    }
-    let parsed = match ctx.read_to_string(rel) {
-        Ok(text) => source::parse_file(&text).map_err(|err| format!("parse error: {err}")),
-        Err(err) => Err(err.to_string()),
-    };
-    match parsed {
-        Ok(parsed) => {
-            *output.read.entry(LANGUAGE.to_owned()).or_default() += 1;
-            files.push(SourceFile {
-                rel: rel.to_path_buf(),
-                package,
-                parsed,
-            });
+/// The Rust files read so far.
+#[derive(Default)]
+struct Sources {
+    files: Vec<SourceFile>,
+    /// The files that could not be read or parsed.
+    unreadable: BTreeSet<PathBuf>,
+    /// Every file tried, read or not.
+    tried: BTreeSet<PathBuf>,
+}
+
+impl Sources {
+    /// Read and parse `rel`, a file of package `package`, once; warn and
+    /// keep it among the unreadable files when that fails.
+    fn read(&mut self, ctx: &RepoContext, rel: &Path, package: usize, output: &mut AnalyzerOutput) {
+        if !self.tried.insert(rel.to_path_buf()) {
+            return;
         }
-        Err(err) => {
-            output
-                .warnings
-                .push(format!("{}: {err}", display_path(rel)));
-            unreadable.insert(rel.to_path_buf());
+        let parsed = match ctx.read_to_string(rel) {
+            Ok(text) => source::parse_file(&text).map_err(|err| format!("parse error: {err}")),
+            Err(err) => Err(err.to_string()),
+        };
+        match parsed {
+            Ok(parsed) => {
+                *output.read.entry(LANGUAGE.to_owned()).or_default() += 1;
+                self.files.push(SourceFile {
+                    rel: rel.to_path_buf(),
+                    package,
+                    parsed,
+                });
+            }
+            Err(err) => {
+                output
+                    .warnings
+                    .push(format!("{}: {err}", display_path(rel)));
+                self.unreadable.insert(rel.to_path_buf());
+            }
         }
     }
 }
