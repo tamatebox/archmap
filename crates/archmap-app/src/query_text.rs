@@ -558,7 +558,12 @@ fn symbol_list(
         [one] => {
             truncated |= importers(out, one, full, rolled, caps);
             if let Some(uses) = &one.used_at {
-                truncated |= used_at(out, uses, one.instance_method, caps);
+                let rust = full
+                    .symbol(&one.symbol.id)
+                    .and_then(|s| full.component(&s.component))
+                    .and_then(|c| c.language.as_deref())
+                    == Some("rust");
+                truncated |= used_at(out, uses, one.instance_method, rust, caps);
             }
         }
         [] => {}
@@ -642,12 +647,19 @@ fn importers(
 /// binding is never used. A method that is not static says that the list
 /// holds only the uses through its class and `this`, so that an empty list
 /// never reads as unused.
-fn used_at(out: &mut String, uses: &SymbolUses, instance_method: bool, caps: &Caps) -> bool {
+fn used_at(
+    out: &mut String,
+    uses: &SymbolUses,
+    instance_method: bool,
+    rust: bool,
+    caps: &Caps,
+) -> bool {
     // the calls through values and subclasses are under `Not traced`
     let partial = instance_method || !uses.subclasses.is_empty();
-    let lead = match partial {
-        true => "through the class and this only: ",
-        false => "",
+    let lead = match (partial, rust) {
+        (true, false) => "through the class and this only: ",
+        (true, true) => "through the type and self only: ",
+        (false, _) => "",
     };
     let mut truncated = false;
     if uses.uses.is_empty() {
@@ -1103,7 +1115,7 @@ pub(crate) fn not_traced(
             truncated |= places.len() < v.total;
             let _ = write!(
                 line,
-                "; {} of the class or its module may make them: {}",
+                "; {} of the type or its module may make them: {}",
                 plural(v.total, "import"),
                 with_more(&places, v.total)
             );

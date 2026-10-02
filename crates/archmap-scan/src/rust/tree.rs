@@ -251,6 +251,9 @@ pub(super) struct SourceFile {
     /// Index of the owning package.
     pub package: usize,
     pub parsed: RustFile,
+    /// A hash of the text that was parsed, so that a later reader can tell
+    /// whether the file changed since (see [`super::text_hash`]).
+    pub hash: u64,
 }
 
 /// A logical module: a file, or an inline module inside one.
@@ -1151,6 +1154,7 @@ mod tests {
                     .position(|p| Path::new(rel).starts_with(&p.dir))
                     .unwrap(),
                 parsed: parse_file(text).unwrap(),
+                hash: super::super::text_hash(text),
             })
             .collect()
     }

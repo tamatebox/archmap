@@ -112,6 +112,9 @@ pub enum UnreadReason {
     /// What the statement loads offers no path to the symbol that the pass
     /// can follow.
     NoPath,
+    /// The file's text differs from what the scan read, so what it holds
+    /// cannot be placed in what the scan resolved.
+    Changed,
     /// The file is gone or cannot be read.
     FileGone,
 }
@@ -125,6 +128,7 @@ impl UnreadReason {
             UnreadReason::AmbiguousStatement => "ambiguous statement",
             UnreadReason::StatementNotFound => "statement not found",
             UnreadReason::NoPath => "no path to the symbol",
+            UnreadReason::Changed => "changed since the scan",
             UnreadReason::FileGone => "file gone",
         }
     }

@@ -4,11 +4,11 @@
 //! during a scan, and nothing it finds enters the graph.
 
 use std::collections::BTreeSet;
-use std::path::Path;
 
 use archmap_core::{ArchitectureGraph, Evidence, Symbol, SymbolUses, Unread, UnreadReason};
 
 use crate::typescript::uses as ts;
+use crate::ScanReport;
 
 /// The statements `listed` names, and the others on their lines that load
 /// the same file: the lists keep one statement per line, while a line can
@@ -34,10 +34,11 @@ fn with_siblings<'g>(graph: &'g ArchitectureGraph, listed: Vec<&'g Evidence>) ->
     statements
 }
 
-/// Where `symbol` is used, read from the files under `root` that the graph
-/// says define and import it. The files of a language that no pass reads
-/// yet are listed as unread.
-pub fn symbol_uses(root: &Path, graph: &ArchitectureGraph, symbol: &Symbol) -> SymbolUses {
+/// Where `symbol` is used, read from the files of the scanned root that the
+/// graph says define and import it. The files of a language that no pass
+/// reads yet are listed as unread.
+pub fn symbol_uses(report: &ScanReport, symbol: &Symbol) -> SymbolUses {
+    let (root, graph) = (report.root.as_path(), &report.graph);
     let mut found = SymbolUses::default();
     let Some(location) = symbol.location() else {
         return found;
@@ -57,8 +58,12 @@ pub fn symbol_uses(root: &Path, graph: &ArchitectureGraph, symbol: &Symbol) -> S
     let language = graph
         .component(&symbol.component)
         .and_then(|c| c.language.as_deref());
-    match language {
-        Some("typescript" | "javascript") => {
+    match (language, &report.rust) {
+        // a module is a component of its own, which `query` points at
+        (Some("rust"), Some(index)) if symbol.kind != archmap_core::SymbolKind::Module => {
+            crate::rust::uses::read(index, root, symbol, &statements, &mut found);
+        }
+        (Some("typescript" | "javascript"), _) => {
             let request = ts::Request {
                 root,
                 graph,

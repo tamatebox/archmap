@@ -702,7 +702,9 @@ fn query_text_is_a_compact_drill_down() {
     assert_eq!(
         symbols,
         "Symbols matching `greet`: 1\n  pub fn greet(user: &User) -> String  crates/lib_core/src/lib.rs:28  in lib_core\n\
-         \nImported by: 2\n  crates/app/src/config.rs:12 (local)\n  crates/app/src/main.rs:2\n"
+         \nImported by: 2\n  crates/app/src/config.rs:12 (local)\n  crates/app/src/main.rs:2\n\
+         \nUsed at: 2 in 2 files (2 calls)\n  crates/app/src/config.rs:12 (call) as lib_core::greet\n  \
+         crates/app/src/main.rs:8 (call)\n"
     );
 }
 
@@ -2749,7 +2751,7 @@ fn query_on_a_ts_symbol_lists_where_it_is_used() {
     assert!(
         method.contains(
             "  values: calls through a value of the type (x.m()) need its type, which is not \
-             read; 9 imports of the class or its module may make them: scripts/cjs.cjs:2, \
+             read; 9 imports of the type or its module may make them: scripts/cjs.cjs:2, \
              src/aliased.ts:1, src/app.ts:1, +6 more\n"
         ),
         "{method}"

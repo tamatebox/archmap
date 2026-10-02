@@ -226,8 +226,8 @@ instead, and `impact` answers for that component. What the lists miss:
 - Code that runs when a file loads (a side-effect import) is listed for
   neither.
 
-For a TypeScript or JavaScript symbol, `query` also lists where code uses
-it, under `Used at`. The uses are read when the query asks, from the file
+For a Rust, TypeScript or JavaScript symbol, `query` also lists where code
+uses it, under `Used at`. The uses are read when the query asks, from the file
 that defines the symbol and the files of the statements the two lists
 name, and never enter the graph, `scan` or `graph.json`. A use is an
 identifier that the language's scoping, within its file, resolves to the
@@ -274,7 +274,7 @@ not, `as` the key when it names the symbol otherwise (`as Wallet` for
 module gives keys that cannot be read. A method that is not static gets
 only the uses through its class and `this` (`Used at: through the class and
 this only: ...`), and `Not traced` says that calls through a value of its
-type (`wallet.pay()`) are not read (`values`), with the imports of the class
+type (`wallet.pay()`) are not read (`values`), with the imports of the type
 or its module that may make them; those are never `never used`. For any
 member, `Not traced` names the places that extend its class
 (`subclasses`): a subclass reaches its members, statics included
@@ -294,7 +294,26 @@ statement it goes through (`uses`), and the statements that end otherwise:
 `unused`, `escapes`, `renamed`, `passed_on` (only re-exported), `values` (a
 member's class bound, which values or subclasses may reach it through),
 `subclasses`, `mocked` and `unread`.
-A symbol of Rust or Python gets no `Used at`.
+In Rust, each path in code is resolved where it is written, in the
+module that encloses it, by the resolver the scan built (inline modules,
+`use` declarations and globs of blocks and modules, and re-exports, as the
+scan resolves them), so a call through a name a re-export gives it
+(`make()` for `pub use graph::build as make`), through a glob, and
+`crate::`, `super::`, full and `<Type>::` paths count, each going through
+the `use` declaration that brings its first name in. A parameter or a
+pattern's binding hides the name only where the language binds it (an
+`if let`, `while let`, match arm or `for` binding in its branch, a `let`
+binding after the statement), and so do a block's own items and a
+function's or `impl`'s generic parameters; a constant or a struct named
+alone in a pattern is a use. The file that defines the symbol and every
+file of its crate are read as well as the importers, since unit tests
+import nothing from their own crate, and only those that hold one of its
+names are parsed. Inside an `impl` of a type, its own or a trait's,
+`Self { .. }` and `Self(..)` are uses of the type. A method taking `self`
+gets the uses through its type and `self` (`Used at: through the type and
+self only: ...`): `self.m()`, `Self::m()`, `Type::m()`. A file whose text
+changed since the scan is not read (`changed since the scan`). A symbol of
+Python gets no `Used at`.
 
 ## impact
 

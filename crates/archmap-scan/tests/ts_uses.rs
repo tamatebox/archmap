@@ -2,23 +2,24 @@
 
 use std::path::{Path, PathBuf};
 
-use archmap_core::{ArchitectureGraph, SymbolUses};
-use archmap_scan::{scan, symbol_uses, ScanOptions};
+use archmap_core::SymbolUses;
+use archmap_scan::{scan, symbol_uses, ScanOptions, ScanReport};
 
 fn fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/ts-uses")
 }
 
-fn graph() -> ArchitectureGraph {
-    scan(&fixture(), &ScanOptions::default()).unwrap().graph
+fn graph() -> ScanReport {
+    scan(&fixture(), &ScanOptions::default()).unwrap()
 }
 
-fn uses_of(graph: &ArchitectureGraph, name: &str) -> SymbolUses {
-    let symbol = graph
+fn uses_of(report: &ScanReport, name: &str) -> SymbolUses {
+    let symbol = report
+        .graph
         .symbols_named(name)
         .next()
         .unwrap_or_else(|| panic!("no symbol {name}"));
-    symbol_uses(&fixture(), graph, symbol)
+    symbol_uses(report, symbol)
 }
 
 /// Each use as `file:line:column role`, with ` as <binding>`, ` via
@@ -140,12 +141,13 @@ fn every_statement_read_ends_in_one_of_the_lists() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures")
             .join(name);
-        let graph = scan(&root, &ScanOptions::default()).unwrap().graph;
+        let report = scan(&root, &ScanOptions::default()).unwrap();
+        let graph = &report.graph;
         for symbol in graph.symbols.values() {
             let Some(importers) = graph.symbol_importers(symbol) else {
                 continue;
             };
-            let found = symbol_uses(&root, &graph, symbol);
+            let found = symbol_uses(&report, symbol);
             let defining = symbol.location().map(|e| e.file.as_str());
             for (_, statement) in importers.by_name.iter().chain(&importers.may_use) {
                 let (file, line) = (statement.file.as_str(), statement.line);
@@ -323,7 +325,8 @@ fn files_that_changed_since_the_scan_are_unread_with_the_reason() {
             "import { f } from './a';\n\nexport const v = f();\n",
         );
     }
-    let graph = scan(&dir, &ScanOptions::default()).unwrap().graph;
+    let report = scan(&dir, &ScanOptions::default()).unwrap();
+    let graph = &report.graph;
     // edited after the scan: the statement moved, the file no longer parses,
     // the file is gone
     write(
@@ -336,7 +339,7 @@ fn files_that_changed_since_the_scan_are_unread_with_the_reason() {
     );
     std::fs::remove_file(dir.join("src/gone.ts")).unwrap();
     let symbol = graph.symbols_named("f").next().unwrap();
-    let found = symbol_uses(&dir, &graph, symbol);
+    let found = symbol_uses(&report, symbol);
     let unread: Vec<String> = found
         .unread
         .iter()
@@ -357,7 +360,8 @@ fn files_that_changed_since_the_scan_are_unread_with_the_reason() {
 #[test]
 fn a_language_without_a_pass_lists_its_files_as_unread() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/simple-python-project");
-    let graph = scan(&root, &ScanOptions::default()).unwrap().graph;
+    let report = scan(&root, &ScanOptions::default()).unwrap();
+    let graph = &report.graph;
     let symbol = graph
         .symbols
         .values()
@@ -367,7 +371,7 @@ fn a_language_without_a_pass_lists_its_files_as_unread() {
                 .is_some_and(|i| !i.by_name.is_empty())
         })
         .expect("a python symbol that something imports");
-    let found = symbol_uses(&root, &graph, symbol);
+    let found = symbol_uses(&report, symbol);
     assert!(found.uses.is_empty());
     assert!(!found.unread.is_empty());
     assert!(found

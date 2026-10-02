@@ -38,6 +38,7 @@
 mod manifest;
 mod source;
 mod tree;
+pub(crate) mod uses;
 
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
@@ -75,6 +76,39 @@ pub fn holds_its_directory(file: &Path) -> bool {
 #[derive(Debug, Default, Clone)]
 pub struct RustAnalyzer;
 
+/// What the Rust analyzer read, kept beside the graph for the passes that
+/// run on demand (where a symbol is used): the module trees, every file's
+/// parsed facts and the resolved packages. Resolution walks the modules'
+/// `uses` and `items` through `files[..].parsed`, and the forest names files
+/// by their index here: keep all three, in this order, or resolution breaks
+/// without a word.
+pub(crate) struct Index {
+    forest: tree::Forest,
+    files: Vec<SourceFile>,
+    packages: Vec<ResolvedPackage>,
+}
+
+impl std::fmt::Debug for Index {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "rust::Index {{ files: {}, modules: {}, packages: {} }}",
+            self.files.len(),
+            self.forest.nodes.len(),
+            self.packages.len()
+        )
+    }
+}
+
+/// A hash of a source text, to tell later whether a file changed since it
+/// was read.
+pub(crate) fn text_hash(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
+
 impl Analyzer for RustAnalyzer {
     fn name(&self) -> &'static str {
         LANGUAGE
@@ -92,7 +126,12 @@ impl Analyzer for RustAnalyzer {
 
         output.read.insert(LANGUAGE.to_owned(), 0);
         if !ctx.options().manifests_only {
-            source_pass(ctx, &packages, &mut output);
+            let (forest, files) = source_pass(ctx, &packages, &mut output);
+            output.kept = Some(Box::new(Index {
+                forest,
+                files,
+                packages,
+            }));
         }
 
         Ok(output)
@@ -103,7 +142,11 @@ impl Analyzer for RustAnalyzer {
 /// targets and the files their `mod` declarations load, place them in the
 /// module trees, and emit modules, symbols and imports. Nothing else outside
 /// `src/` is read: what no target reaches there is test data or input.
-fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut AnalyzerOutput) {
+fn source_pass(
+    ctx: &RepoContext,
+    packages: &[ResolvedPackage],
+    output: &mut AnalyzerOutput,
+) -> (tree::Forest, Vec<SourceFile>) {
     let on_disk: BTreeSet<&Path> = ctx.files_with_extension("rs").collect();
     // the package that owns each file, found once
     let owner: BTreeMap<&Path, usize> = on_disk
@@ -490,6 +533,7 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
             }
         }
     }
+    (forest, files)
 }
 
 /// The note of an import of the dev-dependency `module`, written as `kind`:
@@ -526,16 +570,19 @@ impl Sources {
             return;
         }
         let parsed = match ctx.read_to_string(rel) {
-            Ok(text) => source::parse_file(&text).map_err(|err| format!("parse error: {err}")),
+            Ok(text) => source::parse_file(&text)
+                .map(|parsed| (parsed, text_hash(&text)))
+                .map_err(|err| format!("parse error: {err}")),
             Err(err) => Err(err.to_string()),
         };
         match parsed {
-            Ok(parsed) => {
+            Ok((parsed, hash)) => {
                 *output.read.entry(LANGUAGE.to_owned()).or_default() += 1;
                 self.files.push(SourceFile {
                     rel: rel.to_path_buf(),
                     package,
                     parsed,
+                    hash,
                 });
             }
             Err(err) => {

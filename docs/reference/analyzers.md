@@ -93,8 +93,19 @@ into the model in [graph.md](graph.md); how the commands present it is in
 - every file under `src/` is read; outside it, the roots of the other targets and the files their
   `mod` declarations load, so a `.rs` file there that no target loads (test data, trybuild's
   `tests/ui/`) is neither parsed nor warned about, and Coverage counts it among the files not read
+- on demand, for the one symbol that `query` asks about, the files of the statements that import it
+  and every file of its crate that holds one of its names (its own, its type's, a name a re-export
+  gives it) are parsed again, and each path in them is resolved where it is written with the module
+  trees and the resolver the scan built, which the scan keeps beside the graph (`Used at`, see
+  [commands.md](commands.md#query)); a file whose text changed since the scan is not read
 
 ### Rust known gaps
+
+- `Used at` does not read a method called through a value of its type (`x.weight()`), through a
+  trait (`<Edge as Trait>::m`, `Trait::m(&x)`), an item named inside a string (`println!("{MAX}")`
+  captures `MAX`), or code in doc comments, which `cargo test` runs as doc tests; a struct's or an
+  enum's generic parameters that shadow a type's name are not told apart, and a macro whose
+  arguments are not code stays under `Not traced` (`macros`).
 
 - The arguments of a macro call that are neither expressions, an expression and a pattern, nor
   items (`json!({ .. })`, a DSL), and those of a macro whose arguments are no code of the calling

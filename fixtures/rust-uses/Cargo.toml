@@ -1,0 +1,3 @@
+[workspace]
+members = ["graphlib", "app"]
+resolver = "2"

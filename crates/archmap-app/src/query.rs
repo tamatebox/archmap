@@ -1,8 +1,6 @@
 //! `query`: one target in detail, as a component, a file, symbols or an
 //! import name without a component.
 
-use std::path::Path;
-
 use anyhow::{Context, Result};
 use archmap_core::{
     ArchitectureGraph, ComponentId, ComponentKind, Edge, EdgeKind, Evidence, Symbol, SymbolUses,
@@ -13,6 +11,8 @@ use crate::not_traced::{not_traced, with_uses, Own, Place, Subject};
 use crate::resolve::{resolve, Resolved};
 use crate::target::{component_file, fold, namesakes, reject_outside, unquote, AtDepth};
 use crate::views::{ComponentView, FileView, Importer, QueryResult, SymbolView, UnmappedView};
+use archmap_scan::ScanReport;
+
 use crate::{Answer, Format, Found, QueryRequest, Workspace};
 
 /// Group a file's import evidence by the component at `depth` on the other side.
@@ -161,7 +161,7 @@ fn query(ws: &Workspace, request: &QueryRequest) -> Result<Answer> {
         Resolved::Symbol(symbol) => {
             // as the rolled-up graph holds it, in its folded component
             let symbol = rolled.symbol(&symbol.id).unwrap_or(symbol);
-            QueryResult::Symbols(vec![symbol_view(full, root, symbol)])
+            QueryResult::Symbols(vec![symbol_view(full, &ws.report, symbol)])
         }
         // an import name that no component carries, such as an extra
         Resolved::ImportName(_) => QueryResult::NotMapped(UnmappedView {
@@ -184,7 +184,11 @@ fn query(ws: &Workspace, request: &QueryRequest) -> Result<Answer> {
 
 /// A symbol with the statements that import it, read in the full graph,
 /// production code first, as `impact` lists them, and where it is used.
-fn symbol_view<'a>(full: &'a ArchitectureGraph, root: &Path, symbol: &'a Symbol) -> SymbolView<'a> {
+fn symbol_view<'a>(
+    full: &'a ArchitectureGraph,
+    report: &ScanReport,
+    symbol: &'a Symbol,
+) -> SymbolView<'a> {
     let importers = full.symbol_importers(symbol).filter(|i| i.recorded);
     let list =
         |pairs: Vec<(&'a Edge, &'a Evidence)>,
@@ -227,7 +231,7 @@ fn symbol_view<'a>(full: &'a ArchitectureGraph, root: &Path, symbol: &'a Symbol)
         },
         usize::MAX,
     );
-    let used_at = uses_of(full, root, symbol);
+    let used_at = uses_of(full, report, symbol);
     let instance_method = used_at.is_some() && instance_method(symbol);
     if let Some(found) = &used_at {
         not_traced = with_uses(not_traced, found, instance_method);
@@ -244,10 +248,10 @@ fn symbol_view<'a>(full: &'a ArchitectureGraph, root: &Path, symbol: &'a Symbol)
 
 /// Where a symbol is used, or `None` for a language that no uses pass
 /// reads yet.
-fn uses_of(full: &ArchitectureGraph, root: &Path, symbol: &Symbol) -> Option<SymbolUses> {
+fn uses_of(full: &ArchitectureGraph, report: &ScanReport, symbol: &Symbol) -> Option<SymbolUses> {
     // the symbol as scan recorded it, in the component that declares it
     let symbol = full.symbol(&symbol.id).unwrap_or(symbol);
-    let found = archmap_scan::symbol_uses(root, full, symbol);
+    let found = archmap_scan::symbol_uses(report, symbol);
     let unread_language = found
         .unread
         .iter()
@@ -255,14 +259,18 @@ fn uses_of(full: &ArchitectureGraph, root: &Path, symbol: &Symbol) -> Option<Sym
     (!unread_language).then_some(found)
 }
 
-/// A TS/JS class member that is not static, whose calls go through values
-/// of its type: `Wallet.pay`, not `Wallet.open` (`static open()`).
+/// A method called through values of its type: a TS/JS class member that
+/// is not static (`Wallet.pay`, not `static open()`), or a Rust method that
+/// takes `self` (`Edge::weight`, not `Edge::new`).
 fn instance_method(symbol: &Symbol) -> bool {
-    symbol.name.contains('.')
-        && !symbol
-            .signature
-            .as_deref()
-            .is_some_and(|s| s.starts_with("static "))
+    let signature = symbol.signature.as_deref().unwrap_or("");
+    match (symbol.name.contains('.'), symbol.name.contains("::")) {
+        // TS/JS `Class.method`, not `static`
+        (true, _) => !signature.starts_with("static "),
+        // Rust `Type::method` whose first parameter is `self`
+        (_, true) => archmap_scan::takes_self(signature),
+        _ => false,
+    }
 }
 
 /// The component `at` points to, as `query` shows it.

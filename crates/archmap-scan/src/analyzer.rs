@@ -16,6 +16,9 @@ pub struct AnalyzerOutput {
     /// Of those, the files read as scripts, without imports or exports, per
     /// language.
     pub scripts: BTreeMap<String, usize>,
+    /// What an analyzer keeps for the passes that run on demand (the Rust
+    /// analyzer's module trees); the scan hands it on by its type.
+    pub(crate) kept: Option<Box<dyn std::any::Any + Send + Sync>>,
 }
 
 /// One source of architectural facts (a language, a manifest format, an

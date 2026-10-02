@@ -30,6 +30,7 @@ pub use context::RepoContext;
 pub use error::ScanError;
 pub use languages::language_of;
 pub use options::ScanOptions;
+pub use rust::uses::takes_self;
 pub use stamp::{stamp, Stamp};
 pub use test_code::is_test_code;
 pub use uses::symbol_uses;
@@ -48,6 +49,8 @@ pub struct ScanReport {
     pub root: PathBuf,
     /// Non-fatal problems (unparseable file, unreadable manifest, ...).
     pub warnings: Vec<String>,
+    /// What the Rust analyzer read, for the passes that run on demand.
+    pub(crate) rust: Option<rust::Index>,
 }
 
 /// The analyzers archmap ships with, in the order they run.
@@ -83,12 +86,20 @@ pub fn scan_with(
     let mut read: BTreeMap<String, usize> = BTreeMap::new();
     let mut scripts: BTreeMap<String, usize> = BTreeMap::new();
     let mut contributed = ids::ContributedIds::default();
+    let mut rust = None;
 
     for analyzer in analyzers {
         if !analyzer.detect(&ctx) {
             continue;
         }
         let mut output = analyzer.analyze(&ctx)?;
+        if let Some(index) = output
+            .kept
+            .take()
+            .and_then(|k| k.downcast::<rust::Index>().ok())
+        {
+            rust = Some(*index);
+        }
         warnings.extend(contributed.separate(analyzer.name(), &mut output.fragment));
         graph.meta.analyzers.push(analyzer.name().to_owned());
         graph.merge(output.fragment);
@@ -107,6 +118,7 @@ pub fn scan_with(
         graph,
         root: ctx.root().to_path_buf(),
         warnings,
+        rust,
     })
 }
 

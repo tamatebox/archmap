@@ -73,8 +73,8 @@ The graph is meant to be consumed by agents as much as by humans:
   starting with what the scan could not see
 - `archmap scan` writes the full graph for tools, export and debugging; agents never need to read it,
   because `summary`, `query` and `impact` return the parts they need
-- `archmap query` answers "what does component X expose and depend on", and for a TS/JS
-  symbol "where is it used"
+- `archmap query` answers "what does component X expose and depend on", and for a Rust or
+  TS/JS symbol "where is it used"
 - `archmap impact` answers "if I touch this file or component, what else might be affected",
   with the import statements to open and the tests to run again
 - `archmap check` tells an agent or CI whether a change broke a declared dependency rule,
@@ -132,8 +132,8 @@ What works today, by the [roadmap](#roadmap) phase it belongs to:
 | `impact` file by file | 2 | ✅ | ✅ | ✅ |
 | Test code counted apart from production code | 2 | ✅ | ✅ | ✅ |
 | `check` rules and cycles | 3 | ✅ | ✅ | ◐ |
-| Callers of a symbol | 4 | — | — | ◐ |
-| References to a symbol | 4 | — | — | ◐ |
+| Callers of a symbol | 4 | ◐ | — | ◐ |
+| References to a symbol | 4 | ◐ | — | ◐ |
 | Type relationships | 4 | — | — | — |
 | Selective data flow | 4 | — | — | — |
 | Test-to-code links | 4 | — | — | — |
@@ -151,10 +151,10 @@ The gaps behind the marks:
 - TS/JS `check`: only `type` written in an import marks it as types only,
   so a type imported without it (`import { Money }` for an interface) can
   close a cycle that `cycles.forbid` reports.
-- TS/JS callers and references: `query` lists where a symbol is used
-  through the names imports bind and, for a method, through its class and
-  `this`; a call through a value of a type (`wallet.pay()`) is not read,
-  and `impact` does not narrow by uses yet.
+- Rust and TS/JS callers and references: `query` lists where a symbol is
+  used through the names imports bind and, for a method, through its class
+  or type and `this` or `self`; a call through a value of a type
+  (`wallet.pay()`) is not read, and `impact` does not narrow by uses yet.
 
 The commands read one merged graph, so a gap in what an analyzer reads
 shows in all of them: an import that is not read is missing from `query`,
@@ -195,7 +195,7 @@ comes later.
 | 1 Structural Facts | modules, public symbols, imports with their target file and scope, dependencies | Rust, Python and TypeScript/JavaScript, target files and scope included |
 | 2 Structural Compression & Agent Context | roll-up; `summary`, `query` and `impact` small enough for an agent and at one granularity; file and module queries whose evidence leads directly to source; full detail with `--format json` | done for Rust, Python and TS/JS, test code counted apart |
 | 3 Rules & Declared Architecture | declared components and layers, cycles, forbidden dependencies, drift, CI `check` | done: deny rules, layers, allow lists, coverage, cycles with a file-level reading, undeclared imports, stale declarations; structural signals |
-| 4 Deep Static Analysis | precise symbol resolution, callers and reference graph, type relationships, selective data flow, test-to-code links; on demand for one selected area | started: where a TS/JS symbol is used, read on demand by `query`; agent traces point first to callers and references, then selective data flow |
+| 4 Deep Static Analysis | precise symbol resolution, callers and reference graph, type relationships, selective data flow, test-to-code links; on demand for one selected area | started: where a Rust or TS/JS symbol is used, read on demand by `query`; agent traces point first to callers and references, then selective data flow |
 | 5 Cross-system Graph | OpenAPI, Terraform, databases, HTTP, events, CI/build/deploy relationships | planned |
 | 6 Change & Work Graph | Git history, churn and co-change; Issue → PR → Commit → File; PR overlap and other explicit work links | planned |
 | 7 Semantic Enrichment | LLM naming, responsibilities, intent and other semantic interpretations, stored separately as inferred facts | planned |

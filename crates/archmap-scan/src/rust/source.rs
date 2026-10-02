@@ -22,7 +22,7 @@ use syn::{
 /// Macros whose arguments are no code of the calling crate, however much
 /// they look like expressions: tokens to print (`stringify!`) or to emit
 /// into another crate (`quote!`). They are never read, only recorded.
-const NOT_CODE: &[&str] = &[
+pub(super) const NOT_CODE: &[&str] = &[
     "stringify",
     "concat_idents",
     "quote",
@@ -90,7 +90,10 @@ pub(super) struct MacroCall {
 /// an expression and a pattern (`matches!(x, Some(_))`), as the elements of
 /// an array (`vec![x; n]`), or as items; `false` when they are none of
 /// these.
-fn visit_arguments(tokens: &proc_macro2::TokenStream, paths: &mut Paths<'_>) -> bool {
+pub(super) fn visit_arguments<V>(tokens: &proc_macro2::TokenStream, paths: &mut V) -> bool
+where
+    V: for<'ast> Visit<'ast>,
+{
     use syn::parse::{ParseStream, Parser};
     if let Ok(list) = Punctuated::<syn::Expr, Token![,]>::parse_terminated.parse2(tokens.clone()) {
         list.iter().for_each(|e| paths.visit_expr(e));
@@ -562,7 +565,7 @@ fn module_path(path: &Path) -> Option<Vec<String>> {
     Some(path.segments.iter().map(|s| name(&s.ident)).collect())
 }
 
-fn use_decls(u: &ItemUse, line: u32, scope: Scope, test: bool) -> Vec<UseDecl> {
+pub(super) fn use_decls(u: &ItemUse, line: u32, scope: Scope, test: bool) -> Vec<UseDecl> {
     let mut leaves = Vec::new();
     use_leaves(&u.tree, &mut Vec::new(), &mut leaves);
     leaves
@@ -622,7 +625,7 @@ fn use_leaves(
 }
 
 /// An identifier as a name: `r#type` is the module `type`.
-fn name(ident: &Ident) -> String {
+pub(super) fn name(ident: &Ident) -> String {
     ident.unraw().to_string()
 }
 
@@ -681,7 +684,7 @@ fn attrs(item: &Item) -> &[Attribute] {
 
 /// Compiled only for tests: `#[test]`, `#[cfg(test)]`, or `test` inside
 /// `all(..)`.
-fn cfg_test(attrs: &[Attribute]) -> bool {
+pub(super) fn cfg_test(attrs: &[Attribute]) -> bool {
     fn requires_test(meta: &Meta) -> bool {
         match meta {
             Meta::Path(path) => path.is_ident("test"),
