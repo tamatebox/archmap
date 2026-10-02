@@ -101,7 +101,7 @@ Details: [commands](docs/reference/commands.md), [MCP server](docs/reference/mcp
 | Language | Read from |
 |---|---|
 | [Rust](docs/reference/analyzers.md#rust) | `Cargo.toml` packages and dependencies; module files reached from `src/lib.rs` and `src/main.rs`; `pub` items; `use` declarations and module paths in code |
-| [Python](docs/reference/analyzers.md#python) | `pyproject.toml`, `setup.py` / `setup.cfg` and requirements files; packages and namespace packages; public top-level definitions; `import` statements, scanned line by line, those under `if TYPE_CHECKING:` apart |
+| [Python](docs/reference/analyzers.md#python) | `pyproject.toml`, `setup.py` / `setup.cfg` and requirements files; packages and namespace packages; public top-level definitions; `import` statements, scanned line by line and followed through the names modules bind from others, those under `if TYPE_CHECKING:` apart |
 | [TypeScript / JavaScript](docs/reference/analyzers.md#typescript-and-javascript) | `package.json` packages, workspaces and dependencies; directories and files; exported declarations, CommonJS exports and the globals of scripts; `import`, `export ... from`, `require`, `import()` and test mocks, resolved through tsconfig paths, workspace links and re-exports, imports of types only apart |
 
 Other languages are counted in `summary`, not analyzed. Each analyzer's
@@ -144,10 +144,10 @@ The gaps behind the marks:
   `examples/` and `build.rs` are not read.
 - Rust imports: code inside macro calls (`vec![..]`, `println!(..)`) is not
   read.
-- Python symbols: a statement that takes a package whole (`import pkg`,
-  then `pkg.name()`) does not reach a name its `__init__.py` imports from
-  another file, and `impact` goes on from that `__init__.py` to every file
-  that imports it or a module below it.
+- Python `query` and `impact` on a symbol: a statement that takes a package
+  whole (`import pkg`, then `pkg.name()`) does not reach a name its
+  `__init__.py` imports from another file, and `impact` goes on from that
+  `__init__.py` to every file that imports it or a module below it.
 - TS/JS imports: aliases defined only in a bundler configuration or a
   `jsconfig.json` are not followed.
 - TS/JS symbols: declarations inside `declare global { .. }` give none.

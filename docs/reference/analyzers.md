@@ -126,7 +126,8 @@ into the model in [graph.md](graph.md); how the commands present it is in
 - a statement keeps only the evidence for the file it loads when a file on the way shows the name in
   ways that lead to more than one definition (its definitions, assignments, `from` imports and star
   imports; only those that run count, when any does), binds it in a way the walk does not follow
-  (`import a.b as c`, a module outside the scan), may bind it through a name list that could not be
+  (`import a.b as c`, a module outside the scan, a file next to the importer), may bind it through a
+  name list that could not be
   read or a star import of a module outside the scan and shows it no other way, or passes it on from a
   source whose `__all__` is built at runtime, or when the walk meets a cycle or more than 32 bindings
 - a bare import that matches no module but a `.py` file next to the importing file (`import helpers`
@@ -169,8 +170,9 @@ into the model in [graph.md](graph.md); how the commands present it is in
   loads.
 - A name bound by a statement the scan does not read as an assignment (`a, b = …`, `for`, `with … as`)
   is unseen, so a star import whose source binds a name that way may lead to another source of it.
-- `impact` on an `__init__.py` reaches the files below the package from what they import: a file that
-  imports nothing at all is not among them.
+- `impact` on an `__init__.py` reaches the files below the package that import something or define
+  a public name: one that imports only the standard library, or nothing, and defines no public name is
+  not among them.
 - A file outside any regular package tree that no import resolves to gives no symbols: a script run
   directly, a helper reached only through a `sys.path` entry added at runtime (pytest's
   `pythonpath`), or a module loaded by name (`pytest_plugins`).

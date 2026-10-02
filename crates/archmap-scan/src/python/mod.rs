@@ -1195,7 +1195,7 @@ fn declared_elsewhere(
 
 /// Evidence note for an import of an extra, group or dev dependency, saying
 /// where it is declared for the importing directory: `import pytest,
-/// declared as pytest in pyproject.toml [project.optional-dependencies] dev`.
+/// declared as pytest in pyproject.toml:7 ([project.optional-dependencies] dev)`.
 fn declared_optionally(
     project: &Project,
     optional: &resolve::Resolver,
@@ -1238,8 +1238,9 @@ fn declaration_note(
 }
 
 /// Where a declaration is written: `functions/notify/requirements.txt:2`,
-/// `requirements-dev.txt:1 (dev by file name)`, or for a table without
-/// lines `pyproject.toml [project.optional-dependencies] dev`.
+/// `requirements-dev.txt:1 (dev by file name)`, `pyproject.toml:7
+/// ([project.optional-dependencies] dev)`, or without a line `pyproject.toml
+/// [project.optional-dependencies] dev`.
 fn declared_at(declaration: &Declaration) -> String {
     let e = &declaration.evidence;
     match (e.line, e.note.as_deref()) {

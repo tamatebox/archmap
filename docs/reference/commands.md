@@ -89,9 +89,9 @@ The whole summary then aims at 8 KiB: over it, the largest list gives up
 its lowest-ranked entries, down to 10 each. The header, coverage, `omitted:`
 lines and the most depended on list are never trimmed, so very long names
 can exceed the target, but the size does not grow with the repository.
-`--verbose` lists everything. On archmap's own repository (110 source files,
-fixtures included), depth 2 turns a 295 KB graph into a summary of about
-8 KB (23 KB with `--verbose`).
+`--verbose` lists everything. On archmap's own repository (130 source files,
+fixtures included), depth 2 turns a 364 KB graph into a summary of about
+8 KB (28 KB with `--verbose`).
 
 ## scan
 
@@ -165,7 +165,7 @@ per module with the reason (`local name`, `extra or dev dependency`,
 they are, so an absent edge is never mistaken for an absent dependency.
 Lists are capped at 30 entries and 3 locations, and the rest is counted. On
 archmap's own repository, its busiest component (`archmap_core::graph`)
-takes 6 KB as text and 20 KB as JSON. `--verbose` lifts the caps and
+takes 7 KB as text and 24 KB as JSON. `--verbose` lifts the caps and
 `--format json` adds every piece of evidence.
 
 `query` also takes a single file, by path (`src/shop/users.py`, relative to
@@ -239,9 +239,8 @@ target starts from all of its files. Like `query`, it takes a file as
 it and a package subpath for its package, and a component that is one file
 answers as that file. Dependencies without a target file
 (manifests, external packages) are followed component by component, and the
-result is still reported at the roll-up depth. It does not follow the parent
-`__init__.py` that Python runs before a submodule, nor Rust code inside macro
-calls, and a path that names no component or file is an error. Direct and
+result is still reported at the roll-up depth. It does not follow Rust code
+inside macro calls, and a path that names no component or file is an error. Direct and
 transitive dependents follow production code; the tests to run again are the
 files that reach the target only through test code, and a changed
 component's own test files, those beside production code included. A file
@@ -290,9 +289,10 @@ Lists are capped; verbose lists every entry.
 The first lines name the target as `query` names it: a component, a file
 with the component that holds it, a symbol's line with its component and its
 id, or an import name. `Direct dependents` are the components with a file
-that imports the target. The target's own component is never one of them:
-when none is left, the heading says whether the target's importers are all
-inside its own component or all in test code. `Imported by` lists the
+that imports the target, and for a Python package's `__init__.py` also those
+with a file below it, which needs it run. The target's own component is
+never one of them: when none is left, the heading says whether the target's
+importers are all inside its own component or all in test code. `Imported by` lists the
 statements that import a file, or a component that is one file, and for a
 symbol those that take its name, with `May use` for those that take its file
 whole: one statement per line, production code first, located and marked as
