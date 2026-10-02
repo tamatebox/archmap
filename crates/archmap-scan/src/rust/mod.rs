@@ -43,6 +43,7 @@ use archmap_core::{
 use crate::analyzer::AnalyzerOutput;
 use crate::context::display_path;
 use crate::{Analyzer, RepoContext, ScanError};
+use source::UseDecl;
 use tree::{Resolved, ResolvedPackage, SourceFile};
 
 pub use manifest::{CargoDependency, CargoPackage, CargoWorkspace, DependencyKind, ParsedManifest};
@@ -189,7 +190,7 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
             BTreeMap::new();
         // the declarations that bring in a module whole, by the name they
         // bind (`use crate::graph;`), with their evidence
-        let mut brought: BTreeMap<&str, (u32, Scope, String, bool, usize)> = BTreeMap::new();
+        let mut brought: BTreeMap<&str, (&UseDecl, bool)> = BTreeMap::new();
         for decl in &facts.uses {
             let in_test = node.test || decl.test;
             let evidence = Evidence::new(&file)
@@ -217,7 +218,11 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
                     }
                     let key = (decl.line, decl.scope, note(via), in_test, target_file);
                     if let (None, Some(binds)) = (&name, decl.binds.as_deref()) {
-                        brought.insert(binds, key.clone());
+                        // one at module scope over one inside a function
+                        let kept = brought.get(binds).map(|(d, _)| d.scope);
+                        if kept != Some(Scope::Module) {
+                            brought.insert(binds, (decl, in_test));
+                        }
                     }
                     taken
                         .entry(key)
@@ -246,18 +251,52 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
                 Resolved::Nothing => {}
             }
         }
-        // a path in code through such a module (`graph::build()`) takes the
-        // item it names of it, as part of that declaration
+        // a path in code through such a module (`graph::build()`) takes what
+        // it names as part of that declaration, resolved as if the
+        // declaration had named it, so a re-export leads to the file that
+        // defines it; a path in test code adds nothing to production's
         for path in &facts.paths {
-            let (Some(first), Some(item)) = (path.segments.first(), path.segments.get(1)) else {
+            let Some((first, rest)) = path.segments.split_first() else {
                 continue;
             };
-            if let Some(names) = brought
-                .get(first.as_str())
-                .and_then(|key| taken.get_mut(key))
-            {
-                names.insert(item.clone());
+            let Some(&(decl, in_test)) = brought.get(first.as_str()) else {
+                continue;
+            };
+            if rest.is_empty() || ((node.test || path.test) && !in_test) {
+                continue;
             }
+            // the whole path, else its first item (`Node` of `graph::Node::new`)
+            let reached = [rest, &rest[..1]].into_iter().find_map(|tail| {
+                let leaf = UseDecl {
+                    path: decl.path.iter().chain(tail).cloned().collect(),
+                    ..decl.clone()
+                };
+                match resolver.resolve(n, &leaf) {
+                    Resolved::Module {
+                        node: target,
+                        via,
+                        name,
+                    } => Some((target, via, name)),
+                    _ => None,
+                }
+            });
+            let Some((target, via, name)) = reached else {
+                continue;
+            };
+            let target_file = forest.nodes[target].file;
+            if target_file == node.file {
+                continue;
+            }
+            taken
+                .entry((
+                    decl.line,
+                    decl.scope,
+                    note(decl.note, via, &files),
+                    in_test,
+                    target_file,
+                ))
+                .or_default()
+                .insert(name.unwrap_or_else(|| WHOLE_MODULE.to_owned()));
         }
         for ((line, scope, note, in_test, target_file), names) in taken {
             output.fragment.push_edge(

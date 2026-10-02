@@ -33,8 +33,10 @@ into the model in [graph.md](graph.md); how the commands present it is in
   `import` too, noted `path`: one piece of evidence per file and target (the first at module scope,
   else the first), added to the edge a `use` may already give; a path whose first name a `use`
   brought in is that `use`'s dependency, and when that `use` brings in a module whole (`use
-  crate::graph;`) the item the path names of it (`build` of `graph::build()`) joins the `use`'s names
-  beside `*`; what a module does with the names it imported (calls, references) is not recorded
+  crate::graph;`) the path is resolved as if the `use` had named it (`graph::build()` as `use
+  crate::graph::build`): the item joins the `use`'s names beside `*`, or, re-exported, goes to the file
+  that defines it, noted `use via`; a path in test code adds nothing to a `use` outside it, and what a
+  module does with the names it imported (calls, references) is not recorded
 - import evidence records the names a statement takes from the file it points at (see
   [graph.md](graph.md)): the item it reaches, by the name its defining module gives it (`Invoice`
   through `pub use billing::invoice::Invoice`, the name before any `as`), `*` for a module itself
@@ -261,8 +263,9 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   (`src/routes/`), Nuxt and Astro (`pages/`), a directory named `test` or `tests` is test code by the
   rule above, so its imports carry `test`.
 - The names that a `require` or an `import()` takes later (`import('./m').then((m) => m.a)`, a result
-  kept in a variable and read afterwards) and the names a mock replaces are not read: such calls take
-  the whole module, so `query` on a symbol lists them under `May use`. A `vi.mock` with a factory, which
+  kept in a variable and read afterwards, an assignment that destructures it, `({ a } = require('m'))`)
+  and the names a mock replaces are not read: such calls take the whole module, so `query` on a symbol
+  lists them under `May use`. A `vi.mock` with a factory, which
   never loads the real module, is an edge all the same, noted `vi.mock`.
 - A `require` that a function takes as a parameter (a bundle's module wrapper, AMD's `define`) is
   not Node's and gives nothing, but a committed UMD bundle (`module.exports =

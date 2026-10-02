@@ -737,11 +737,18 @@ fn a_path_through_a_used_module_names_the_item_it_reaches() {
     for (file, text) in [
         ("Cargo.toml", "[package]\nname = \"mini\"\nversion = \"0.1.0\"\n"),
         ("src/lib.rs", "pub mod graph;\npub mod app;\n"),
-        ("src/graph.rs", "pub fn build() {}\npub fn other() {}\npub struct Node;\n"),
+        (
+            "src/graph.rs",
+            "mod builder;\npub use self::builder::assemble;\npub fn build() {}\npub fn other() {}\n\
+             pub struct Node;\n",
+        ),
+        ("src/graph/builder.rs", "pub fn assemble() {}\n"),
         (
             "src/app.rs",
             "use crate::graph;\nuse crate::graph as g;\n\
-             pub fn run() -> graph::Node {\n    graph::build();\n    g::build();\n    graph::Node\n}\n",
+             pub fn run() -> graph::Node {\n    graph::build();\n    g::build();\n    \
+             graph::assemble();\n    graph::Node\n}\n\
+             #[cfg(test)]\nfn check() {\n    graph::other();\n}\n",
         ),
     ] {
         let path = root.join(file);
@@ -750,18 +757,38 @@ fn a_path_through_a_used_module_names_the_item_it_reaches() {
     }
     let report = scan(&root, &ScanOptions::default()).unwrap();
     std::fs::remove_dir_all(&root).unwrap();
-    let names: BTreeMap<u32, BTreeSet<String>> = report
+    type Key = (u32, String, String);
+    let names: BTreeMap<Key, BTreeSet<String>> = report
         .graph
         .edges
         .iter()
         .flat_map(|e| &e.evidence)
-        .filter(|e| e.file == "src/app.rs" && e.note.as_deref() == Some("use"))
-        .map(|e| (e.line.unwrap(), e.names.clone()))
+        .filter(|e| {
+            e.file == "src/app.rs" && e.note.as_deref().is_some_and(|n| n.starts_with("use"))
+        })
+        .map(|e| {
+            let key = (
+                e.line.unwrap(),
+                e.note.clone().unwrap_or_default(),
+                e.target.clone().unwrap_or_default(),
+            );
+            (key, e.names.clone())
+        })
         .collect();
     let set = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<BTreeSet<_>>();
-    // the module stays taken whole, with the items its paths reach
+    let key = |line: u32, note: &str, target: &str| (line, note.to_owned(), target.to_owned());
+    // the module stays taken whole, with the items its paths reach; one it
+    // re-exports leads to the file that defines it, and a test's path adds
+    // nothing to production's `use`
     assert_eq!(
         names,
-        BTreeMap::from([(1, set(&["*", "Node", "build"])), (2, set(&["*", "build"])),])
+        BTreeMap::from([
+            (key(1, "use", "src/graph.rs"), set(&["*", "Node", "build"])),
+            (
+                key(1, "use via src/graph.rs:2", "src/graph/builder.rs"),
+                set(&["assemble"])
+            ),
+            (key(2, "use", "src/graph.rs"), set(&["*", "build"])),
+        ])
     );
 }
