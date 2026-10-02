@@ -20,6 +20,8 @@ pub struct PyImport {
     pub line: u32,
     /// Inside a function body, so it runs only when the function is called.
     pub local: bool,
+    /// Under `if TYPE_CHECKING:`, which only type checkers enter.
+    pub type_only: bool,
 }
 
 /// One public definition.
@@ -66,6 +68,8 @@ pub fn scan_source(text: &str) -> PyFile {
     let mut in_string: Option<(&str, bool)> = None;
     // Indentation of the enclosing `def` headers, innermost last.
     let mut functions: Vec<usize> = Vec::new();
+    // Indentation of the enclosing `if TYPE_CHECKING:` headers.
+    let mut type_checking: Vec<usize> = Vec::new();
     let mut i = 0;
 
     while i < lines.len() {
@@ -120,6 +124,11 @@ pub fn scan_source(text: &str) -> PyFile {
             functions.pop();
         }
         let local = !functions.is_empty();
+        // a line at a header's indentation, its `else:` included, ends the block
+        while type_checking.last().is_some_and(|&d| indent <= d) {
+            type_checking.pop();
+        }
+        let type_only = !type_checking.is_empty();
 
         // Leaving a class body.
         if let Some(ctx) = &class {
@@ -142,6 +151,10 @@ pub fn scan_source(text: &str) -> PyFile {
         }
 
         let code = strip_comment(trimmed);
+        if is_type_checking(code) {
+            type_checking.push(indent);
+            continue;
+        }
         let is_import = code.starts_with("import ") || code.starts_with("from ");
         // An import continued over lines (in brackets, or after a
         // backslash) is read whole, and its other lines are no statements.
@@ -163,6 +176,7 @@ pub fn scan_source(text: &str) -> PyFile {
                         names: Vec::new(),
                         line: line_no,
                         local,
+                        type_only,
                     });
                 }
             }
@@ -194,6 +208,7 @@ pub fn scan_source(text: &str) -> PyFile {
                     names,
                     line: line_no,
                     local,
+                    type_only,
                 });
             }
             continue;
@@ -484,6 +499,25 @@ fn strip_comment(line: &str) -> &str {
         .map_or(line, |(at, _)| &line[..at])
 }
 
+/// `if TYPE_CHECKING:` or `if <module>.TYPE_CHECKING:` (`typing.`, `t.`),
+/// whose body only type checkers enter.
+fn is_type_checking(code: &str) -> bool {
+    let Some(condition) = code
+        .trim_end()
+        .strip_prefix("if ")
+        .and_then(|c| c.strip_suffix(':'))
+    else {
+        return false;
+    };
+    match condition.trim().strip_suffix("TYPE_CHECKING") {
+        Some("") => true,
+        Some(prefix) => prefix
+            .strip_suffix('.')
+            .is_some_and(|m| !m.is_empty() && m.chars().all(|c| c.is_alphanumeric() || c == '_')),
+        None => false,
+    }
+}
+
 fn def_name(header: &str) -> Option<String> {
     let rest = header
         .strip_prefix("async def ")
@@ -673,6 +707,77 @@ CURRENCY = "JPY"
                 ("f2", true),
                 ("h", true),
                 ("i", false),
+            ]
+        );
+    }
+
+    #[test]
+    fn imports_under_type_checking_take_types_only() {
+        let text = "\
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from shop.orders import Order
+    import shop.users
+    # a comment at any indentation ends nothing
+# here either
+    if flag:
+        import nested
+    else:
+        import nested_else
+else:
+    import fallback
+if typing.TYPE_CHECKING:  # pragma: no cover
+    from shop import (
+Payment,
+    )
+elif other:
+    import runtime_elif
+import after
+if TYPE_CHECKING:
+    NOTE = \"\"\"
+a string at column 0 ends nothing
+\"\"\"
+    import after_string
+if TYPE_CHECKING:
+    import second_block
+def f():
+    if TYPE_CHECKING:
+        import in_function
+    import local_runtime
+class C:
+    if t.TYPE_CHECKING:
+        import in_class
+if not TYPE_CHECKING:
+    import runtime_not
+if TYPE_CHECKING_EXTRA:
+    import other_name
+";
+        let file = scan_source(text);
+        let marks: Vec<(&str, bool)> = file
+            .imports
+            .iter()
+            .map(|i| (i.module.as_str(), i.type_only))
+            .collect();
+        assert_eq!(
+            marks,
+            vec![
+                ("typing", false),
+                ("shop.orders", true),
+                ("shop.users", true),
+                ("nested", true),
+                ("nested_else", true),
+                // the other branch runs
+                ("fallback", false),
+                ("shop", true),
+                ("runtime_elif", false),
+                ("after", false),
+                ("after_string", true),
+                ("second_block", true),
+                ("in_function", true),
+                ("local_runtime", false),
+                ("in_class", true),
+                ("runtime_not", false),
+                ("other_name", false),
             ]
         );
     }

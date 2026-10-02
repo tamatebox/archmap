@@ -843,3 +843,42 @@ fn imports_in_test_code_are_marked() {
         .iter()
         .any(|u| u.evidence.file == "tests/test_billing.py" && u.evidence.test));
 }
+
+#[test]
+fn imports_under_type_checking_close_no_cycle() {
+    let dir = namespace_project(
+        "type-checking",
+        "",
+        &[
+            ("app/__init__.py", ""),
+            (
+                "app/billing/__init__.py",
+                "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    \
+                 from app.orders import Order\n    from stubs_only import Thing\n\n\n\
+                 def charge(order: \"Order\") -> int:\n    return 1\n",
+            ),
+            ("app/orders/__init__.py", "from app.billing import charge\n"),
+        ],
+    );
+    let graph = scan(&dir, &ScanOptions::default()).unwrap().graph;
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    let marks: BTreeSet<(String, bool)> = graph
+        .edges
+        .iter()
+        .flat_map(|e| &e.evidence)
+        .chain(graph.unmapped_imports.iter().map(|u| &u.evidence))
+        .filter_map(|e| Some((format!("{}:{}", e.file, e.line?), e.type_only)))
+        .collect();
+    assert_eq!(
+        marks,
+        BTreeSet::from([
+            ("app/billing/__init__.py:4".to_owned(), true),
+            // an import without an edge carries the mark as well
+            ("app/billing/__init__.py:5".to_owned(), true),
+            ("app/orders/__init__.py:1".to_owned(), false),
+        ])
+    );
+    // only imports that run close a cycle
+    assert!(graph.cycles().is_empty(), "{:?}", graph.cycles());
+}

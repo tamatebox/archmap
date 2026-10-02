@@ -54,16 +54,17 @@ dependency), `summary` counts test statements apart, `query` marks them
 `tests`;
 undeclared imports count in test code too.
 
-`type_only` marks a statement that takes types only, which the compiler
-erases, so it never runs: TS/JS `import type`, `export type ... from`, and
-a statement whose names all carry `type`. A statement that takes values and
-types from a file gives one piece of evidence for each; evidence without a
+`type_only` marks a statement that takes types only, so it never runs:
+TS/JS `import type`, `export type ... from` and a statement whose names all
+carry `type`, which the compiler erases, and a Python import under
+`if TYPE_CHECKING:`, which only type checkers enter. A statement that takes
+values and types from a file gives one piece of evidence for each; evidence without a
 `target` records no names and is one, `type_only` when the statement takes
 only types. An edge is a dependency however
 it is taken, so `deny`, `layers`, `allow`, `query` and `impact` count every
 import, but cycles and signals count only imports that run in production:
 an edge closes a cycle only through evidence that is neither `type_only` nor
-`test`. Only the TS/JS analyzer sets it.
+`test`. Only the TS/JS and Python analyzers set it.
 
 A symbol's evidence with a `target` says how the symbol is reached rather
 than where it is: a Rust method whose type another file defines carries

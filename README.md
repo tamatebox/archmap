@@ -101,7 +101,7 @@ Details: [commands](docs/reference/commands.md), [MCP server](docs/reference/mcp
 | Language | Read from |
 |---|---|
 | [Rust](docs/reference/analyzers.md#rust) | `Cargo.toml` packages and dependencies; module files reached from `src/lib.rs` and `src/main.rs`; `pub` items; `use` declarations and module paths in code |
-| [Python](docs/reference/analyzers.md#python) | `pyproject.toml`, `setup.py` / `setup.cfg` and requirements files; packages and namespace packages; public top-level definitions; `import` statements, scanned line by line |
+| [Python](docs/reference/analyzers.md#python) | `pyproject.toml`, `setup.py` / `setup.cfg` and requirements files; packages and namespace packages; public top-level definitions; `import` statements, scanned line by line, those under `if TYPE_CHECKING:` apart |
 | [TypeScript / JavaScript](docs/reference/analyzers.md#typescript-and-javascript) | `package.json` packages, workspaces and dependencies; directories and files; exported declarations, CommonJS exports and the globals of scripts; `import`, `export ... from`, `require`, `import()` and test mocks, resolved through tsconfig paths, workspace links and re-exports, imports of types only apart |
 
 Other languages are counted in `summary`, not analyzed. Each analyzer's

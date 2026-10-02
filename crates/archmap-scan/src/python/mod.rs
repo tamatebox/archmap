@@ -771,6 +771,7 @@ fn emit_imports(
                 .at_line(import.line)
                 .in_scope(scope)
                 .in_test(test)
+                .type_only(import.type_only)
         };
 
         // Internal module -> the files the statement loads in it, with the
@@ -1205,6 +1206,7 @@ mod tests {
             names: names.iter().map(|s| s.to_string()).collect(),
             line: 1,
             local: false,
+            type_only: false,
         }
     }
 

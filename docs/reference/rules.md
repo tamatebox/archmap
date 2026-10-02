@@ -80,7 +80,8 @@ this way; see `archmap.toml`.
 `[cycles] scope` limits cycle findings to cycles with at least one member
 under its selectors, such as product code but not fixtures. Cycles count
 only production imports that run: a TS/JS import of types only (`import
-type`) and an import in test code close none, while `deny`, `layers` and
+type`), a Python import under `if TYPE_CHECKING:` and an import in test code
+close none, while `deny`, `layers` and
 `allow` count imports of types like any other.
 Every cycle finding also says what the files behind it show, because
 roll-up joins the files of each component and different files can close the

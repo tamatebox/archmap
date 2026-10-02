@@ -149,8 +149,9 @@ locations. A location names the file the statement loads when archmap knows
 it, as in `src/shop/billing/charge.py:5 -> src/shop/users.py`, and ends in
 `(local)` when the import sits inside a function body and so runs only when
 the function is called; the others run when their file loads. `(type)` marks
-a TS/JS statement that takes types only (`import type`), which the compiler
-erases, so it never runs, and `(test)` a statement in test code. Each
+a statement that takes types only, so it never runs (a TS/JS `import type`,
+which the compiler erases, or a Python import under `if TYPE_CHECKING:`),
+and `(test)` a statement in test code. Each
 neighbor counts its statements as `summary` counts the pair: in production
 code and in tests apart (`2 imports, 1 in tests`), and apart from those
 statements of the component's entry file into its own submodules (`6 of its

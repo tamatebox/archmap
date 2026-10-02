@@ -100,6 +100,9 @@ into the model in [graph.md](graph.md); how the commands present it is in
 - the evidence of each import names the file it loads (`pkg/sub.py`, otherwise `pkg/__init__.py`)
   and its scope: `local` inside a function body, `module` elsewhere (including under `if`, `try` and
   `class`); imports between files of one component are kept as self edges, which roll-up hides
+- an import under `if TYPE_CHECKING:` or `if <module>.TYPE_CHECKING:` (`typing.TYPE_CHECKING`) takes
+  types only (`type_only`, see [graph.md](graph.md)), since only type checkers enter that block, so it
+  closes no cycle; the `else:` branch runs
 - the evidence also records the names the statement takes from that file (see [graph.md](graph.md)):
   an attribute of the statement's module by name (`VERSION` in `from pkg import VERSION`), `*` for a
   submodule (`from pkg import sub`), for `import pkg.sub` and for `from pkg import *`, and nothing for
@@ -138,6 +141,11 @@ into the model in [graph.md](graph.md); how the commands present it is in
   does not list the importer and `impact` reaches it only as `transitive`.
 - `impact` does not follow the parent `__init__.py` that Python loads implicitly before a
   submodule.
+- Only `if TYPE_CHECKING:` and `if <module>.TYPE_CHECKING:` mark imports as types only: an import
+  in the `else:` of `if not TYPE_CHECKING:`, under a condition that combines `TYPE_CHECKING` with
+  others, or under an alias (`if TC:`) or `if MYPY:` counts as running.
+- An import written on the line of a compound statement (`if TYPE_CHECKING: import x`,
+  `try: import x`) is not read.
 
 ## TypeScript and JavaScript
 

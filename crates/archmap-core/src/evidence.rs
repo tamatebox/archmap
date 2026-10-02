@@ -43,8 +43,8 @@ pub struct Evidence {
     /// The statement is test code: it runs only for tests.
     #[serde(default, skip_serializing_if = "is_false")]
     pub test: bool,
-    /// The statement takes types only, which the compiler erases: it never
-    /// runs (`import type`, `export type ... from`).
+    /// The statement takes types only: it never runs (`import type`, which
+    /// the compiler erases, or an import under `if TYPE_CHECKING:`).
     #[serde(default, skip_serializing_if = "is_false")]
     pub type_only: bool,
 }

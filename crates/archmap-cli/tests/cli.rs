@@ -531,6 +531,24 @@ fn check_finds_cycles_at_the_chosen_depth() {
 }
 
 #[test]
+fn check_finds_no_cycle_that_only_type_checking_closes() {
+    let repo = temp_repo("type-checking-cycle");
+    std::fs::create_dir_all(repo.join("other")).unwrap();
+    std::fs::write(repo.join("pkg/__init__.py"), "from other import thing\n").unwrap();
+    std::fs::write(
+        repo.join("other/__init__.py"),
+        "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    import pkg\n",
+    )
+    .unwrap();
+
+    let rules = "[cycles]\nforbid = true\n";
+    let out = check_with("type-checking-cycle", &repo, rules, &[]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    std::fs::remove_dir_all(&repo).unwrap();
+}
+
+#[test]
 fn archmap_passes_its_own_rules() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let out = archmap()
