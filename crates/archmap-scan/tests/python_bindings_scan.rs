@@ -53,3 +53,24 @@ fn a_module_binding_takes_the_names_its_file_reads_through_it() {
         ]
     );
 }
+
+#[test]
+fn a_definition_with_its_body_on_one_line_ends_there() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/python-bindings");
+    let graph = scan(&root, &ScanOptions::default()).unwrap().graph;
+    let mut defined: Vec<(&str, &str)> = graph
+        .symbols
+        .values()
+        .filter(|s| s.location().is_some_and(|at| at.file == "store/errors.py"))
+        .map(|s| (s.name.as_str(), s.signature.as_deref().unwrap_or("")))
+        .collect();
+    defined.sort();
+    assert_eq!(
+        defined,
+        [
+            ("Conflict", "class Conflict(Exception)"),
+            ("NotFound", "class NotFound(Exception)"),
+            ("check", "def check(order)"),
+        ]
+    );
+}

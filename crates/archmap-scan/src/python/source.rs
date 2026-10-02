@@ -546,20 +546,29 @@ fn collect_header(lines: &[&str], start: usize) -> (String, usize) {
     let mut depth: i32 = 0;
     let mut parts = Vec::new();
     let mut consumed = 0;
-    for line in lines.iter().skip(start).take(50) {
+    'lines: for line in lines.iter().skip(start).take(50) {
         consumed += 1;
         let code = strip_comment(line).trim();
-        parts.push(code.to_owned());
-        for c in code.chars() {
-            match c {
-                '(' | '[' | '{' => depth += 1,
-                ')' | ']' | '}' => depth -= 1,
+        // the header ends at its colon, outside brackets and strings: a
+        // body may follow on the line (`class Missing(Error): pass`)
+        let (mut quote, mut escaped) = (None, false);
+        for (at, c) in code.char_indices() {
+            match (quote, c) {
+                (Some(_), _) if escaped => escaped = false,
+                (Some(_), '\\') => escaped = true,
+                (Some(q), c) if c == q => quote = None,
+                (Some(_), _) => {}
+                (None, '"' | '\'') => quote = Some(c),
+                (None, '(' | '[' | '{') => depth += 1,
+                (None, ')' | ']' | '}') => depth -= 1,
+                (None, ':') if depth <= 0 => {
+                    parts.push(code[..=at].to_owned());
+                    break 'lines;
+                }
                 _ => {}
             }
         }
-        if depth <= 0 && code.ends_with(':') {
-            break;
-        }
+        parts.push(code.to_owned());
     }
     let joined = parts.join(" ");
     let header = joined.trim_end_matches(':').trim();
@@ -909,6 +918,35 @@ CURRENCY = "JPY"
         assert_eq!(
             file.defs[3].signature.as_deref(),
             Some("def charge(self, amount: int) -> \"Receipt\"")
+        );
+    }
+
+    #[test]
+    fn a_body_on_the_header_line_ends_the_definition() {
+        let file = scan_source(
+            "class NotFound(Exception): pass\n\
+             class Conflict(Exception): pass  # a comment: here\n\
+             def pay(n): return n\n\
+             def label(x: str = \"a:b\") -> str: return x\n\
+             \n\
+             \n\
+             def check(x):\n\
+             \x20   return x\n",
+        );
+        let defs: Vec<(&str, Option<&str>, u32)> = file
+            .defs
+            .iter()
+            .map(|d| (d.name.as_str(), d.signature.as_deref(), d.line))
+            .collect();
+        assert_eq!(
+            defs,
+            [
+                ("NotFound", Some("class NotFound(Exception)"), 1),
+                ("Conflict", Some("class Conflict(Exception)"), 2),
+                ("pay", Some("def pay(n)"), 3),
+                ("label", Some("def label(x: str = …) -> str"), 4),
+                ("check", Some("def check(x)"), 7),
+            ]
         );
     }
 
