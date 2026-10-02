@@ -170,7 +170,13 @@ into the model in [graph.md](graph.md); how the commands present it is in
   leading `_`), and when a file it reaches shows nothing more of the name, the evidence points at that
   file; the evidence is `type_only` when the statement or a binding on the way is under
   `if TYPE_CHECKING:`. A `from` import binds a name its own file may use as well as pass on, so it is
-  never noted `export`
+  noted `export`, passing the names on as a TS/JS re-export does, only when it runs at module level
+  and is no star import, every name it binds is a definition rather than a submodule (which code may
+  import for what loading it registers), is listed in a literal `__all__` or written `x as x`, and is
+  written nowhere else in the file, comments and strings included, and the file reaches no name by a
+  computed one (`globals()`, `locals()`, `vars()`, `sys.modules`, a module `__getattr__`, `exec`,
+  `eval`, `importlib`): a package's `__init__.py` with `from .charge import pay` and `__all__ =
+  ["pay"]`
 - a statement keeps only the evidence for the file it loads when a file on the way shows the name in
   ways that lead to more than one definition (its definitions, assignments, `from` imports and star
   imports; only those that run count, when any does), binds it in a way the walk does not follow
@@ -209,8 +215,13 @@ into the model in [graph.md](graph.md); how the commands present it is in
 
 - Dynamic imports are recorded but not followed, and `sys.path` changes made at runtime are not
   seen.
-- An `__init__.py` is no barrel, since it may use what it imports: `impact` goes on from the
-  `__init__.py` file by file, to every importer of it and whatever imports a module below it.
+- An `__init__.py` that imports a name without listing it in a literal `__all__` (or as `x as x`),
+  or whose `__all__` is built at runtime (`__all__ += other.__all__`), is no barrel, since it may use
+  what it imports: `impact` goes on from it file by file, to every importer of it and whatever imports
+  a module below it. One that lists a name it imports only for what loading its module registers (a
+  class a decorator adds to a registry) passes it on all the same, so what uses the registry through
+  the package is not reached from a change to that module, and the `__init__.py` shows only in
+  `impact`'s `barrels:` line.
 - What a file reads through a module it binds is read from its text, not parsed: an attribute read
   over two lines (`sub.\` then `pay`), through another name the module is assigned to, or through
   `getattr` with a literal is not seen, the last two as uses of the module itself; and for

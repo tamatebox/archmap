@@ -921,13 +921,22 @@ fn emit_imports(
                 placed[i] = target.map(|t| (t, WHOLE_MODULE.to_owned()));
             }
         }
+        // a statement that only passes on the definitions it binds is a
+        // re-export, as a TS/JS `export ... from` is; not one that binds a
+        // submodule, which code may import for what loading it registers
+        let symbols = !placed.is_empty()
+            && placed
+                .iter()
+                .all(|p| p.as_ref().is_some_and(|(_, name)| name != WHOLE_MODULE));
         resolved.push(Resolved {
             names: placed,
             own: own.clone(),
             read,
         });
 
-        let note = if import.level > 0 {
+        let note = if import.relays && symbols {
+            "export"
+        } else if import.level > 0 {
             "relative import"
         } else {
             "import"
@@ -1459,6 +1468,7 @@ mod tests {
             unread: false,
             end_line: 1,
             reads: Vec::new(),
+            relays: false,
         }
     }
 

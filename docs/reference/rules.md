@@ -69,8 +69,9 @@ through a TS/JS barrel; so does `import shop`, then `shop.pay(order)`, which
 takes `pay` through the module it binds. A file that binds a name twice
 (`from .x import pay`, then `pay = wrap(pay)`) may give such evidence for a
 definition that no longer holds the name, and a rule may find it there.
-`impact`, on the other hand, takes no `__init__.py` for a barrel and goes on
-from it to everything that imports it.
+`impact`, on the other hand, follows an `__init__.py` that may use what it
+imports to everything that imports it, and one that only passes a name on
+(its `from` import noted `export`) only to what takes that name.
 
 Rules are about production code. `deny`, `layers` and `allow` leave out
 imports in test code (test files and directories, `#[cfg(test)]`, a Rust

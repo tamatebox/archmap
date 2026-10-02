@@ -215,11 +215,12 @@ Rust module (`pub mod invoice;`) is also a symbol of the file that declares
 it, but its imports name its own file, so `query` points at its component
 instead, and `impact` answers for that component. What the lists miss:
 
-- A Python `__init__.py` may use what it imports as well as pass it on, so
-  no statement of it is a barrel, and `impact` goes on from it to whatever
-  imports it or a module below it. A statement that binds the package
-  (`import pkg`, then `pkg.pay()`) takes `pay` from it, and through its
-  `via` evidence from the file that defines it.
+- A Python `__init__.py` that imports a name without listing it in
+  `__all__` may use it as well as pass it on, so it is no barrel, and
+  `impact` goes on from it to whatever imports it or a module below it. A
+  statement that binds the package (`import pkg`, then `pkg.pay()`) takes
+  `pay` from it, and through its `via` evidence from the file that defines
+  it.
 - Rust path evidence shows the first path from its file to the target, not
   always one that names the symbol.
 - Code that runs when a file loads (a side-effect import) is listed for
@@ -328,7 +329,18 @@ does not, although loading the barrel runs the changed file too; one that
 takes a name the changed file defines points at it through its `via`
 evidence anyway. A barrel that also imports the changed file for its own
 use, or that code depending on the change imports, leads on through every
-statement that loads it. A test file whose mock replaces a module for its
+statement that loads it. A Python package's `__init__.py` that only passes
+names on (its `from` import noted `export`, see
+[analyzers.md](analyzers.md#python)) is such a barrel too, and past it the
+reach follows names only: not the imports of a module below the package,
+which run the `__init__.py` first. `Not traced` names the files the reach
+went on from by names only, for a file or a symbol target (`barrels: 1 file
+passes it on, and only what takes it from there is followed; a rename, a
+removal or an error on load also breaks whatever else loads that file:
+src/shop/__init__.py:2 (runs first; 2 test files that load it or a module
+below it are not listed)`), with the test files that load each, and for a
+package's entry file a module below it, that the tests to run again leave
+out. A test file whose mock replaces a module for its
 whole run (marked `(mock)`) reaches the change only along a way that passes
 none of the modules it replaces, since every module its run loads gets the
 mock in their place: it is left out of the tests to run again when every way
@@ -451,15 +463,15 @@ name from the same file is not affected. Two things widen or narrow it:
 
 - A re-export takes the name, so the re-exporting file is in the first step
   (a direct dependent, unless it sits in the symbol's own component, as a
-  Python `__init__.py` usually does). A TS/JS barrel that only passes the
-  name on goes no further than the statements `query` lists through it,
-  which are in the first step too, unless code that depends on the symbol
-  imports it as well; a Python `__init__.py`'s
-  `from .m import X` leads to every importer of the `__init__.py`, and to
-  whatever imports a module below it, as transitive dependents, those that
-  take other names included, while those
-  that take `X` from it (`from pkg import X`) are in the first step through
-  their `via` evidence.
+  Python `__init__.py` usually does). A barrel that only passes the name
+  on (a TS/JS re-export, a Python `from .m import X` noted `export`) goes no
+  further than the statements `query` lists through it, which are in the
+  first step too, unless code that depends on the symbol imports it as
+  well; a Python `__init__.py`'s `from .m import X` that may use `X` leads
+  to every importer of the `__init__.py`, and to whatever imports a module
+  below it, as transitive dependents, those that take other names
+  included, while those that take `X` from it (`from pkg import X`) are in
+  the first step through their `via` evidence.
 - A statement that only loads the file (a side-effect import) is not in the
   first step, although code that runs on load may call the symbol.
 

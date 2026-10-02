@@ -8,7 +8,7 @@ use archmap_core::{
     UnmappedImport,
 };
 
-use crate::not_traced::{not_traced, Own, Place, Subject};
+use crate::not_traced::{barrels, not_traced, Narrowed, NotTraced, Own, Place, Subject};
 use crate::resolve::{resolve, Resolved};
 use crate::target::{component_file, fold, namesakes, reject_outside, unquote};
 use crate::views::{
@@ -271,7 +271,16 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
             }
         }
     };
-    let not_traced = not_traced(full, &subject, caps.sites);
+    let mut not_traced = not_traced(full, &subject, caps.sites);
+    // the barrels past which the reach went on by names only
+    let narrowed = match &traced {
+        Traced::File(file, _) => Some(Narrowed::File(file)),
+        Traced::Symbol(symbol) => Some(Narrowed::Symbol(symbol)),
+        Traced::Component(_) => None,
+    };
+    if let Some(found) = narrowed.and_then(|n| barrels(full, n, &reach.tests, caps.sites)) {
+        not_traced.get_or_insert_with(NotTraced::default).barrels = Some(found);
+    }
 
     let about = match traced {
         Traced::Component(_) => About::Component,

@@ -140,10 +140,11 @@ What works today, by the [roadmap](#roadmap) phase it belongs to:
 
 The gaps behind the marks:
 
-- Python `query` and `impact` on a symbol: a statement that takes a package
-  whole (`import pkg`, then `pkg.name()`) does not reach a name its
-  `__init__.py` imports from another file, and `impact` goes on from that
-  `__init__.py` to every file that imports it or a module below it.
+- Python `impact` on a symbol: an `__init__.py` that imports a name from
+  another file without listing it in `__all__` (or as `x as x`) may use it,
+  so `impact` goes on from it to every file that imports it or a module
+  below it; one that lists the name, or writes `from .x import name as
+  name`, is followed only to what takes the name.
 - TS/JS imports: aliases defined only in a bundler configuration or a
   `jsconfig.json` are not followed.
 - TS/JS symbols: declarations inside `declare global { .. }` give none.

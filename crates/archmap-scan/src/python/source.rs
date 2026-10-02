@@ -41,6 +41,12 @@ pub struct PyImport {
     /// in `charge.pay`, the module path itself for `import shop.billing`),
     /// or `None` when it may take anything (see [`Reads::names`]).
     pub reads: Vec<Option<BTreeSet<String>>>,
+    /// A module-level `from` import that passes on what it binds, as a
+    /// package's `__init__.py` re-exports: every name it binds is listed in
+    /// a literal `__all__` or written `x as x`, appears nowhere else in the
+    /// file's text, and the file reaches no name by a computed one
+    /// (`globals()`, `sys.modules`, a module `__getattr__`).
+    pub relays: bool,
 }
 
 /// One public definition.
@@ -112,6 +118,9 @@ pub fn scan_source(text: &str) -> PyFile {
     let mut brackets: i32 = 0;
     // for each import, the paths the file reads its bindings through
     let mut paths: Vec<Vec<String>> = Vec::new();
+    // names a `from` import binds as `x as x`, by line; the lines of `__all__`
+    let mut explicit: BTreeSet<(u32, String)> = BTreeSet::new();
+    let mut all_lines: BTreeSet<u32> = BTreeSet::new();
     let mut i = 0;
 
     while i < lines.len() {
@@ -254,6 +263,7 @@ pub fn scan_source(text: &str) -> PyFile {
                         unread: false,
                         end_line: line_no + extra as u32,
                         reads: Vec::new(),
+                        relays: false,
                     });
                 }
             }
@@ -275,7 +285,13 @@ pub fn scan_source(text: &str) -> PyFile {
                         let mut words = item.split_whitespace();
                         let name = words.next()?;
                         let alias = match (words.next(), words.next()) {
-                            (Some("as"), Some(alias)) => alias,
+                            (Some("as"), Some(alias)) => {
+                                // `x as x`: an explicit re-export
+                                if alias == name {
+                                    explicit.insert((line_no, name.to_owned()));
+                                }
+                                alias
+                            }
                             _ => name,
                         };
                         Some((name.to_owned(), alias.to_owned()))
@@ -299,6 +315,7 @@ pub fn scan_source(text: &str) -> PyFile {
                     unread: open,
                     end_line: line_no + extra as u32,
                     reads: Vec::new(),
+                    relays: false,
                 });
             }
             continue;
@@ -308,6 +325,7 @@ pub fn scan_source(text: &str) -> PyFile {
             brackets = 0;
             let (joined, extra, _) = continued(&lines, i, code);
             i += extra;
+            all_lines.extend(line_no..=line_no + extra as u32);
             let listed = (indent == 0).then(|| listed_names(&joined)).flatten();
             out.all = Some(match (&out.all, listed) {
                 (Some(DunderAll::Built), _) | (_, None) => DunderAll::Built,
@@ -407,7 +425,64 @@ pub fn scan_source(text: &str) -> PyFile {
             })
             .collect();
     }
+    // the `from` imports that only pass on what they bind
+    let computed = COMPUTED_NAMES.iter().any(|call| text.contains(call));
+    let listed = |name: &str| matches!(&out.all, Some(DunderAll::Listed(all)) if all.iter().any(|n| n == name));
+    let mut relays = Vec::with_capacity(out.imports.len());
+    for import in &out.imports {
+        let module_level = !import.local && !import.in_class && !import.type_only;
+        let whole = !import.unread && !import.names.iter().any(|n| n == WHOLE_MODULE);
+        let elsewhere: BTreeSet<u32> = all_lines
+            .iter()
+            .copied()
+            .chain(import.line..=import.end_line)
+            .collect();
+        let passes = |(name, bound): (&String, &String)| {
+            (listed(bound) || explicit.contains(&(import.line, name.clone())))
+                && !appears(text, bound, &elsewhere)
+        };
+        relays.push(
+            !computed
+                && module_level
+                && whole
+                && !import.names.is_empty()
+                && !import.bound.is_empty()
+                && import.names.iter().zip(&import.bound).all(passes),
+        );
+    }
+    for (import, relays) in out.imports.iter_mut().zip(relays) {
+        import.relays = relays;
+    }
     out
+}
+
+/// What reaches a module's names by a computed one, so that a name bound
+/// and never written may still be used: `globals()["pay"]`,
+/// `sys.modules[__name__]`, a module `__getattr__`, code run from a string.
+const COMPUTED_NAMES: [&str; 8] = [
+    "globals(",
+    "locals(",
+    "vars(",
+    "sys.modules",
+    "__getattr__",
+    "exec(",
+    "eval(",
+    "importlib",
+];
+
+/// Whether `name` is written as a whole word in `text`, in code, a string
+/// or a comment alike, on a line outside `skip`.
+fn appears(text: &str, name: &str, skip: &BTreeSet<u32>) -> bool {
+    let word = |c: char| c == '_' || c.is_alphanumeric();
+    text.lines()
+        .enumerate()
+        .filter(|(i, _)| !skip.contains(&(*i as u32 + 1)))
+        .any(|(_, line)| {
+            line.match_indices(name).any(|(at, _)| {
+                !line[..at].chars().next_back().is_some_and(word)
+                    && !line[at + name.len()..].chars().next().is_some_and(word)
+            })
+        })
 }
 
 /// Functions that load a module by a name computed at runtime.
@@ -918,6 +993,48 @@ CURRENCY = "JPY"
         assert_eq!(
             file.defs[3].signature.as_deref(),
             Some("def charge(self, amount: int) -> \"Receipt\"")
+        );
+    }
+
+    #[test]
+    fn a_from_import_relays_what_it_binds_only_when_the_file_never_writes_it() {
+        let relays = |text: &str| -> Vec<bool> {
+            scan_source(text).imports.iter().map(|i| i.relays).collect()
+        };
+        // listed in `__all__`, or written `x as x`
+        assert_eq!(
+            relays(
+                "from .charge import pay\nfrom .rates import rate as rate\n__all__ = [\"pay\"]\n"
+            ),
+            [true, true]
+        );
+        // not listed; written elsewhere, a comment included; read by a
+        // computed name
+        assert_eq!(relays("from .charge import pay\n"), [false]);
+        assert_eq!(
+            relays("from .charge import pay\n__all__ = [\"pay\"]\ntotal = pay(1)\n"),
+            [false]
+        );
+        assert_eq!(
+            relays("from .charge import pay\n__all__ = [\"pay\"]\n# pay is ours\n"),
+            [false]
+        );
+        assert_eq!(
+            relays("from .charge import pay\n__all__ = [\"pay\"]\nf = globals()[\"pay\"]\n"),
+            [false]
+        );
+        // inside a function, under `if TYPE_CHECKING:`, a star import
+        assert_eq!(
+            relays("def f():\n    from .charge import pay\n__all__ = [\"pay\"]\n"),
+            [false]
+        );
+        assert_eq!(
+            relays("if TYPE_CHECKING:\n    from .charge import pay\n__all__ = [\"pay\"]\n"),
+            [false]
+        );
+        assert_eq!(
+            relays("from .charge import *\n__all__ = [\"pay\"]\n"),
+            [false]
         );
     }
 

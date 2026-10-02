@@ -1242,6 +1242,36 @@ pub(crate) fn not_traced(
         }
         lines.push(line);
     }
+    if let Some(b) = &found.barrels {
+        let (what, from, them) = match b.total {
+            1 => ("1 file passes it on".to_owned(), "there", "that file"),
+            n => (format!("{n} files pass it on"), "them", "them"),
+        };
+        let places: Vec<String> = b
+            .shown
+            .iter()
+            .take(cap)
+            .map(|barrel| {
+                let at = place(&barrel.file, barrel.line);
+                let (n, loaded) = (barrel.tests_not_listed, plural(barrel.tests_not_listed, "test file"));
+                let (load, are) = if n == 1 { ("loads", "is") } else { ("load", "are") };
+                match (barrel.runs_first, n) {
+                    (true, 0) => format!("{at} (runs first)"),
+                    (true, _) => format!(
+                        "{at} (runs first; {loaded} that {load} it or a module below it {are} not listed)"
+                    ),
+                    (false, 0) => at,
+                    (false, _) => format!("{at} ({loaded} that {load} it {are} not listed)"),
+                }
+            })
+            .collect();
+        truncated |= places.len() < b.total;
+        lines.push(format!(
+            "  barrels: {what}, and only what takes it from {from} is followed; a rename, a \
+             removal or an error on load also breaks whatever else loads {them}: {}",
+            with_more(&places, b.total)
+        ));
+    }
     if !lines.is_empty() {
         let _ = writeln!(out, "\nNot traced:");
         for line in lines {

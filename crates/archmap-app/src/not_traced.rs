@@ -3,9 +3,11 @@
 //! applies. A target's own imports without an edge stay under `Not mapped`;
 //! this is what could reach the target unseen.
 
+use std::collections::BTreeSet;
+
 use archmap_core::{
-    ArchitectureGraph, ComponentId, ComponentKind, SymbolUses, UnmappedImport, UnmappedReason,
-    UnreadMacro, UnreadReason,
+    ArchitectureGraph, ComponentId, ComponentKind, EdgeKind, Evidence, Symbol, SymbolUses,
+    UnmappedImport, UnmappedReason, UnreadMacro, UnreadReason,
 };
 use serde::Serialize;
 
@@ -60,6 +62,115 @@ pub struct NotTraced {
     /// (`Rich.open()`, `super.open()`) are not read.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) subclasses: Option<Spots>,
+    /// For `impact`: the re-exports that pass the target's names on, past
+    /// which it follows only what takes those names. A rename, a removal or
+    /// an error on load breaks whatever else loads them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) barrels: Option<Barrels>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct Barrels {
+    pub(crate) total: usize,
+    pub(crate) shown: Vec<Barrel>,
+}
+
+/// A file that passes the target's names on, at its first such re-export.
+#[derive(Debug, Serialize)]
+pub(crate) struct Barrel {
+    pub(crate) file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) line: Option<u32>,
+    /// Its file is a package's entry file, which runs before any module
+    /// below the package is loaded.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) runs_first: bool,
+    /// Test files that load its file, or a module below it when it runs
+    /// first, and are not among the tests to run again.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub(crate) tests_not_listed: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+/// What `impact` narrowed at barrels for: a file, or a symbol.
+pub(crate) enum Narrowed<'a> {
+    File(&'a str),
+    Symbol(&'a Symbol),
+}
+
+/// The re-exports that pass the names of `target` on: for a file, the
+/// statements that re-export from it; for a symbol, those that re-export
+/// its name. Each counts the test files that load its file (or, for a
+/// package's entry file, a module below it) that `listed` does not hold.
+pub(crate) fn barrels(
+    full: &ArchitectureGraph,
+    target: Narrowed,
+    listed: &BTreeSet<String>,
+    cap: usize,
+) -> Option<Barrels> {
+    let imports = || {
+        full.edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::Import)
+            .flat_map(|e| &e.evidence)
+    };
+    let mut statements: Vec<&Evidence> = match target {
+        Narrowed::File(file) => imports()
+            .filter(|e| e.passes_on() && e.target.as_deref() == Some(file) && e.file != file)
+            .collect(),
+        Narrowed::Symbol(symbol) => full
+            .symbol_importers(symbol)?
+            .by_name
+            .into_iter()
+            .map(|(_, e)| e)
+            .filter(|e| e.passes_on())
+            .collect(),
+    };
+    // each file once, at its first such statement
+    statements.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+    statements.dedup_by(|a, b| a.file == b.file);
+    if statements.is_empty() {
+        return None;
+    }
+    let entries: BTreeSet<&str> = full
+        .components
+        .values()
+        .flat_map(|c| &c.evidence)
+        .filter(|e| e.runs_first())
+        .map(|e| e.file.as_str())
+        .collect();
+    let shown = statements
+        .iter()
+        .take(cap)
+        .map(|e| {
+            let barrel = e.file.as_str();
+            let runs_first = entries.contains(barrel);
+            let below = if runs_first {
+                full.imports_below(barrel)
+            } else {
+                Vec::new()
+            };
+            let loading: BTreeSet<&str> = imports()
+                .filter(|i| i.target.as_deref() == Some(barrel) && i.via().is_none())
+                .chain(below.iter().map(|(_, i)| *i))
+                .filter(|i| i.test && !listed.contains(&i.file))
+                .map(|i| i.file.as_str())
+                .collect();
+            Barrel {
+                file: e.file.clone(),
+                line: e.line,
+                runs_first,
+                tests_not_listed: loading.len(),
+            }
+        })
+        .collect();
+    Some(Barrels {
+        total: statements.len(),
+        shown,
+    })
 }
 
 pub(crate) const VALUES: &str =
@@ -209,7 +320,8 @@ pub(crate) fn with_uses(
         && found.renamed.is_empty()
         && found.uses.is_none()
         && found.values.is_none()
-        && found.subclasses.is_none();
+        && found.subclasses.is_none()
+        && found.barrels.is_none();
     (!empty).then_some(found)
 }
 

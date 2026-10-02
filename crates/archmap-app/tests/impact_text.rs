@@ -137,7 +137,10 @@ fn a_file_answers_with_its_dependents_statements_tests_and_blind_spots() {
          \n\
          Not traced:\n  \
            dynamic: 2 calls load modules by computed names, which may be this: \
-           scripts/report.cjs:4, src/app/lazy.tsx:7\n\
+           scripts/report.cjs:4, src/app/lazy.tsx:7\n  \
+           barrels: 1 file passes it on, and only what takes it from there is followed; a \
+           rename, a removal or an error on load also breaks whatever else loads that file: \
+           src/index.ts:8\n\
          \n\
          Lists are capped; verbose lists every entry.\n"
     );
@@ -420,13 +423,14 @@ fn a_python_symbol_is_taken_by_name_through_a_module_binding() {
         })
         .unwrap()
         .output;
-    // read through the package, a submodule or an `as` name
+    // read through the package, a submodule or an `as` name; the package
+    // only passes it on
     assert_eq!(
-        section(&out, "Imported by: 5"),
+        section(&out, "Imported by: 5 (1 re-export)"),
         [
             "  store/aliased.py:1",
-            "  store/app.py:1 (via store/billing/__init__.py:1)",
-            "  store/billing/__init__.py:1",
+            "  store/app.py:1 (via store/billing/__init__.py:2)",
+            "  store/billing/__init__.py:2 (export)",
             "  store/other.py:1",
             "  spec/test_pay.py:1 (test)",
         ]
@@ -441,5 +445,26 @@ fn a_python_symbol_is_taken_by_name_through_a_module_binding() {
             "  store/passed.py:1",
             "  store/unused.py:1",
         ]
+    );
+}
+
+#[test]
+fn a_python_package_that_only_passes_a_name_on_is_followed_by_that_name() {
+    let ws = scan(&fixture("python-bindings"));
+    let out = text(&ws, "pay");
+    // not a test that imports a module below the package, nor one that
+    // takes another name from it
+    assert_eq!(
+        section(&out, "Tests to run again: 1"),
+        ["  spec/test_pay.py"]
+    );
+    assert!(
+        out.contains(
+            "\n  barrels: 1 file passes it on, and only what takes it from there is followed; \
+             a rename, a removal or an error on load also breaks whatever else loads that file: \
+             store/billing/__init__.py:2 (runs first; 2 test files that load it or a module \
+             below it are not listed)\n"
+        ),
+        "{out}"
     );
 }
