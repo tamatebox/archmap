@@ -13,7 +13,7 @@ and impact without re-reading the whole repository.
 - Every node and edge must carry `Evidence` (file, line, note) explaining why it exists.
 - Small, testable changes. Add or extend a fixture under `fixtures/` for new extraction behavior.
 - Verify before claiming done: run the commands below and read the output.
-- Agent trials are a feedback loop, not a gate between phases: watch what agents still search for after using archmap on real changes, and add the smallest deterministic fact or query that would have answered it.
+- Agent trials are a feedback loop, not a gate between phases: navigate this repository with archmap itself (see "Navigating this repository"), watch what you and other agents still search for after using it on real changes, and add the smallest deterministic fact or query that would have answered it.
 - Nothing from a private repository used for dogfooding enters anything pushed or posted (code, comments, fixtures, tests, docs, commits, issues): not its name, paths, packages, counts or layout, not even in general terms. Rebuild a finding as a minimal fixture with invented names.
 - Planned work is tracked in GitHub issues; use the `backlog` skill to pick the next task, record deferred work, or close an issue with a change.
 
@@ -95,12 +95,13 @@ Never add a dependency that points against the arrow. Never make `archmap-core` 
 
 ## Navigating this repository
 
-Use archmap on itself, the way the plugin skill teaches, running the current source with `cargo run -q -p archmap-cli --`:
+Ask archmap before searching by hand, the way the plugin skill teaches, running the current source with `cargo run -q -p archmap-cli --` (the MCP tools serve the last installed binary):
 
 - `summary .` first; fixtures appear as components too, so check paths.
 - Before searching inside a crate, module or file, `query <crate|module|file>` and open the `file:line` it gives.
 - Before changing a public item, `impact <file>`.
 - In Rust, `use` declarations and module paths in code (noted `path`) are imports, but code inside macro calls (`vec![Box::new(rust::RustAnalyzer)]`, `write!(out, "{}", crate::query_text::shell_word(..))`) is not read, so also search for callers of what you change.
+- When grep, the compiler or a test answers what archmap did not (a caller, a construction site, text pinned in tests or docs), note the question and what answered it: a gap that recurs is the next smallest fact or query to add.
 
 ## Commands to run after every change
 
