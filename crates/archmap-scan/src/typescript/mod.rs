@@ -524,6 +524,27 @@ fn emit_components(
                 .evidence
                 .push(Evidence::new(display_path(index)).with_note("index"));
         }
+        // what the package's dependents load: the files its package.json
+        // names, wherever they are, and its source root's `index.*`
+        let named = package
+            .manifest
+            .as_ref()
+            .and_then(|dir| manifests.get(dir).map(|m| (dir, m)))
+            .into_iter()
+            .flat_map(|(dir, manifest)| {
+                manifest
+                    .entries
+                    .iter()
+                    .map(|entry| fs::normalize(&dir.join(entry)))
+            });
+        let entries: BTreeSet<PathBuf> = named
+            .chain(indexes.get(&package.id).map(|index| index.to_path_buf()))
+            .collect();
+        component.evidence.extend(
+            entries
+                .iter()
+                .map(|entry| Evidence::new(display_path(entry)).with_note("entry")),
+        );
         output.fragment.push_component(component);
 
         let Some((dir, manifest)) = package

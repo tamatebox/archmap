@@ -244,9 +244,11 @@ production code stands for its component there; one reached through test
 code alone (a test, or a Rust file through its unit tests) does not, since no
 dependent loads it that way: a test that a package owns reaches no manifest
 that declares the package. A package that names the files its dependents
-load (a Rust package, by its library's root) is stood for by those and its
-manifest only, so a binary or a build script reaches none of the packages
-that declare it; one that names none still is by every file it owns. It does not follow Rust code inside macro calls, and a path that
+load (a Rust package by its library's root, a TS/JS package by what its
+`package.json` names and its source root's `index.*`) is stood for by those
+and its manifest only, so a binary, a build script or a configuration file
+reaches none of the packages that declare it; one that names none still is
+by every file it owns. It does not follow Rust code inside macro calls, and a path that
 names no component or file is an error. Direct and
 transitive dependents follow production code; the tests to run again are the
 files that reach the target only through test code, and a changed

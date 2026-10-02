@@ -111,3 +111,55 @@ fn a_declaration_of_an_enclosing_package_says_so() {
         )
     );
 }
+
+#[test]
+fn a_configuration_file_does_not_stand_for_its_package() {
+    // @acme/ui's vite.config.ts imports a module its entry does not pass
+    // on; @acme/docs declares @acme/ui and imports nothing of it
+    let root = std::env::temp_dir().join(format!("archmap-ts-entries-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let write = |file: &str, text: &str| {
+        let path = root.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    write(
+        "package.json",
+        r#"{ "name": "mono", "private": true, "workspaces": ["packages/*"] }"#,
+    );
+    write(
+        "packages/ui/package.json",
+        r#"{ "name": "@acme/ui", "exports": { ".": "./src/index.ts" } }"#,
+    );
+    write("packages/ui/src/index.ts", "export const Card = 1;\n");
+    write("packages/ui/src/theme.ts", "export const theme = {};\n");
+    write(
+        "packages/ui/vite.config.ts",
+        "import { theme } from './src/theme';\nexport default { theme };\n",
+    );
+    write(
+        "packages/docs/package.json",
+        r#"{ "name": "@acme/docs", "dependencies": { "@acme/ui": "workspace:*" } }"#,
+    );
+    write("packages/docs/src/index.ts", "export const docs = 1;\n");
+    let graph = scan(&root, &ScanOptions::default()).expect("scan").graph;
+    // the package names its entry, so only it and its manifest stand for it
+    let ui = graph.component(&ComponentId::new("@acme/ui")).unwrap();
+    assert!(ui
+        .evidence
+        .iter()
+        .any(|e| e.is_entry() && e.file == "packages/ui/src/index.ts"));
+    let reach = graph.change_impact(
+        archmap_core::ChangeSeed::File("packages/ui/src/theme.ts"),
+        2,
+    );
+    let ids: BTreeSet<&str> = reach.transitive.iter().map(ComponentId::as_str).collect();
+    assert!(!ids.contains("@acme/docs"), "{ids:?}");
+    // a change the entry reaches does reach the package's dependents
+    let reach = graph.change_impact(
+        archmap_core::ChangeSeed::File("packages/ui/src/index.ts"),
+        2,
+    );
+    let ids: BTreeSet<&str> = reach.transitive.iter().map(ComponentId::as_str).collect();
+    assert!(ids.contains("@acme/docs"), "{ids:?}");
+}

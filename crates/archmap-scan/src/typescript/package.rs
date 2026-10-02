@@ -1,5 +1,6 @@
-//! `package.json`: the package name, whether it is a workspace root, and
-//! the dependencies it declares with the line of each.
+//! `package.json`: the package name, whether it is a workspace root, the
+//! files it names as what its dependents load, and the dependencies it
+//! declares with the line of each.
 
 use std::collections::BTreeMap;
 
@@ -14,6 +15,10 @@ pub(crate) struct PackageJson {
     pub workspace_patterns: Vec<String>,
     /// `"type": "module"`: Node runs the `.js` files below it as ES modules.
     pub module: bool,
+    /// The files it names as what its dependents load, relative to it, as
+    /// written: `main`, `module`, `types`, `typings`, a `browser` string and
+    /// every path of `exports` but a pattern with `*`, sorted.
+    pub entries: Vec<String>,
     /// In file order within each section, sections in [`Section::ALL`]
     /// order.
     pub declarations: Vec<Declaration>,
@@ -128,8 +133,36 @@ pub(crate) fn parse(text: &str) -> Result<PackageJson, String> {
             .filter_map(|p| p.as_str().map(str::to_owned))
             .collect(),
         module: value.get("type").and_then(|v| v.as_str()) == Some("module"),
+        entries: entries(&value),
         declarations,
     })
+}
+
+/// The files a `package.json` names as what its dependents load.
+fn entries(value: &serde_json::Value) -> Vec<String> {
+    fn paths(value: &serde_json::Value, out: &mut Vec<String>) {
+        match value {
+            serde_json::Value::String(path) if !path.contains('*') => out.push(path.clone()),
+            serde_json::Value::Array(list) => list.iter().for_each(|v| paths(v, out)),
+            serde_json::Value::Object(map) => map.values().for_each(|v| paths(v, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for key in ["main", "module", "types", "typings"] {
+        if let Some(path) = value.get(key).and_then(|v| v.as_str()) {
+            out.push(path.to_owned());
+        }
+    }
+    if let Some(path) = value.get("browser").and_then(|v| v.as_str()) {
+        out.push(path.to_owned());
+    }
+    if let Some(exports) = value.get("exports") {
+        paths(exports, &mut out);
+    }
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// The line of every key of the objects at the top level of a JSON text,
@@ -277,6 +310,26 @@ mod tests {
                 ("e", None)
             ]
         );
+    }
+
+    #[test]
+    fn the_files_dependents_load_are_read() {
+        let p = parse(
+            r#"{ "main": "./dist/index.js", "types": "./src/index.ts", "browser": { "fs": false },
+                 "exports": { ".": { "import": "./src/index.ts", "require": ["./dist/index.cjs"] },
+                              "./button": "./src/button.tsx", "./icons/*": "./src/icons/*.tsx" } }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            p.entries,
+            [
+                "./dist/index.cjs",
+                "./dist/index.js",
+                "./src/button.tsx",
+                "./src/index.ts"
+            ]
+        );
+        assert!(parse("{}").unwrap().entries.is_empty());
     }
 
     #[test]

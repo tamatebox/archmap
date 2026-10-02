@@ -237,7 +237,7 @@ impl ViewFs {
 }
 
 /// `path` with `.` and `..` resolved lexically.
-fn normalize(path: &Path) -> PathBuf {
+pub(crate) fn normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
         match component {

@@ -1603,7 +1603,8 @@ fn commonjs_exports_are_symbols() {
 
 #[test]
 fn a_package_names_its_own_index_file() {
-    // as a directory names its `index.*`: the file that says what it holds
+    // as a directory names its `index.*`: the file that says what it holds,
+    // and here what its dependents load
     let graph = scan_fixture();
     let package = graph.component(&ComponentId::new("ts-shop")).unwrap();
     let files: Vec<(&str, Option<&str>)> = package
@@ -1615,7 +1616,8 @@ fn a_package_names_its_own_index_file() {
         files,
         [
             ("package.json", Some("package.json")),
-            ("src/index.ts", Some("index"))
+            ("src/index.ts", Some("index")),
+            ("src/index.ts", Some("entry"))
         ]
     );
 }

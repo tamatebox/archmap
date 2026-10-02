@@ -339,6 +339,10 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   `next` (`app/`, `pages/`, `src/app/`, `src/pages/`), a directory named `test` or `tests` is a URL
   segment (`app/test/page.tsx` is the page `/test`), while test file names, `__tests__` and `__mocks__`
   keep their meaning
+- a package names as what its dependents load (evidence noted `entry`) the files its `package.json`
+  names (`main`, `module`, `types`, `typings`, a `browser` string, every path of `exports` but a
+  pattern) and its source root's `index.*`, so in `impact` a configuration file at the package's root
+  (`vite.config.ts`) reaches none of the packages that declare it
 
 ### TypeScript and JavaScript known gaps
 
