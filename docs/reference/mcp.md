@@ -79,10 +79,12 @@ The server keeps one scanned graph per root in memory, up to 8 roots; the
 least recently used goes first. Before each call it stamps the root: the
 files a scan would walk, with their size, modification time and (on Unix)
 change time, and the `site-packages` directories of the virtualenvs the
-Python analyzer reads. When the stamp matches the one taken before the kept
+Python analyzer reads, and the git HEAD with whether the clone is shallow.
+When the stamp matches the one taken before the kept
 graph's scan, the graph answers; otherwise the root is scanned again, so an
 edit, a new file, a deleted or renamed file, or a package installed into
-`.venv` shows in the next answer. The stamp goes by sizes and times, so an
+`.venv`, a commit, a checkout or `git fetch --unshallow` shows in the next
+answer. The stamp goes by sizes and times, so an
 edit that keeps a file's size and lands within the file system's timestamp
 resolution of the previous stamp is seen only with the next change. A
 failed scan keeps nothing, and the next call tries again; a target outside
@@ -93,6 +95,8 @@ of a symbol that `query` lists are read from the files when it asks, after
 the stamp, so they read the same files as the graph; for Rust, the module
 trees the scan built are kept beside the graph to resolve them, which adds
 a few MB to a kept root (about 3 MB for rust-lang/cargo's 1,374 files).
+The committed git history that `impact` reads for the files changed in the
+same commits is read once per kept graph, on the first `impact`.
 
 On a synthetic tree of 20,000 Python files, the first call takes about
 1.1 s and a call that reuses the graph about 0.1 s, almost all of it the

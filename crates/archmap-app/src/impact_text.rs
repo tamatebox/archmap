@@ -77,6 +77,9 @@ pub(crate) fn render(
     }
     truncated |= transitive(&mut out, result, rolled, &caps);
     truncated |= tests(&mut out, result, &caps);
+    if let Some(section) = &result.co_change {
+        truncated |= crate::co_change::render(&mut out, section, verbose);
+    }
     if let Some(found) = &result.not_traced {
         truncated |= not_traced(&mut out, found, caps.locations, true, true);
     }

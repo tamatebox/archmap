@@ -10,6 +10,7 @@
 //! Declared architecture lives in [`rules`] and is only ever compared with
 //! the graph, never merged into it.
 
+pub mod co_change;
 mod evidence;
 mod fragment;
 mod graph;

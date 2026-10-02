@@ -11,7 +11,14 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
+/// Fixtures sit inside archmap's own repository: its history stays out of
+/// their answers, which read them as roots without one.
 fn scan(root: &Path) -> Workspace {
+    static CEILING: std::sync::Once = std::sync::Once::new();
+    CEILING.call_once(|| {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+        std::env::set_var("GIT_CEILING_DIRECTORIES", fixtures);
+    });
     Workspace::scan(root, ScanMode::Full).unwrap()
 }
 

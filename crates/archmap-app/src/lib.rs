@@ -10,6 +10,7 @@
 //! `impact`, `check`), which depend on this file and never the other way.
 
 mod check;
+mod co_change;
 mod impact;
 mod impact_text;
 mod not_traced;
@@ -22,8 +23,10 @@ mod target;
 mod views;
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
+use archmap_core::history::History;
 use archmap_core::ArchitectureGraph;
 use archmap_scan::{ScanOptions, ScanReport};
 use serde::Serialize;
@@ -102,6 +105,9 @@ pub struct CheckRequest {
 pub struct Workspace {
     root: PathBuf,
     report: ScanReport,
+    /// The root's committed git history, read on the first command that
+    /// needs it.
+    history: OnceLock<History>,
 }
 
 impl Workspace {
@@ -115,6 +121,7 @@ impl Workspace {
         Ok(Workspace {
             root: root.to_path_buf(),
             report,
+            history: OnceLock::new(),
         })
     }
 
@@ -132,6 +139,14 @@ impl Workspace {
     /// manifest).
     pub fn warnings(&self) -> &[String] {
         &self.report.warnings
+    }
+
+    /// The committed history of the root, read once (bounded as
+    /// `archmap_scan::history::DEFAULT_BOUND` says).
+    fn history(&self) -> &History {
+        self.history.get_or_init(|| {
+            archmap_scan::history::read(&self.root, archmap_scan::history::DEFAULT_BOUND)
+        })
     }
 
     /// The Markdown summary at `depth`; `verbose` lists everything.

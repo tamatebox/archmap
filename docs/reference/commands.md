@@ -460,8 +460,20 @@ external dependency) gets no statement list: the answer names the `query`
 that shows where it is imported. `Transitive dependents` are the
 components reached only through others, so the direct ones are not repeated,
 and the heading counts everything reached. A test file that is the target is
-among the tests to run again, marked `(the target itself)`. `Not traced` ends
-the answer as in `query`, and gives a script's note too.
+among the tests to run again, marked `(the target itself)`. `Changed in the
+same commits` follows, from the root's committed git history: the files
+committed together with the target (a file, a symbol's file, or a
+component's files), each with the commits it shares with the target out
+of the target's and out of its own (`2 of the target's 4, 2 of its own
+2`) and its newest shared commits, those that change mostly with the
+target first, then a `history:` line
+saying what was read (`history: HEAD 6bf7b15, full clone; 6 commits read, 5
+counted; left out 1 over 30 files; renames -M50%`), or why nothing was
+(`not read (not a git repository)`); see [history.md](history.md).
+Changing together is a fact of the history, never proof of a dependency.
+`Not traced` ends the answer as in `query`, and gives a script's note too,
+and `history:` when the history read may hide files changed with the
+target (a shallow clone, older commits not read, renames not detected).
 
 Direct dependents come with their statements into the target that the
 lists below hold, those with most in production code first, written as
@@ -469,8 +481,9 @@ lists below hold, those with most in production code first, written as
 transitive dependents nearest first, with their steps from the target and
 the file the walk reached them from, or their own manifest where its
 declaration was the way (`app/lazy.tsx  2 steps, through
-src/lib/money.ts`); ties go by the name shown. Lists show 30 components, 5 statements, 20 test files
-and 3 locations per kind of `Not traced`, and their headings count the rest
+src/lib/money.ts`); ties go by the name shown. Lists show 30 components, 5 statements, 20 test files, 5 files changed in
+the same commits with 2 commits each, and 3 locations per kind of `Not
+traced`, and their headings count the rest
 (`6, showing 5`); a capped statement list ends with the components the rest
 are in, most first (`13 more in: app/x 5, app/y 4, app/z 2, +2 more
 components`); an answer with a capped list ends by saying so, and
@@ -488,7 +501,9 @@ the text's order;
 the language; `tests` as `{"total", "shown"}` with every file by path, and
 `left_out` as `{"total", "shown"}` with every test file and the `mocks` of
 each, by `file`, `line` and the `target` it replaces, when a mock left one
-out; `not_traced` with every location of each kind; and for an import name
+out; `co_change` with the history read and every file with every shared
+commit (see [history.md](history.md#files-changed-in-the-same-commits));
+`not_traced` with every location of each kind; and for an import name
 `module`, with `target` `null`. Earlier versions capped this JSON unless
 `--verbose`, listed `direct` and `transitive` as ids and the statements as
 `shown`.

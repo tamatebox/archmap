@@ -1469,6 +1469,16 @@ impl ArchitectureGraph {
     pub fn component_for_path(&self, file: &str) -> Option<&Component> {
         PathIndex::new(self).owner(file)
     }
+
+    /// The owner of each of `files`, as [`Self::component_for_path`] finds
+    /// it, with one index for them all.
+    pub fn components_for_paths<'p>(
+        &self,
+        files: impl IntoIterator<Item = &'p str>,
+    ) -> Vec<(&'p str, Option<&Component>)> {
+        let index = PathIndex::new(self);
+        files.into_iter().map(|f| (f, index.owner(f))).collect()
+    }
 }
 
 /// The statements that import a symbol, for a symbol query.

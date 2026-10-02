@@ -221,6 +221,78 @@ async fn impact_answers_with_the_shared_layers_text_or_json() {
     client.cancel().await.unwrap();
 }
 
+/// Commit everything in `dir`, with fixed identities and dates and the
+/// user's git config kept apart.
+fn commit(dir: &Path, day: u32) {
+    let date = format!("2026-01-{day:02}T00:00:00Z");
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "A")
+            .env("GIT_AUTHOR_EMAIL", "a@example.com")
+            .env("GIT_COMMITTER_NAME", "A")
+            .env("GIT_COMMITTER_EMAIL", "a@example.com")
+            .env("GIT_AUTHOR_DATE", &date)
+            .env("GIT_COMMITTER_DATE", &date)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    if !dir.join(".git").exists() {
+        git(&["init", "-q", "-b", "main"]);
+    }
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "change"]);
+}
+
+#[tokio::test]
+async fn impact_lists_the_files_changed_in_the_same_commits_as_the_app_does() {
+    let repo = Repo::python("co-change");
+    repo.write("pkg/rates.toml", "rate = 1\n");
+    commit(&repo.0, 1);
+    repo.write("pkg/__init__.py", "def run():\n    return 1\n")
+        .write("pkg/rates.toml", "rate = 2\n");
+    commit(&repo.0, 2);
+    let client = connect(Server::new(repo.0.clone())).await;
+    let ws = Workspace::scan(&repo.0, ScanMode::Full).unwrap();
+    for format in [Format::Text, Format::Json] {
+        let expected = ws
+            .impact(&ImpactRequest {
+                target: "pkg/__init__.py",
+                depth: DEFAULT_DEPTH,
+                format,
+                verbose: false,
+            })
+            .unwrap()
+            .output;
+        let mut args = serde_json::json!({"target": "pkg/__init__.py"});
+        if format == Format::Json {
+            args["format"] = "json".into();
+        }
+        assert_eq!(ok(&call(&client, "impact", args).await), expected);
+    }
+    let text = ok(&call(
+        &client,
+        "impact",
+        serde_json::json!({"target": "pkg/__init__.py"}),
+    )
+    .await);
+    assert!(
+        text.contains("\nChanged in the same commits: 1 file, in the 2 commits that changed pkg/__init__.py\n  pkg/rates.toml  2 of the target's 2, 2 of its own 2: "),
+        "{text}"
+    );
+    client.cancel().await.unwrap();
+}
+
 #[tokio::test]
 async fn every_tool_answers_on_a_fixture() {
     let client = connect(Server::new(fixture("simple-python-project"))).await;

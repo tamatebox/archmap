@@ -2,6 +2,8 @@
 //! [`crate::impact`], rendered as JSON there or as text by
 //! [`crate::query_text`] and [`crate::impact_text`].
 
+use archmap_core::co_change::CoChange;
+use archmap_core::history::{HistoryState, Renames};
 use archmap_core::{
     Component, ComponentId, DynamicImport, Edge, Evidence, Symbol, SymbolId, SymbolUses,
     UnmappedImport,
@@ -200,6 +202,10 @@ pub struct ImpactResult<'a> {
     /// For a symbol: the statements that take its file whole.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub may_use: Option<ImportSites<'a>>,
+    /// Files changed in the same commits as the target, from the committed
+    /// history.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub co_change: Option<CoChangeSection<'a>>,
     /// What could reach the target unseen, from what analyzers record.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub not_traced: Option<NotTraced>,
@@ -324,4 +330,39 @@ pub struct ImportSite<'a> {
     /// The statement's evidence, every field of it in JSON.
     #[serde(flatten)]
     pub(crate) evidence: &'a Evidence,
+}
+
+/// The files changed in the same commits as the target, and the history
+/// they come from.
+#[derive(Debug, Serialize)]
+pub struct CoChangeSection<'a> {
+    /// The history read, apart from its commits and files.
+    pub history: HistoryCoverage<'a>,
+    /// The target's paths at HEAD that the view starts from.
+    pub target_paths: Vec<String>,
+    /// The view; absent when the history was not read.
+    #[serde(flatten)]
+    pub view: Option<CoChange>,
+    /// How the heading names the target.
+    #[serde(skip)]
+    pub(crate) label: String,
+}
+
+/// How the history was read, for Coverage.
+#[derive(Debug, Serialize)]
+pub struct HistoryCoverage<'a> {
+    #[serde(flatten)]
+    pub state: &'a HistoryState,
+    /// The root's path from the repository's top.
+    #[serde(skip_serializing_if = "str::is_empty")]
+    pub prefix: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_version: Option<&'a str>,
+    /// Commits asked for, and whether the read stopped there.
+    pub bound: usize,
+    pub reached_bound: bool,
+    #[serde(flatten)]
+    pub renames: &'a Renames,
+    /// Paths that are not UTF-8, skipped.
+    pub skipped_paths: usize,
 }

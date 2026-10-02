@@ -28,7 +28,19 @@ fn sites(statements: &serde_json::Value) -> serde_json::Value {
 }
 
 fn archmap() -> Command {
+    keep_own_history_out();
     Command::new(env!("CARGO_BIN_EXE_archmap"))
+}
+
+/// Fixtures sit inside archmap's own repository: its history stays out of
+/// their answers, in the binary and in process, which read them as roots
+/// without one.
+fn keep_own_history_out() {
+    static CEILING: std::sync::Once = std::sync::Once::new();
+    CEILING.call_once(|| {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+        std::env::set_var("GIT_CEILING_DIRECTORIES", fixtures);
+    });
 }
 
 /// A throwaway directory containing one tiny Python package.
@@ -2359,6 +2371,7 @@ fn the_cli_prints_what_the_shared_layer_answers() {
         load_rules, CheckRequest, Format, ImpactRequest, QueryRequest, ScanMode, Workspace,
         DEFAULT_DEPTH,
     };
+    keep_own_history_out();
     let root = python_fixture();
     let ws = Workspace::scan(&root, ScanMode::Full).unwrap();
     let query = |target, format| {

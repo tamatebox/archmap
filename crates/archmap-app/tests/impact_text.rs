@@ -34,7 +34,14 @@ impl Drop for Repo {
     }
 }
 
+/// Fixtures sit inside archmap's own repository: its history stays out of
+/// their answers, which read them as roots without one.
 fn scan(root: &Path) -> Workspace {
+    static CEILING: std::sync::Once = std::sync::Once::new();
+    CEILING.call_once(|| {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+        std::env::set_var("GIT_CEILING_DIRECTORIES", fixtures);
+    });
     Workspace::scan(root, ScanMode::Full).unwrap()
 }
 
@@ -135,6 +142,8 @@ fn a_file_answers_with_its_dependents_statements_tests_and_blind_spots() {
          Tests to run again: 2\n  \
            tests/helpers.ts\n  \
            tests/money.test.ts\n\
+         \n\
+         Changed in the same commits: not read (not a git repository)\n\
          \n\
          Not traced:\n  \
            dynamic: 2 calls load modules by computed names, which may be this: \

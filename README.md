@@ -76,7 +76,8 @@ The graph is meant to be consumed by agents as much as by humans:
 - `archmap query` answers "what does component X expose and depend on", and for a Rust or
   TS/JS symbol "where is it used"
 - `archmap impact` answers "if I touch this file or component, what else might be affected",
-  with the import statements to open and the tests to run again
+  with the import statements to open, the tests to run again and the files changed in the
+  same commits in the git history
 - `archmap check` tells an agent or CI whether a change broke a declared dependency rule,
   and points out structural signals that are observations, not failures
 - every fact points to `file:line` evidence, so an agent can verify and jump to the source
@@ -107,6 +108,10 @@ Details: [commands](docs/reference/commands.md), [MCP server](docs/reference/mcp
 
 Other languages are counted in `summary`, not analyzed. Each analyzer's
 behavior and known gaps are in [analyzers.md](docs/reference/analyzers.md).
+Besides code, `impact` reads the root's committed git history with the git
+CLI ([history.md](docs/reference/history.md)): commits, their parents and
+times, and the files each changed, renames included; never uncommitted
+changes, authors or messages, and never the network.
 No analyzer sees runtime coupling (HTTP, databases, queues, subprocesses,
 configuration-driven loading) or follows a module loaded by a name computed
 at runtime, and nothing is inferred; `summary`, `query` and `impact` say what
@@ -197,7 +202,7 @@ comes later.
 | 3 Rules & Declared Architecture | declared components and layers, cycles, forbidden dependencies, drift, CI `check` | done: deny rules, layers, allow lists, coverage, cycles with a file-level reading, undeclared imports, stale declarations; structural signals |
 | 4 Deep Static Analysis | precise symbol resolution, callers and reference graph, type relationships, selective data flow, test-to-code links; on demand for one selected area | started: where a Rust or TS/JS symbol is used, read on demand by `query`; agent traces point first to callers and references, then selective data flow |
 | 5 Cross-system Graph | OpenAPI, Terraform, databases, HTTP, events, CI/build/deploy relationships | planned |
-| 6 Change & Work Graph | Git history, churn and co-change; Issue → PR → Commit → File; PR overlap and other explicit work links | planned |
+| 6 Change & Work Graph | 6A local git history: commits, renames and the files changed together; 6B issues, pull requests and their explicit links from a fetched GitHub snapshot; 6C code to work and work to code at query time, Issue → PR → Commit → File | 6A: files changed in the same commits in `impact`; 6B and 6C planned |
 | 7 Semantic Enrichment | LLM naming, responsibilities, intent and other semantic interpretations, stored separately as inferred facts | planned |
 | 8 Agent Interface | plugin and skill for agents; MCP server over the same engine | MCP server (`archmap mcp`), plugin and skill |
 | 9 Incremental / Runtime | incremental scans and caches; runtime traces and other observed execution relationships | planned |
@@ -224,6 +229,16 @@ The roadmap therefore grows in three directions:
 - **time and work**: Phase 6 connects the current structure to changes
   and explicit development activity: how an area changed, what tends to
   change with it, and which issue and PR introduced it.
+
+Phase 6 keeps facts and views apart. The facts are what the history and
+the work tracker record: commits with their parents, times and changed
+files, and later issues, pull requests and the links GitHub records between
+them. Co-change, churn, shared files and the paths from code to work are
+views computed when a command asks, with settings of their own, never
+stored and never called inferred. Every answer carries what was read (a
+shallow clone, a bounded read, a snapshot's range), so a missing link never
+reads as no link. The value lies in linking code and work: why an area
+changed, what changes with it, and which issue and pull request did it.
 
 Through Phase 6, the emphasis stays on relationships that can be extracted
 deterministically and attached to evidence. Semantic interpretation begins

@@ -1052,7 +1052,7 @@ pub(crate) fn import_counts(production: usize, tests: usize) -> Option<String> {
     }
 }
 
-fn plural(n: usize, noun: &str) -> String {
+pub(crate) fn plural(n: usize, noun: &str) -> String {
     if n == 1 {
         format!("1 {noun}")
     } else {
@@ -1315,6 +1315,12 @@ pub(crate) fn not_traced(
             "  barrels: {what}, and only what takes it from {from} is followed; a rename, a \
              removal or an error on load also breaks whatever else loads {them}: {}",
             with_more(&places, b.total)
+        ));
+    }
+    if let Some(h) = &found.history {
+        lines.push(format!(
+            "  history: files changed in the same commits may be missing: {}",
+            h.gaps.join("; ")
         ));
     }
     if !lines.is_empty() {

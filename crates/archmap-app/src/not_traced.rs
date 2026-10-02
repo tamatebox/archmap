@@ -67,6 +67,16 @@ pub struct NotTraced {
     /// an error on load breaks whatever else loads them.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) barrels: Option<Barrels>,
+    /// For `impact`: what in the history read may hide files changed in
+    /// the same commits as the target.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) history: Option<HistoryGaps>,
+}
+
+/// Each in words: `the clone is shallow, so the history ends at its depth`.
+#[derive(Debug, Serialize)]
+pub(crate) struct HistoryGaps {
+    pub(crate) gaps: Vec<&'static str>,
 }
 
 #[derive(Debug, Serialize)]

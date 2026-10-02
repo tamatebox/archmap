@@ -8,6 +8,7 @@ use archmap_core::{
     UnmappedImport,
 };
 
+use crate::co_change::{self, Changed};
 use crate::not_traced::{barrels, not_traced, Narrowed, NotTraced, Own, Place, Subject};
 use crate::resolve::{resolve, Resolved};
 use crate::target::{component_file, fold, namesakes, reject_outside, unquote};
@@ -279,6 +280,29 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
         not_traced.get_or_insert_with(NotTraced::default).barrels = Some(found);
     }
 
+    // the files changed in the same commits, from the committed history
+    let changed = match &traced {
+        Traced::File(file, _) => Some(Changed::File {
+            path: file,
+            symbol: false,
+        }),
+        Traced::Symbol(symbol) => symbol.location().map(|e| Changed::File {
+            path: &e.file,
+            symbol: true,
+        }),
+        Traced::Component(component) => component
+            .path
+            .is_some()
+            .then_some(Changed::Component(component)),
+    };
+    let co_change = changed.map(|changed| {
+        let history = ws.history();
+        if let Some(gaps) = co_change::gaps(history) {
+            not_traced.get_or_insert_with(NotTraced::default).history = Some(gaps);
+        }
+        co_change::section(history, full, changed)
+    });
+
     let about = match traced {
         Traced::Component(_) => About::Component,
         Traced::File(file, _) => About::File(file),
@@ -314,6 +338,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
         importers,
         imports_below,
         may_use,
+        co_change,
         not_traced,
         about,
     };
@@ -499,6 +524,7 @@ fn import_name_impact<'a>(
         importers: Some(importers),
         imports_below: None,
         may_use: None,
+        co_change: None,
         not_traced: None,
         about: About::ImportName,
     }
