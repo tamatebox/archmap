@@ -120,10 +120,10 @@ What works today, by the [roadmap](#roadmap) phase it belongs to:
 | Public symbols with signatures | 1 | ✅ | ✅ | ◐ |
 | Imports resolved to the file they load | 1 | ◐ | ✅ | ◐ |
 | Re-exports followed to the defining file | 1 | ✅ | — | ✅ |
-| Names each import takes | 1 | ◐ | ✅ | ◐ |
+| Names each import takes | 1 | ◐ | ✅ | ✅ |
 | Imports without an edge, with the reason | 1 | ✅ | ✅ | ✅ |
 | `summary` and `query`, down to one file | 2 | ✅ | ✅ | ✅ |
-| `query` and `impact` on a symbol, by the names imports take | 2 | ◐ | ◐ | ◐ |
+| `query` and `impact` on a symbol, by the names imports take | 2 | ◐ | ◐ | ✅ |
 | `impact` file by file | 2 | ✅ | ◐ | ✅ |
 | Test code counted apart from production code | 2 | ✅ | ✅ | ✅ |
 | `check` rules and cycles | 3 | ✅ | ✅ | ◐ |
@@ -149,9 +149,6 @@ The gaps behind the marks:
   submodule is not followed.
 - TS/JS imports: aliases defined only in a bundler configuration or a
   `jsconfig.json` are not followed.
-- TS/JS names: `require` and `import()` take the whole module, so the
-  names destructured from them (`const { pad } = require('./format')`) are
-  not read, and `query` on a symbol lists such files under `May use`.
 - TS/JS symbols: declarations inside `declare global { .. }` give none.
 - TS/JS `check`: only `type` written in an import marks it as types only,
   so a type imported without it (`import { Money }` for an interface) can

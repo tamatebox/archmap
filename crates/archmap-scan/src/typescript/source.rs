@@ -11,12 +11,12 @@ use std::path::Path;
 use archmap_core::{SymbolKind, WHOLE_MODULE};
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    Argument, AssignmentExpression, AssignmentPattern, AssignmentTarget, CallExpression, Class,
-    ClassElement, Declaration, Decorator, ExportDefaultDeclarationKind, Expression,
-    FormalParameter, FormalParameters, Function, ImportDeclarationSpecifier, ImportExpression,
-    MethodDefinitionKind, NewExpression, ObjectProperty, ObjectPropertyKind, Statement,
-    TSAccessibility, TSImportEqualsDeclaration, TSImportType, TSImportTypeQualifier,
-    TSModuleReference,
+    Argument, AssignmentExpression, AssignmentPattern, AssignmentTarget, BindingPattern,
+    CallExpression, Class, ClassElement, Declaration, Decorator, ExportDefaultDeclarationKind,
+    Expression, FormalParameter, FormalParameters, Function, ImportDeclarationSpecifier,
+    ImportExpression, MethodDefinitionKind, NewExpression, ObjectProperty, ObjectPropertyKind,
+    Statement, StaticMemberExpression, TSAccessibility, TSImportEqualsDeclaration, TSImportType,
+    TSImportTypeQualifier, TSModuleReference, VariableDeclarator,
 };
 use oxc_ast::AstKind;
 use oxc_ast_visit::{walk, Visit};
@@ -412,6 +412,7 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
         functions: Vec::new(),
         imports: Vec::new(),
         dynamic: Vec::new(),
+        taken: BTreeMap::new(),
         module_syntax: false,
         has_jsx: false,
     };
@@ -544,12 +545,58 @@ struct Calls<'s> {
     functions: Vec<bool>,
     imports: Vec<ImportStatement>,
     dynamic: Vec<DynamicCall>,
+    /// The names that a `require` or `import()` call, by its start, takes
+    /// at once: those its result is destructured into (`const { a } =
+    /// require('m')`) or the property read from it (`require('m').a`).
+    taken: BTreeMap<u32, Vec<String>>,
     /// `import.meta`, or in JavaScript `require` or `module.exports`.
     module_syntax: bool,
     has_jsx: bool,
 }
 
+/// The start of the `require` or `import()` call whose module
+/// `expression` is, through parentheses: `require('m')`, or an
+/// `import('m')` awaited. An `import()` not awaited is a promise, whose
+/// `then` is no name of the module.
+fn loading_call(expression: &Expression) -> Option<u32> {
+    match expression {
+        Expression::ParenthesizedExpression(p) => loading_call(&p.expression),
+        Expression::AwaitExpression(a) => match a.argument.without_parentheses() {
+            Expression::ImportExpression(i) => Some(i.span.start),
+            other => loading_call(other),
+        },
+        Expression::CallExpression(c) if matches!(&c.callee, Expression::Identifier(callee) if callee.name == "require") => {
+            Some(c.span.start)
+        }
+        _ => None,
+    }
+}
+
+/// The keys an object pattern destructures, when every one is written out
+/// and nothing collects the rest.
+fn destructured(pattern: &BindingPattern) -> Option<Vec<String>> {
+    let BindingPattern::ObjectPattern(object) = pattern else {
+        return None;
+    };
+    if object.rest.is_some() {
+        return None;
+    }
+    object
+        .properties
+        .iter()
+        .map(|p| p.key.static_name().map(|name| name.into_owned()))
+        .collect()
+}
+
 impl Calls<'_> {
+    /// The names the loading call at `start` takes: those read at once, or
+    /// the whole module.
+    fn names_of(&mut self, start: u32) -> Vec<String> {
+        self.taken
+            .remove(&start)
+            .unwrap_or_else(|| vec![WHOLE_MODULE.to_owned()])
+    }
+
     /// A statement that takes `name`, as a type only when `type_only`.
     /// Calls on one line that load one module the same way are one
     /// statement, with the names of all (`import('./m').A | import('./m').B`).
@@ -646,13 +693,15 @@ impl<'a> Visit<'a> for Calls<'_> {
         }
         if let (Some(note), Some(first)) = (note, it.arguments.first()) {
             match first.as_expression().and_then(literal) {
-                Some(specifier) => self.import(
-                    specifier,
-                    it.span.start,
-                    note,
-                    WHOLE_MODULE.to_owned(),
-                    false,
-                ),
+                Some(specifier) => {
+                    let names = match note {
+                        "require" => self.names_of(it.span.start),
+                        _ => vec![WHOLE_MODULE.to_owned()],
+                    };
+                    for name in names {
+                        self.import(specifier.clone(), it.span.start, note, name, false);
+                    }
+                }
                 // a mock of a computed name loads nothing to point at
                 None if note == "require" => self.dynamic(note, it.span.start),
                 None => {}
@@ -670,16 +719,33 @@ impl<'a> Visit<'a> for Calls<'_> {
 
     fn visit_import_expression(&mut self, it: &ImportExpression<'a>) {
         match literal(&it.source) {
-            Some(specifier) => self.import(
-                specifier,
-                it.span.start,
-                "import()",
-                WHOLE_MODULE.to_owned(),
-                false,
-            ),
+            Some(specifier) => {
+                for name in self.names_of(it.span.start) {
+                    self.import(specifier.clone(), it.span.start, "import()", name, false);
+                }
+            }
             None => self.dynamic("import()", it.span.start),
         }
         walk::walk_import_expression(self, it);
+    }
+
+    fn visit_variable_declarator(&mut self, it: &VariableDeclarator<'a>) {
+        if let (Some(start), Some(names)) = (
+            it.init.as_ref().and_then(loading_call),
+            destructured(&it.id),
+        ) {
+            self.taken.insert(start, names);
+        }
+        walk::walk_variable_declarator(self, it);
+    }
+
+    fn visit_static_member_expression(&mut self, it: &StaticMemberExpression<'a>) {
+        if let Some(start) = loading_call(&it.object) {
+            self.taken
+                .entry(start)
+                .or_insert_with(|| vec![it.property.name.to_string()]);
+        }
+        walk::walk_static_member_expression(self, it);
     }
 
     fn visit_ts_import_type(&mut self, it: &TSImportType<'a>) {
@@ -1723,6 +1789,53 @@ export default local;
             .map(|d| (d.call, d.line, d.local))
             .collect();
         assert_eq!(dynamic, [("require", 3, true), ("import()", 11, false)]);
+    }
+
+    #[test]
+    fn a_destructured_require_or_import_takes_its_names() {
+        let file = parse(
+            Path::new("x.js"),
+            "const { pad, trim: t } = require('./a');\n\
+             async function f() { const { default: run } = await import('./b'); }\n\
+             const { x, ...rest } = require('./c');\n\
+             const whole = require('./d');\n\
+             const one = require('./e').one;\n\
+             require('./f').go();\n\
+             const { [key]: k } = require('./g');\n\
+             const { h } = require('./h').inner;\n\
+             import('./i').then((m) => m.i);\n\
+             async function g() { return (await import('./j')).j; }\n",
+        )
+        .unwrap();
+        let names: Vec<(&str, Vec<&str>)> = file
+            .imports
+            .iter()
+            .map(|i| {
+                (
+                    i.specifier.as_str(),
+                    i.names.iter().map(String::as_str).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("./a", vec!["pad", "trim"]),
+                ("./b", vec!["default"]),
+                // a rest element, a computed key: the whole module
+                ("./c", vec!["*"]),
+                ("./d", vec!["*"]),
+                // a property read at once
+                ("./e", vec!["one"]),
+                ("./f", vec!["go"]),
+                ("./g", vec!["*"]),
+                // what is destructured is `inner`'s, which the file exports
+                ("./h", vec!["inner"]),
+                // a promise's `then` is none of the module's names
+                ("./i", vec!["*"]),
+                ("./j", vec!["j"]),
+            ]
+        );
     }
 
     #[test]

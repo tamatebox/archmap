@@ -1421,12 +1421,13 @@ fn calls_that_load_modules_are_imports() {
         )
     };
     for expected in [
+        // `const { pad } = require(..)` takes `pad`
         row(
             "scripts/report.cjs:1",
             "scripts/format.cjs",
             "require",
             Scope::Module,
-            &["*"],
+            &["pad"],
             false,
             false,
         ),

@@ -167,8 +167,11 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   become `import` edges too, noted with the call: `require`, `import()`, and the module calls of Vitest
   and Jest (`vi.mock`, `vi.doMock`, `vi.unmock`, `vi.importActual`, `vi.importMock`, `jest.mock`,
   `jest.doMock`, `jest.unmock`, `jest.requireActual`, `jest.requireMock`); inside a function body
-  (`lazy(() => import('./chart'))`) their evidence is `local`, and they take the whole module (`*`);
-  `require` and `import()` of a computed specifier are dynamic imports
+  (`lazy(() => import('./chart'))`) their evidence is `local`; a `require`, or an `import()` awaited, takes
+  the names its result is destructured into at once or the property read from it
+  (`const { pad, trim: t } = require('./format')`, `const { run } = await import('./job')`,
+  `require('./fn').default`), and any other call the whole module (`*`), a destructuring with a rest
+  element or a computed key included; `require` and `import()` of a computed specifier are dynamic imports
 - an `import()` type (`typeof import('./m')`, `import('./m').Wallet`) is an `import` edge that takes types
   only: `*`, or the first name after it; calls on one line that load one module with one note are one
   statement with the names of all (`import('./m').A | import('./m').B` takes `A` and `B`)
@@ -258,10 +261,10 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
 - Routes are read for Next.js only: in the route directories of Remix (`app/routes/`), SvelteKit
   (`src/routes/`), Nuxt and Astro (`pages/`), a directory named `test` or `tests` is test code by the
   rule above, so its imports carry `test`.
-- `require`, `import()` and the mock calls take the whole module: destructured names
-  (`const { pad } = require('./format.cjs')`) are not read, so `query` on a symbol lists them under
-  `May use`. A `vi.mock` with a factory, which never loads the real module, is an edge all the same,
-  noted `vi.mock`.
+- The names that a `require` or an `import()` takes later (`import('./m').then((m) => m.a)`, a result
+  kept in a variable and read afterwards) and the names a mock replaces are not read: such calls take
+  the whole module, so `query` on a symbol lists them under `May use`. A `vi.mock` with a factory, which
+  never loads the real module, is an edge all the same, noted `vi.mock`.
 - A `require` that a function takes as a parameter (a bundle's module wrapper, AMD's `define`) is
   not Node's and gives nothing, but a committed UMD bundle (`module.exports =
   factory(require('jquery'))`) reads as code that imports `jquery`; list such files in an `.ignore`
