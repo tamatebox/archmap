@@ -204,7 +204,9 @@ fn optional_declarations(
 
 /// Where each declaration of a `pyproject.toml` is written, by the section
 /// its evidence note names and its normalized name: a second, typed read
-/// that keeps the place of each value. A manifest it cannot read that way
+/// that keeps the place of each list item and of each poetry key (a key has
+/// one whatever its value, a dotted `sqlalchemy.version = "^2"` included,
+/// while a dotted key's value has none). A manifest it cannot read that way
 /// gives no lines.
 fn declaration_lines(text: &str) -> BTreeMap<(String, String), u32> {
     #[derive(Deserialize, Default)]
@@ -231,15 +233,15 @@ fn declaration_lines(text: &str) -> BTreeMap<(String, String), u32> {
     #[derive(Deserialize, Default)]
     #[serde(default)]
     struct Poetry {
-        dependencies: BTreeMap<String, Spanned<Value>>,
+        dependencies: BTreeMap<Spanned<String>, Value>,
         #[serde(rename = "dev-dependencies")]
-        dev: BTreeMap<String, Spanned<Value>>,
+        dev: BTreeMap<Spanned<String>, Value>,
         group: BTreeMap<String, PoetryGroup>,
     }
     #[derive(Deserialize, Default)]
     #[serde(default)]
     struct PoetryGroup {
-        dependencies: BTreeMap<String, Spanned<Value>>,
+        dependencies: BTreeMap<Spanned<String>, Value>,
     }
     #[derive(Deserialize, Default)]
     #[serde(default)]
@@ -253,9 +255,8 @@ fn declaration_lines(text: &str) -> BTreeMap<(String, String), u32> {
     };
     let positions = Lines::new(text);
     let mut lines = BTreeMap::new();
-    let mut at = |section: String, name: String, value: &Spanned<Value>| {
-        let line = positions.of(value.span().start);
-        lines.entry((section, name)).or_insert(line);
+    let mut at = |section: String, name: String, start: usize| {
+        lines.entry((section, name)).or_insert(positions.of(start));
     };
     let mut lists = vec![(
         "[project] dependencies".to_owned(),
@@ -274,7 +275,7 @@ fn declaration_lines(text: &str) -> BTreeMap<(String, String), u32> {
     for (section, specs) in lists {
         for spec in specs {
             if let Some(name) = spec.get_ref().as_str().and_then(requirement_name) {
-                at(section.clone(), name, spec);
+                at(section.clone(), name, spec.span().start);
             }
         }
     }
@@ -293,8 +294,12 @@ fn declaration_lines(text: &str) -> BTreeMap<(String, String), u32> {
         ));
     }
     for (section, table) in tables {
-        for (key, value) in table {
-            at(section.clone(), normalize_dist_name(key), value);
+        for key in table.keys() {
+            at(
+                section.clone(),
+                normalize_dist_name(key.get_ref()),
+                key.span().start,
+            );
         }
     }
     lines
@@ -380,7 +385,7 @@ mod tests {
         let text = "[project]\nname = \"shop\"\ndependencies = [\n  \"requests>=2\",\n  \"PyYAML\",\n]\n\n\
                     [project.optional-dependencies]\ndev = [\"pytest\"]\n\n\
                     [dependency-groups]\nlint = [\"ruff\", {include-group = \"dev\"}]\n\n\
-                    [tool.poetry.dependencies]\npython = \"^3.11\"\nsqlalchemy = \"^2\"\n\n\
+                    [tool.poetry.dependencies]\npython = \"^3.11\"\nsqlalchemy = \"^2\"\ncelery.version = \"^5\"\n\n\
                     [tool.poetry.group.test.dependencies]\nhypothesis = \"*\"\n\n\
                     [tool.uv]\ndev-dependencies = [\"mypy\"]\n";
         let parsed = parse_pyproject(text, Path::new("pyproject.toml")).unwrap();
@@ -388,15 +393,21 @@ mod tests {
             deps.iter().map(|d| (d.name.clone(), d.line)).collect()
         };
         let at = |name: &str, line| (name.to_owned(), Some(line));
+        // a dotted key (`celery.version`) has its line like any other
         assert_eq!(
             lines(&parsed.dependencies),
-            [at("requests", 4), at("pyyaml", 5), at("sqlalchemy", 16)]
+            [
+                at("requests", 4),
+                at("pyyaml", 5),
+                at("celery", 17),
+                at("sqlalchemy", 16)
+            ]
         );
         assert_eq!(
             lines(&parsed.optional_dependencies),
             [
-                at("hypothesis", 19),
-                at("mypy", 22),
+                at("hypothesis", 20),
+                at("mypy", 23),
                 at("pytest", 9),
                 at("ruff", 12)
             ]

@@ -91,11 +91,11 @@ struct RawManifest {
     lib: Option<RawLib>,
     workspace: Option<RawWorkspace>,
     #[serde(default)]
-    dependencies: BTreeMap<String, Spanned<RawDependency>>,
+    dependencies: BTreeMap<String, RawDependency>,
     #[serde(default, rename = "build-dependencies")]
-    build_dependencies: BTreeMap<String, Spanned<RawDependency>>,
+    build_dependencies: BTreeMap<String, RawDependency>,
     #[serde(default, rename = "dev-dependencies")]
-    dev_dependencies: BTreeMap<String, Spanned<RawDependency>>,
+    dev_dependencies: BTreeMap<String, RawDependency>,
 }
 
 #[derive(Deserialize)]
@@ -111,7 +111,55 @@ struct RawLib {
 #[derive(Deserialize)]
 struct RawWorkspace {
     #[serde(default)]
-    dependencies: BTreeMap<String, Spanned<RawDependency>>,
+    dependencies: BTreeMap<String, RawDependency>,
+}
+
+/// The tables of dependencies again, by the position of each key: a key
+/// has one whether its value is a string, an inline table, a dotted key
+/// (`serde.workspace = true`) or a `[dependencies.serde]` table, while a
+/// dotted key's value has none.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct KeyPlaces {
+    dependencies: BTreeMap<Spanned<String>, toml::Value>,
+    #[serde(rename = "build-dependencies")]
+    build_dependencies: BTreeMap<Spanned<String>, toml::Value>,
+    #[serde(rename = "dev-dependencies")]
+    dev_dependencies: BTreeMap<Spanned<String>, toml::Value>,
+    workspace: WorkspaceKeyPlaces,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct WorkspaceKeyPlaces {
+    dependencies: BTreeMap<Spanned<String>, toml::Value>,
+}
+
+/// The table that declares a dependency: its kind's table, or the
+/// workspace's.
+const WORKSPACE_TABLE: &str = "[workspace.dependencies]";
+
+/// The line of each dependency, by its table and name, from a second read
+/// that keeps the keys' positions. A manifest it cannot read that way gives
+/// no lines; the first read still gives its dependencies.
+fn dependency_lines(text: &str) -> BTreeMap<(&'static str, String), u32> {
+    let Ok(places) = toml::from_str::<KeyPlaces>(text) else {
+        return BTreeMap::new();
+    };
+    let lines = Lines::new(text);
+    let tables = [
+        (DependencyKind::Normal.section(), &places.dependencies),
+        (DependencyKind::Build.section(), &places.build_dependencies),
+        (DependencyKind::Dev.section(), &places.dev_dependencies),
+        (WORKSPACE_TABLE, &places.workspace.dependencies),
+    ];
+    let mut found = BTreeMap::new();
+    for (table, keys) in tables {
+        for key in keys.keys() {
+            found.insert((table, key.get_ref().clone()), lines.of(key.span().start));
+        }
+    }
+    found
 }
 
 #[derive(Deserialize)]
@@ -138,39 +186,46 @@ pub fn parse_manifest(text: &str, manifest_path: &Path) -> Result<ParsedManifest
         .map(Path::to_path_buf)
         .unwrap_or_default();
 
-    // the line its value starts on
-    let positions = Lines::new(text);
-    let line = |raw: &Spanned<RawDependency>| Some(positions.of(raw.span().start));
-    let convert = |table: &BTreeMap<String, Spanned<RawDependency>>,
-                   kind: DependencyKind|
+    let lines = dependency_lines(text);
+    let convert = |table: &BTreeMap<String, RawDependency>,
+                   kind: DependencyKind,
+                   declared_in: &'static str|
      -> Vec<CargoDependency> {
         table
             .iter()
-            .map(|(name, raw)| match raw.get_ref() {
-                RawDependency::Version(_) => CargoDependency {
-                    name: name.clone(),
-                    package: None,
-                    path: None,
-                    workspace: false,
-                    kind,
-                    line: line(raw),
-                },
-                RawDependency::Detailed(d) => CargoDependency {
-                    name: name.clone(),
-                    package: d.package.clone(),
-                    path: d.path.as_deref().map(|p| normalize(&dir.join(p))),
-                    workspace: d.workspace,
-                    kind,
-                    line: line(raw),
-                },
+            .map(|(name, raw)| {
+                let line = lines.get(&(declared_in, name.clone())).copied();
+                match raw {
+                    RawDependency::Version(_) => CargoDependency {
+                        name: name.clone(),
+                        package: None,
+                        path: None,
+                        workspace: false,
+                        kind,
+                        line,
+                    },
+                    RawDependency::Detailed(d) => CargoDependency {
+                        name: name.clone(),
+                        package: d.package.clone(),
+                        path: d.path.as_deref().map(|p| normalize(&dir.join(p))),
+                        workspace: d.workspace,
+                        kind,
+                        line,
+                    },
+                }
             })
             .collect()
     };
 
     let package = raw.package.map(|p| {
-        let mut dependencies = convert(&raw.dependencies, DependencyKind::Normal);
-        dependencies.extend(convert(&raw.build_dependencies, DependencyKind::Build));
-        dependencies.extend(convert(&raw.dev_dependencies, DependencyKind::Dev));
+        let mut dependencies = Vec::new();
+        for (table, kind) in [
+            (&raw.dependencies, DependencyKind::Normal),
+            (&raw.build_dependencies, DependencyKind::Build),
+            (&raw.dev_dependencies, DependencyKind::Dev),
+        ] {
+            dependencies.extend(convert(table, kind, kind.section()));
+        }
         CargoPackage {
             name: p.name,
             lib_name: raw.lib.and_then(|lib| lib.name),
@@ -182,7 +237,7 @@ pub fn parse_manifest(text: &str, manifest_path: &Path) -> Result<ParsedManifest
 
     let workspace = raw.workspace.map(|w| CargoWorkspace {
         dir: dir.clone(),
-        dependencies: convert(&w.dependencies, DependencyKind::Normal)
+        dependencies: convert(&w.dependencies, DependencyKind::Normal, WORKSPACE_TABLE)
             .into_iter()
             .map(|d| (d.name.clone(), d))
             .collect(),
@@ -277,6 +332,29 @@ assert_cmd = "2"
         assert_eq!(
             parsed.workspace.unwrap().dependencies["anyhow"].line,
             Some(15)
+        );
+    }
+
+    #[test]
+    fn dotted_keys_declare_dependencies_with_their_lines() {
+        let text = "[package]\nname = \"app\"\n\n[dependencies]\nserde.workspace = true\n\
+                    regex.version = \"1\"\nregex.features = [\"std\"]\nanyhow = \"1\"\n";
+        let parsed = parse_manifest(text, Path::new("Cargo.toml")).unwrap();
+        let deps: Vec<(&str, bool, Option<u32>)> = parsed
+            .package
+            .as_ref()
+            .unwrap()
+            .dependencies
+            .iter()
+            .map(|d| (d.name.as_str(), d.workspace, d.line))
+            .collect();
+        assert_eq!(
+            deps,
+            [
+                ("anyhow", false, Some(8)),
+                ("regex", false, Some(6)),
+                ("serde", true, Some(5))
+            ]
         );
     }
 
