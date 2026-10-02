@@ -10,7 +10,8 @@ use std::fmt::Write;
 
 use archmap_core::{
     ArchitectureGraph, Component, ComponentId, ComponentKind, DynamicImport, Edge, EdgeKind,
-    Evidence, Scope, Symbol, SymbolKind, UnmappedImport, UnmappedReason,
+    Evidence, Scope, Symbol, SymbolKind, SymbolUse, SymbolUses, UnmappedImport, UnmappedReason,
+    UseRole,
 };
 
 use crate::not_traced::NotTraced;
@@ -23,12 +24,14 @@ const MAX_SYMBOLS: usize = 30;
 const MAX_NEIGHBORS: usize = 30;
 const MAX_LOCATIONS: usize = 3;
 const MAX_IMPORTERS: usize = 5;
+const MAX_USE_FILES: usize = 10;
 
 struct Caps {
     symbols: usize,
     neighbors: usize,
     locations: usize,
     importers: usize,
+    use_files: usize,
 }
 
 impl Caps {
@@ -39,6 +42,7 @@ impl Caps {
                 neighbors: usize::MAX,
                 locations: usize::MAX,
                 importers: usize::MAX,
+                use_files: usize::MAX,
             }
         } else {
             Caps {
@@ -46,6 +50,7 @@ impl Caps {
                 neighbors: MAX_NEIGHBORS,
                 locations: MAX_LOCATIONS,
                 importers: MAX_IMPORTERS,
+                use_files: MAX_USE_FILES,
             }
         }
     }
@@ -550,7 +555,12 @@ fn symbol_list(
     }
     let mut truncated = shown < total;
     match symbols {
-        [one] => truncated |= importers(out, one, full, rolled, caps),
+        [one] => {
+            truncated |= importers(out, one, full, rolled, caps);
+            if let Some(uses) = &one.uses {
+                truncated |= used_at(out, uses, one.instance_method, caps);
+            }
+        }
         [] => {}
         [first, ..] => {
             let _ = writeln!(
@@ -625,6 +635,128 @@ fn importers(
         );
     }
     truncated
+}
+
+/// Where one symbol is used: a line per file, production code first, then
+/// the files with the most uses, then by path, and the imports whose
+/// binding is never used. A method that is not static says that the list
+/// holds only the uses through its class and `this`, so that an empty list
+/// never reads as unused.
+fn used_at(out: &mut String, uses: &SymbolUses, instance_method: bool, caps: &Caps) -> bool {
+    // the calls through values are under `Not traced`
+    let lead = match instance_method {
+        true => "through the class and this only: ",
+        false => "",
+    };
+    let mut truncated = false;
+    if uses.uses.is_empty() {
+        let _ = match instance_method {
+            true => writeln!(out, "\nUsed at: {lead}none"),
+            false => writeln!(
+                out,
+                "\nUsed at: none found\n  (only code that names it is read: a framework that \
+                 loads it by path, a string or a value of a type is not seen)"
+            ),
+        };
+    } else {
+        let mut by_file: BTreeMap<&str, Vec<&SymbolUse>> = BTreeMap::new();
+        for found in &uses.uses {
+            by_file.entry(&found.evidence.file).or_default().push(found);
+        }
+        let mut files: Vec<(&str, Vec<&SymbolUse>)> = by_file.into_iter().collect();
+        files.sort_by_key(|(file, list)| {
+            (
+                list.iter().all(|u| u.evidence.test),
+                std::cmp::Reverse(list.len()),
+                *file,
+            )
+        });
+        let shown = files.len().min(caps.use_files);
+        truncated |= shown < files.len();
+        let mut roles: BTreeMap<UseRole, usize> = BTreeMap::new();
+        for found in &uses.uses {
+            *roles.entry(found.role).or_default() += 1;
+        }
+        let roles: Vec<String> = roles
+            .into_iter()
+            .map(|(role, n)| role_count(role, n))
+            .collect();
+        let showing = match shown < files.len() {
+            true => format!(", showing {shown}"),
+            false => String::new(),
+        };
+        let _ = writeln!(
+            out,
+            "\nUsed at: {lead}{} in {}{showing} ({})",
+            uses.uses.len(),
+            plural(files.len(), "file"),
+            roles.join(", ")
+        );
+        for (_, list) in files.iter().take(shown) {
+            let locations: Vec<String> = list
+                .iter()
+                .take(caps.locations)
+                .map(|u| use_location(u))
+                .collect();
+            truncated |= locations.len() < list.len();
+            let mut line = locations.join(", ");
+            if list.len() > locations.len() {
+                let _ = write!(
+                    line,
+                    ", +{} more in this file",
+                    list.len() - locations.len()
+                );
+            }
+            let _ = writeln!(out, "  {line}");
+        }
+    }
+    if !uses.unused.is_empty() {
+        let places: Vec<String> = uses
+            .unused
+            .iter()
+            .take(caps.locations)
+            .map(location)
+            .collect();
+        truncated |= places.len() < uses.unused.len();
+        let _ = writeln!(
+            out,
+            "  never used: {}: {}",
+            uses.unused.len(),
+            with_more(&places, uses.unused.len())
+        );
+    }
+    truncated
+}
+
+/// A use as `file:line`, its role and test marks, and the name it is used
+/// by when that is not the symbol's own (`as fp`, `as m.formatPrice`).
+fn use_location(found: &SymbolUse) -> String {
+    let mut out = location(&found.evidence);
+    out.push_str(match found.role {
+        UseRole::Call => " (call)",
+        UseRole::New => " (new)",
+        UseRole::Jsx => " (jsx)",
+        UseRole::Type => " (type)",
+        UseRole::Read => "",
+    });
+    if found.evidence.test {
+        out.push_str(" (test)");
+    }
+    if let Some(binding) = &found.binding {
+        let _ = write!(out, " as {binding}");
+    }
+    out
+}
+
+/// `3 calls`, `1 JSX element`, `2 new`: how many uses have a role.
+fn role_count(role: UseRole, n: usize) -> String {
+    match role {
+        UseRole::Call => plural(n, "call"),
+        UseRole::New => format!("{n} new"),
+        UseRole::Jsx => plural(n, "JSX element"),
+        UseRole::Type => plural(n, "type"),
+        UseRole::Read => format!("{n} other"),
+    }
 }
 
 /// The statements of one list; one that reaches the symbol through a
@@ -912,7 +1044,47 @@ pub(crate) fn not_traced(
     if let Some(why) = found.no_importers.filter(|_| no_importers) {
         lines.push(format!("  no importers: {why}"));
     }
+    if let Some(why) = found.values {
+        lines.push(format!("  values: {why}"));
+    }
     let mut truncated = false;
+    if let Some(w) = &found.whole_module {
+        let what = match w.total {
+            1 => "1 place uses the module as a value".to_owned(),
+            n => format!("{n} places use the module as a value"),
+        };
+        let places: Vec<String> = w
+            .shown
+            .iter()
+            .take(cap)
+            .map(|s| {
+                let at = place(&s.file, s.line);
+                if s.test {
+                    format!("{at} (test)")
+                } else {
+                    at
+                }
+            })
+            .collect();
+        truncated |= places.len() < w.total;
+        lines.push(format!(
+            "  whole module: {what}, which may use this: {}",
+            with_more(&places, w.total)
+        ));
+    }
+    if !found.renamed.is_empty() {
+        let names: Vec<String> = found
+            .renamed
+            .iter()
+            .take(cap)
+            .map(|r| format!("as `{}` by {}", r.name, place(&r.file, r.line)))
+            .collect();
+        truncated |= names.len() < found.renamed.len();
+        lines.push(format!(
+            "  renamed: passed on {}; what takes that name is not followed",
+            with_more(&names, found.renamed.len())
+        ));
+    }
     if let Some(d) = &found.dynamic {
         let what = if d.total == 1 {
             "1 call loads a module by a computed name".to_owned()
@@ -983,6 +1155,20 @@ pub(crate) fn not_traced(
             .collect();
         truncated |= places.len() < m.total;
         lines.push(format!("  macros: {what}: {}", with_more(&places, m.total)));
+    }
+    if let Some(u) = &found.uses {
+        let places: Vec<String> = u
+            .shown
+            .iter()
+            .take(cap)
+            .map(|s| format!("{} ({})", place(&s.file, s.line), s.reason.as_str()))
+            .collect();
+        truncated |= places.len() < u.total;
+        lines.push(format!(
+            "  uses: not read in {}: {}",
+            plural(u.total, "place"),
+            with_more(&places, u.total)
+        ));
     }
     if let Some(r) = &found.not_read {
         let mut line = format!(

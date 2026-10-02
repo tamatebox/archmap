@@ -25,6 +25,7 @@ oxc_ast = "0.152.0"
 oxc_ast_visit = "0.152.0"
 oxc_parser = { version = "0.152.0", default-features = false }
 oxc_resolver = "11.24.3"
+oxc_semantic = "0.152.0"
 oxc_span = "0.152.0"
 proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"

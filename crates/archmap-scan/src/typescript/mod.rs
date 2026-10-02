@@ -53,6 +53,7 @@ mod layout;
 mod package;
 mod resolve;
 mod source;
+pub(crate) mod uses;
 mod workspace;
 
 use std::collections::{BTreeMap, BTreeSet};

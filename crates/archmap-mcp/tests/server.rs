@@ -157,6 +157,38 @@ async fn query_answers_with_the_shared_layers_text() {
 }
 
 #[tokio::test]
+async fn query_answers_where_a_symbol_is_used_as_the_app_does() {
+    let root = fixture("ts-uses");
+    let client = connect(Server::new(root.clone())).await;
+    let ws = Workspace::scan(&root, ScanMode::Full).unwrap();
+    for (format, name) in [(Format::Text, "text"), (Format::Json, "json")] {
+        let expected = ws
+            .query(&QueryRequest {
+                target: "formatPrice",
+                depth: DEFAULT_DEPTH,
+                format,
+                verbose: false,
+            })
+            .unwrap()
+            .output;
+        let args = serde_json::json!({"target": "formatPrice", "format": name});
+        let answer = ok(&call(&client, "query", args).await);
+        assert_eq!(answer, expected, "{name}");
+    }
+    let text = ok(&call(
+        &client,
+        "query",
+        serde_json::json!({"target": "formatPrice"}),
+    )
+    .await);
+    assert!(
+        text.contains("\nUsed at: 14 in 8 files (13 calls, 1 type)\n"),
+        "{text}"
+    );
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn impact_answers_with_the_shared_layers_text_or_json() {
     let root = fixture("simple-ts-project");
     let client = connect(Server::new(root.clone())).await;

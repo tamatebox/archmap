@@ -88,7 +88,9 @@ resolution of the previous stamp is seen only with the next change. A
 failed scan keeps nothing, and the next call tries again; a target outside
 the root fails before any scan. Calls run one at a time, so two calls on one root scan it
 once, and a call on a very large root holds the others until its scan ends.
-Nothing is written to disk; `.archmap/graph.json` is never read.
+Nothing is written to disk; `.archmap/graph.json` is never read. The uses
+of a TS/JS symbol that `query` lists are read from the files when it asks,
+after the stamp, so they read the same files as the graph.
 
 On a synthetic tree of 20,000 Python files, the first call takes about
 1.1 s and a call that reuses the graph about 0.1 s, almost all of it the

@@ -124,15 +124,22 @@ pub(crate) struct ParsedFile {
 /// Characters of a signature kept; a longer one ends in `...`.
 const MAX_SIGNATURE: usize = 200;
 
+/// How the parser reads the file at `path`: its extension decides
+/// TypeScript or JavaScript, JSX and `.d.ts`.
+pub(crate) fn source_type(path: &Path) -> Result<SourceType, String> {
+    let source_type = SourceType::from_path(path).map_err(|e| e.to_string())?;
+    // Plain `.js` files carry JSX as often as `.jsx` files do.
+    Ok(match source_type.is_javascript() {
+        true => source_type.with_jsx(true),
+        false => source_type,
+    })
+}
+
 /// Parse `text`, the file at `path`; its extension decides TypeScript or
 /// JavaScript, JSX and `.d.ts`. Fails only when the parser gives up.
 pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
-    let mut source_type = SourceType::from_path(path).map_err(|e| e.to_string())?;
+    let source_type = source_type(path)?;
     let javascript = source_type.is_javascript();
-    if javascript {
-        // Plain `.js` files carry JSX as often as `.jsx` files do.
-        source_type = source_type.with_jsx(true);
-    }
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, text, source_type).parse();
     if parsed.fatal_error {

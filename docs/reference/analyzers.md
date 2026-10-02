@@ -351,6 +351,11 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   pattern), else Node's default `index.js` at its root, apart from a path that leads out of the
   package, and its source root's `index.*`, so in `impact` a configuration file at the package's root
   (`vite.config.ts`) reaches none of the packages that declare it
+- on demand, for the one symbol that `query` asks about, the file that defines it, the files of the
+  statements that import it and the barrels those go through are read again, with oxc's semantic
+  analysis, for the identifiers that resolve to it (`Used at`, see [commands.md](commands.md#query));
+  which file a statement loads is the scan's evidence, found again by its line, and nothing of this
+  enters the graph
 
 ### TypeScript and JavaScript known gaps
 
@@ -360,7 +365,8 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
 - The names that a `require` or an `import()` takes later (`import('./m').then((m) => m.a)`, a result
   kept in a variable and read afterwards, an assignment that destructures it, `({ a } = require('m'))`)
   and the names of a mock that loads the real module are not read: such calls take the whole module,
-  so `query` on a symbol lists them under `May use`. A `vi.mock` with a factory, which
+  so `query` on a symbol lists them under `May use`; `Used at` still reads the uses through such a
+  binding (`const m = require('m')`, then `m.a()`). A `vi.mock` with a factory, which
   never loads the real module, is an edge all the same, noted `vi.mock`.
 - A mock replaces its module for the file's whole run (evidence `replaces`) only when it runs before
   the file's imports and its factory is a function written in place that names no `importOriginal`,
@@ -375,6 +381,13 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   (`jest.unstable_mockModule`) are not read, and a mocked path that only a test runner's own
   aliases resolve (Vite's `resolve.alias`, Jest's `moduleNameMapper`) maps to no file, so neither
   hides a module.
+- `Used at` does not read a method called through a value of its type (`wallet.pay()`), `super.m()`,
+  `this.m()` in a subclass that only inherits `m`, what an `import()` that is not awaited gives
+  (`import('./m').then((m) => m.f())`, named as a `whole module` place), or a member kept under
+  another name (`const fp = ns.formatPrice` is one use, and the uses of `fp` are not followed). A
+  barrel that passes a name on under another name ends the uses as it ends the importers, and
+  `Not traced` names it (`renamed`). `this.m()` names the class's `m`, which a subclass may
+  override.
 - A `require` that a function takes as a parameter (a bundle's module wrapper, AMD's `define`) is
   not Node's and gives nothing, but a committed UMD bundle (`module.exports =
   factory(require('jquery'))`) reads as code that imports `jquery`; list such files in an `.ignore`

@@ -19,6 +19,13 @@ impl Lines {
     pub(crate) fn of(&self, offset: usize) -> u32 {
         self.starts.partition_point(|&start| start <= offset) as u32
     }
+
+    /// The column, from 1, of byte `offset` in `text`, the text these lines
+    /// were made from, counted in characters.
+    pub(crate) fn column(&self, text: &str, offset: usize) -> u32 {
+        let start = self.starts[self.of(offset) as usize - 1];
+        text.get(start..offset).map_or(0, |s| s.chars().count()) as u32 + 1
+    }
 }
 
 #[cfg(test)]
@@ -34,5 +41,15 @@ mod tests {
         assert_eq!(lines.of(12), 3);
         assert_eq!(lines.of(13), 4);
         assert_eq!(lines.of(99), 4);
+    }
+
+    #[test]
+    fn columns_count_characters_from_the_line_start() {
+        let text = "ab\n\u{e9}t\u{e9} = x";
+        let lines = Lines::new(text);
+        assert_eq!(lines.column(text, 0), 1);
+        assert_eq!(lines.column(text, 1), 2);
+        // `x` sits after two two-byte characters
+        assert_eq!(lines.column(text, text.find('x').unwrap()), 7);
     }
 }

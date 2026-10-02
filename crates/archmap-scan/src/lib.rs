@@ -21,6 +21,7 @@ pub mod rust;
 mod stamp;
 mod test_code;
 pub mod typescript;
+mod uses;
 mod walk;
 
 pub use analyzer::Analyzer;
@@ -30,6 +31,7 @@ pub use languages::language_of;
 pub use options::ScanOptions;
 pub use stamp::{stamp, Stamp};
 pub use test_code::is_test_code;
+pub use uses::symbol_uses;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

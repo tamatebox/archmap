@@ -1,12 +1,15 @@
 //! `query`: one target in detail, as a component, a file, symbols or an
 //! import name without a component.
 
+use std::path::Path;
+
 use anyhow::{Context, Result};
 use archmap_core::{
-    ArchitectureGraph, ComponentId, ComponentKind, Edge, EdgeKind, Evidence, Symbol,
+    ArchitectureGraph, ComponentId, ComponentKind, Edge, EdgeKind, Evidence, Symbol, SymbolUses,
+    UnreadReason,
 };
 
-use crate::not_traced::{not_traced, Own, Place, Subject};
+use crate::not_traced::{not_traced, with_uses, Own, Place, Subject};
 use crate::resolve::{resolve, Resolved};
 use crate::target::{component_file, fold, namesakes, reject_outside, unquote, AtDepth};
 use crate::views::{ComponentView, FileView, Importer, QueryResult, SymbolView, UnmappedView};
@@ -158,7 +161,7 @@ fn query(ws: &Workspace, request: &QueryRequest) -> Result<Answer> {
         Resolved::Symbol(symbol) => {
             // as the rolled-up graph holds it, in its folded component
             let symbol = rolled.symbol(&symbol.id).unwrap_or(symbol);
-            QueryResult::Symbols(vec![symbol_view(full, symbol)])
+            QueryResult::Symbols(vec![symbol_view(full, root, symbol)])
         }
         // an import name that no component carries, such as an extra
         Resolved::ImportName(_) => QueryResult::NotMapped(UnmappedView {
@@ -180,8 +183,8 @@ fn query(ws: &Workspace, request: &QueryRequest) -> Result<Answer> {
 }
 
 /// A symbol with the statements that import it, read in the full graph,
-/// production code first, as `impact` lists them.
-fn symbol_view<'a>(full: &'a ArchitectureGraph, symbol: &'a Symbol) -> SymbolView<'a> {
+/// production code first, as `impact` lists them, and where it is used.
+fn symbol_view<'a>(full: &'a ArchitectureGraph, root: &Path, symbol: &'a Symbol) -> SymbolView<'a> {
     let importers = full.symbol_importers(symbol).filter(|i| i.recorded);
     let list =
         |pairs: Vec<(&'a Edge, &'a Evidence)>,
@@ -211,10 +214,11 @@ fn symbol_view<'a>(full: &'a ArchitectureGraph, symbol: &'a Symbol) -> SymbolVie
         .symbol(&symbol.id)
         .and_then(|s| full.component(&s.component));
     let location = symbol.location().map(|e| e.file.as_str()).unwrap_or("");
-    let not_traced = not_traced(
+    let language = declared.and_then(|c| c.language.as_deref());
+    let mut not_traced = not_traced(
         full,
         &Subject {
-            language: declared.and_then(|c| c.language.as_deref()),
+            language,
             place: None,
             own: Own::File(location),
             script: declared.is_some_and(|c| c.kind == ComponentKind::Script),
@@ -223,12 +227,42 @@ fn symbol_view<'a>(full: &'a ArchitectureGraph, symbol: &'a Symbol) -> SymbolVie
         },
         usize::MAX,
     );
+    let uses = uses_of(full, root, symbol);
+    let instance_method = uses.is_some() && instance_method(symbol);
+    if let Some(found) = &uses {
+        not_traced = with_uses(not_traced, found, instance_method);
+    }
     SymbolView {
         symbol,
         imported_by,
         may_use,
+        uses,
+        instance_method,
         not_traced,
     }
+}
+
+/// Where a symbol is used, or `None` for a language that no uses pass
+/// reads yet.
+fn uses_of(full: &ArchitectureGraph, root: &Path, symbol: &Symbol) -> Option<SymbolUses> {
+    // the symbol as scan recorded it, in the component that declares it
+    let symbol = full.symbol(&symbol.id).unwrap_or(symbol);
+    let found = archmap_scan::symbol_uses(root, full, symbol);
+    let unread_language = found
+        .unread
+        .iter()
+        .any(|u| u.reason == UnreadReason::LanguageNotRead);
+    (!unread_language).then_some(found)
+}
+
+/// A TS/JS class member that is not static, whose calls go through values
+/// of its type: `Wallet.pay`, not `Wallet.open` (`static open()`).
+fn instance_method(symbol: &Symbol) -> bool {
+    symbol.name.contains('.')
+        && !symbol
+            .signature
+            .as_deref()
+            .is_some_and(|s| s.starts_with("static "))
 }
 
 /// The component `at` points to, as `query` shows it.

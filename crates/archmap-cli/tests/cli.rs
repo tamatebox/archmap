@@ -2696,3 +2696,64 @@ fn impact_reaches_an_importer_through_the_barrel_alone() {
         .collect();
     assert!(direct.contains(&"ts-shop::src/app/checkout.ts"), "{json}");
 }
+
+#[test]
+fn query_on_a_ts_symbol_lists_where_it_is_used() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/ts-uses");
+    let text = query_text(&root, &["formatPrice"]);
+    let used_at = "\nUsed at: 14 in 8 files (13 calls, 1 type)\n\
+         \x20 src/app.ts:11 (call) as fp, src/app.ts:11 (call) as m.formatPrice, \
+         src/app.ts:11 (call) as m.formatPrice, +1 more in this file\n\
+         \x20 src/view.tsx:9 (call) as money.formatPrice, src/view.tsx:10 (call), \
+         src/view.tsx:11 (call) as all.money.formatPrice\n\
+         \x20 scripts/cjs.cjs:4 (call), scripts/cjs.cjs:4 (call) as money.formatPrice\n\
+         \x20 scripts/lazy.mjs:3 (call)\n\
+         \x20 src/hoisted.ts:1 (call)\n\
+         \x20 src/money.ts:10 (call)\n\
+         \x20 src/types.ts:4 (type)\n\
+         \x20 tests/money.test.ts:3 (call) (test)\n\
+         \x20 never used: 1: src/unused.ts:1\n";
+    assert!(text.contains(used_at), "{text}");
+    for line in [
+        "  whole module: 2 places use the module as a value, which may use this: \
+         scripts/lazy.mjs:7, src/app.ts:8\n",
+        "  renamed: passed on as `price` by src/index.ts:3; what takes that name is not followed\n",
+        "  uses: not read in 1 place: src/two.ts:1 (ambiguous statement)\n",
+    ] {
+        assert!(text.contains(line), "{line}\n{text}");
+    }
+    // a method that is not static: only what its class and `this` show
+    let method = query_text(&root, &["Wallet.pay"]);
+    assert!(
+        method.contains(
+            "\nUsed at: through the class and this only: 2 in 1 file (2 calls)\n\
+             \x20 src/money.ts:13 (call) as this.pay, src/money.ts:17 (call) as this.pay\n"
+        ),
+        "{method}"
+    );
+    assert!(
+        method.contains("  values: calls through a value of the type (x.m()) need its type"),
+        "{method}"
+    );
+    // JSON lists every use with its column, role and statement
+    let out = archmap()
+        .args(["query", "formatPrice", "--format", "json", "--path"])
+        .arg(&root)
+        .output()
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let uses = value[0]["uses"]["uses"].as_array().unwrap();
+    assert_eq!(uses.len(), 14);
+    assert_eq!(
+        uses[0],
+        serde_json::json!({
+            "evidence": {"file": "scripts/cjs.cjs", "line": 4},
+            "column": 23,
+            "role": "call",
+            "statement": {"file": "scripts/cjs.cjs", "line": 1}
+        })
+    );
+    // a language without a uses pass says nothing about uses
+    let python = query_text(&python_fixture(), &["notify"]);
+    assert!(!python.contains("Used at"), "{python}");
+}

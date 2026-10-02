@@ -3,7 +3,8 @@
 //! [`crate::query_text`] and [`crate::impact_text`].
 
 use archmap_core::{
-    Component, ComponentId, DynamicImport, Edge, Evidence, Symbol, SymbolId, UnmappedImport,
+    Component, ComponentId, DynamicImport, Edge, Evidence, Symbol, SymbolId, SymbolUses,
+    UnmappedImport,
 };
 use serde::Serialize;
 
@@ -123,6 +124,14 @@ pub struct SymbolView<'a> {
     /// Statements that take that file whole, the others aside.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub may_use: Option<Vec<Importer<'a>>>,
+    /// Where it is used, read from the files that define and import it;
+    /// `None` for a language no uses pass reads yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uses: Option<SymbolUses>,
+    /// Its kind's calls through a value are not read: a method that is not
+    /// static.
+    #[serde(skip)]
+    pub instance_method: bool,
     /// What could reach the target unseen, from what analyzers record.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub not_traced: Option<NotTraced>,

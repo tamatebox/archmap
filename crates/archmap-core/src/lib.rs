@@ -16,6 +16,7 @@ mod graph;
 mod model;
 pub mod rules;
 pub mod signals;
+mod uses;
 
 pub use evidence::{via_place, Evidence, Scope, WHOLE_MODULE};
 pub use fragment::GraphFragment;
@@ -24,6 +25,7 @@ pub use model::{
     Component, ComponentId, ComponentKind, DynamicImport, Edge, EdgeKind, LanguageCoverage, Symbol,
     SymbolId, SymbolKind, UnmappedImport, UnmappedReason, UnreadMacro,
 };
+pub use uses::{ImportPlace, Renamed, SymbolUse, SymbolUses, Unread, UnreadReason, UseRole};
 
 /// Version of the JSON schema emitted by [`ArchitectureGraph`].
 ///

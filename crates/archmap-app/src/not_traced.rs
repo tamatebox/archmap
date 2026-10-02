@@ -4,7 +4,8 @@
 //! this is what could reach the target unseen.
 
 use archmap_core::{
-    ArchitectureGraph, ComponentId, ComponentKind, UnmappedImport, UnmappedReason, UnreadMacro,
+    ArchitectureGraph, ComponentId, ComponentKind, SymbolUses, UnmappedImport, UnmappedReason,
+    UnreadMacro, UnreadReason,
 };
 use serde::Serialize;
 
@@ -38,6 +39,129 @@ pub struct NotTraced {
     /// runner loads.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) no_importers: Option<&'static str>,
+    /// Places where a binding of a symbol's module whole is used other than
+    /// by a static name (passed as a value, `ns[key]`): that code may use
+    /// the symbol unseen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) whole_module: Option<Spots>,
+    /// Statements that pass a symbol on under another name: what takes that
+    /// name is not followed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) renamed: Vec<RenamedName>,
+    /// Statements and files whose uses of a symbol were not read, with why.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) uses: Option<UsesNotRead>,
+    /// A method called through a value of its type, which needs the value's
+    /// type; the value says so in words.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) values: Option<&'static str>,
+}
+
+pub(crate) const VALUES: &str =
+    "calls through a value of the type (x.m()) need its type, which is not read";
+
+#[derive(Debug, Serialize)]
+pub(crate) struct Spots {
+    pub(crate) total: usize,
+    pub(crate) shown: Vec<Spot>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct Spot {
+    pub(crate) file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) line: Option<u32>,
+    /// The place is test code.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) test: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct RenamedName {
+    pub(crate) file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) line: Option<u32>,
+    /// The name it passes the symbol on as.
+    pub(crate) name: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct UsesNotRead {
+    pub(crate) total: usize,
+    pub(crate) shown: Vec<UnreadSpot>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct UnreadSpot {
+    pub(crate) file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) line: Option<u32>,
+    pub(crate) reason: UnreadReason,
+}
+
+/// `found` with what the uses pass for a symbol could not follow: the
+/// places its module escapes, the names it is passed on as, the files not
+/// read, and for a method that is not static, the calls through values.
+pub(crate) fn with_uses(
+    found: Option<NotTraced>,
+    uses: &SymbolUses,
+    instance_method: bool,
+) -> Option<NotTraced> {
+    let mut found = found.unwrap_or_default();
+    if !uses.escapes.is_empty() {
+        // production code first
+        let mut spots: Vec<Spot> = uses
+            .escapes
+            .iter()
+            .map(|e| Spot {
+                file: e.file.clone(),
+                line: e.line,
+                test: e.test,
+            })
+            .collect();
+        spots.sort_by(|a, b| (a.test, &a.file, a.line).cmp(&(b.test, &b.file, b.line)));
+        found.whole_module = Some(Spots {
+            total: spots.len(),
+            shown: spots,
+        });
+    }
+    found.renamed = uses
+        .renamed
+        .iter()
+        .map(|r| RenamedName {
+            file: r.evidence.file.clone(),
+            line: r.evidence.line,
+            name: r.name.clone(),
+        })
+        .collect();
+    if !uses.unread.is_empty() {
+        found.uses = Some(UsesNotRead {
+            total: uses.unread.len(),
+            shown: uses
+                .unread
+                .iter()
+                .map(|u| UnreadSpot {
+                    file: u.file.clone(),
+                    line: u.line,
+                    reason: u.reason,
+                })
+                .collect(),
+        });
+    }
+    if instance_method {
+        found.values = Some(VALUES);
+    }
+    let empty = found.dynamic.is_none()
+        && found.named_like.is_none()
+        && found.macros.is_none()
+        && found.not_read.is_none()
+        && found.script.is_none()
+        && found.no_importers.is_none()
+        && found.whole_module.is_none()
+        && found.renamed.is_empty()
+        && found.uses.is_none()
+        && found.values.is_none();
+    (!empty).then_some(found)
 }
 
 pub(crate) const SCRIPT: &str =
@@ -268,6 +392,7 @@ pub(crate) fn not_traced(
         script: subject.script.then_some(SCRIPT),
         // a script's own note already says why nothing imports it
         no_importers: (subject.unreached && !test_file && !subject.script).then_some(NO_IMPORTERS),
+        ..Default::default()
     };
     let empty = found.dynamic.is_none()
         && found.named_like.is_none()

@@ -224,6 +224,51 @@ instead, and `impact` answers for that component. What the lists miss:
 - Code that runs when a file loads (a side-effect import) is listed for
   neither.
 
+For a TypeScript or JavaScript symbol, `query` also lists where code uses
+it, under `Used at`. The uses are read when the query asks, from the file
+that defines the symbol and the files of the statements the two lists
+name, and never enter the graph, `scan` or `graph.json`. A use is an
+identifier that the language's scoping, within its file, resolves to the
+symbol: through the binding an import statement makes for it (an alias, a
+default import, `import x = require()`, a CommonJS `require` and a
+destructuring of a module bound whole), through a static member of a module
+bound whole (`m.formatPrice`, `m['formatPrice']`, and through a namespace a
+barrel passes on, `money.formatPrice`), or to the symbol's own declaration
+in the file that defines it. For a class member, it is an access through the
+class (`Wallet.open()`) or `this.m` inside the class's own members of the
+same kind, static or not, and the arrow functions in them. Names in comments
+and strings are no uses, nor is an export specifier, which passes a name on.
+Each use is marked by what it does, `(call)`, `(new)`, `(jsx)` for a JSX
+element's name or `(type)`, and unmarked otherwise, then `(test)`, and it
+ends in `as <name>` when the code names it otherwise:
+
+```text
+Used at: 14 in 8 files (13 calls, 1 type)
+  src/app.ts:11 (call) as fp, src/app.ts:11 (call) as m.formatPrice, src/app.ts:11 (call) as m.formatPrice, +1 more in this file
+  src/view.tsx:9 (call) as money.formatPrice, src/view.tsx:10 (call), src/view.tsx:11 (call) as all.money.formatPrice
+  ...
+  tests/money.test.ts:3 (call) (test)
+  never used: 1: src/unused.ts:1
+```
+
+There is a line per file, production code first, then the files with the
+most uses, then by path; 10 files and 3 locations per file are shown, and
+the heading counts every use, file and role. `never used` lists the import
+statements whose binding nothing uses. A method that is not static gets
+only the uses through its class and `this` (`Used at: through the class and
+this only: ...`), and `Not traced` says that calls through a value of its
+type (`wallet.pay()`) are not read (`values`). `Not traced` also names the
+places that use the symbol's module as a value (`whole module`: passed as an
+argument, `ns[key]`, the promise of an `import()` not awaited), which may use
+it unseen; the barrels that pass it on under another name (`renamed`),
+whose importers are not followed; and the statements whose uses were not
+read, with why (`uses`): two statements on one line that load different
+files (`ambiguous statement`), a line that no longer holds the statement
+because the file changed since the scan (`statement not found`), a parse
+error, or a file gone. `--format json` gives every use with its column, its
+role, the name it goes by and the import statement it goes through, under
+`uses`. A symbol of Rust or Python gets no `Used at`.
+
 ## impact
 
 ```bash
