@@ -549,16 +549,23 @@ fn emit_components(
             .and_then(|dir| manifests.get(dir).map(|m| (dir, m)))
             .into_iter()
             .flat_map(|(dir, manifest)| {
-                let written = match manifest.entries.is_empty() {
-                    true => vec!["index.js".to_owned()],
-                    false => manifest.entries.clone(),
-                };
                 // one that leads out of the package is no file of it, and
-                // would count as its evidence where components share a path
+                // would count as its evidence where components share a path;
+                // when none is left, the package holds nothing its
+                // dependents load, which Node's default says as well
+                let mut written: Vec<&str> = manifest
+                    .entries
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|entry| stays_inside(Path::new(entry)))
+                    .collect();
+                if written.is_empty() {
+                    written.push("index.js");
+                }
                 written
                     .into_iter()
-                    .filter(|entry| stays_inside(Path::new(entry)))
                     .map(|entry| fs::normalize(&dir.join(entry)))
+                    .collect::<Vec<_>>()
             });
         let entries: BTreeSet<PathBuf> = named
             .chain(indexes.get(&package.id).map(|index| index.to_path_buf()))

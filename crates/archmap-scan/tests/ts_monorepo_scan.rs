@@ -182,15 +182,24 @@ fn an_entry_outside_its_package_is_no_evidence_of_it() {
         r#"{ "name": "@acme/ui", "main": "../../dist/ui.js", "types": "./src/index.ts" }"#,
     );
     write("packages/ui/src/index.ts", "export const Card = 1;\n");
+    // every entry it names leads out: Node's default stands in
+    write(
+        "packages/icons/package.json",
+        r#"{ "name": "@acme/icons", "main": "../../dist/icons.js" }"#,
+    );
     let graph = scan(&root, &ScanOptions::default()).expect("scan").graph;
-    let ui = graph.component(&ComponentId::new("@acme/ui")).unwrap();
-    let entries: Vec<&str> = ui
-        .evidence
-        .iter()
-        .filter(|e| e.is_entry())
-        .map(|e| e.file.as_str())
-        .collect();
-    assert_eq!(entries, ["packages/ui/src/index.ts"]);
+    let entries = |id: &str| -> Vec<String> {
+        graph
+            .component(&ComponentId::new(id))
+            .unwrap()
+            .evidence
+            .iter()
+            .filter(|e| e.is_entry())
+            .map(|e| e.file.clone())
+            .collect()
+    };
+    assert_eq!(entries("@acme/ui"), ["packages/ui/src/index.ts"]);
+    assert_eq!(entries("@acme/icons"), ["packages/icons/index.js"]);
 }
 
 #[test]
