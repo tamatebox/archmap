@@ -13,6 +13,7 @@
 mod evidence;
 mod fragment;
 mod graph;
+pub mod history;
 mod model;
 pub mod rules;
 pub mod signals;

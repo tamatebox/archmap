@@ -1,6 +1,6 @@
 //! A cheap fingerprint of what a scan reads: every walked file with its
-//! size and times, and the installed packages the Python analyzer reads
-//! outside the walk. A long-running caller compares stamps to tell whether
+//! size and times, the installed packages the Python analyzer reads
+//! outside the walk, and the git HEAD the history starts from. A long-running caller compares stamps to tell whether
 //! a graph it keeps is still current, without scanning again.
 
 use std::path::{Path, PathBuf};
@@ -17,6 +17,9 @@ pub struct Stamp {
     /// reads, with their modification times: installing or removing a
     /// distribution changes them.
     installed: Vec<(PathBuf, Option<SystemTime>)>,
+    /// HEAD and whether the clone is shallow, which the history a command
+    /// reads starts from (see [`crate::history`]).
+    head: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,7 +63,12 @@ pub fn stamp(root: &Path) -> Result<Stamp, ScanError> {
             (dir, modified)
         })
         .collect();
-    Ok(Stamp { files, installed })
+    let head = crate::history::head_stamp(&root);
+    Ok(Stamp {
+        files,
+        installed,
+        head,
+    })
 }
 
 #[cfg(unix)]

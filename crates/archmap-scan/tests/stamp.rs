@@ -133,3 +133,38 @@ fn a_symlinked_file_is_stamped_through_the_link() {
 fn a_missing_root_is_an_error() {
     assert!(stamp(Path::new("/no/such/archmap/root")).is_err());
 }
+
+#[test]
+fn a_commit_changes_the_stamp_though_no_file_does() {
+    let repo = Repo::new("commit");
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo.0)
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "A")
+            .env("GIT_AUTHOR_EMAIL", "a@example.com")
+            .env("GIT_COMMITTER_NAME", "A")
+            .env("GIT_COMMITTER_EMAIL", "a@example.com")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "first"]);
+    assert!(changes(&repo, |_| git(&[
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "second"
+    ])));
+}

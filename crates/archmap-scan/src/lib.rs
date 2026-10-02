@@ -12,6 +12,7 @@
 mod analyzer;
 mod context;
 mod error;
+pub mod history;
 mod ids;
 mod languages;
 mod lines;
