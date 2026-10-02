@@ -307,7 +307,8 @@ entry. `--format json` gives the same lists as fields, the output earlier
 versions printed by default: `direct` and `transitive` (which includes
 `direct`) in full; `importers` and `may_use` as `{"recorded", "total",
 "shown"}` with 5 statements, each with its `file`, `line`, the `component` it
-is in and `"test": true` in test code, `recorded` being false when no
+is in, `"test": true` in test code and, for a symbol, the barrel it went
+through as `through`, `recorded` being false when no
 evidence names imported files for the language; `tests` as `{"total",
 "shown"}` with 20 files by path; `not_traced` with 5 locations per kind; and
 for an import name `module`, with `target` `null`. `--verbose` lists every
