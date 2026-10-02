@@ -147,10 +147,13 @@ into the model in [graph.md](graph.md); how the commands present it is in
 - calls to `import_module`, `__import__` and `spec_from_file_location` are recorded as dynamic imports,
   which no edge can follow
 - public top-level `def` / `class` / `CONSTANT` and public methods of public classes become symbols
-  for files inside a regular package tree; test files (`test_*.py`, `*_test.py`, `conftest.py`) and
-  namespace trees outside any regular package contribute imports only, while a helper below `tests/`
-  in a package tree gives symbols, as for TS/JS; in a signature a parameter's default value reads `…`,
-  since a default can hold a secret
+  for files inside a regular package tree; a file outside any regular package tree (in a namespace
+  tree such as `scripts/` or a `tests/` without `__init__.py`, or at the top of the project) gives
+  only the definitions that imports in other files take from it, and all of its public ones when one
+  takes it whole (`import util`, `from util import *`), so its `Public symbols` in `query` are what is
+  used from it; test files (`test_*.py`, `*_test.py`, `conftest.py`) give none, while a helper below
+  `tests/` does, as for TS/JS; in a signature a parameter's default value reads `…`, since a default
+  can hold a secret
 - source files are scanned structurally line by line, not parsed; function bodies are read only for imports
 
 ### Python known gaps
@@ -168,8 +171,9 @@ into the model in [graph.md](graph.md); how the commands present it is in
   is unseen, so a star import whose source binds a name that way may lead to another source of it.
 - `impact` on an `__init__.py` reaches the files below the package from what they import: a file that
   imports nothing at all is not among them.
-- A helper in a `tests/` without `__init__.py`, like any file of a namespace tree outside a regular
-  package, gives no symbols.
+- A file outside any regular package tree that no import resolves to gives no symbols: a script run
+  directly, a helper reached only through a `sys.path` entry added at runtime (pytest's
+  `pythonpath`), or a module loaded by name (`pytest_plugins`).
 - `from pkg import name` where `pkg/name.py` exists takes that submodule whole, even when
   `pkg/__init__.py` has `from .name import name`, which makes `pkg.name` the object it imports.
 - Only `if TYPE_CHECKING:` and `if <module>.TYPE_CHECKING:` mark imports as types only: an import

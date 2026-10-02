@@ -252,7 +252,7 @@ fn summary_depth_controls_the_roll_up() {
     let packages_only = summary_stdout(&["--depth", "0"]);
     assert!(
         packages_only
-            .contains("\nshop  package  language: python  path: .  symbols: 10  folded: 7\n"),
+            .contains("\nshop  package  language: python  path: .  symbols: 11  folded: 7\n"),
         "{packages_only}"
     );
     assert!(packages_only.contains("## Internal dependencies\nnone\n"));

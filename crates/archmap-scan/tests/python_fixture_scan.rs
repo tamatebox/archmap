@@ -220,12 +220,17 @@ fn test_files_and_loose_scripts_contribute_imports_but_no_symbols() {
         && e.to == id("shop::shop")
         && e.kind == EdgeKind::Import));
 
-    // scripts/ is a namespace module: imports yes, symbols no
+    // scripts/ is a namespace module: its imports count, while a script
+    // gives symbols only once another file imports names from it
     assert_eq!(
         graph.component(&id("shop::scripts")).unwrap().kind,
         ComponentKind::Module
     );
-    assert!(graph.symbols_named("backfill_payments").next().is_none());
+    let scripts: Vec<&str> = graph
+        .symbols_of(&id("shop::scripts"))
+        .map(|s| s.name.as_str())
+        .collect();
+    assert_eq!(scripts, ["backfill_payments"]);
     assert!(graph.edges.iter().any(|e| e.from == id("shop::scripts")
         && e.to == id("shop::shop.billing")
         && e.kind == EdgeKind::Import));
@@ -1030,6 +1035,37 @@ fn a_name_a_package_assigns_reaches_no_other_file() {
         .filter_map(|e| e.target.as_deref())
         .collect();
     assert_eq!(targets, ["app/pkg/__init__.py"]);
+}
+
+#[test]
+fn a_file_outside_a_package_tree_gives_the_names_imported_from_it() {
+    let dir = namespace_project(
+        "namespace-tests",
+        "",
+        &[
+            ("app/__init__.py", ""),
+            (
+                "tests/factories.py",
+                "OUTPUT = \"out\"\n\n\ndef make_user():\n    pass\n\n\ndef main():\n    pass\n",
+            ),
+            (
+                "tests/util.py",
+                "def a():\n    pass\n\n\nclass B:\n    def go(self):\n        pass\n",
+            ),
+            ("tests/unused.py", "def nobody():\n    pass\n"),
+            ("tests/test_helpers.py", "def assist():\n    pass\n"),
+            (
+                "tests/test_app.py",
+                "from factories import make_user\nfrom test_helpers import assist\nimport util\n",
+            ),
+        ],
+    );
+    let graph = scan(&dir, &ScanOptions::default()).unwrap().graph;
+    std::fs::remove_dir_all(&dir).unwrap();
+    // only what other files take by name, or the whole module's when they
+    // take it whole; nothing from a test file by name
+    let names: BTreeSet<&str> = graph.symbols.values().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, BTreeSet::from(["B", "B.go", "a", "make_user"]));
 }
 
 #[test]

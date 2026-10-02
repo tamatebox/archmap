@@ -45,9 +45,11 @@
 //!   `__import__`, `spec_from_file_location`) become [`DynamicImport`]s
 //! - public top-level `def` / `class` / `CONSTANT` and public methods become
 //!   symbols for files inside a regular package tree (a namespace directory
-//!   nested in a regular package still counts); test files and namespace
-//!   trees outside any regular package, such as `experiments/`, contribute
-//!   imports only
+//!   nested in a regular package still counts); a file outside any regular
+//!   package tree (in a namespace tree such as `experiments/`, or at the top
+//!   of the project) gives those that other files import from it, all of
+//!   them when one takes it whole; test files by name give none, while a
+//!   helper below `tests/` does
 //!
 //! Source files are scanned structurally (see [`source`]); bodies are not
 //! parsed.
@@ -212,6 +214,7 @@ impl Analyzer for PythonAnalyzer {
                     &symbol_scope(file),
                     &file_display,
                     &scanned,
+                    None,
                     &mut output,
                 );
             }
@@ -262,6 +265,7 @@ impl Analyzer for PythonAnalyzer {
                 file: file.to_path_buf(),
                 display: file_display,
                 owner,
+                in_package_tree,
                 scanned,
                 resolved,
             });
@@ -271,6 +275,31 @@ impl Analyzer for PythonAnalyzer {
             .map(|read| (read.display.clone(), binding_table(read)))
             .collect();
         emit_definitions(&reads, &tables, &mut output);
+
+        // a file outside a package tree declares no interface: what other
+        // files import from it is one, all of it when they take it whole
+        let mut imported: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for e in output.fragment.edges.iter().flat_map(|e| &e.evidence) {
+            if let Some(target) = e.target.as_deref().filter(|t| *t != e.file) {
+                if !e.names.is_empty() {
+                    imported
+                        .entry(target.to_owned())
+                        .or_default()
+                        .extend(e.names.iter().cloned());
+                }
+            }
+        }
+        for read in &reads {
+            if read.in_package_tree || is_test_named(&read.file) {
+                continue;
+            }
+            if let Some(names) = imported.get(&read.display) {
+                let scope = symbol_scope(&read.file);
+                let only = (!names.contains(WHOLE_MODULE)).then_some(names);
+                let file = &read.display;
+                emit_symbols(&read.owner, &scope, file, &read.scanned, only, &mut output);
+            }
+        }
 
         Ok(output)
     }
@@ -692,14 +721,21 @@ fn symbol_scope(file: &Path) -> Option<String> {
     (stem != "__init__").then(|| stem.into_owned())
 }
 
+/// The symbols of `scanned`'s public definitions, or of those among
+/// `only` (a method goes with its class).
 fn emit_symbols(
     owner: &ComponentId,
     scope: &Option<String>,
     file: &str,
     scanned: &PyFile,
+    only: Option<&BTreeSet<String>>,
     output: &mut AnalyzerOutput,
 ) {
     for def in &scanned.defs {
+        let named = def.name.split('.').next().unwrap_or(&def.name);
+        if only.is_some_and(|names| !names.contains(named)) {
+            continue;
+        }
         let mut id = owner.as_str().to_owned();
         if let Some(scope) = scope {
             id.push_str("::");
@@ -750,6 +786,9 @@ struct ReadFile {
     file: PathBuf,
     display: String,
     owner: ComponentId,
+    /// Inside a regular package tree, where public definitions are
+    /// symbols whether or not anything imports them.
+    in_package_tree: bool,
     scanned: PyFile,
     resolved: Vec<Resolved>,
 }
