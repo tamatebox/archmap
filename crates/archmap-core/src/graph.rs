@@ -286,7 +286,12 @@ impl ArchitectureGraph {
         let (through_tests, with_tests, seeds) = self.reach(seed, depth, true, &test_code);
         reach.left_out = through_tests.left_out;
         for (entry, from) in through_tests.relayed {
-            reach.relayed.entry(entry).or_insert(from);
+            let known = reach.relayed.entry(entry).or_default();
+            for file in from {
+                if !known.contains(&file) {
+                    known.push(file);
+                }
+            }
         }
         // a changed test is a test to run again too
         reach.tests = with_tests
@@ -570,145 +575,159 @@ impl ArchitectureGraph {
         // manifests that declare the package. The files in `cut` run for
         // nothing: the walk enters and leaves them only through statements
         // that take types, and takes no symbol from them otherwise.
-        let walk =
-            |cut: &BTreeSet<&'s str>| -> (BTreeMap<Node<'s>, usize>, BTreeMap<Node<'s>, Node<'s>>) {
-                let blocked = |node: &Node| match node {
-                    Node::File(f) | Node::Passes(f) | Node::Relays(f) => cut.contains(f),
-                    Node::Component(_) => false,
-                };
-                let mut production = production.clone();
-                let mut distance: BTreeMap<Node, usize> = BTreeMap::new();
-                // the node each was reached from at its distance
-                let mut parent: BTreeMap<Node, Node> = BTreeMap::new();
-                let mut queue: VecDeque<Node> = VecDeque::new();
-                let mut first: Vec<(Node, usize)> = start
-                    .iter()
-                    .filter(|(node, _, loads)| {
-                        !blocked(node)
-                            && loads.is_none_or(|(loaded, types)| types || !cut.contains(loaded))
-                    })
-                    .map(|(node, d, _)| (*node, *d))
-                    .collect();
-                first.sort_by_key(|(_, d)| *d);
-                for (node, d) in first {
-                    if let Entry::Vacant(slot) = distance.entry(node) {
-                        slot.insert(d);
-                        queue.push_back(node);
-                    }
-                }
-                while let Some(node) = queue.pop_front() {
-                    let d = distance[&node];
-                    let here = blocked(&node);
-                    let mut next: Vec<(Node, usize, Node)> = Vec::new();
-                    if let (Node::File(f) | Node::Passes(f) | Node::Relays(f), false) = (node, here)
-                    {
-                        let stands = |owner: &&ComponentId| {
-                            production.contains(&node) && stands_for(f, owner)
-                        };
-                        if let Some(owner) = owner_of(f).filter(stands) {
-                            next.push((Node::Component(owner), d, node));
-                        }
-                    }
-                    let mut links: Vec<(Node, Link)> = Vec::new();
-                    match node {
-                        Node::Passes(barrel) => {
-                            links.extend(
-                                passed
-                                    .get(barrel)
-                                    .into_iter()
-                                    .flatten()
-                                    .map(|(n, p)| (*n, *p)),
-                            );
-                        }
-                        Node::Component(_) => {
-                            links.extend(
-                                dependents
-                                    .get(&node)
-                                    .into_iter()
-                                    .flatten()
-                                    .map(|(n, p)| (*n, *p)),
-                            );
-                        }
-                        Node::File(f) | Node::Relays(f) => {
-                            links.extend(
-                                dependents
-                                    .get(&Node::File(f))
-                                    .into_iter()
-                                    .flatten()
-                                    .map(|(n, p)| (*n, *p)),
-                            );
-                            // what runs a package entry file first, when its own
-                            // code may be affected
-                            if let Node::File(_) = node {
-                                links.extend(
-                                    runs_first
-                                        .get(f)
-                                        .into_iter()
-                                        .flatten()
-                                        .map(|(importer, p)| (Node::File(importer), *p)),
-                                );
-                            }
-                            // a barrel of a changed file passes its names on, and
-                            // any other barrel the names of what it loads
-                            {
-                                for (importer, through) in walked.get(f).into_iter().flatten() {
-                                    let mut open = through
-                                        .iter()
-                                        .filter(|(loaded, link)| {
-                                            link.types || !cut.contains(*loaded)
-                                        })
-                                        .map(|(_, link)| *link);
-                                    if let Some(mut link) = open.next() {
-                                        open.for_each(|other| link.add(other));
-                                        links.push((Node::File(importer), link));
-                                    }
-                                }
-                                let pass = |importer: &'s str| match changed.contains(f)
-                                    && !changed.contains(importer)
-                                {
-                                    true => Node::Passes(importer),
-                                    false => Node::Relays(importer),
-                                };
-                                links.extend(
-                                    passing
-                                        .get(f)
-                                        .into_iter()
-                                        .flatten()
-                                        .map(|(importer, p)| (pass(importer), *p)),
-                                );
-                            }
-                        }
-                    }
-                    let open = |(n, link): &(Node, Link)| link.types || !(here || blocked(n));
-                    for (n, link) in links.into_iter().filter(open) {
-                        // reached through production code only now: it stands for
-                        // its component from where it was reached before
-                        if link.production && production.insert(n) && !blocked(&n) {
-                            if let (Node::File(f) | Node::Passes(f) | Node::Relays(f), Some(&at)) =
-                                (n, distance.get(&n))
-                            {
-                                if let Some(owner) = owner_of(f).filter(|c| stands_for(f, c)) {
-                                    next.push((Node::Component(owner), at, n));
-                                }
-                            }
-                        }
-                        next.push((n, d + 1, node));
-                    }
-                    for (n, nd, from) in next {
-                        if distance.get(&n).is_none_or(|&old| nd < old) {
-                            distance.insert(n, nd);
-                            parent.insert(n, from);
-                            if nd == d {
-                                queue.push_front(n);
-                            } else {
-                                queue.push_back(n);
-                            }
-                        }
-                    }
-                }
-                (distance, parent)
+        let walk = |cut: &BTreeSet<&'s str>| -> Walk<'s> {
+            let blocked = |node: &Node| match node {
+                Node::File(f) | Node::Passes(f) | Node::Relays(f) => cut.contains(f),
+                Node::Component(_) => false,
             };
-        let (mut distance, parent) = walk(&BTreeSet::new());
+            let mut production = production.clone();
+            let mut distance: BTreeMap<Node, usize> = BTreeMap::new();
+            // the node each was reached from at its distance
+            let mut parent: BTreeMap<Node, Node> = BTreeMap::new();
+            let mut feeds: BTreeMap<&str, BTreeMap<&str, usize>> = BTreeMap::new();
+            let mut queue: VecDeque<Node> = VecDeque::new();
+            let mut first: Vec<(Node, usize)> = start
+                .iter()
+                .filter(|(node, _, loads)| {
+                    !blocked(node)
+                        && loads.is_none_or(|(loaded, types)| types || !cut.contains(loaded))
+                })
+                .map(|(node, d, _)| (*node, *d))
+                .collect();
+            first.sort_by_key(|(_, d)| *d);
+            for (node, d) in first {
+                if let Entry::Vacant(slot) = distance.entry(node) {
+                    slot.insert(d);
+                    queue.push_back(node);
+                }
+            }
+            while let Some(node) = queue.pop_front() {
+                let d = distance[&node];
+                let here = blocked(&node);
+                let mut next: Vec<(Node, usize, Node)> = Vec::new();
+                if let (Node::File(f) | Node::Passes(f) | Node::Relays(f), false) = (node, here) {
+                    let stands =
+                        |owner: &&ComponentId| production.contains(&node) && stands_for(f, owner);
+                    if let Some(owner) = owner_of(f).filter(stands) {
+                        next.push((Node::Component(owner), d, node));
+                    }
+                }
+                let mut links: Vec<(Node, Link)> = Vec::new();
+                match node {
+                    Node::Passes(barrel) => {
+                        links.extend(
+                            passed
+                                .get(barrel)
+                                .into_iter()
+                                .flatten()
+                                .map(|(n, p)| (*n, *p)),
+                        );
+                    }
+                    Node::Component(_) => {
+                        links.extend(
+                            dependents
+                                .get(&node)
+                                .into_iter()
+                                .flatten()
+                                .map(|(n, p)| (*n, *p)),
+                        );
+                    }
+                    Node::File(f) | Node::Relays(f) => {
+                        links.extend(
+                            dependents
+                                .get(&Node::File(f))
+                                .into_iter()
+                                .flatten()
+                                .map(|(n, p)| (*n, *p)),
+                        );
+                        // what runs a package entry file first, when its own
+                        // code may be affected
+                        if let Node::File(_) = node {
+                            links.extend(
+                                runs_first
+                                    .get(f)
+                                    .into_iter()
+                                    .flatten()
+                                    .map(|(importer, p)| (Node::File(importer), *p)),
+                            );
+                        }
+                        // a barrel of a changed file passes its names on, and
+                        // any other barrel the names of what it loads
+                        {
+                            for (importer, through) in walked.get(f).into_iter().flatten() {
+                                let mut open = through
+                                    .iter()
+                                    .filter(|(loaded, link)| link.types || !cut.contains(*loaded))
+                                    .map(|(_, link)| *link);
+                                if let Some(mut link) = open.next() {
+                                    open.for_each(|other| link.add(other));
+                                    links.push((Node::File(importer), link));
+                                }
+                            }
+                            let pass = |importer: &'s str| match changed.contains(f)
+                                && !changed.contains(importer)
+                            {
+                                true => Node::Passes(importer),
+                                false => Node::Relays(importer),
+                            };
+                            links.extend(
+                                passing
+                                    .get(f)
+                                    .into_iter()
+                                    .flatten()
+                                    .map(|(importer, p)| (pass(importer), *p)),
+                            );
+                        }
+                    }
+                }
+                let open = |(n, link): &(Node, Link)| link.types || !(here || blocked(n));
+                for (n, link) in links.into_iter().filter(open) {
+                    // a barrel passes on the names of each file it is
+                    // reached from
+                    if let (
+                        Node::Passes(barrel) | Node::Relays(barrel),
+                        Node::File(f) | Node::Passes(f) | Node::Relays(f),
+                    ) = (n, node)
+                    {
+                        let at = feeds.entry(barrel).or_default().entry(f).or_insert(d);
+                        *at = (*at).min(d);
+                    }
+                    // reached through production code only now: it stands for
+                    // its component from where it was reached before
+                    if link.production && production.insert(n) && !blocked(&n) {
+                        if let (Node::File(f) | Node::Passes(f) | Node::Relays(f), Some(&at)) =
+                            (n, distance.get(&n))
+                        {
+                            if let Some(owner) = owner_of(f).filter(|c| stands_for(f, c)) {
+                                next.push((Node::Component(owner), at, n));
+                            }
+                        }
+                    }
+                    next.push((n, d + 1, node));
+                }
+                for (n, nd, from) in next {
+                    if distance.get(&n).is_none_or(|&old| nd < old) {
+                        distance.insert(n, nd);
+                        parent.insert(n, from);
+                        if nd == d {
+                            queue.push_front(n);
+                        } else {
+                            queue.push_back(n);
+                        }
+                    }
+                }
+            }
+            Walk {
+                distance,
+                parent,
+                feeds,
+            }
+        };
+        let Walk {
+            mut distance,
+            parent,
+            feeds,
+        } = walk(&BTreeSet::new());
 
         // A test file whose mock replaces a module for its whole run (a
         // `vi.mock` with a factory) reaches the change only along a way that
@@ -776,7 +795,9 @@ impl ArchitectureGraph {
                 }
                 let cut: BTreeSet<&str> =
                     mocks.iter().filter_map(|e| e.target.as_deref()).collect();
-                let other = walked.entry(cut.clone()).or_insert_with(|| walk(&cut).0);
+                let other = walked
+                    .entry(cut.clone())
+                    .or_insert_with(|| walk(&cut).distance);
                 if !other.contains_key(&Node::File(file)) {
                     // the mocks of the modules the change reaches, in order
                     let reached = |e: &&Evidence| {
@@ -815,22 +836,24 @@ impl ArchitectureGraph {
             }
         }
         // package entry files reached only through their re-exports, whose
-        // modules below them were not followed, each with the file whose
-        // names it passed on at the fewest steps
+        // modules below them were not followed, each with the files whose
+        // names it passed on, nearest first
         reach.relayed = runs_first
             .keys()
-            .filter(|entry| !distance.get(&Node::File(entry)).is_some_and(|d| *d > 0))
-            .filter_map(|entry| {
-                let (_, node) = [Node::Relays(entry), Node::Passes(entry)]
+            .filter(|entry| {
+                let only = |node: Node| distance.get(&node).is_some_and(|d| *d > 0);
+                !only(Node::File(entry)) && (only(Node::Relays(entry)) || only(Node::Passes(entry)))
+            })
+            .map(|entry| {
+                let mut from: Vec<(usize, &str)> = feeds
+                    .get(entry)
                     .into_iter()
-                    .filter_map(|node| Some((*distance.get(&node).filter(|d| **d > 0)?, node)))
-                    .min()?;
-                match parent.get(&node)? {
-                    Node::File(f) | Node::Passes(f) | Node::Relays(f) => {
-                        Some(((*entry).to_owned(), (*f).to_owned()))
-                    }
-                    Node::Component(_) => None,
-                }
+                    .flatten()
+                    .map(|(file, d)| (*d, *file))
+                    .collect();
+                from.sort();
+                let from = from.into_iter().map(|(_, file)| file.to_owned()).collect();
+                ((*entry).to_owned(), from)
             })
             .collect();
         let folded_of = |node: &Node| match node {
@@ -1604,11 +1627,11 @@ pub struct Reach {
     /// that distance.
     pub from: BTreeMap<ComponentId, Hop>,
     /// Package entry files (a Python `__init__.py`) the walk reached only
-    /// through their re-exports, each with the file whose names it passed
-    /// on at the fewest steps: what imports a module below them, which runs
-    /// them first, was not followed. One the walk starts from, which takes
-    /// a symbol's name, has none.
-    pub relayed: BTreeMap<String, String>,
+    /// through their re-exports, each with the files whose names it passed
+    /// on, nearest first: what imports a module below them, which runs them
+    /// first, was not followed. One the walk starts from, which takes a
+    /// symbol's name, has none.
+    pub relayed: BTreeMap<String, Vec<String>>,
 }
 
 /// What the walk reached a component from: a file of another component,
@@ -1638,6 +1661,16 @@ enum Node<'a> {
     /// before (the imports of a module below the package), since none of
     /// its own code is affected. Reached otherwise, it is a [`Node::File`].
     Relays(&'a str),
+}
+
+/// What one walk of the reach found.
+struct Walk<'a> {
+    distance: BTreeMap<Node<'a>, usize>,
+    /// The node each was reached from at its distance.
+    parent: BTreeMap<Node<'a>, Node<'a>>,
+    /// For each file reached as a barrel ([`Node::Passes`], [`Node::Relays`]),
+    /// the files it was reached from, each at its distance.
+    feeds: BTreeMap<&'a str, BTreeMap<&'a str, usize>>,
 }
 
 /// Where a walk starts, at what distance, and for a statement that takes a

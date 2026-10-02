@@ -54,6 +54,7 @@ fn a_module_binding_takes_the_names_its_file_reads_through_it() {
             r#"store/billing/__init__.py relative import -> store/billing/rates.py ["*"]"#,
             r#"store/billing/charge.py import -> store/billing/money.py ["cents"]"#,
             r#"store/billing/duty.py import -> store/billing/levy.py ["rate_of"]"#,
+            r#"store/billing/duty.py import -> store/billing/money.py ["cents"]"#,
             // what an f-string formats is code
             r#"store/formatted.py import -> store/billing/charge.py ["pay", "refund"]"#,
             r#"store/other.py import -> store/billing/charge.py ["pay"]"#,

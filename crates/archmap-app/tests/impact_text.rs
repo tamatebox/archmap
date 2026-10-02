@@ -513,6 +513,27 @@ fn a_package_entry_is_named_at_the_re_export_the_reach_came_through() {
             "{out}"
         );
     }
+    // money.py reaches it through charge.py and duty.py: the nearest way's
+    // re-export, and every one on a way in JSON
+    let out = text(&ws, "store/billing/money.py");
+    assert!(
+        out.contains("that file: store/billing/__init__.py:2 (runs first;"),
+        "{out}"
+    );
+    let json = ws
+        .impact(&ImpactRequest {
+            target: "store/billing/money.py",
+            depth: DEFAULT_DEPTH,
+            format: Format::Json,
+            verbose: false,
+        })
+        .unwrap()
+        .output;
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        value["not_traced"]["barrels"]["shown"][0]["lines"],
+        serde_json::json!([2, 3, 6])
+    );
 }
 
 #[test]

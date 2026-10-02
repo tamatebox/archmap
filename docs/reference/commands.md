@@ -363,9 +363,9 @@ reach follows names only: not the imports of a module below the package,
 which run the `__init__.py` first. Nor are they followed past one reached
 only through what it re-exports from a file that did not change, since none
 of its own code is affected. `Not traced` names the files the reach went on
-from by names only, for a file or a symbol target, each at its first
-re-export of what may change, the file the reach came from for a package's
-entry file reached that way (`barrels: 1 file passes
+from by names only, for a file or a symbol target, each at its re-export
+on the nearest way: of the target, or for a package's entry file reached
+that way, of the nearest file the reach came from (`barrels: 1 file passes
 on what may change, and only what takes it from there is followed; a
 rename, a removal or an error on load also breaks whatever else loads that
 file:
@@ -508,7 +508,8 @@ the language; `tests` as `{"total", "shown"}` with every file by path, and
 each, by `file`, `line` and the `target` it replaces, when a mock left one
 out; `co_change` with the history read and every file with every shared
 commit (see [history.md](history.md#files-changed-in-the-same-commits));
-`not_traced` with every location of each kind; and for an import name
+`not_traced` with every location of each kind, a barrel with every
+re-export of it on a way as `lines`; and for an import name
 `module`, with `target` `null`. Earlier versions capped this JSON unless
 `--verbose`, listed `direct` and `transitive` as ids and the statements as
 `shown`.

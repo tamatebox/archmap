@@ -85,14 +85,16 @@ pub(crate) struct Barrels {
     pub(crate) shown: Vec<Barrel>,
 }
 
-/// A file that passes the target's names on, at its first such re-export:
-/// for a package entry the reach went on from only through its re-exports,
-/// of the file it came from.
+/// A file that passes the target's names on, at its re-export on the
+/// nearest way: of the target, or for a package entry the reach went on
+/// from only through its re-exports, of the nearest file it came from.
 #[derive(Debug, Serialize)]
 pub(crate) struct Barrel {
     pub(crate) file: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) line: Option<u32>,
+    /// Every re-export of it on a way, by line.
+    pub(crate) lines: Vec<u32>,
     /// Its file is a package's entry file, which runs before any module
     /// below the package is loaded.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -117,13 +119,14 @@ pub(crate) enum Narrowed<'a> {
 /// statements that re-export from it; for a symbol, those that re-export
 /// its name; and for the package entry files in `relayed`, which the reach
 /// went on from only through their re-exports, those that re-export the
-/// file it came from. Each counts the test files that load its file (or,
-/// for a package's entry file, a module below it) that `listed` does not
-/// hold.
+/// files it came from, nearest first, or with none of those, its first
+/// unless a statement of it is listed already. Each counts the test files
+/// that load its file (or, for a package's entry file, a module below it)
+/// that `listed` does not hold.
 pub(crate) fn barrels(
     full: &ArchitectureGraph,
     target: Narrowed,
-    relayed: &BTreeMap<String, String>,
+    relayed: &BTreeMap<String, Vec<String>>,
     listed: &BTreeSet<String>,
     cap: usize,
 ) -> Option<Barrels> {
@@ -145,16 +148,47 @@ pub(crate) fn barrels(
             .filter(|e| e.passes_on())
             .collect(),
     };
-    statements.extend(imports().filter(|e| {
-        e.passes_on()
-            && relayed
-                .get(&e.file)
-                .is_some_and(|from| e.target.as_deref() == Some(from.as_str()))
-    }));
-    // each file once, at its first such statement
+    // how near the way a statement is on: what re-exports the target is
+    // nearest, then a relayed entry's statement by the file it re-exports
+    let mut rank: BTreeMap<(&str, Option<u32>), usize> = BTreeMap::new();
+    for (entry, from) in relayed {
+        let re_exports = || {
+            imports().filter(move |e| {
+                e.passes_on() && e.file == *entry && e.target.as_deref() != Some(entry.as_str())
+            })
+        };
+        let near = |e: &Evidence| from.iter().position(|f| e.target.as_deref() == Some(f));
+        let on_way: Vec<&Evidence> = re_exports().filter(|e| near(e).is_some()).collect();
+        if on_way.is_empty() {
+            // no file it came from is known: its first, unless listed
+            if !statements.iter().any(|e| e.file == *entry) {
+                statements.extend(re_exports());
+            }
+            continue;
+        }
+        for e in on_way {
+            let at = near(e).map_or(0, |at| at + 1);
+            rank.insert((e.file.as_str(), e.line), at);
+            statements.push(e);
+        }
+    }
+    let rank_of = |e: &Evidence| rank.get(&(e.file.as_str(), e.line)).copied().unwrap_or(0);
     statements.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
-    statements.dedup_by(|a, b| a.file == b.file);
-    if statements.is_empty() {
+    statements.dedup_by(|a, b| a.file == b.file && a.line == b.line);
+    // each file once, at its statement on the nearest way, with all of them
+    let mut files: Vec<(&Evidence, Vec<u32>)> = Vec::new();
+    for e in statements {
+        match files.last_mut() {
+            Some((shown, lines)) if shown.file == e.file => {
+                lines.extend(e.line);
+                if (rank_of(e), e.line) < (rank_of(shown), shown.line) {
+                    *shown = e;
+                }
+            }
+            _ => files.push((e, e.line.into_iter().collect())),
+        }
+    }
+    if files.is_empty() {
         return None;
     }
     let entries: BTreeSet<&str> = full
@@ -164,10 +198,10 @@ pub(crate) fn barrels(
         .filter(|e| e.runs_first())
         .map(|e| e.file.as_str())
         .collect();
-    let shown = statements
+    let shown = files
         .iter()
         .take(cap)
-        .map(|e| {
+        .map(|(e, lines)| {
             let barrel = e.file.as_str();
             let runs_first = entries.contains(barrel);
             let below = if runs_first {
@@ -184,13 +218,14 @@ pub(crate) fn barrels(
             Barrel {
                 file: e.file.clone(),
                 line: e.line,
+                lines: lines.clone(),
                 runs_first,
                 tests_not_listed: loading.len(),
             }
         })
         .collect();
     Some(Barrels {
-        total: statements.len(),
+        total: files.len(),
         shown,
     })
 }
@@ -808,5 +843,45 @@ mod tests {
         assert_eq!(no_importers("app/test/page.tsx"), Some(NO_IMPORTERS));
         // nothing recorded in it: its path decides
         assert_eq!(no_importers("tests/helper.ts"), None);
+    }
+
+    #[test]
+    fn a_relayed_entry_is_named_at_the_re_export_of_the_nearest_file_it_came_from() {
+        let re_export = |line: u32, target: &str| {
+            Edge::new("pkg", "pkg", EdgeKind::Import).with_evidence(
+                Evidence::new("pkg/__init__.py")
+                    .at_line(line)
+                    .pointing_at(target)
+                    .with_note("export"),
+            )
+        };
+        let full = ArchitectureGraph {
+            edges: vec![
+                re_export(1, "pkg/a.py"),
+                re_export(2, "pkg/b.py"),
+                re_export(3, "pkg/c.py"),
+            ],
+            ..Default::default()
+        };
+        let named = |from: &[&str]| {
+            let relayed = BTreeMap::from([(
+                "pkg/__init__.py".to_owned(),
+                from.iter().map(|f| (*f).to_owned()).collect(),
+            )]);
+            let found = barrels(
+                &full,
+                Narrowed::File("pkg/z.py"),
+                &relayed,
+                &BTreeSet::new(),
+                usize::MAX,
+            )
+            .unwrap();
+            let barrel = &found.shown[0];
+            (found.total, barrel.line, barrel.lines.clone())
+        };
+        // the nearest way first, every re-export on a way listed
+        assert_eq!(named(&["pkg/c.py", "pkg/b.py"]), (1, Some(3), vec![2, 3]));
+        // where no file it came from is known, its first, not dropped
+        assert_eq!(named(&[]), (1, Some(1), vec![1, 2, 3]));
     }
 }
