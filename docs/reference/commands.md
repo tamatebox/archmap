@@ -446,8 +446,8 @@ Transitive dependents: 2 more (6 in all)
   scripts/report.cjs  2 steps, through src/lib/money.ts
 
 Tests to run again: 2
-  tests/helpers.ts
-  tests/money.test.ts
+  tests/helpers.ts (through src/lib/money.ts)
+  tests/money.test.ts (takes it)
 
 Not traced:
   dynamic: 2 calls load modules by computed names, which may be this: scripts/report.cjs:4, src/app/lazy.tsx:7
@@ -481,8 +481,18 @@ of the repository. A whole component (a package, a directory, an
 external dependency) gets no statement list: the answer names the `query`
 that shows where it is imported. `Transitive dependents` are the
 components reached only through others, so the direct ones are not repeated,
-and the heading counts everything reached. A test file that is the target is
-among the tests to run again, marked `(the target itself)`. `Changed in the
+and the heading counts everything reached. Each test to run again says
+how it reaches the target, at its fewest steps: a statement of it takes the
+target (`(takes it)`: imports the file, or takes the symbol by name, with
+`via <file>:<line>` when it takes the name through a re-export), takes the
+symbol's module whole (`(takes its module whole)`), loads a module below a
+package whose entry file the change reaches and that runs it first (`(runs
+first: src/shop/__init__.py)`), or reaches through other files, the first
+one on the way (`(through src/app.py)`); where several ways are as near,
+the first of those named here. `types only` follows when every statement
+of it toward what the change reaches takes types only, so its run loads
+none of them. A test file that is the target is marked `(the target
+itself)`, and one of a changed component `(in the target)`. `Changed in the
 same commits` follows, from the root's committed git history: the files
 committed together with the target (a file, a symbol's file, or a
 component's files), each with the commits it shares with the target out
@@ -529,7 +539,10 @@ declaration or an import that names no file was the way, `declared_in` or
 `target`, `scope`, `names`, `test`, `type_only`, `replaces`) with the
 `component` it is in and, for a symbol, the barrel it went through as
 `through`, `recorded` being false when no evidence names imported files for
-the language; `tests` as `{"total", "shown"}` with every file by path, and
+the language; `tests` as `{"total", "shown"}` with every file by path, each
+with its `ways` as the text names them, every one as near (`{"kind":
+"takes", "via"?}`, `whole`, `runs_first` and `through` with their `file`,
+`target`), and `types_only`, and
 `left_out` as `{"total", "shown"}` with every test file and the `mocks` of
 each, by `file`, `line` and the `target` it replaces, when a mock left one
 out; `co_change` with the history read and every file with every shared

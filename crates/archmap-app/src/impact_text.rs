@@ -14,7 +14,9 @@ use crate::query_text::{
     component_head, count, display, file_head, import_counts, import_location, namesakes,
     not_traced, place, shell_word, statements_title, symbol_line, with_more,
 };
-use crate::views::{About, Dependent, ImpactResult, ImportSites, MAX_IMPORT_SITES, MAX_TEST_FILES};
+use crate::views::{
+    About, Dependent, ImpactResult, ImportSites, TestWayView, MAX_IMPORT_SITES, MAX_TEST_FILES,
+};
 
 /// Default caps, lifted by `verbose`; statements and test files are capped
 /// as the JSON caps them.
@@ -376,13 +378,29 @@ fn tests(out: &mut String, result: &ImpactResult, caps: &Caps) -> bool {
     } else {
         let _ = writeln!(out, "\nTests to run again: {}", count(total, shown));
     }
-    for file in &result.tests.shown[..shown] {
-        match &result.about {
-            About::File(target) if target == file => {
-                let _ = writeln!(out, "  {file} (the target itself)");
+    // each with the first way it reaches the target
+    for test in &result.tests.shown[..shown] {
+        let mut how = match test.ways.first() {
+            Some(TestWayView::Target) => match &result.about {
+                About::Component => "in the target".to_owned(),
+                _ => "the target itself".to_owned(),
+            },
+            Some(TestWayView::Takes { via: None }) => "takes it".to_owned(),
+            Some(TestWayView::Takes { via: Some(via) }) => format!("takes it, via {via}"),
+            Some(TestWayView::Whole) => "takes its module whole".to_owned(),
+            Some(TestWayView::RunsFirst { file }) => format!("runs first: {file}"),
+            Some(TestWayView::Through { file }) => format!("through {file}"),
+            None => String::new(),
+        };
+        if test.types_only {
+            how.push_str(", types only");
+        }
+        match how.is_empty() {
+            true => {
+                let _ = writeln!(out, "  {}", test.file);
             }
-            _ => {
-                let _ = writeln!(out, "  {file}");
+            false => {
+                let _ = writeln!(out, "  {} ({how})", test.file);
             }
         }
     }

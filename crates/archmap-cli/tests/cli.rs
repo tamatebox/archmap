@@ -18,6 +18,16 @@ fn ids(dependents: &serde_json::Value) -> serde_json::Value {
 }
 
 /// Where impact's statements are, and the component each is in.
+/// The files of impact's tests to run again, without how each reaches.
+fn test_files(tests: &serde_json::Value) -> serde_json::Value {
+    tests["shown"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["file"].clone())
+        .collect()
+}
+
 fn sites(statements: &serde_json::Value) -> serde_json::Value {
     statements
         .as_array()
@@ -426,13 +436,15 @@ fn impact_of_a_file_uses_the_summary_depth() {
         ids(&result["transitive"]),
         serde_json::json!(["shop::shop", "shop::scripts", "shop::shop.billing"])
     );
-    // the tests to run again
+    // the tests to run again, each with how it reaches the target
+    assert_eq!(result["tests"]["total"], 2);
     assert_eq!(
-        result["tests"],
-        serde_json::json!({
-            "total": 2,
-            "shown": ["tests/test_billing.py", "tests/unit/factories.py"]
-        })
+        test_files(&result["tests"]),
+        serde_json::json!(["tests/test_billing.py", "tests/unit/factories.py"])
+    );
+    assert_eq!(
+        result["tests"]["shown"][0]["ways"],
+        serde_json::json!([{"kind": "runs_first", "file": "src/shop/__init__.py"}])
     );
 }
 
@@ -1835,7 +1847,7 @@ fn impact_of_a_symbol_starts_at_the_statements_that_take_it() {
     // tests/helpers.ts takes another name from money.ts: the file reaches
     // it, the symbol does not
     let tests = |json: &str| -> serde_json::Value {
-        serde_json::from_str::<serde_json::Value>(json).unwrap()["tests"]["shown"].clone()
+        test_files(&serde_json::from_str::<serde_json::Value>(json).unwrap()["tests"])
     };
     assert_eq!(
         tests(&file),
@@ -2070,7 +2082,7 @@ fn test_code_is_marked_and_listed_apart() {
     let impact: serde_json::Value = serde_json::from_str(&json).unwrap();
     // the tests to run again, apart from the code that depends on the file
     assert_eq!(
-        impact["tests"]["shown"],
+        test_files(&impact["tests"]),
         serde_json::json!(["tests/helpers.ts", "tests/money.test.ts"])
     );
     // importers: production code first, test code marked

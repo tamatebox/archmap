@@ -23,7 +23,10 @@ pub mod work;
 
 pub use evidence::{via_place, Evidence, Scope, WHOLE_MODULE};
 pub use fragment::GraphFragment;
-pub use graph::{ArchitectureGraph, ChangeSeed, FileFacts, GraphMeta, Hop, Reach, SymbolImporters};
+pub use graph::{
+    ArchitectureGraph, ChangeSeed, FileFacts, GraphMeta, Hop, Reach, SymbolImporters, TestReach,
+    TestWay,
+};
 pub use model::{
     Component, ComponentId, ComponentKind, DynamicImport, Edge, EdgeKind, LanguageCoverage, Symbol,
     SymbolId, SymbolKind, UnmappedImport, UnmappedReason, UnreadMacro,

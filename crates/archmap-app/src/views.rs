@@ -285,11 +285,45 @@ pub struct Statements {
 pub struct TestFiles {
     pub total: usize,
     /// The first ones by path.
-    pub shown: Vec<String>,
+    pub shown: Vec<TestFile>,
     /// The test files left out, which reach the target only through
     /// modules their mocks replace for their whole run.
     #[serde(skip_serializing_if = "LeftOut::is_empty")]
     pub left_out: LeftOut,
+}
+
+/// A test file to run again, with how it reaches the target.
+#[derive(Debug, Serialize)]
+pub struct TestFile {
+    pub file: String,
+    /// Every way at its fewest steps from the target, by precedence: the
+    /// text shows the first.
+    pub ways: Vec<TestWayView>,
+    /// Each statement of it toward what the change reaches takes types
+    /// only.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub types_only: bool,
+}
+
+/// One way a test file reaches the target.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TestWayView {
+    /// It is the target, or a file of the target component.
+    Target,
+    /// A statement of it takes the target, through the re-export at `via`
+    /// when barrels pass it on.
+    Takes {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        via: Option<String>,
+    },
+    /// A statement of it takes the target's module whole.
+    Whole,
+    /// It loads a module below the package whose entry `file` runs first.
+    RunsFirst { file: String },
+    /// Through other files, `file` the first on the way (a component's id
+    /// where its package was).
+    Through { file: String },
 }
 
 #[derive(Debug, Default, Serialize)]

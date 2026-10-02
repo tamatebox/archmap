@@ -140,8 +140,8 @@ fn a_file_answers_with_its_dependents_statements_tests_and_blind_spots() {
            scripts/report.cjs  2 steps, through src/lib/money.ts\n\
          \n\
          Tests to run again: 2\n  \
-           tests/helpers.ts\n  \
-           tests/money.test.ts\n\
+           tests/helpers.ts (through src/lib/money.ts)\n  \
+           tests/money.test.ts (takes it)\n\
          \n\
          Changed in the same commits: not read (not a git repository)\n\
          \n\
@@ -303,7 +303,7 @@ fn a_test_file_marks_itself_among_the_tests_to_run_again() {
         section(&out, "Tests to run again: 2"),
         [
             "  tests/helpers.ts (the target itself)",
-            "  tests/money.test.ts"
+            "  tests/money.test.ts (takes it)"
         ]
     );
 }
@@ -323,7 +323,7 @@ fn a_barrel_leads_on_only_to_what_may_take_the_files_names() {
     );
     assert_eq!(
         section(&url, "Tests to run again: 1"),
-        ["  tests/link.test.ts"]
+        ["  tests/link.test.ts (takes it, via src/storage.ts:1)"]
     );
     // a barrel that re-exports two files and a package whole: what takes it
     // whole or only loads it, a name both files define, and what uses the
@@ -375,13 +375,13 @@ fn a_test_whose_mock_replaces_a_module_on_the_way_is_left_out() {
     assert_eq!(
         section(&pricing, "Tests to run again: 7"),
         [
-            "  tests/actual.test.ts",
-            "  tests/auto.test.ts",
-            "  tests/both.test.ts",
-            "  tests/helper.test.ts",
-            "  tests/inside.test.ts",
-            "  tests/original.test.ts",
-            "  tests/passed.test.ts",
+            "  tests/actual.test.ts (through src/orders.ts)",
+            "  tests/auto.test.ts (through src/orders.ts)",
+            "  tests/both.test.ts (through src/orders.ts)",
+            "  tests/helper.test.ts (through src/orders.ts)",
+            "  tests/inside.test.ts (through src/orders.ts)",
+            "  tests/original.test.ts (through src/orders.ts)",
+            "  tests/passed.test.ts (through src/orders.ts)",
             "  left out: 5 test files reach it only through modules their mocks replace: \
              tests/barrel.test.ts:4 (mocks src/index.ts), tests/jest.test.ts:3 (mocks \
              src/orders.ts), tests/replaced.test.ts:4 (mocks src/orders.ts), +2 more",
@@ -391,14 +391,14 @@ fn a_test_whose_mock_replaces_a_module_on_the_way_is_left_out() {
     let types = text(&ws, "src/types.ts");
     assert_eq!(
         section(&types, "Tests to run again: 1"),
-        ["  tests/typed.test.ts"]
+        ["  tests/typed.test.ts (through src/lines.ts)"]
     );
     // a module that re-exports a name: only the mock that gives that name
     // depends on it
     let url = text(&ws, "src/url.ts");
     assert_eq!(
         section(&url, "Tests to run again: 1"),
-        ["  tests/link.test.ts"]
+        ["  tests/link.test.ts (takes it, via src/storage.ts:1)"]
     );
     // a mock of the changed file, or of a barrel of it, that gives it a
     // name it exports, the default by its declared name too; not one that
@@ -407,8 +407,8 @@ fn a_test_whose_mock_replaces_a_module_on_the_way_is_left_out() {
     assert_eq!(
         section(&audio, "Tests to run again: 2"),
         [
-            "  tests/default.test.ts",
-            "  tests/media.test.ts",
+            "  tests/default.test.ts (takes it)",
+            "  tests/media.test.ts (takes it, via src/media.ts:1)",
             "  left out: 1 test file reaches it only through a module its mock replaces: \
              tests/unrelated.test.ts:4 (mocks src/audio.ts)",
         ]
@@ -469,7 +469,7 @@ fn a_python_package_that_only_passes_a_name_on_is_followed_by_that_name() {
     // takes another name from it
     assert_eq!(
         section(&out, "Tests to run again: 1"),
-        ["  spec/test_pay.py"]
+        ["  spec/test_pay.py (takes it)"]
     );
     assert!(
         out.contains(
@@ -490,7 +490,10 @@ fn a_package_entry_reached_through_its_re_exports_runs_nothing_below_it() {
     let out = text(&ws, "store/billing/money.py");
     assert_eq!(
         section(&out, "Tests to run again: 2"),
-        ["  spec/test_pay.py", "  spec/test_refund.py"]
+        [
+            "  spec/test_pay.py (through store/billing/charge.py)",
+            "  spec/test_refund.py (through store/billing/charge.py)"
+        ]
     );
     assert!(
         out.contains(
@@ -646,5 +649,48 @@ fn a_dependent_a_declaration_reaches_names_what_it_declares_and_where() {
             "through": "mid",
             "declared_in": {"file": "top/Cargo.toml", "line": 6}
         })
+    );
+}
+
+#[test]
+fn each_test_to_run_again_says_how_it_reaches_the_symbol() {
+    let files: Vec<(String, String)> = [
+        ("package.json", r#"{"name": "shop"}"#),
+        (
+            "src/money.ts",
+            "export interface Price {\n  amount: number;\n}\n\
+             export function price(): Price {\n  return { amount: 1 };\n}\n",
+        ),
+        (
+            "tests/named.test.ts",
+            "import { price } from '../src/money';\nprice();\n",
+        ),
+        (
+            "tests/whole.test.ts",
+            "import * as money from '../src/money';\nmoney.price();\n",
+        ),
+        (
+            "tests/typed.test.ts",
+            "import type { Price } from '../src/money';\nexport const p: Price = { amount: 1 };\n",
+        ),
+    ]
+    .into_iter()
+    .map(|(path, text)| (path.to_owned(), text.to_owned()))
+    .collect();
+    let repo = Repo::new("test-ways", &files);
+    let ws = scan(&repo.0);
+    assert_eq!(
+        section(&text(&ws, "price"), "Tests to run again: 2"),
+        [
+            "  tests/named.test.ts (takes it)",
+            "  tests/whole.test.ts (takes its module whole)"
+        ]
+    );
+    assert_eq!(
+        section(&text(&ws, "Price"), "Tests to run again: 2"),
+        [
+            "  tests/typed.test.ts (takes it, types only)",
+            "  tests/whole.test.ts (takes its module whole)"
+        ]
     );
 }

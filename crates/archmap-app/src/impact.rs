@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Context, Result};
 use archmap_core::{
     ArchitectureGraph, ChangeSeed, Component, ComponentId, ComponentKind, Edge, Evidence, Hop,
-    Symbol, UnmappedImport,
+    Symbol, TestReach, TestWay, UnmappedImport,
 };
 
 use crate::co_change::{self, Changed};
@@ -14,7 +14,7 @@ use crate::resolve::{resolve, Resolved};
 use crate::target::{component_file, fold, namesakes, reject_outside, unquote};
 use crate::views::{
     About, Dependent, ImpactResult, ImportSite, ImportSites, LeftOut, Location, MockCall,
-    MockingTest, Statements, TestFiles,
+    MockingTest, Statements, TestFile, TestFiles, TestWayView,
 };
 use crate::{Answer, Format, Found, ImpactRequest, Workspace};
 
@@ -335,7 +335,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
         depth,
         direct,
         transitive,
-        tests: test_files(reach.tests, reach.left_out, caps.tests),
+        tests: test_files(reach.tests, reach.test_ways, reach.left_out, caps.tests),
         target: Some(at.id),
         module: None,
         folded_from: at.folded_from,
@@ -537,6 +537,13 @@ fn import_name_impact<'a>(
     // what reaches them is one step further
     reach.transitive.extend(direct.iter().cloned());
     reach.direct = direct;
+    // a test that imports the name takes it, before any other way
+    let mut ways = std::mem::take(&mut reach.test_ways);
+    for file in &tests {
+        let way = ways.entry(file.clone()).or_default();
+        way.ways.insert(0, TestWay::Takes { via: None });
+        way.types_only = false;
+    }
     tests.extend(reach.tests.iter().cloned());
     // a test that imports the name itself is one to run again anyway
     let mut left_out = std::mem::take(&mut reach.left_out);
@@ -557,7 +564,7 @@ fn import_name_impact<'a>(
         also_at_path: Vec::new(),
         direct,
         transitive,
-        tests: test_files(tests, left_out, caps.tests),
+        tests: test_files(tests, ways, left_out, caps.tests),
         importers: Some(importers),
         imports_below: None,
         may_use: None,
@@ -571,12 +578,31 @@ fn import_name_impact<'a>(
 /// replace a module on their way, the first `cap` of each by path.
 fn test_files(
     tests: BTreeSet<String>,
+    mut ways: BTreeMap<String, TestReach>,
     left_out: BTreeMap<String, Vec<Evidence>>,
     cap: usize,
 ) -> TestFiles {
+    let view = |way: TestWay| match way {
+        TestWay::Target => TestWayView::Target,
+        TestWay::Takes { via } => TestWayView::Takes { via },
+        TestWay::Whole => TestWayView::Whole,
+        TestWay::RunsFirst { entry } => TestWayView::RunsFirst { file: entry },
+        TestWay::Through { from } => TestWayView::Through { file: from },
+    };
     TestFiles {
         total: tests.len(),
-        shown: tests.into_iter().take(cap).collect(),
+        shown: tests
+            .into_iter()
+            .take(cap)
+            .map(|file| {
+                let reach = ways.remove(&file).unwrap_or_default();
+                TestFile {
+                    file,
+                    ways: reach.ways.into_iter().map(view).collect(),
+                    types_only: reach.types_only,
+                }
+            })
+            .collect(),
         left_out: LeftOut {
             total: left_out.len(),
             shown: left_out

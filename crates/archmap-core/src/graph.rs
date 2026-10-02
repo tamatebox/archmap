@@ -285,6 +285,7 @@ impl ArchitectureGraph {
         let (mut reach, production, _) = self.reach(seed, depth, false, &test_code);
         let (through_tests, with_tests, seeds) = self.reach(seed, depth, true, &test_code);
         reach.left_out = through_tests.left_out;
+        let mut test_ways = through_tests.test_ways;
         for (entry, from) in through_tests.relayed {
             let known = reach.relayed.entry(entry).or_default();
             for file in from {
@@ -299,6 +300,8 @@ impl ArchitectureGraph {
             .chain(seeds.iter().filter(|f| test_code.contains(*f)))
             .map(|f| (*f).to_owned())
             .collect();
+        test_ways.retain(|file, _| reach.tests.contains(file));
+        reach.test_ways = test_ways;
         reach
     }
 
@@ -359,6 +362,9 @@ impl ArchitectureGraph {
         // that file, with the files they load: a mock that replaces one of
         // those hides the file from them
         let mut walked: BTreeMap<&str, BTreeMap<&str, BTreeMap<&str, Link>>> = BTreeMap::new();
+        // the first re-export on the way of each such statement, by the file
+        // it leads to and its own file
+        let mut via_at: BTreeMap<(&str, &str), &str> = BTreeMap::new();
         // a declaration says a package is installed, not that a symbol of it
         // is used
         let symbol = matches!(seed, ChangeSeed::Symbol(_));
@@ -401,6 +407,10 @@ impl ArchitectureGraph {
                 let loaded = e.via().and_then(|place| Some(place.rsplit_once(':')?.0));
                 match (target, loaded) {
                     (Node::File(t), Some(loaded)) => {
+                        if let Some(place) = e.via() {
+                            let at = via_at.entry((t, e.file.as_str())).or_insert(place);
+                            *at = (*at).min(place);
+                        }
                         walked
                             .entry(t)
                             .or_default()
@@ -479,6 +489,9 @@ impl ArchitectureGraph {
         // a symbol, the file it is reached through and the name it goes by
         let mut changed: BTreeSet<&str> = BTreeSet::new();
         let mut symbol_name: Option<(&str, &str)> = None;
+        // for a symbol, how the files of its statements take it, and whether
+        // the statement takes types only
+        let mut start_ways: BTreeMap<&str, Vec<(Way, bool)>> = BTreeMap::new();
         let target = match seed {
             ChangeSeed::File(file) => {
                 start.push((Node::File(file), 0, None));
@@ -513,6 +526,14 @@ impl ArchitectureGraph {
                     Some((at.file.as_str(), reached_name(&symbol.name)))
                 });
                 if let Some(found) = self.symbol_importers(symbol) {
+                    let by_name = found.by_name.iter().map(|(_, e)| (Way::Takes(e.via()), *e));
+                    let whole = found.may_use.iter().map(|(_, e)| (Way::Whole, *e));
+                    for (way, e) in by_name.chain(whole).filter(|(_, e)| tests || !e.test) {
+                        start_ways
+                            .entry(e.file.as_str())
+                            .or_default()
+                            .push((way, e.type_only));
+                    }
                     let statements: Vec<&Evidence> = found
                         .by_name
                         .iter()
@@ -579,6 +600,26 @@ impl ArchitectureGraph {
         // manifests that declare the package. The files in `cut` run for
         // nothing: the walk enters and leaves them only through statements
         // that take types, and takes no symbol from them otherwise.
+        // how a link from `node`, `d` steps from the change, leads into a
+        // test file: an importer of a module that changed outside the graph
+        // takes nothing of the change itself
+        let taken = !matches!(seed, ChangeSeed::Importers(_));
+        let way_of = |node: Node<'s>, kind: Kind<'s>, d: usize| match (node, kind) {
+            (Node::File(entry), Kind::RunsFirst) => Way::RunsFirst(entry),
+            (Node::File(_) | Node::Passes(_) | Node::Relays(_), Kind::Via(place))
+                if d == 0 && taken =>
+            {
+                Way::Takes(Some(place))
+            }
+            (Node::File(_) | Node::Passes(_) | Node::Relays(_), _) if d == 0 && taken => {
+                Way::Takes(None)
+            }
+            // a statement that names the symbol's package and no file of it
+            (Node::Component(_), _) if d == 0 && symbol => Way::Whole,
+            (Node::Component(_), _) if d == 0 => Way::Takes(None),
+            (Node::File(f) | Node::Passes(f) | Node::Relays(f), _) => Way::Through(f),
+            (Node::Component(c), _) => Way::Through(c.as_str()),
+        };
         let walk = |cut: &BTreeSet<&'s str>| -> Walk<'s> {
             let blocked = |node: &Node| match node {
                 Node::File(f) | Node::Passes(f) | Node::Relays(f) => cut.contains(f),
@@ -589,6 +630,9 @@ impl ArchitectureGraph {
             // the node each was reached from at its distance
             let mut parent: BTreeMap<Node, Node> = BTreeMap::new();
             let mut feeds: BTreeMap<&str, BTreeMap<&str, usize>> = BTreeMap::new();
+            // the ways into test files, for the walk that counts test code
+            let record = tests && cut.is_empty();
+            let mut ways: BTreeMap<&str, Vec<(usize, Way, bool)>> = BTreeMap::new();
             let mut queue: VecDeque<Node> = VecDeque::new();
             let mut first: Vec<(Node, usize)> = start
                 .iter()
@@ -616,7 +660,7 @@ impl ArchitectureGraph {
                         next.push((Node::Component(owner), d, node));
                     }
                 }
-                let mut links: Vec<(Node, Link)> = Vec::new();
+                let mut links: Vec<(Node, Link, Kind)> = Vec::new();
                 match node {
                     Node::Passes(barrel) => {
                         links.extend(
@@ -624,7 +668,7 @@ impl ArchitectureGraph {
                                 .get(barrel)
                                 .into_iter()
                                 .flatten()
-                                .map(|(n, p)| (*n, *p)),
+                                .map(|(n, p)| (*n, *p, Kind::Import)),
                         );
                     }
                     Node::Component(_) => {
@@ -633,7 +677,7 @@ impl ArchitectureGraph {
                                 .get(&node)
                                 .into_iter()
                                 .flatten()
-                                .map(|(n, p)| (*n, *p)),
+                                .map(|(n, p)| (*n, *p, Kind::Import)),
                         );
                     }
                     Node::File(f) | Node::Relays(f) => {
@@ -642,7 +686,7 @@ impl ArchitectureGraph {
                                 .get(&Node::File(f))
                                 .into_iter()
                                 .flatten()
-                                .map(|(n, p)| (*n, *p)),
+                                .map(|(n, p)| (*n, *p, Kind::Import)),
                         );
                         // what runs a package entry file first, when its own
                         // code may be affected
@@ -652,7 +696,9 @@ impl ArchitectureGraph {
                                     .get(f)
                                     .into_iter()
                                     .flatten()
-                                    .map(|(importer, p)| (Node::File(importer), *p)),
+                                    .map(|(importer, p)| {
+                                        (Node::File(importer), *p, Kind::RunsFirst)
+                                    }),
                             );
                         }
                         // a barrel of a changed file passes its names on, and
@@ -665,7 +711,8 @@ impl ArchitectureGraph {
                                     .map(|(_, link)| *link);
                                 if let Some(mut link) = open.next() {
                                     open.for_each(|other| link.add(other));
-                                    links.push((Node::File(importer), link));
+                                    let place = via_at.get(&(f, *importer)).copied().unwrap_or("");
+                                    links.push((Node::File(importer), link, Kind::Via(place)));
                                 }
                             }
                             let pass = |importer: &'s str| match changed.contains(f)
@@ -679,13 +726,19 @@ impl ArchitectureGraph {
                                     .get(f)
                                     .into_iter()
                                     .flatten()
-                                    .map(|(importer, p)| (pass(importer), *p)),
+                                    .map(|(importer, p)| (pass(importer), *p, Kind::Import)),
                             );
                         }
                     }
                 }
-                let open = |(n, link): &(Node, Link)| link.types || !(here || blocked(n));
-                for (n, link) in links.into_iter().filter(open) {
+                let open = |(n, link, _): &(Node, Link, Kind)| link.types || !(here || blocked(n));
+                for (n, link, kind) in links.into_iter().filter(open) {
+                    if let (true, Node::File(t) | Node::Passes(t) | Node::Relays(t)) = (record, n) {
+                        if test_code.contains(t) {
+                            let way = way_of(node, kind, d);
+                            ways.entry(t).or_default().push((d, way, link.types_only()));
+                        }
+                    }
                     // a barrel passes on the names of each file it is
                     // reached from
                     if let (
@@ -725,12 +778,14 @@ impl ArchitectureGraph {
                 distance,
                 parent,
                 feeds,
+                ways,
             }
         };
         let Walk {
             mut distance,
             parent,
             feeds,
+            ways,
         } = walk(&BTreeSet::new());
 
         // A test file whose mock replaces a module for its whole run (a
@@ -837,6 +892,53 @@ impl ArchitectureGraph {
                     0 => seeds.insert(*f),
                     _ => files.insert(*f),
                 };
+            }
+        }
+        // how each test file reaches the change: every way at its fewest
+        // steps, by precedence, and whether all of its own ways take types
+        // only
+        if tests {
+            let at = |t: &'s str| {
+                [Node::File(t), Node::Passes(t), Node::Relays(t)]
+                    .iter()
+                    .filter_map(|n| distance.get(n).copied())
+                    .min()
+            };
+            let mut found: BTreeSet<&str> = ways.keys().copied().collect();
+            found.extend(start_ways.keys().copied().filter(|t| test_code.contains(t)));
+            found.extend(seeds.iter().copied().filter(|t| test_code.contains(t)));
+            for t in found {
+                let Some(dt) = at(t) else {
+                    continue;
+                };
+                let into = || ways.get(t).into_iter().flatten();
+                let started = || start_ways.get(t).into_iter().flatten();
+                let mut shortest: Vec<Way> = match dt {
+                    0 => vec![Way::Target],
+                    _ => started()
+                        .filter(|_| dt == 1)
+                        .map(|(way, _)| *way)
+                        .chain(
+                            into()
+                                .filter(|(d, _, _)| d + 1 == dt)
+                                .map(|(_, way, _)| *way),
+                        )
+                        .collect(),
+                };
+                shortest.sort();
+                shortest.dedup();
+                let mut kinds = into()
+                    .map(|(_, _, types)| *types)
+                    .chain(started().map(|(_, types)| *types))
+                    .peekable();
+                let types_only = dt > 0 && kinds.peek().is_some() && kinds.all(|types| types);
+                reach.test_ways.insert(
+                    t.to_owned(),
+                    TestReach {
+                        ways: shortest.into_iter().map(Way::public).collect(),
+                        types_only,
+                    },
+                );
             }
         }
         // package entry files reached only through their re-exports, whose
@@ -1691,12 +1793,42 @@ pub struct Reach {
     /// For each component of `transitive`, its files the walk reached,
     /// nearest first.
     pub files: BTreeMap<ComponentId, Vec<String>>,
+    /// For each file of `tests`, how it reaches the change.
+    pub test_ways: BTreeMap<String, TestReach>,
     /// Package entry files (a Python `__init__.py`) the walk reached only
     /// through their re-exports, each with the files whose names it passed
     /// on, nearest first: what imports a module below them, which runs them
     /// first, was not followed. One the walk starts from, which takes a
     /// symbol's name, has none.
     pub relayed: BTreeMap<String, Vec<String>>,
+}
+
+/// How a test file reaches the change: every way at its fewest steps, by
+/// precedence.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TestReach {
+    pub ways: Vec<TestWay>,
+    /// Each statement of it toward what the change reaches takes types
+    /// only, so its run loads none of them.
+    pub types_only: bool,
+}
+
+/// One way a test file reaches the change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TestWay {
+    /// It changed: it is the target, or a file of the changed component.
+    Target,
+    /// A statement of it takes the change: the changed file, or the
+    /// symbol by name, through the re-export at `via` when barrels pass it.
+    Takes { via: Option<String> },
+    /// A statement of it takes the symbol's module whole.
+    Whole,
+    /// It loads a module below a package whose entry file `entry`, which
+    /// the change reaches, runs first.
+    RunsFirst { entry: String },
+    /// Through other files: `from` is the first one on the way, or a
+    /// component's id where its package was.
+    Through { from: String },
 }
 
 /// What the walk reached a component from: a file of another component,
@@ -1739,19 +1871,23 @@ struct Walk<'a> {
     /// For each file reached as a barrel ([`Node::Passes`], [`Node::Relays`]),
     /// the files it was reached from, each at its distance.
     feeds: BTreeMap<&'a str, BTreeMap<&'a str, usize>>,
+    /// For each test file, every link into it: the distance it leads from,
+    /// the way it gives, and whether it takes types only.
+    ways: BTreeMap<&'a str, Vec<(usize, Way<'a>, bool)>>,
 }
 
 /// Where a walk starts, at what distance, and for a statement that takes a
 /// symbol, the file it loads and whether it takes types only.
 type Start<'a> = (Node<'a>, usize, Option<(&'a str, bool)>);
 
-/// How an importer depends on what it loads: through production code, and
+/// How an importer depends on what it loads: through production code,
 /// through a statement that takes types only, of which a mock replaces
-/// nothing.
+/// nothing, and through one that takes values.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct Link {
     production: bool,
     types: bool,
+    values: bool,
 }
 
 impl Link {
@@ -1759,6 +1895,7 @@ impl Link {
         Link {
             production: !e.test,
             types: e.type_only,
+            values: !e.type_only,
         }
     }
 
@@ -1767,12 +1904,59 @@ impl Link {
         Link {
             production,
             types: false,
+            values: true,
         }
     }
 
     fn add(&mut self, other: Link) {
         self.production |= other.production;
         self.types |= other.types;
+        self.values |= other.values;
+    }
+
+    /// Every statement of it takes types only.
+    fn types_only(self) -> bool {
+        self.types && !self.values
+    }
+}
+
+/// How a link leads from what it loads to its importer.
+#[derive(Debug, Clone, Copy)]
+enum Kind<'a> {
+    Import,
+    /// An import that takes a name through re-exports, at the first of
+    /// them.
+    Via(&'a str),
+    /// A file that runs a package's entry file first.
+    RunsFirst,
+}
+
+/// How a test file reaches the change, by precedence: variants in order,
+/// a statement without re-exports before one through them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Way<'a> {
+    Target,
+    Takes(Option<&'a str>),
+    Whole,
+    RunsFirst(&'a str),
+    Through(&'a str),
+}
+
+impl Way<'_> {
+    fn public(self) -> TestWay {
+        match self {
+            Way::Target => TestWay::Target,
+            Way::Takes(via) => TestWay::Takes {
+                via: via.map(str::to_owned),
+            },
+            Way::Whole => TestWay::Whole,
+            Way::RunsFirst(entry) => TestWay::RunsFirst {
+                entry: entry.to_owned(),
+            },
+            Way::Through(from) => TestWay::Through {
+                from: from.to_owned(),
+            },
+        }
     }
 }
 
@@ -4217,6 +4401,19 @@ mod tests {
                 "tests/test_pay.py"
             ]
         );
+        // each needs the changed entry file run first
+        let runs_first = TestReach {
+            ways: vec![TestWay::RunsFirst {
+                entry: "src/shop/__init__.py".into(),
+            }],
+            types_only: false,
+        };
+        assert!(
+            reach.test_ways.values().all(|way| *way == runs_first),
+            "{:?}",
+            reach.test_ways
+        );
+        assert_eq!(reach.test_ways.len(), 4);
 
         // a change to a module that the package's entry file imports reaches
         // what runs that entry file
@@ -4246,6 +4443,84 @@ mod tests {
         let symbol = graph.symbols[&SymbolId::new("shop::VERSION")].clone();
         let reach = graph.change_impact(ChangeSeed::Symbol(&symbol), 9);
         assert!(reach.direct.is_empty(), "{reach:?}");
+    }
+
+    #[test]
+    fn each_test_says_how_it_reaches_the_change() {
+        let mut graph = ArchitectureGraph::default();
+        for file in ["lib/a.ts", "lib/b.ts", "lib/index.ts"] {
+            let mut c = Component::new(file, file, ComponentKind::Module);
+            c.path = Some(file.into());
+            graph.add_component(c);
+        }
+        let import = |file: &str, target: &str, test: bool| {
+            Edge::new(file, target, EdgeKind::Import).with_evidence(
+                Evidence::new(file)
+                    .at_line(1)
+                    .pointing_at(target)
+                    .taking(["x"])
+                    .in_test(test),
+            )
+        };
+        graph.add_edges([
+            import("lib/b.ts", "lib/a.ts", false),
+            Edge::new("lib/index.ts", "lib/a.ts", EdgeKind::Import).with_evidence(
+                Evidence::new("lib/index.ts")
+                    .at_line(2)
+                    .pointing_at("lib/a.ts")
+                    .taking(["x"])
+                    .with_note("export"),
+            ),
+            import("tests/direct.test.ts", "lib/a.ts", true),
+            Edge::new("tests/typed.test.ts", "lib/a.ts", EdgeKind::Import).with_evidence(
+                Evidence::new("tests/typed.test.ts")
+                    .at_line(1)
+                    .pointing_at("lib/a.ts")
+                    .taking(["X"])
+                    .type_only(true)
+                    .in_test(true),
+            ),
+            import("tests/through.test.ts", "lib/b.ts", true),
+            // a name taken through the barrel, as the scan records it: the
+            // barrel loaded, and the file that defines the name
+            import("tests/via.test.ts", "lib/index.ts", true),
+            Edge::new("tests/via.test.ts", "lib/a.ts", EdgeKind::Import).with_evidence(
+                Evidence::new("tests/via.test.ts")
+                    .at_line(1)
+                    .pointing_at("lib/a.ts")
+                    .taking(["x"])
+                    .with_note("import via lib/index.ts:2")
+                    .in_test(true),
+            ),
+        ]);
+        let reach = graph.change_impact(ChangeSeed::File("lib/a.ts"), 9);
+        let ways: Vec<(&str, &[TestWay], bool)> = reach
+            .test_ways
+            .iter()
+            .map(|(file, at)| (file.as_str(), at.ways.as_slice(), at.types_only))
+            .collect();
+        let takes = |via: Option<&str>| TestWay::Takes {
+            via: via.map(str::to_owned),
+        };
+        assert_eq!(
+            ways,
+            [
+                ("tests/direct.test.ts", &[takes(None)][..], false),
+                (
+                    "tests/through.test.ts",
+                    &[TestWay::Through {
+                        from: "lib/b.ts".into()
+                    }][..],
+                    false
+                ),
+                ("tests/typed.test.ts", &[takes(None)][..], true),
+                (
+                    "tests/via.test.ts",
+                    &[takes(Some("lib/index.ts:2"))][..],
+                    false
+                ),
+            ]
+        );
     }
 
     fn edge_to(from: &str, to: &str, file: &str, target: &str) -> Edge {
