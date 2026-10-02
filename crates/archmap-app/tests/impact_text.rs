@@ -125,7 +125,7 @@ fn a_file_answers_with_its_dependents_statements_tests_and_blind_spots() {
            app/checkout.ts  2 imports\n  \
            app/page.tsx  1 import\n  \
            lib/money.ts  1 import\n  \
-           ts-shop  1 import\n\
+           ts-shop (src/index.ts)  1 import\n\
          \n\
          Imported by: 6, showing 5 (1 re-export)\n  \
            src/app/checkout.ts:8 (via src/index.ts:8) (type)\n  \
@@ -337,7 +337,7 @@ fn a_barrel_leads_on_only_to_what_may_take_the_files_names() {
             "  app/cart.ts  2 steps, through src/checkout.ts",
             "  app/report.ts  2 steps, through src/shop/index.ts",
             "  app/tag.ts  2 steps, through src/shop/index.ts",
-            "  ts-reexports  2 steps, through src/shop/index.ts"
+            "  ts-reexports (src/index.ts)  2 steps, through src/shop/index.ts"
         ]
     );
     for other in [
@@ -535,6 +535,55 @@ fn a_package_entry_is_named_at_the_re_export_the_reach_came_through() {
     assert_eq!(
         value["not_traced"]["barrels"]["shown"][0]["lines"],
         serde_json::json!([2, 3, 6])
+    );
+}
+
+#[test]
+fn a_component_that_holds_the_target_names_the_files_of_it_reached() {
+    let ws = scan(&fixture("simple-ts-project"));
+    // the package re-exports the symbol from its own barrel: not the whole
+    // package is reached
+    let out = text(&ws, "formatPrice");
+    assert_eq!(
+        section(&out, "Direct dependents: 4"),
+        [
+            "  app/checkout.ts  2 imports",
+            "  ts-shop (src/index.ts)  2 imports",
+            "  app/page.tsx  1 import",
+            "  scripts/report.cjs  1 import",
+        ]
+    );
+    let json = ws
+        .impact(&ImpactRequest {
+            target: "formatPrice",
+            depth: DEFAULT_DEPTH,
+            format: Format::Json,
+            verbose: false,
+        })
+        .unwrap()
+        .output;
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        value["direct"][1],
+        serde_json::json!({
+            "id": "ts-shop",
+            "distance": 1,
+            "through": ["src/index.ts"],
+            "imports": {"production": 2, "tests": 0}
+        })
+    );
+    // a package that holds the changed module, reached through its own
+    // modules, further away too
+    let ws = scan(&fixture("python-bindings"));
+    assert_eq!(
+        section(
+            &text(&ws, "store/billing/money.py"),
+            "Transitive dependents: 1"
+        ),
+        [
+            "  store::store (store/aliased.py, store/annotated.py, store/app.py, +5 more)  \
+          2 steps, through store/billing/charge.py"
+        ]
     );
 }
 

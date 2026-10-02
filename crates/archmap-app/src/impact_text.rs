@@ -168,7 +168,7 @@ fn direct(
     );
     // those with the most statements into the target first
     for dependent in &result.direct[..shown] {
-        let mut line = format!("  {}", display(rolled, &dependent.id));
+        let mut line = format!("  {}", dependent_name(rolled, dependent));
         let counted = dependent.imports.unwrap_or_default();
         if let Some(counts) = import_counts(counted.production, counted.tests) {
             let _ = write!(line, "  {counts}");
@@ -324,11 +324,11 @@ fn transitive(
     for dependent in &further[..shown] {
         let mut line = format!(
             "  {}  {} steps",
-            display(rolled, &dependent.id),
+            dependent_name(rolled, dependent),
             dependent.distance
         );
-        if let Some(through) = &dependent.through {
-            let _ = write!(line, ", through {through}");
+        if let Some(from) = &dependent.from_shown {
+            let _ = write!(line, ", through {from}");
         }
         if let Some(declared) = &dependent.declared_in {
             let _ = write!(
@@ -337,10 +337,33 @@ fn transitive(
                 place(&declared.file, declared.line)
             );
         }
+        if let Some(imported) = &dependent.imported_in {
+            let _ = write!(
+                line,
+                " (imported in {})",
+                place(&imported.file, imported.line)
+            );
+        }
         let _ = writeln!(out, "{line}");
     }
     shown < further.len()
 }
+
+/// A dependent as the lists name it: a component that holds the target with
+/// the files of its own it is reached through (`ts-shop (src/index.ts)`).
+fn dependent_name(rolled: &ArchitectureGraph, dependent: &Dependent) -> String {
+    let name = display(rolled, &dependent.id);
+    match dependent.through.len() {
+        0 => name.to_owned(),
+        n => {
+            let shown = &dependent.through[..n.min(MAX_THROUGH)];
+            format!("{name} ({})", with_more(shown, n))
+        }
+    }
+}
+
+/// How many files a component that holds the target names.
+const MAX_THROUGH: usize = 3;
 
 /// The test files to run again after the change: a changed test file is
 /// one of them. Those left out because their mocks replace a module on the

@@ -362,9 +362,11 @@ impl ArchitectureGraph {
         // a declaration says a package is installed, not that a symbol of it
         // is used
         let symbol = matches!(seed, ChangeSeed::Symbol(_));
-        // where a manifest declares a component, by the component and the
-        // manifest: the first line
-        let mut declared: BTreeMap<(&ComponentId, &str), Option<u32>> = BTreeMap::new();
+        // where a file names a component without naming a file of it (a
+        // manifest's declaration, an import of the package), by the
+        // component and the file: the first line, and whether a manifest
+        // declares it
+        let mut named_in: BTreeMap<(&ComponentId, &str), (Option<u32>, bool)> = BTreeMap::new();
         for edge in self
             .edges
             .iter()
@@ -379,14 +381,16 @@ impl ArchitectureGraph {
                         Node::File(t)
                     }
                     None => {
-                        if edge.kind == EdgeKind::Dependency {
-                            let first = declared
+                        if matches!(edge.kind, EdgeKind::Dependency | EdgeKind::Import) {
+                            let declares = edge.kind == EdgeKind::Dependency;
+                            let first = named_in
                                 .entry((&edge.to, e.file.as_str()))
-                                .or_insert(e.line);
-                            *first = match (*first, e.line) {
+                                .or_insert((e.line, declares));
+                            first.0 = match (first.0, e.line) {
                                 (Some(a), Some(b)) => Some(a.min(b)),
                                 (a, b) => a.or(b),
                             };
+                            first.1 |= declares;
                         }
                         Node::Component(&edge.to)
                     }
@@ -863,8 +867,8 @@ impl ArchitectureGraph {
             Node::Component(c) => Some(self.ancestor_at(c, depth)),
         };
         // the first node on the way to `node` that `folded` does not hold:
-        // the file or the component it was reached from, with the manifest
-        // of its own that declares that component
+        // the file or the component it was reached from, with the file of
+        // its own that declares or imports that component
         let hop = |node: Node, folded: &ComponentId| {
             let mut at = node;
             while let Some(&from) = parent.get(&at) {
@@ -873,21 +877,32 @@ impl ArchitectureGraph {
                         (Node::File(f) | Node::Passes(f) | Node::Relays(f), _) => {
                             Hop::File(f.to_owned())
                         }
-                        (Node::Component(c), at) => Hop::Component {
-                            id: c.clone(),
-                            declared_in: match at {
-                                Node::File(f) => {
-                                    declared.get(&(c, f)).map(|line| (f.to_owned(), *line))
-                                }
+                        (Node::Component(c), at) => {
+                            let place = match at {
+                                Node::File(f) => named_in
+                                    .get(&(c, f))
+                                    .map(|(line, declares)| ((f.to_owned(), *line), *declares)),
                                 _ => None,
-                            },
-                        },
+                            };
+                            let (declared_in, imported_in) = match place {
+                                Some((place, true)) => (Some(place), None),
+                                Some((place, false)) => (None, Some(place)),
+                                None => (None, None),
+                            };
+                            Hop::Component {
+                                id: c.clone(),
+                                declared_in,
+                                imported_in,
+                            }
+                        }
                     });
                 }
                 at = from;
             }
             None
         };
+        // the files of each component the walk reached, at their distances
+        let mut reached: BTreeMap<ComponentId, BTreeMap<&str, usize>> = BTreeMap::new();
         for (node, d) in &distance {
             let Some(folded) = folded_of(node) else {
                 continue;
@@ -905,8 +920,25 @@ impl ArchitectureGraph {
                     None => reach.from.remove(&folded),
                 };
             }
+            if let Node::File(f) | Node::Passes(f) | Node::Relays(f) = node {
+                let at = reached
+                    .entry(folded.clone())
+                    .or_default()
+                    .entry(f)
+                    .or_insert(*d);
+                *at = (*at).min(*d);
+            }
             reach.transitive.insert(folded);
         }
+        reach.files = reached
+            .into_iter()
+            .map(|(id, files)| {
+                let mut files: Vec<(usize, &str)> =
+                    files.into_iter().map(|(f, d)| (d, f)).collect();
+                files.sort();
+                (id, files.into_iter().map(|(_, f)| f.to_owned()).collect())
+            })
+            .collect();
         (reach, files, seeds)
     }
 
@@ -1626,6 +1658,9 @@ pub struct Reach {
     /// For each component of `transitive`, what the walk reached it from at
     /// that distance.
     pub from: BTreeMap<ComponentId, Hop>,
+    /// For each component of `transitive`, its files the walk reached,
+    /// nearest first.
+    pub files: BTreeMap<ComponentId, Vec<String>>,
     /// Package entry files (a Python `__init__.py`) the walk reached only
     /// through their re-exports, each with the files whose names it passed
     /// on, nearest first: what imports a module below them, which runs them
@@ -1645,6 +1680,9 @@ pub enum Hop {
         /// The manifest of its own that declares that component, and the
         /// line, when a declaration was the way.
         declared_in: Option<(String, Option<u32>)>,
+        /// The file of its own that imports that component without naming
+        /// a file of it, and the line, when that import was the way.
+        imported_in: Option<(String, Option<u32>)>,
     },
 }
 
@@ -3562,13 +3600,68 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_dependent_an_import_without_a_file_reaches_names_where_it_imports() {
+        let mut graph = ArchitectureGraph::default();
+        for name in ["core", "mid", "top"] {
+            let mut c = Component::new(name, name, ComponentKind::Package);
+            c.path = Some(name.into());
+            graph.add_component(c);
+        }
+        graph.add_edges([
+            Edge::new("mid", "core", EdgeKind::Dependency)
+                .with_evidence(Evidence::new("mid/package.json").at_line(5)),
+            // an import of the package whose entry is no scanned file
+            Edge::new("top", "mid", EdgeKind::Import)
+                .with_evidence(Evidence::new("top/src/page.tsx").at_line(2)),
+        ]);
+        let reach = graph.change_impact(ChangeSeed::File("core/src/index.ts"), 9);
+        let steps: Vec<(&str, usize, Option<String>)> = reach
+            .distance
+            .iter()
+            .map(|(id, d)| (id.as_str(), *d, reach.from.get(id).map(hop_text)))
+            .collect();
+        assert_eq!(
+            steps,
+            [
+                (
+                    "mid",
+                    1,
+                    Some("core (declared in mid/package.json:5)".to_owned())
+                ),
+                (
+                    "top",
+                    2,
+                    Some("mid (imported in top/src/page.tsx:2)".to_owned())
+                ),
+            ]
+        );
+        // the files of each that the walk reached
+        assert_eq!(
+            reach.files,
+            BTreeMap::from([
+                (ComponentId::new("mid"), vec!["mid/package.json".to_owned()]),
+                (ComponentId::new("top"), vec!["top/src/page.tsx".to_owned()]),
+            ])
+        );
+    }
+
     /// A hop as `impact`'s text gives it.
     fn hop_text(hop: &Hop) -> String {
         match hop {
             Hop::File(file) => file.clone(),
-            Hop::Component { id, declared_in } => match declared_in {
-                Some((file, line)) => format!("{id} (declared in {file}:{})", line.unwrap_or(0)),
-                None => id.to_string(),
+            Hop::Component {
+                id,
+                declared_in,
+                imported_in,
+            } => match (declared_in, imported_in) {
+                (Some((file, line)), _) => {
+                    format!("{id} (declared in {file}:{})", line.unwrap_or(0))
+                }
+                (None, Some((file, line))) => {
+                    format!("{id} (imported in {file}:{})", line.unwrap_or(0))
+                }
+                (None, None) => id.to_string(),
             },
         }
     }

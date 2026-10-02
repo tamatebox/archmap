@@ -413,7 +413,7 @@ Direct dependents: 4
   app/checkout.ts  2 imports
   app/page.tsx  1 import
   lib/money.ts  1 import
-  ts-shop  1 import
+  ts-shop (src/index.ts)  1 import
 
 Imported by: 6, showing 5 (1 re-export)
   src/app/checkout.ts:8 (via src/index.ts:8) (type)
@@ -486,8 +486,12 @@ transitive dependents nearest first, with their steps from the target and
 what the walk reached them from: a file they import (`app/lazy.tsx  2
 steps, through src/lib/money.ts`), or a component they depend on as a
 whole, with the line of their manifest that declares it (`cli  2 steps,
-through app (declared in crates/cli/Cargo.toml:9)`); ties go by the name
-shown. Lists show 30 components, 5 statements, 20 test files, 5 files changed in
+through app (declared in crates/cli/Cargo.toml:9)`) or of their file that
+imports it without naming a file of it (`(imported in src/page.tsx:2)`);
+ties go by the name shown. A component that holds the target, such as a
+package whose own barrel re-exports it, names the files of it the change
+reaches, nearest first (`ts-shop (src/index.ts)  2 imports`), since the
+target is inside it and the rest of it may not be reached. Lists show 30 components, 5 statements, 20 test files, 5 files changed in
 the same commits with 2 commits each, and 3 locations per kind of `Not
 traced`, and their headings count the rest
 (`6, showing 5`); a capped statement list ends with the components the rest
@@ -496,10 +500,12 @@ components`); an answer with a capped list ends by saying so, and
 `--verbose` lists every entry. `--format json` lists every entry with all
 its evidence, whatever `--verbose` says, and for a busy target runs large:
 `direct` and `transitive` (which includes `direct`) as objects with the
-component's `id`, its `distance` (1 for a direct one), for a direct one its
+component's `id`, its `distance` (1 for a direct one), for one that holds
+the target the files of it reached as `through`, for a direct one its
 `imports` (`{"production", "tests"}`), and for one further its `from` (a
-file's path or a component's id) and, where a declaration was the way,
-`declared_in` (`{"file", "line"}`), in the text's order;
+file's path or a component's id) and, where a declaration or an import
+that names no file was the way, `declared_in` or `imported_in` (`{"file",
+"line"}`), in the text's order;
 `importers`, `imports_below` and `may_use` as `{"recorded", "total",
 "statements"}`, each statement its evidence (`file`, `line`, `note`,
 `target`, `scope`, `names`, `test`, `type_only`, `replaces`) with the

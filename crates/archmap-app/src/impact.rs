@@ -13,7 +13,7 @@ use crate::not_traced::{barrels, not_traced, Narrowed, NotTraced, Own, Place, Su
 use crate::resolve::{resolve, Resolved};
 use crate::target::{component_file, fold, namesakes, reject_outside, unquote};
 use crate::views::{
-    About, Declared, Dependent, ImpactResult, ImportSite, ImportSites, LeftOut, MockCall,
+    About, Dependent, ImpactResult, ImportSite, ImportSites, LeftOut, Location, MockCall,
     MockingTest, Statements, TestFiles,
 };
 use crate::{Answer, Format, Found, ImpactRequest, Workspace};
@@ -321,7 +321,13 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
     if let About::Component = about {
         counted = into_component(full, depth, &at.id);
     }
-    let (direct, transitive) = dependents(full, &reach, &counted, 0);
+    // the components that hold the target
+    let holders: BTreeSet<ComponentId> = full
+        .containment_path(&at.id)
+        .into_iter()
+        .filter(|c| *c != at.id)
+        .collect();
+    let (direct, transitive) = dependents(full, &reach, &counted, &holders, 0);
     let result = ImpactResult {
         also_named: owned(also_named),
         also_at_path: owned(also_at_path),
@@ -431,36 +437,54 @@ fn dependents(
     full: &ArchitectureGraph,
     reach: &archmap_core::Reach,
     counted: &BTreeMap<ComponentId, Statements>,
+    holders: &BTreeSet<ComponentId>,
     beyond: usize,
 ) -> (Vec<Dependent>, Vec<Dependent>) {
     let name = |id: &ComponentId| {
         full.component(id)
             .map_or_else(|| id.to_string(), |c| c.name.clone())
     };
+    let location = |place: &Option<(String, Option<u32>)>| {
+        place.as_ref().map(|(file, line)| Location {
+            file: file.clone(),
+            line: *line,
+        })
+    };
     let dependent = |id: &ComponentId| {
         let distance = match reach.direct.contains(id) {
             true => 1,
             false => reach.distance.get(id).map_or(1, |d| d + beyond),
         };
-        let (from, through, declared_in) = match (distance > 1).then(|| reach.from.get(id)) {
-            Some(Some(Hop::File(file))) => (Some(file.clone()), Some(file.clone()), None),
-            Some(Some(Hop::Component { id, declared_in })) => (
+        // a component that holds the target is reached through files of
+        // its own, not as a whole
+        let through = match holders.contains(id) {
+            false => Vec::new(),
+            true => reach.files.get(id).cloned().unwrap_or_default(),
+        };
+        let hop = (distance > 1).then(|| reach.from.get(id)).flatten();
+        let (from, from_shown, declared_in, imported_in) = match hop {
+            Some(Hop::File(file)) => (Some(file.clone()), Some(file.clone()), None, None),
+            Some(Hop::Component {
+                id,
+                declared_in,
+                imported_in,
+            }) => (
                 Some(id.to_string()),
                 Some(name(id)),
-                declared_in.as_ref().map(|(file, line)| Declared {
-                    file: file.clone(),
-                    line: *line,
-                }),
+                location(declared_in),
+                location(imported_in),
             ),
-            _ => (None, None, None),
+            None => (None, None, None, None),
         };
         Dependent {
             id: id.clone(),
             distance,
+            through,
             imports: (distance == 1).then(|| counted.get(id).copied()).flatten(),
             from,
             declared_in,
-            through,
+            imported_in,
+            from_shown,
         }
     };
     let mut direct: Vec<Dependent> = reach.direct.iter().map(dependent).collect();
@@ -519,7 +543,8 @@ fn import_name_impact<'a>(
     left_out.retain(|file, _| !tests.contains(file));
     let statements = imports.iter().map(|i| (&i.from, &i.evidence));
     let importers = sites(full, depth, statements, true, caps.sites);
-    let (direct, transitive) = dependents(full, &reach, &counts(importers.shown.iter()), 1);
+    let counted = counts(importers.shown.iter());
+    let (direct, transitive) = dependents(full, &reach, &counted, &BTreeSet::new(), 1);
     ImpactResult {
         requested: target,
         depth,

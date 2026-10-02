@@ -240,6 +240,10 @@ pub struct Dependent {
     pub id: ComponentId,
     /// The fewest steps from the target: 1 for a direct dependent.
     pub distance: usize,
+    /// For a component that holds the target: the files of it the change
+    /// reaches, nearest first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub through: Vec<String>,
     /// For a direct dependent: its statements that `importers`, `imports_below`
     /// and `may_use` list, counted in production code and in tests.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -252,15 +256,19 @@ pub struct Dependent {
     /// Where a manifest of its own declares the component of `from`, when
     /// that declaration was the way.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub declared_in: Option<Declared>,
+    pub declared_in: Option<Location>,
+    /// Where a file of its own imports the component of `from` without
+    /// naming a file of it, when that import was the way.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub imported_in: Option<Location>,
     /// `from` as the text writes it: a file's path, a component's name.
     #[serde(skip)]
-    pub(crate) through: Option<String>,
+    pub(crate) from_shown: Option<String>,
 }
 
-/// A manifest's declaration of a dependency.
+/// Where a statement is written.
 #[derive(Debug, Clone, Serialize)]
-pub struct Declared {
+pub struct Location {
     pub file: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line: Option<u32>,
