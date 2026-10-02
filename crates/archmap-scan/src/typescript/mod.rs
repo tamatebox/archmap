@@ -450,6 +450,22 @@ fn root_name(root: &Path) -> String {
         .unwrap_or_else(|| "root".to_owned())
 }
 
+/// Whether a relative `path` stays inside the directory it starts from: no
+/// `..` leads above it.
+fn stays_inside(path: &Path) -> bool {
+    let mut depth = 0usize;
+    for part in path.components() {
+        match part {
+            std::path::Component::ParentDir if depth == 0 => return false,
+            std::path::Component::ParentDir => depth -= 1,
+            std::path::Component::Normal(_) => depth += 1,
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => return false,
+            std::path::Component::CurDir => {}
+        }
+    }
+    true
+}
+
 /// Every readable `package.json`, by directory.
 fn read_manifests(ctx: &RepoContext, warnings: &mut Vec<String>) -> BTreeMap<PathBuf, PackageJson> {
     let mut manifests = BTreeMap::new();
@@ -525,16 +541,23 @@ fn emit_components(
                 .push(Evidence::new(display_path(index)).with_note("index"));
         }
         // what the package's dependents load: the files its package.json
-        // names, wherever they are, and its source root's `index.*`
+        // names, wherever they are, else Node's `index.js` at its root, and
+        // its source root's `index.*`
         let named = package
             .manifest
             .as_ref()
             .and_then(|dir| manifests.get(dir).map(|m| (dir, m)))
             .into_iter()
             .flat_map(|(dir, manifest)| {
-                manifest
-                    .entries
-                    .iter()
+                let written = match manifest.entries.is_empty() {
+                    true => vec!["index.js".to_owned()],
+                    false => manifest.entries.clone(),
+                };
+                // one that leads out of the package is no file of it, and
+                // would count as its evidence where components share a path
+                written
+                    .into_iter()
+                    .filter(|entry| stays_inside(Path::new(entry)))
                     .map(|entry| fs::normalize(&dir.join(entry)))
             });
         let entries: BTreeSet<PathBuf> = named

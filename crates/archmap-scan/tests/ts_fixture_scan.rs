@@ -1617,6 +1617,8 @@ fn a_package_names_its_own_index_file() {
         [
             ("package.json", Some("package.json")),
             ("src/index.ts", Some("index")),
+            // Node's default, as package.json names no entry
+            ("index.js", Some("entry")),
             ("src/index.ts", Some("entry"))
         ]
     );

@@ -342,7 +342,8 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   keep their meaning
 - a package names as what its dependents load (evidence noted `entry`) the files its `package.json`
   names (`main`, `module`, `types`, `typings`, a `browser` string, every path of `exports` but a
-  pattern) and its source root's `index.*`, so in `impact` a configuration file at the package's root
+  pattern), else Node's default `index.js` at its root, apart from a path that leads out of the
+  package, and its source root's `index.*`, so in `impact` a configuration file at the package's root
   (`vite.config.ts`) reaches none of the packages that declare it
 
 ### TypeScript and JavaScript known gaps

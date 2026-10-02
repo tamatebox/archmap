@@ -163,3 +163,69 @@ fn a_configuration_file_does_not_stand_for_its_package() {
     let ids: BTreeSet<&str> = reach.transitive.iter().map(ComponentId::as_str).collect();
     assert!(ids.contains("@acme/docs"), "{ids:?}");
 }
+
+#[test]
+fn an_entry_outside_its_package_is_no_evidence_of_it() {
+    let root = std::env::temp_dir().join(format!("archmap-ts-outside-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let write = |file: &str, text: &str| {
+        let path = root.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    write(
+        "package.json",
+        r#"{ "name": "mono", "private": true, "workspaces": ["packages/*"] }"#,
+    );
+    write(
+        "packages/ui/package.json",
+        r#"{ "name": "@acme/ui", "main": "../../dist/ui.js", "types": "./src/index.ts" }"#,
+    );
+    write("packages/ui/src/index.ts", "export const Card = 1;\n");
+    let graph = scan(&root, &ScanOptions::default()).expect("scan").graph;
+    let ui = graph.component(&ComponentId::new("@acme/ui")).unwrap();
+    let entries: Vec<&str> = ui
+        .evidence
+        .iter()
+        .filter(|e| e.is_entry())
+        .map(|e| e.file.as_str())
+        .collect();
+    assert_eq!(entries, ["packages/ui/src/index.ts"]);
+}
+
+#[test]
+fn a_package_json_that_names_no_entry_has_nodes_default() {
+    // an app without `main` or `exports`, and without an index: its
+    // configuration file stands for it no more than a library's does
+    let root =
+        std::env::temp_dir().join(format!("archmap-ts-default-entry-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let write = |file: &str, text: &str| {
+        let path = root.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    write(
+        "package.json",
+        r#"{ "name": "mono", "private": true, "workspaces": ["apps/*"] }"#,
+    );
+    write("apps/web/package.json", r#"{ "name": "web" }"#);
+    write("apps/web/src/util.ts", "export const util = 1;\n");
+    write(
+        "apps/web/vite.config.ts",
+        "import { util } from './src/util';\nexport default { util };\n",
+    );
+    write(
+        "apps/ui/package.json",
+        r#"{ "name": "ui", "dependencies": { "web": "workspace:*" } }"#,
+    );
+    let graph = scan(&root, &ScanOptions::default()).expect("scan").graph;
+    let web = graph.component(&ComponentId::new("web")).unwrap();
+    assert!(web
+        .evidence
+        .iter()
+        .any(|e| e.is_entry() && e.file == "apps/web/index.js"));
+    let reach = graph.change_impact(archmap_core::ChangeSeed::File("apps/web/src/util.ts"), 2);
+    let ids: BTreeSet<&str> = reach.transitive.iter().map(ComponentId::as_str).collect();
+    assert!(!ids.contains("ui"), "{ids:?}");
+}
