@@ -100,7 +100,7 @@ Ask archmap before searching by hand, the way the plugin skill teaches, running 
 - `summary .` first; fixtures appear as components too, so check paths.
 - Before searching inside a crate, module or file, `query <crate|module|file>` and open the `file:line` it gives.
 - Before changing a public item, `impact <file>`.
-- In Rust, `use` declarations and module paths in code (noted `path`) are imports, but code inside macro calls (`vec![Box::new(rust::RustAnalyzer)]`, `write!(out, "{}", crate::query_text::shell_word(..))`) is not read, so also search for callers of what you change.
+- In Rust, `use` declarations and module paths in code (noted `path`) are imports, the arguments of macro calls that are expressions included (`vec![Box::new(rust::RustAnalyzer)]`), but a macro whose arguments are no expressions (`json!`, `quote!`) is not read, and calls through an imported name are not recorded, so also search for callers of what you change.
 - When grep, the compiler or a test answers what archmap did not (a caller, a construction site, text pinned in tests or docs), note the question and what answered it: a gap that recurs is the next smallest fact or query to add.
 
 ## Commands to run after every change

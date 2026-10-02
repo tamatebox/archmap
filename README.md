@@ -122,7 +122,7 @@ What works today, by the [roadmap](#roadmap) phase it belongs to:
 | Packages and declared dependencies | 0 | ✅ | ✅ | ✅ |
 | Module and file components | 1 | ✅ | ✅ | ✅ |
 | Public symbols with signatures | 1 | ✅ | ✅ | ◐ |
-| Imports resolved to the file they load | 1 | ◐ | ✅ | ◐ |
+| Imports resolved to the file they load | 1 | ✅ | ✅ | ◐ |
 | Re-exports followed to the defining file | 1 | ✅ | ✅ | ✅ |
 | Names each import takes | 1 | ✅ | ✅ | ✅ |
 | Imports without an edge, with the reason | 1 | ✅ | ✅ | ✅ |
@@ -139,8 +139,6 @@ What works today, by the [roadmap](#roadmap) phase it belongs to:
 
 The gaps behind the marks:
 
-- Rust imports: code inside macro calls (`vec![..]`, `println!(..)`) is not
-  read.
 - Python `query` and `impact` on a symbol: a statement that takes a package
   whole (`import pkg`, then `pkg.name()`) does not reach a name its
   `__init__.py` imports from another file, and `impact` goes on from that

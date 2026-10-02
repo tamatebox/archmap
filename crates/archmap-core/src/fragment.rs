@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{Component, ComponentId, DynamicImport, Edge, Symbol, SymbolId, UnmappedImport};
+use crate::{
+    Component, ComponentId, DynamicImport, Edge, Symbol, SymbolId, UnmappedImport, UnreadMacro,
+};
 
 /// A partial graph produced by a single analyzer.
 ///
@@ -19,6 +21,8 @@ pub struct GraphFragment {
     pub unmapped_imports: Vec<UnmappedImport>,
     #[serde(default)]
     pub dynamic_imports: Vec<DynamicImport>,
+    #[serde(default)]
+    pub unread_macros: Vec<UnreadMacro>,
 }
 
 impl GraphFragment {
@@ -32,6 +36,7 @@ impl GraphFragment {
             && self.edges.is_empty()
             && self.unmapped_imports.is_empty()
             && self.dynamic_imports.is_empty()
+            && self.unread_macros.is_empty()
     }
 
     pub fn push_component(&mut self, component: Component) {
@@ -54,6 +59,10 @@ impl GraphFragment {
         self.dynamic_imports.push(import);
     }
 
+    pub fn push_unread_macro(&mut self, call: UnreadMacro) {
+        self.unread_macros.push(call);
+    }
+
     /// Append another fragment into this one without normalizing.
     pub fn extend(&mut self, other: GraphFragment) {
         self.components.extend(other.components);
@@ -61,12 +70,14 @@ impl GraphFragment {
         self.edges.extend(other.edges);
         self.unmapped_imports.extend(other.unmapped_imports);
         self.dynamic_imports.extend(other.dynamic_imports);
+        self.unread_macros.extend(other.unread_macros);
     }
 
     /// Give the component `from`, and every id under it (`from::...`), the
     /// id `to` instead, wherever this fragment names them: components and
-    /// their parents, symbols and their components, edges, and unmapped and
-    /// dynamic imports. Evidence holds only paths and stays as it is.
+    /// their parents, symbols and their components, edges, unmapped and
+    /// dynamic imports, and unread macro calls. Evidence holds only paths and
+    /// stays as it is.
     pub fn rename_component(&mut self, from: &ComponentId, to: &ComponentId) {
         let rename = |id: &mut ComponentId| {
             if let Some(renamed) = renamed(id.as_str(), from.as_str(), to.as_str()) {
@@ -94,6 +105,9 @@ impl GraphFragment {
         }
         for import in &mut self.dynamic_imports {
             rename(&mut import.from);
+        }
+        for call in &mut self.unread_macros {
+            rename(&mut call.from);
         }
     }
 }

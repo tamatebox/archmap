@@ -95,6 +95,22 @@ fn the_dynamic_imports_of_the_target_itself_stay_under_not_mapped() {
 }
 
 #[test]
+fn a_macro_call_not_read_that_names_the_target_is_listed() {
+    let ws = scan(&fixture("rust-cargo-targets"));
+    let text = query(&ws, "kiosk/src/stamp.rs", Format::Text);
+    assert!(
+        text.contains(
+            "\nNot traced:\n  macros: 1 macro call whose arguments are not read names `stamp`: \
+             kiosk/src/lib.rs:27 (tally!)\n"
+        ),
+        "{text}"
+    );
+    // a module no such call names has no such line
+    let till = query(&ws, "kiosk/src/till.rs", Format::Text);
+    assert!(!till.contains("macros:"), "{till}");
+}
+
+#[test]
 fn a_rust_target_counts_the_files_its_analyzer_did_not_read() {
     let ws = scan(&fixture("rust-cargo-targets"));
     let text = query(&ws, "kiosk/src/till.rs", Format::Text);

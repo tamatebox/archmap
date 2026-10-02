@@ -54,9 +54,11 @@ into the model in [graph.md](graph.md); how the commands present it is in
   module's file and the scope (`local` inside a function body, `module` elsewhere), and the note
   names the first `use` in another file the path went through, usually a re-export
   (`use via crates/archmap-core/src/lib.rs:22`); an external crate is an edge without a file
-- a module path written in code, in a signature, a type, a pattern, an expression or
-  `#[derive(..)]` (`crate::summary::render(..)`, `child::run()`, `serde_json::to_string(..)`), is an
-  `import` too, noted `path`: one piece of evidence per file and target (the first at module scope,
+- a module path written in code, in a signature, a type, a pattern, an expression,
+  `#[derive(..)]` or the arguments of a macro call that are expressions, an expression and a
+  pattern, or items (`vec![Box::new(rust::RustAnalyzer)]`, `write!(out, "{}", crate::x::y(..))`,
+  `matches!(e, crate::Kind::A)`, `thread_local! { .. }`) (`crate::summary::render(..)`, `child::run()`,
+  `serde_json::to_string(..)`), is an `import` too, noted `path`: one piece of evidence per file and target (the first at module scope,
   else the first), added to the edge a `use` may already give; a path whose first name a `use`
   brought in is that `use`'s dependency, and when that `use` brings in a module whole (`use
   crate::graph;`) the path is resolved as if the `use` had named it (`graph::build()` as `use
@@ -94,10 +96,10 @@ into the model in [graph.md](graph.md); how the commands present it is in
 
 ### Rust known gaps
 
-- `use` declarations and module paths in code are imports, but code inside macro calls
-  (`vec![Box::new(rust::RustAnalyzer)]`, `write!(out, "{}", crate::query_text::shell_word(..))`) is not
-  read, and neither is a module's own use of what it re-exports, so `query` and `impact` miss
-  those dependents.
+- The arguments of a macro call that are neither expressions, an expression and a pattern, nor
+  items (`json!({ .. })`, `quote!(..)`, a DSL) are not read; such a call is recorded with the names
+  its `a::b` paths write, and `Not traced` lists the ones that name the target. A module's own use
+  of what it re-exports is not read either, so `query` and `impact` miss those dependents.
 - `#[path]` modules belong to their package without a module tree, and a target whose root lies
   outside its package directory (`path = "../shared/tool.rs"`) is not read.
 - Edition 2015's rule that one declared target of a kind turns off finding the others of that kind

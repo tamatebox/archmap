@@ -134,7 +134,9 @@ fn the_symbols_of_other_targets_take_their_files() {
             ("depot::idle".to_owned(), false),
             ("kiosk::clock".to_owned(), false),
             ("kiosk::clock::now".to_owned(), false),
+            ("kiosk::counted".to_owned(), false),
             ("kiosk::helper".to_owned(), false),
+            ("kiosk::report".to_owned(), false),
             // a binary's symbols are production code under their files too
             ("kiosk::src/bin/report.rs::helper".to_owned(), false),
             ("kiosk::src/bin/tool/util.rs::run".to_owned(), false),
@@ -415,4 +417,30 @@ fn only_the_library_stands_for_its_package_toward_dependents() {
     assert_eq!(ids(&clock.transitive), ["kiosk"]);
     let report = graph.change_impact(ChangeSeed::File("kiosk/src/bin/report.rs"), 2);
     assert!(report.direct.is_empty() && report.transitive.is_empty());
+}
+
+#[test]
+fn macro_arguments_are_read_and_the_rest_recorded() {
+    let graph = fixture();
+    // `format!("{:?}", util::shared())`: a path in a macro's expressions
+    assert!(imports_in(&graph, "kiosk/src/lib.rs").contains(&(
+        22,
+        "kiosk/src/util.rs".to_owned(),
+        false
+    )));
+    // `tally!(stamp::mark => 1)`: no expressions, so recorded as not read,
+    // with the names its paths write
+    let calls: Vec<(&str, &str, Option<u32>, Vec<&str>)> = graph
+        .unread_macros
+        .iter()
+        .map(|m| {
+            (
+                m.from.as_str(),
+                m.name.as_str(),
+                m.evidence.line,
+                m.names.iter().map(String::as_str).collect(),
+            )
+        })
+        .collect();
+    assert_eq!(calls, [("kiosk", "tally", Some(27), vec!["mark", "stamp"])]);
 }

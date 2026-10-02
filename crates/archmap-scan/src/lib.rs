@@ -15,6 +15,7 @@ mod error;
 mod ids;
 mod languages;
 mod lines;
+mod options;
 pub mod python;
 pub mod rust;
 mod stamp;
@@ -26,6 +27,7 @@ pub use analyzer::Analyzer;
 pub use context::RepoContext;
 pub use error::ScanError;
 pub use languages::language_of;
+pub use options::ScanOptions;
 pub use stamp::{stamp, Stamp};
 pub use test_code::is_test_code;
 
@@ -33,13 +35,6 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use archmap_core::{ArchitectureGraph, GraphMeta, LanguageCoverage};
-
-/// Options controlling a scan.
-#[derive(Debug, Clone, Default)]
-pub struct ScanOptions {
-    /// Skip source parsing and only extract manifest-level facts.
-    pub manifests_only: bool,
-}
 
 /// Result of a scan: the graph plus non-fatal problems encountered.
 #[derive(Debug)]

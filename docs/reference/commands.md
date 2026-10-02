@@ -248,7 +248,8 @@ load (a Rust package by its library's root, a TS/JS package by what its
 `package.json` names and its source root's `index.*`) is stood for by those
 and its manifest only, so a binary, a build script or a configuration file
 reaches none of the packages that declare it; one that names none still is
-by every file it owns. It does not follow Rust code inside macro calls, and a path that
+by every file it owns. It does not follow the arguments of a Rust macro call
+that are no expressions (`json!`), and a path that
 names no component or file is an error. Direct and
 transitive dependents follow production code; the tests to run again are the
 files that reach the target only through test code, and a changed
@@ -449,9 +450,12 @@ target's own imports without an edge stay under `Not mapped`.
   a file or a symbol. It is left out for a test file, which its runner
   loads, for a script, and for a Python package's `__init__.py` that an
   import of a module below it runs first.
+- `macros`: Rust macro calls whose arguments were not read (`json!`, a DSL)
+  and whose `a::b` paths write the target's name (its module's, or its
+  crate's for a crate root). A name match, not a use of it.
 
-Gaps that no analyzer records yet are not counted: module paths inside Rust
-macro calls, imports in a Rust crate's own unit tests.
+Gaps that no analyzer records yet are not counted: imports in a Rust crate's
+own unit tests.
 
 ## check
 

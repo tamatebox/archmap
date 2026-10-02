@@ -227,6 +227,20 @@ pub struct DynamicImport {
     pub evidence: Evidence,
 }
 
+/// A macro call whose arguments the analyzer could not read (a DSL such as
+/// Rust's `json!({ .. })`): what the paths in it name is unseen.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct UnreadMacro {
+    /// The component whose source makes the call.
+    pub from: ComponentId,
+    /// The macro's name, as written last in its path (`json`).
+    pub name: String,
+    /// The names in the `a::b` paths its arguments write, sorted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub names: Vec<String>,
+    pub evidence: Evidence,
+}
+
 /// What a scan saw of one language.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LanguageCoverage {

@@ -27,9 +27,13 @@
 //! - `use` in `#[cfg(test)]` code is no dependency of its crate on itself
 //! - a `use` of a `[dev-dependencies]` crate becomes an [`UnmappedImport`]
 //!
+//! - a module path in the arguments of a macro call is an `Import` too when
+//!   they are expressions, an expression and a pattern, or items; a call
+//!   whose arguments are none of these is an [`UnreadMacro`]
+//!
 //! Not extracted (yet): which items a module uses after importing them (call
-//! and reference graphs), code inside macro calls, trait impls, `#[path]`
-//! modules, and edition 2015's rules for finding targets.
+//! and reference graphs), trait impls, `#[path]` modules, and edition 2015's
+//! rules for finding targets.
 
 mod manifest;
 mod source;
@@ -41,7 +45,7 @@ use std::path::{Path, PathBuf};
 
 use archmap_core::{
     Component, ComponentId, ComponentKind, Edge, EdgeKind, Evidence, Scope, Symbol, SymbolId,
-    SymbolKind, UnmappedImport, UnmappedReason, WHOLE_MODULE,
+    SymbolKind, UnmappedImport, UnmappedReason, UnreadMacro, WHOLE_MODULE,
 };
 
 use crate::analyzer::AnalyzerOutput;
@@ -247,6 +251,20 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
                     evidence,
                 });
             }
+        }
+
+        // the macro calls whose arguments were not read: what they name is
+        // unseen
+        for call in &facts.unread_macros {
+            output.fragment.push_unread_macro(UnreadMacro {
+                from: owner.clone(),
+                name: call.name.clone(),
+                names: call.names.iter().cloned().collect(),
+                evidence: Evidence::new(&file)
+                    .at_line(call.line)
+                    .in_scope(call.scope)
+                    .in_test(node.test || call.test || test_target),
+            });
         }
 
         // the leaves of a declaration that reach one file (`use a::{X, Y}`)

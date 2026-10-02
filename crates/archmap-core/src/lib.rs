@@ -22,7 +22,7 @@ pub use fragment::GraphFragment;
 pub use graph::{ArchitectureGraph, ChangeSeed, FileFacts, GraphMeta, Reach, SymbolImporters};
 pub use model::{
     Component, ComponentId, ComponentKind, DynamicImport, Edge, EdgeKind, LanguageCoverage, Symbol,
-    SymbolId, SymbolKind, UnmappedImport, UnmappedReason,
+    SymbolId, SymbolKind, UnmappedImport, UnmappedReason, UnreadMacro,
 };
 
 /// Version of the JSON schema emitted by [`ArchitectureGraph`].

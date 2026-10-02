@@ -3,7 +3,9 @@
 //! applies. A target's own imports without an edge stay under `Not mapped`;
 //! this is what could reach the target unseen.
 
-use archmap_core::{ArchitectureGraph, ComponentId, ComponentKind, UnmappedImport, UnmappedReason};
+use archmap_core::{
+    ArchitectureGraph, ComponentId, ComponentKind, UnmappedImport, UnmappedReason, UnreadMacro,
+};
 use serde::Serialize;
 
 use crate::target::test_files;
@@ -20,6 +22,10 @@ pub struct NotTraced {
     /// import of it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) named_like: Option<NamedLike>,
+    /// Macro calls whose arguments were not read and whose paths name the
+    /// target: they may use it unseen. A name match, not a use of it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) macros: Option<Macros>,
     /// Files of the target's language that its analyzer did not read.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) not_read: Option<NotRead>,
@@ -70,6 +76,27 @@ pub(crate) struct NamedImport {
     pub(crate) line: Option<u32>,
     pub(crate) module: String,
     pub(crate) reason: UnmappedReason,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct Macros {
+    /// The name their paths write.
+    pub(crate) name: String,
+    pub(crate) total: usize,
+    pub(crate) shown: Vec<MacroCall>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct MacroCall {
+    pub(crate) file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) line: Option<u32>,
+    /// The macro called (`json`).
+    #[serde(rename = "macro")]
+    pub(crate) name: String,
+    /// The call is test code.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) test: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -188,6 +215,29 @@ pub(crate) fn not_traced(
         })
     });
 
+    let macros = subject.place.as_ref().and_then(|place| {
+        let names = macro_names(full, place);
+        let name = names.first()?.clone();
+        let mut calls: Vec<MacroCall> = full
+            .unread_macros
+            .iter()
+            .filter(|m| in_family(&m.from) && !own(&m.from, &m.evidence.file))
+            .filter(|m| m.names.iter().any(|n| names.contains(n)))
+            .map(|m: &UnreadMacro| MacroCall {
+                file: m.evidence.file.clone(),
+                line: m.evidence.line,
+                name: m.name.clone(),
+                test: m.evidence.test,
+            })
+            .collect();
+        calls.sort_by(|a, b| (a.test, &a.file, a.line).cmp(&(b.test, &b.file, b.line)));
+        (!calls.is_empty()).then(|| Macros {
+            name,
+            total: calls.len(),
+            shown: calls.into_iter().take(cap).collect(),
+        })
+    });
+
     let not_read = family.and_then(|family| {
         let counted: Vec<(&String, usize, usize)> = full
             .meta
@@ -214,6 +264,7 @@ pub(crate) fn not_traced(
     let found = NotTraced {
         dynamic,
         named_like,
+        macros,
         not_read,
         script: subject.script.then_some(SCRIPT),
         // a script's own note already says why nothing imports it
@@ -221,6 +272,7 @@ pub(crate) fn not_traced(
     };
     let empty = found.dynamic.is_none()
         && found.named_like.is_none()
+        && found.macros.is_none()
         && found.not_read.is_none()
         && found.script.is_none()
         && found.no_importers.is_none();
@@ -309,6 +361,22 @@ fn may_be(
         return target.ends_with(&parts);
     }
     target.last().map(String::as_str) == Some(module)
+}
+
+/// The names a path inside a macro call writes for the target at `place`:
+/// its module's name (a file's stem, a `mod.rs` directory's name), and for a
+/// file that a package owns directly, its crate's name (`archmap_scan`).
+fn macro_names(full: &ArchitectureGraph, place: &Place) -> Vec<String> {
+    let mut names: Vec<String> = segments_of(place).last().cloned().into_iter().collect();
+    let path = match place {
+        Place::File(file) | Place::Directory(file) => file,
+    };
+    if let Some(owner) = full.component_for_path(path) {
+        if owner.kind == ComponentKind::Package {
+            names.push(owner.name.replace('-', "_"));
+        }
+    }
+    names
 }
 
 /// The nearest package that holds `component`.

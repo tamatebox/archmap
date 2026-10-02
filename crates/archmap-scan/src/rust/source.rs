@@ -51,9 +51,86 @@ pub(super) struct ModuleFacts {
     /// `#[macro_export]` macros defined here, which live at the crate root.
     pub exported_macros: Vec<String>,
     pub uses: Vec<UseDecl>,
-    /// Paths in code that may name a module, outside `use` declarations.
+    /// Paths in code that may name a module, outside `use` declarations,
+    /// those in the arguments of macro calls included.
     pub paths: Vec<PathRef>,
+    /// Macro calls whose arguments are neither expressions nor items, so
+    /// the paths in them are not read.
+    pub unread_macros: Vec<MacroCall>,
     pub symbols: Vec<SymbolDecl>,
+}
+
+/// A macro call whose arguments are not read (`json!({ .. })`, a DSL).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct MacroCall {
+    /// The macro's name, as written last in its path (`json`).
+    pub name: String,
+    /// The names in the `a::b` paths its arguments write, which a target
+    /// of that name may be.
+    pub names: BTreeSet<String>,
+    pub line: u32,
+    pub scope: Scope,
+    /// In `#[cfg(test)]` or `#[test]` code.
+    pub test: bool,
+}
+
+/// Visit the arguments of a macro call as comma-separated expressions, as
+/// an expression and a pattern (`matches!(x, Some(_))`), as the elements of
+/// an array (`vec![x; n]`), or as items; `false` when they are none of
+/// these.
+fn visit_arguments(tokens: &proc_macro2::TokenStream, paths: &mut Paths<'_>) -> bool {
+    use syn::parse::{ParseStream, Parser};
+    if let Ok(list) = Punctuated::<syn::Expr, Token![,]>::parse_terminated.parse2(tokens.clone()) {
+        list.iter().for_each(|e| paths.visit_expr(e));
+        return true;
+    }
+    let matched = |input: ParseStream| {
+        let expr: syn::Expr = input.parse()?;
+        input.parse::<Token![,]>()?;
+        let pattern = syn::Pat::parse_multi_with_leading_vert(input)?;
+        let guard = match input.parse::<Option<Token![if]>>()? {
+            Some(_) => Some(input.parse::<syn::Expr>()?),
+            None => None,
+        };
+        input.parse::<Option<Token![,]>>()?;
+        Ok((expr, pattern, guard))
+    };
+    if let Ok((expr, pattern, guard)) = matched.parse2(tokens.clone()) {
+        paths.visit_expr(&expr);
+        paths.visit_pat(&pattern);
+        guard.iter().for_each(|g| paths.visit_expr(g));
+        return true;
+    }
+    if let Ok(array) = syn::parse2::<syn::Expr>(quote::quote!([#tokens])) {
+        paths.visit_expr(&array);
+        return true;
+    }
+    if let Ok(file) = syn::parse2::<syn::File>(tokens.clone()) {
+        file.items.iter().for_each(|i| paths.visit_item(i));
+        return true;
+    }
+    false
+}
+
+/// The names in the `a::b` paths of `tokens`, groups included.
+fn path_names(tokens: proc_macro2::TokenStream, names: &mut BTreeSet<String>) {
+    use proc_macro2::{Spacing, TokenTree};
+    let trees: Vec<TokenTree> = tokens.into_iter().collect();
+    let colons = |i: usize| {
+        matches!((trees.get(i), trees.get(i + 1)),
+            (Some(TokenTree::Punct(a)), Some(TokenTree::Punct(b)))
+                if a.as_char() == ':' && a.spacing() == Spacing::Joint && b.as_char() == ':')
+    };
+    for (i, tree) in trees.iter().enumerate() {
+        match tree {
+            TokenTree::Group(group) => path_names(group.stream(), names),
+            // a name before or after `::`
+            TokenTree::Ident(ident) if colons(i + 1) || (i >= 2 && colons(i - 2)) => {
+                names.insert(ident.to_string());
+            }
+            _ => {}
+        }
+    }
 }
 
 /// A path written in code that may name a module: two or more segments,
@@ -147,8 +224,10 @@ fn collect(items: &[Item], module: usize, file: &mut RustFile) {
     for item in items {
         let test = cfg_test(attrs(item));
         if !matches!(item, Item::Use(_) | Item::ExternCrate(_) | Item::Mod(_)) {
+            let facts = &mut file.modules[module];
             Paths {
-                out: &mut file.modules[module].paths,
+                out: &mut facts.paths,
+                unread: &mut facts.unread_macros,
                 scope: Scope::Module,
                 test,
             }
@@ -360,17 +439,51 @@ fn local_uses(block: &Block, module: &mut ModuleFacts, test: bool) {
 }
 
 /// Module paths in an item: in signatures and types at module scope, in
-/// function bodies at local scope. `use` declarations, inline modules,
-/// visibility restrictions and attributes other than `#[derive(..)]` are left
-/// out, and so is anything inside a macro call's arguments, which `syn` keeps
-/// as tokens.
+/// function bodies at local scope, in the arguments of macro calls that are
+/// code. `use` declarations, inline modules, visibility restrictions and
+/// attributes other than `#[derive(..)]` are left out; a macro call whose
+/// arguments are no code is recorded as not read.
 struct Paths<'a> {
     out: &'a mut Vec<PathRef>,
+    unread: &'a mut Vec<MacroCall>,
     scope: Scope,
     test: bool,
 }
 
 impl<'ast> Visit<'ast> for Paths<'_> {
+    /// A macro call's arguments, which `syn` keeps as tokens, read as the
+    /// expressions or items most macros take (`vec![..]`, `write!(..)`,
+    /// `assert_eq!(..)`, `thread_local! { .. }`); any other form is recorded
+    /// as not read.
+    fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        syn::visit::visit_macro(self, mac);
+        let mut inner = Paths {
+            out: &mut *self.out,
+            unread: &mut *self.unread,
+            scope: self.scope,
+            test: self.test,
+        };
+        if !visit_arguments(&mac.tokens, &mut inner) {
+            let last = mac.path.segments.last();
+            let mut names = BTreeSet::new();
+            path_names(mac.tokens.clone(), &mut names);
+            self.unread.push(MacroCall {
+                name: last.map(|s| s.ident.to_string()).unwrap_or_default(),
+                names,
+                line: last.map_or(0, |s| line_of(s.ident.span())),
+                scope: self.scope,
+                test: self.test,
+            });
+        }
+    }
+
+    /// A `macro_rules!` definition: its body is patterns, not code.
+    fn visit_item_macro(&mut self, item: &'ast syn::ItemMacro) {
+        if item.ident.is_none() {
+            syn::visit::visit_item_macro(self, item);
+        }
+    }
+
     fn visit_path(&mut self, path: &'ast Path) {
         if let Some(segments) = module_path(path) {
             self.out.push(PathRef {
@@ -728,6 +841,53 @@ trait T {
     }
 
     #[test]
+    fn macro_arguments_are_read_as_code_when_they_are() {
+        let text = "\
+macro_rules! ignored {
+    ($x:expr) => { crate::not::read };
+}
+fn calls(out: &mut String) {
+    let all = vec![Box::new(rust::Analyzer)];
+    write!(out, \"{}\", crate::text::shell(1));
+    let ok = matches!(kind, model::Kind::A | model::Kind::B);
+    let many = vec![shape::unit(); 3];
+    json!({ \"a\": config::value() });
+}
+thread_local! {
+    static CELL: std::cell::Cell<u32> = std::cell::Cell::new(cache::start());
+}
+";
+        let file = parse_file(text).unwrap();
+        let root = &file.modules[0];
+        let paths: BTreeSet<String> = root.paths.iter().map(|p| p.segments.join("::")).collect();
+        for read in [
+            "rust::Analyzer",
+            "crate::text::shell",
+            "model::Kind::A",
+            "model::Kind::B",
+            "shape::unit",
+            "cache::start",
+        ] {
+            assert!(paths.contains(read), "{read} in {paths:?}");
+        }
+        // a definition's body is patterns; a DSL's arguments are not read
+        assert!(!paths
+            .iter()
+            .any(|p| p.contains("not::read") || p.contains("config")));
+        let unread: Vec<(&str, Vec<&str>)> = root
+            .unread_macros
+            .iter()
+            .map(|m| {
+                (
+                    m.name.as_str(),
+                    m.names.iter().map(String::as_str).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(unread, [("json", vec!["config", "value"])]);
+    }
+
+    #[test]
     fn test_symbols_are_marked() {
         let text = "\
 #[cfg(test)]
@@ -878,11 +1038,13 @@ mod inline {
                 row("self::d::D", 6, Scope::Module),
                 row("crate::e::run", 7, Scope::Local),
                 row("crate::m::shout", 11, Scope::Local),
+                // inside `format!(..)`, whose arguments are expressions
+                row("crate::hidden::X", 12, Scope::Local),
                 row("child::go", 13, Scope::Local),
                 row("other::f", 13, Scope::Local),
             ]
         );
-        assert!(file.modules[0].paths[8].leading_colon);
+        assert!(file.modules[0].paths[9].leading_colon);
         // an inline module keeps its own paths
         let inline = &file.modules[file.modules[0].inline["inline"]];
         assert_eq!(inline.paths[0].segments, vec!["crate", "i", "j"]);

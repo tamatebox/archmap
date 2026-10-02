@@ -952,6 +952,34 @@ pub(crate) fn not_traced(
             with_more(&places, n.total)
         ));
     }
+    if let Some(m) = &found.macros {
+        let what = if m.total == 1 {
+            format!(
+                "1 macro call whose arguments are not read names `{}`",
+                m.name
+            )
+        } else {
+            format!(
+                "{} macro calls whose arguments are not read name `{}`",
+                m.total, m.name
+            )
+        };
+        let places: Vec<String> = m
+            .shown
+            .iter()
+            .take(cap)
+            .map(|c| {
+                let at = format!("{} ({}!)", place(&c.file, c.line), c.name);
+                if c.test {
+                    format!("{at} (test)")
+                } else {
+                    at
+                }
+            })
+            .collect();
+        truncated |= places.len() < m.total;
+        lines.push(format!("  macros: {what}: {}", with_more(&places, m.total)));
+    }
     if let Some(r) = &found.not_read {
         let mut line = format!(
             "  not read: {} of {} {} files",

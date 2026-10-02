@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Component, ComponentId, ComponentKind, DynamicImport, Edge, EdgeKind, Evidence, GraphFragment,
-    LanguageCoverage, Symbol, SymbolId, UnmappedImport, SCHEMA_VERSION, WHOLE_MODULE,
+    LanguageCoverage, Symbol, SymbolId, UnmappedImport, UnreadMacro, SCHEMA_VERSION, WHOLE_MODULE,
 };
 
 /// Information about how a graph was produced.
@@ -49,6 +49,10 @@ pub struct ArchitectureGraph {
     /// edges.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dynamic_imports: Vec<DynamicImport>,
+    /// Macro calls whose arguments were not read. Observations of what the
+    /// scan could not see.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unread_macros: Vec<UnreadMacro>,
 }
 
 impl Default for ArchitectureGraph {
@@ -61,6 +65,7 @@ impl Default for ArchitectureGraph {
             edges: Vec::new(),
             unmapped_imports: Vec::new(),
             dynamic_imports: Vec::new(),
+            unread_macros: Vec::new(),
         }
     }
 }
@@ -157,6 +162,7 @@ impl ArchitectureGraph {
         self.add_edges(fragment.edges);
         self.unmapped_imports.extend(fragment.unmapped_imports);
         self.dynamic_imports.extend(fragment.dynamic_imports);
+        self.unread_macros.extend(fragment.unread_macros);
     }
 
     /// Sort edges so that serialized output is stable regardless of the
@@ -171,6 +177,8 @@ impl ArchitectureGraph {
         self.unmapped_imports.dedup();
         self.dynamic_imports.sort();
         self.dynamic_imports.dedup();
+        self.unread_macros.sort();
+        self.unread_macros.dedup();
     }
 
     pub fn component(&self, id: &ComponentId) -> Option<&Component> {
