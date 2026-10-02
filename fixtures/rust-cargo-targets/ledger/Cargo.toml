@@ -1,0 +1,21 @@
+[package]
+name = "ledger"
+version = "0.1.0"
+edition = "2021"
+build = false
+autotests = false
+
+[lib]
+path = "lib/ledger.rs"
+
+[[bin]]
+name = "ledger-cli"
+path = "src/main.rs"
+
+[[bin]]
+name = "audit"
+path = "tools/audit.rs"
+
+[[test]]
+name = "books"
+path = "checks/books.rs"

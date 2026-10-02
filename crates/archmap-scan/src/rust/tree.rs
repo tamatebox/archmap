@@ -29,6 +29,7 @@ use std::path::{Path, PathBuf};
 use archmap_core::{ComponentId, Scope};
 
 use super::source::{ModDecl, ModuleFacts, PathRef, RustFile, UseDecl};
+use super::{DeclaredTargets, TargetKind};
 use crate::context::display_path;
 
 /// Crates of the standard distribution, which never become components.
@@ -54,38 +55,129 @@ pub(super) struct ResolvedPackage {
     pub other_packages: BTreeMap<String, ComponentId>,
     /// Crate names of `[dev-dependencies]`, which have no edges.
     pub dev_imports: BTreeSet<String>,
+    /// What the manifest says of the package's targets.
+    pub declared: DeclaredTargets,
 }
 
-/// The kind of a Cargo target.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum TargetKind {
-    Lib,
-    Bin,
-    Test,
-    Example,
-    Bench,
-    Build,
-}
-
-impl TargetKind {
-    /// Tests, examples and benches may use `[dev-dependencies]` and are no
-    /// part of the package's library and binaries: their code is test code.
-    pub fn is_test(self) -> bool {
-        matches!(
-            self,
-            TargetKind::Test | TargetKind::Example | TargetKind::Bench
-        )
-    }
-}
-
-/// A target of a package other than its library and its `src/main.rs`
-/// binary: its kind, its root file (relative to the repository root) and
-/// the name of its crate.
+/// A target of a package: its kind, its root file (relative to the
+/// repository root), the name of its crate, and whether its modules are
+/// named by their paths (every target but the library and `src/main.rs`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Target {
     pub kind: TargetKind,
     pub root: PathBuf,
     pub crate_name: String,
+    pub by_path: bool,
+}
+
+/// The targets of `package` among its `files`, the library first, then the
+/// binary `src/main.rs`, then the others by root: what Cargo finds by itself
+/// unless the manifest turns that off, and what the manifest declares, which
+/// takes the place of a found target of its name or root, as from edition
+/// 2018. A `[[bin]]` at `src/main.rs` renames that binary.
+pub(super) fn targets<'a>(
+    package: &ResolvedPackage,
+    files: impl IntoIterator<Item = &'a Path>,
+) -> Vec<Target> {
+    let files: BTreeSet<&Path> = files.into_iter().collect();
+    let (dir, declared) = (&package.dir, &package.declared);
+    let found = |kind: TargetKind| !declared.undiscovered.contains(&kind);
+    let exists = |path: &PathBuf| files.contains(path.as_path());
+
+    let mut out = Vec::new();
+    let lib = match &declared.lib_path {
+        Some(path) => Some(dir.join(path)),
+        None => found(TargetKind::Lib).then(|| dir.join("src/lib.rs")),
+    };
+    if let Some(root) = lib.filter(exists) {
+        out.push(Target {
+            kind: TargetKind::Lib,
+            root,
+            crate_name: package.crate_name.clone(),
+            by_path: false,
+        });
+    }
+
+    // the declared targets, at their paths or where Cargo infers them
+    let main = dir.join("src/main.rs");
+    let mut declared_targets: Vec<Target> = declared
+        .targets
+        .iter()
+        .filter_map(|t| {
+            let root = match &t.path {
+                Some(path) => dir.join(path),
+                None => {
+                    let name = t.name.as_deref()?;
+                    let place = match t.kind {
+                        TargetKind::Bin => "src/bin",
+                        TargetKind::Test => "tests",
+                        TargetKind::Example => "examples",
+                        TargetKind::Bench => "benches",
+                        TargetKind::Lib | TargetKind::Build => return None,
+                    };
+                    let mut candidates = vec![
+                        dir.join(place).join(format!("{name}.rs")),
+                        dir.join(place).join(name).join("main.rs"),
+                    ];
+                    if t.kind == TargetKind::Bin && name == package.name {
+                        candidates.push(main.clone());
+                    }
+                    candidates.into_iter().find(|c| exists(c))?
+                }
+            };
+            let name = match &t.name {
+                Some(name) => name.clone(),
+                None => root.file_stem()?.to_string_lossy().into_owned(),
+            };
+            exists(&root).then(|| Target {
+                kind: t.kind,
+                by_path: root != main,
+                root,
+                crate_name: name.replace('-', "_"),
+            })
+        })
+        .collect();
+    // the binary `src/main.rs`, under the name a `[[bin]]` gives it
+    let renamed = declared_targets
+        .iter()
+        .position(|t| t.kind == TargetKind::Bin && t.root == main);
+    let main_target = match renamed {
+        Some(i) => Some(declared_targets.remove(i)),
+        None => (found(TargetKind::Bin) && exists(&main)).then(|| Target {
+            kind: TargetKind::Bin,
+            root: main.clone(),
+            crate_name: package.name.replace('-', "_"),
+            by_path: false,
+        }),
+    };
+    out.extend(main_target);
+
+    let mut others: Vec<Target> = default_targets(dir, files.iter().copied())
+        .into_iter()
+        .filter(|t| found(t.kind) || t.kind == TargetKind::Build)
+        .filter(|t| t.kind != TargetKind::Build || declared.build.is_none())
+        .filter(|t| {
+            !declared_targets
+                .iter()
+                .any(|d| d.root == t.root || (d.kind == t.kind && d.crate_name == t.crate_name))
+        })
+        .collect();
+    if let Some(Some(path)) = &declared.build {
+        let root = dir.join(path);
+        if exists(&root) {
+            others.push(Target {
+                kind: TargetKind::Build,
+                root,
+                crate_name: "build_script_build".to_owned(),
+                by_path: true,
+            });
+        }
+    }
+    others.extend(declared_targets);
+    others.sort_by(|a, b| a.root.cmp(&b.root));
+    others.dedup_by(|a, b| a.root == b.root);
+    out.extend(others);
+    out
 }
 
 /// The targets Cargo finds by default among the files of the package in
@@ -114,6 +206,7 @@ pub(super) fn default_targets<'a>(
                 kind,
                 root: file.to_path_buf(),
                 crate_name: name.replace('-', "_"),
+                by_path: true,
             })
         })
         .collect();
@@ -303,25 +396,12 @@ pub(super) fn build(
     let mut later: Vec<(usize, String)> = Vec::new();
 
     for (p, package) in packages.iter().enumerate() {
-        let own = [
-            (TargetKind::Lib, "lib.rs", package.crate_name.clone()),
-            (TargetKind::Bin, "main.rs", package.name.replace('-', "_")),
-        ];
-        let other = targets
-            .get(p)
-            .into_iter()
-            .flatten()
-            .map(|t| (t.kind, t.root.clone(), t.crate_name.clone()));
-        for (kind, root_path, crate_name) in own
-            .into_iter()
-            .map(|(kind, file, name)| (kind, package.dir.join("src").join(file), name))
-            .chain(other)
-        {
-            let Some(&file) = index.get(root_path.as_path()) else {
+        for target in targets.get(p).into_iter().flatten() {
+            let Some(&file) = index.get(target.root.as_path()) else {
                 continue;
             };
-            let by_path = !matches!(kind, TargetKind::Lib)
-                && !(kind == TargetKind::Bin && root_path == package.dir.join("src/main.rs"));
+            let (kind, by_path, crate_name) =
+                (target.kind, target.by_path, target.crate_name.clone());
             owners[file].get_or_insert_with(|| package.id.clone());
             root_files.insert(file);
             let root = forest.push(Node {
@@ -1046,6 +1126,7 @@ mod tests {
                 .collect(),
             other_packages: BTreeMap::new(),
             dev_imports: BTreeSet::new(),
+            declared: DeclaredTargets::default(),
         }
     }
 
@@ -1063,8 +1144,27 @@ mod tests {
             .collect()
     }
 
+    /// The targets of each package among `files`.
+    fn targets_of(files: &[SourceFile], packages: &[ResolvedPackage]) -> Vec<Vec<Target>> {
+        packages
+            .iter()
+            .enumerate()
+            .map(|(p, package)| {
+                let own = files.iter().filter(|f| f.package == p);
+                targets(package, own.map(|f| f.rel.as_path()))
+            })
+            .collect()
+    }
+
     fn forest(files: &[SourceFile], packages: &[ResolvedPackage]) -> Forest {
-        build(files, &BTreeSet::new(), packages, &[], &BTreeSet::new())
+        let targets = targets_of(files, packages);
+        build(
+            files,
+            &BTreeSet::new(),
+            packages,
+            &targets,
+            &BTreeSet::new(),
+        )
     }
 
     fn describe(forest: &Forest, files: &[SourceFile], resolved: Resolved) -> String {
@@ -1192,6 +1292,61 @@ mod tests {
     }
 
     #[test]
+    fn a_manifest_declares_targets_in_place_of_the_ones_cargo_finds() {
+        let mut shop = package("shop", "", &[]);
+        let declare = |kind, name: &str, path: Option<&str>| crate::rust::CargoTarget {
+            kind,
+            name: Some(name.to_owned()),
+            path: path.map(PathBuf::from),
+        };
+        shop.declared = DeclaredTargets {
+            lib_path: None,
+            targets: vec![
+                // where Cargo infers it from the name
+                declare(TargetKind::Bin, "tool", None),
+                // in place of tests/total.rs, by name
+                declare(TargetKind::Test, "total", Some("checks/total.rs")),
+            ],
+            build: Some(Some(PathBuf::from("tools/gen.rs"))),
+            undiscovered: BTreeSet::from([TargetKind::Example]),
+        };
+        let files = [
+            "src/lib.rs",
+            "src/main.rs",
+            "src/bin/tool.rs",
+            "tests/total.rs",
+            "checks/total.rs",
+            "examples/demo.rs",
+            "build.rs",
+            "tools/gen.rs",
+        ];
+        let found = targets(&shop, files.iter().map(Path::new));
+        let target = |kind, root: &str, crate_name: &str, by_path| Target {
+            kind,
+            root: PathBuf::from(root),
+            crate_name: crate_name.to_owned(),
+            by_path,
+        };
+        // examples are not looked for, and build.rs gives way to the script
+        // `package.build` names
+        assert_eq!(
+            found,
+            [
+                target(TargetKind::Lib, "src/lib.rs", "shop", false),
+                target(TargetKind::Bin, "src/main.rs", "shop", false),
+                target(TargetKind::Test, "checks/total.rs", "total", true),
+                target(TargetKind::Bin, "src/bin/tool.rs", "tool", true),
+                target(
+                    TargetKind::Build,
+                    "tools/gen.rs",
+                    "build_script_build",
+                    true
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn a_build_script_does_not_name_the_library() {
         let packages = [package("kiosk", "", &[])];
         let files = files(
@@ -1202,17 +1357,7 @@ mod tests {
             ],
             &packages,
         );
-        let targets = [default_targets(
-            Path::new(""),
-            files.iter().map(|f| f.rel.as_path()),
-        )];
-        let forest = build(
-            &files,
-            &BTreeSet::new(),
-            &packages,
-            &targets,
-            &BTreeSet::new(),
-        );
+        let forest = forest(&files, &packages);
         assert_eq!(
             resolved(&forest, &files, &packages, "tests/total.rs"),
             vec![row("kiosk::total", "src/lib.rs")]
@@ -1239,17 +1384,7 @@ mod tests {
             ],
             &packages,
         );
-        let targets = [default_targets(
-            Path::new(""),
-            files.iter().map(|f| f.rel.as_path()),
-        )];
-        let forest = build(
-            &files,
-            &BTreeSet::new(),
-            &packages,
-            &targets,
-            &BTreeSet::new(),
-        );
+        let forest = forest(&files, &packages);
         assert!(forest.warnings.is_empty(), "{:?}", forest.warnings);
         let owners: Vec<&str> = forest.owners.iter().map(|o| o.as_str()).collect();
         assert_eq!(
@@ -1745,7 +1880,13 @@ pub fn h(_: crate::Thing) {}
         );
         // broken.rs exists but did not parse: its own warning says so
         let unreadable = BTreeSet::from([PathBuf::from("src/broken.rs")]);
-        let forest = build(&files, &unreadable, &packages, &[], &BTreeSet::new());
+        let forest = build(
+            &files,
+            &unreadable,
+            &packages,
+            &targets_of(&files, &packages),
+            &BTreeSet::new(),
+        );
         assert_eq!(
             forest.warnings,
             vec![

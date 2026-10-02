@@ -8,7 +8,8 @@
 //!   everything else becomes an `External` component)
 //! - every file that a `mod` declaration loads, following the module trees
 //!   of `src/lib.rs`, `src/main.rs` and the binaries, tests, examples,
-//!   benches and build script Cargo finds beside them, becomes a `Module` component whose
+//!   benches and build script Cargo finds beside them or `Cargo.toml`
+//!   declares, becomes a `Module` component whose
 //!   parent is the component of the declaring file (see [`tree`]); crate
 //!   roots and files no root reaches belong to the package
 //! - `pub` items and `pub` inherent methods become symbols
@@ -28,7 +29,7 @@
 //!
 //! Not extracted (yet): which items a module uses after importing them (call
 //! and reference graphs), code inside macro calls, trait impls, `#[path]`
-//! modules, and the targets `Cargo.toml` declares.
+//! modules, and edition 2015's rules for finding targets.
 
 mod manifest;
 mod source;
@@ -49,7 +50,10 @@ use crate::{Analyzer, RepoContext, ScanError};
 use source::UseDecl;
 use tree::{Resolved, ResolvedPackage, SourceFile, Target};
 
-pub use manifest::{CargoDependency, CargoPackage, CargoWorkspace, DependencyKind, ParsedManifest};
+pub use manifest::{
+    CargoDependency, CargoPackage, CargoTarget, CargoWorkspace, DeclaredTargets, DependencyKind,
+    ParsedManifest, TargetKind,
+};
 
 pub const LANGUAGE: &str = "rust";
 
@@ -109,7 +113,7 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
     let targets: Vec<Vec<Target>> = packages
         .iter()
         .zip(&owned)
-        .map(|(package, own)| tree::default_targets(&package.dir, own.iter().copied()))
+        .map(|(package, own)| tree::targets(package, own.iter().copied()))
         .collect();
 
     let mut sources = Sources::default();
@@ -641,6 +645,7 @@ fn manifest_pass(
             import_targets,
             other_packages,
             dev_imports,
+            declared: pkg.declared.clone(),
         });
     }
 

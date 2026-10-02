@@ -39,8 +39,8 @@ fn every_cargo_target_is_read_and_test_data_is_not() {
     assert_eq!(
         graph.meta.coverage["rust"],
         LanguageCoverage {
-            files: 17,
-            read: Some(16),
+            files: 25,
+            read: Some(22),
             scripts: 0
         }
     );
@@ -100,6 +100,21 @@ fn every_cargo_target_is_read_and_test_data_is_not() {
                 "kiosk/src/util.rs",
                 Some("kiosk")
             ),
+            ("ledger", "ledger", "ledger", None),
+            // the renamed `src/main.rs` binary's module
+            (
+                "ledger::cli",
+                "ledger_cli::cli",
+                "ledger/src/cli.rs",
+                Some("ledger")
+            ),
+            // a module of the library at `[lib] path`
+            (
+                "ledger::entry",
+                "ledger::entry",
+                "ledger/lib/entry.rs",
+                Some("ledger")
+            ),
         ]
     );
 }
@@ -134,7 +149,44 @@ fn the_symbols_of_other_targets_take_their_files() {
             ("kiosk::total".to_owned(), false),
             ("kiosk::util".to_owned(), false),
             ("kiosk::util::shared".to_owned(), false),
+            ("ledger::cli::run".to_owned(), false),
+            ("ledger::entry".to_owned(), false),
+            ("ledger::entry::post".to_owned(), false),
         ]
+    );
+}
+
+#[test]
+fn the_targets_a_manifest_declares_take_the_place_of_the_ones_cargo_finds() {
+    let graph = fixture();
+    let row = |line: u32, target: &str, test: bool| (line, target.to_owned(), test);
+    // `[[bin]]` at its path, the library at `[lib] path`
+    assert_eq!(
+        imports_in(&graph, "ledger/tools/audit.rs"),
+        BTreeSet::from([row(1, "ledger/lib/entry.rs", false)])
+    );
+    // a `[[test]]` at its path is test code
+    assert_eq!(
+        imports_in(&graph, "ledger/checks/books.rs"),
+        BTreeSet::from([row(1, "ledger/lib/entry.rs", true)])
+    );
+    // `src/main.rs` stays the package's binary under its new name
+    assert_eq!(
+        imports_in(&graph, "ledger/src/main.rs"),
+        BTreeSet::from([
+            row(4, "ledger/src/cli.rs", false),
+            row(5, "ledger/lib/entry.rs", false),
+        ])
+    );
+    // `autotests = false` and `build = false`: tests/ignored.rs and
+    // build.rs are no targets, so not read
+    for file in ["ledger/tests/ignored.rs", "ledger/build.rs"] {
+        assert!(imports_in(&graph, file).is_empty(), "{file}");
+    }
+    let reach = graph.change_impact(ChangeSeed::File("ledger/lib/entry.rs"), 2);
+    assert_eq!(
+        reach.tests.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["ledger/checks/books.rs"]
     );
 }
 
