@@ -1132,6 +1132,23 @@ fn a_rust_module_directory_stands_for_its_module() {
 }
 
 #[test]
+fn a_directory_without_code_beside_a_file_of_its_name_stays_its_owners() {
+    // `src/Button/` holds a stylesheet only, so `Button.tsx` has nothing there
+    let repo = temp_repo("dir-beside-data");
+    std::fs::write(repo.join("package.json"), "{\"name\": \"web\"}\n").unwrap();
+    std::fs::create_dir_all(repo.join("src/Button")).unwrap();
+    std::fs::write(repo.join("src/Button.tsx"), "export const Button = 1;\n").unwrap();
+    std::fs::write(
+        repo.join("src/App.tsx"),
+        "import { Button } from './Button';\nexport const App = Button;\n",
+    )
+    .unwrap();
+    std::fs::write(repo.join("src/Button/style.css"), ".b {}\n").unwrap();
+    let text = query_text(&repo, &["src/Button"]);
+    assert!(text.contains("\nid: web\n"), "{text}");
+}
+
+#[test]
 fn a_symbol_wins_over_a_directory_of_the_same_name() {
     // `run/` holds no Python code, so only the root component contains it
     let repo = temp_repo("dir-symbol");

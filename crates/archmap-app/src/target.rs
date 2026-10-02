@@ -163,7 +163,8 @@ fn module_of_directory<'a>(
         })
         .collect();
     if let [only] = beside.as_slice() {
-        return holds_all(only).then_some(*only);
+        // a directory with no code recorded in it is not the file's
+        return (!recorded.is_empty() && holds_all(only)).then_some(*only);
     }
     let inside: Vec<&Component> = full
         .components
