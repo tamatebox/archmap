@@ -502,6 +502,20 @@ fn a_package_entry_reached_through_its_re_exports_runs_nothing_below_it() {
 }
 
 #[test]
+fn a_package_entry_is_named_at_the_re_export_the_reach_came_through() {
+    let ws = scan(&fixture("python-bindings"));
+    // the package's `__init__.py` passes on the names of duty.py at its last
+    // re-export, after those of another file
+    for target in ["store/billing/levy.py", "charge_duty"] {
+        let out = text(&ws, target);
+        assert!(
+            out.contains("that file: store/billing/__init__.py:6 (runs first;"),
+            "{out}"
+        );
+    }
+}
+
+#[test]
 fn a_dependent_a_declaration_reaches_names_what_it_declares_and_where() {
     let manifest = |name: &str, dependency: &str| {
         format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n[dependencies]\n{dependency}")

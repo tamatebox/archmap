@@ -3,7 +3,7 @@
 //! applies. A target's own imports without an edge stay under `Not mapped`;
 //! this is what could reach the target unseen.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use archmap_core::{
     ArchitectureGraph, ComponentId, ComponentKind, EdgeKind, Evidence, Symbol, SymbolUses,
@@ -85,7 +85,9 @@ pub(crate) struct Barrels {
     pub(crate) shown: Vec<Barrel>,
 }
 
-/// A file that passes the target's names on, at its first such re-export.
+/// A file that passes the target's names on, at its first such re-export:
+/// for a package entry the reach went on from only through its re-exports,
+/// of the file it came from.
 #[derive(Debug, Serialize)]
 pub(crate) struct Barrel {
     pub(crate) file: String,
@@ -113,14 +115,15 @@ pub(crate) enum Narrowed<'a> {
 
 /// The re-exports that pass the names of `target` on: for a file, the
 /// statements that re-export from it; for a symbol, those that re-export
-/// its name; and the package entry files in `relayed`, which the reach went
-/// on from only through their re-exports, at their first. Each counts the
-/// test files that load its file (or, for a package's entry file, a module
-/// below it) that `listed` does not hold.
+/// its name; and for the package entry files in `relayed`, which the reach
+/// went on from only through their re-exports, those that re-export the
+/// file it came from. Each counts the test files that load its file (or,
+/// for a package's entry file, a module below it) that `listed` does not
+/// hold.
 pub(crate) fn barrels(
     full: &ArchitectureGraph,
     target: Narrowed,
-    relayed: &BTreeSet<String>,
+    relayed: &BTreeMap<String, String>,
     listed: &BTreeSet<String>,
     cap: usize,
 ) -> Option<Barrels> {
@@ -142,11 +145,12 @@ pub(crate) fn barrels(
             .filter(|e| e.passes_on())
             .collect(),
     };
-    statements.extend(
-        imports()
-            .filter(|e| e.passes_on() && relayed.contains(&e.file))
-            .filter(|e| e.target.as_deref().is_some_and(|t| t != e.file)),
-    );
+    statements.extend(imports().filter(|e| {
+        e.passes_on()
+            && relayed
+                .get(&e.file)
+                .is_some_and(|from| e.target.as_deref() == Some(from.as_str()))
+    }));
     // each file once, at its first such statement
     statements.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
     statements.dedup_by(|a, b| a.file == b.file);

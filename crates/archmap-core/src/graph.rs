@@ -285,7 +285,9 @@ impl ArchitectureGraph {
         let (mut reach, production, _) = self.reach(seed, depth, false, &test_code);
         let (through_tests, with_tests, seeds) = self.reach(seed, depth, true, &test_code);
         reach.left_out = through_tests.left_out;
-        reach.relayed.extend(through_tests.relayed);
+        for (entry, from) in through_tests.relayed {
+            reach.relayed.entry(entry).or_insert(from);
+        }
         // a changed test is a test to run again too
         reach.tests = with_tests
             .difference(&production)
@@ -813,14 +815,23 @@ impl ArchitectureGraph {
             }
         }
         // package entry files reached only through their re-exports, whose
-        // modules below them were not followed
+        // modules below them were not followed, each with the file whose
+        // names it passed on at the fewest steps
         reach.relayed = runs_first
             .keys()
-            .filter(|entry| {
-                let only = |node: Node| distance.get(&node).is_some_and(|d| *d > 0);
-                !only(Node::File(entry)) && (only(Node::Relays(entry)) || only(Node::Passes(entry)))
+            .filter(|entry| !distance.get(&Node::File(entry)).is_some_and(|d| *d > 0))
+            .filter_map(|entry| {
+                let (_, node) = [Node::Relays(entry), Node::Passes(entry)]
+                    .into_iter()
+                    .filter_map(|node| Some((*distance.get(&node).filter(|d| **d > 0)?, node)))
+                    .min()?;
+                match parent.get(&node)? {
+                    Node::File(f) | Node::Passes(f) | Node::Relays(f) => {
+                        Some(((*entry).to_owned(), (*f).to_owned()))
+                    }
+                    Node::Component(_) => None,
+                }
             })
-            .map(|entry| (*entry).to_owned())
             .collect();
         let folded_of = |node: &Node| match node {
             Node::File(f) | Node::Passes(f) | Node::Relays(f) => {
@@ -1593,9 +1604,11 @@ pub struct Reach {
     /// that distance.
     pub from: BTreeMap<ComponentId, Hop>,
     /// Package entry files (a Python `__init__.py`) the walk reached only
-    /// through their re-exports: what imports a module below them, which
-    /// runs them first, was not followed.
-    pub relayed: BTreeSet<String>,
+    /// through their re-exports, each with the file whose names it passed
+    /// on at the fewest steps: what imports a module below them, which runs
+    /// them first, was not followed. One the walk starts from, which takes
+    /// a symbol's name, has none.
+    pub relayed: BTreeMap<String, String>,
 }
 
 /// What the walk reached a component from: a file of another component,
