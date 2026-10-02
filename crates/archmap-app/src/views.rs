@@ -244,11 +244,26 @@ pub struct Dependent {
     /// and `may_use` list, counted in production code and in tests.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub imports: Option<Statements>,
-    /// For one beyond the direct dependents: the file the walk reached it
-    /// from at that distance, which its file imports, or its own manifest
-    /// where that declares the way (a component where no file does).
+    /// For one beyond the direct dependents: what the walk reached it from
+    /// at that distance, a file its file imports or the id of a component
+    /// it depends on as a whole.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
+    /// Where a manifest of its own declares the component of `from`, when
+    /// that declaration was the way.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub declared_in: Option<Declared>,
+    /// `from` as the text writes it: a file's path, a component's name.
+    #[serde(skip)]
+    pub(crate) through: Option<String>,
+}
+
+/// A manifest's declaration of a dependency.
+#[derive(Debug, Clone, Serialize)]
+pub struct Declared {
+    pub file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
 }
 
 /// Statements counted in production code and in tests.

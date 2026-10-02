@@ -327,8 +327,15 @@ fn transitive(
             display(rolled, &dependent.id),
             dependent.distance
         );
-        if let Some(from) = &dependent.from {
-            let _ = write!(line, ", through {from}");
+        if let Some(through) = &dependent.through {
+            let _ = write!(line, ", through {through}");
+        }
+        if let Some(declared) = &dependent.declared_in {
+            let _ = write!(
+                line,
+                " (declared in {})",
+                place(&declared.file, declared.line)
+            );
         }
         let _ = writeln!(out, "{line}");
     }

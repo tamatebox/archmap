@@ -479,9 +479,11 @@ Direct dependents come with their statements into the target that the
 lists below hold, those with most in production code first, written as
 `query` counts neighbors (`app/checkout.ts  2 imports, 1 in tests`), and
 transitive dependents nearest first, with their steps from the target and
-the file the walk reached them from, or their own manifest where its
-declaration was the way (`app/lazy.tsx  2 steps, through
-src/lib/money.ts`); ties go by the name shown. Lists show 30 components, 5 statements, 20 test files, 5 files changed in
+what the walk reached them from: a file they import (`app/lazy.tsx  2
+steps, through src/lib/money.ts`), or a component they depend on as a
+whole, with the line of their manifest that declares it (`cli  2 steps,
+through app (declared in crates/cli/Cargo.toml:9)`); ties go by the name
+shown. Lists show 30 components, 5 statements, 20 test files, 5 files changed in
 the same commits with 2 commits each, and 3 locations per kind of `Not
 traced`, and their headings count the rest
 (`6, showing 5`); a capped statement list ends with the components the rest
@@ -491,8 +493,9 @@ components`); an answer with a capped list ends by saying so, and
 its evidence, whatever `--verbose` says, and for a busy target runs large:
 `direct` and `transitive` (which includes `direct`) as objects with the
 component's `id`, its `distance` (1 for a direct one), for a direct one its
-`imports` (`{"production", "tests"}`), and for one further its `from`, in
-the text's order;
+`imports` (`{"production", "tests"}`), and for one further its `from` (a
+file's path or a component's id) and, where a declaration was the way,
+`declared_in` (`{"file", "line"}`), in the text's order;
 `importers`, `imports_below` and `may_use` as `{"recorded", "total",
 "statements"}`, each statement its evidence (`file`, `line`, `note`,
 `target`, `scope`, `names`, `test`, `type_only`, `replaces`) with the

@@ -4,8 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result};
 use archmap_core::{
-    ArchitectureGraph, ChangeSeed, Component, ComponentId, ComponentKind, Edge, Evidence, Symbol,
-    UnmappedImport,
+    ArchitectureGraph, ChangeSeed, Component, ComponentId, ComponentKind, Edge, Evidence, Hop,
+    Symbol, UnmappedImport,
 };
 
 use crate::co_change::{self, Changed};
@@ -13,8 +13,8 @@ use crate::not_traced::{barrels, not_traced, Narrowed, NotTraced, Own, Place, Su
 use crate::resolve::{resolve, Resolved};
 use crate::target::{component_file, fold, namesakes, reject_outside, unquote};
 use crate::views::{
-    About, Dependent, ImpactResult, ImportSite, ImportSites, LeftOut, MockCall, MockingTest,
-    Statements, TestFiles,
+    About, Declared, Dependent, ImpactResult, ImportSite, ImportSites, LeftOut, MockCall,
+    MockingTest, Statements, TestFiles,
 };
 use crate::{Answer, Format, Found, ImpactRequest, Workspace};
 
@@ -442,13 +442,25 @@ fn dependents(
             true => 1,
             false => reach.distance.get(id).map_or(1, |d| d + beyond),
         };
+        let (from, through, declared_in) = match (distance > 1).then(|| reach.from.get(id)) {
+            Some(Some(Hop::File(file))) => (Some(file.clone()), Some(file.clone()), None),
+            Some(Some(Hop::Component { id, declared_in })) => (
+                Some(id.to_string()),
+                Some(name(id)),
+                declared_in.as_ref().map(|(file, line)| Declared {
+                    file: file.clone(),
+                    line: *line,
+                }),
+            ),
+            _ => (None, None, None),
+        };
         Dependent {
             id: id.clone(),
             distance,
             imports: (distance == 1).then(|| counted.get(id).copied()).flatten(),
-            from: (distance > 1)
-                .then(|| reach.from.get(id).cloned())
-                .flatten(),
+            from,
+            declared_in,
+            through,
         }
     };
     let mut direct: Vec<Dependent> = reach.direct.iter().map(dependent).collect();

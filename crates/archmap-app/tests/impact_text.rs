@@ -500,3 +500,65 @@ fn a_package_entry_reached_through_its_re_exports_runs_nothing_below_it() {
         "{out}"
     );
 }
+
+#[test]
+fn a_dependent_a_declaration_reaches_names_what_it_declares_and_where() {
+    let manifest = |name: &str, dependency: &str| {
+        format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n[dependencies]\n{dependency}")
+    };
+    let files = [
+        (
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"base\", \"mid\", \"top\"]\n".to_owned(),
+        ),
+        ("base/Cargo.toml", manifest("base", "")),
+        (
+            "base/src/lib.rs",
+            "pub fn rate() -> u32 {\n    1\n}\n".to_owned(),
+        ),
+        (
+            "mid/Cargo.toml",
+            manifest("mid", "base = { path = \"../base\" }\n"),
+        ),
+        (
+            "mid/src/lib.rs",
+            "pub fn price() -> u32 {\n    base::rate()\n}\n".to_owned(),
+        ),
+        // top uses nothing of mid: its manifest's declaration is the way
+        (
+            "top/Cargo.toml",
+            manifest("top", "mid = { path = \"../mid\" }\n"),
+        ),
+        ("top/src/main.rs", "fn main() {}\n".to_owned()),
+    ];
+    let files: Vec<(String, String)> = files
+        .into_iter()
+        .map(|(path, text)| (path.to_owned(), text))
+        .collect();
+    let repo = Repo::new("declared", &files);
+    let ws = scan(&repo.0);
+    let out = text(&ws, "base/src/lib.rs");
+    assert_eq!(
+        section(&out, "Transitive dependents: 1 more (2 in all)"),
+        ["  top  2 steps, through mid (declared in top/Cargo.toml:6)"]
+    );
+    let json = ws
+        .impact(&ImpactRequest {
+            target: "base/src/lib.rs",
+            depth: DEFAULT_DEPTH,
+            format: Format::Json,
+            verbose: false,
+        })
+        .unwrap()
+        .output;
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        value["transitive"][1],
+        serde_json::json!({
+            "id": "top",
+            "distance": 2,
+            "from": "mid",
+            "declared_in": {"file": "top/Cargo.toml", "line": 6}
+        })
+    );
+}
