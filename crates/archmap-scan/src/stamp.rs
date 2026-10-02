@@ -1,6 +1,7 @@
 //! A cheap fingerprint of what a scan reads: every walked file with its
 //! size and times, the installed packages the Python analyzer reads
-//! outside the walk, and the git HEAD the history starts from. A long-running caller compares stamps to tell whether
+//! outside the walk, the git HEAD the history starts from, and the work
+//! snapshot. A long-running caller compares stamps to tell whether
 //! a graph it keeps is still current, without scanning again.
 
 use std::path::{Path, PathBuf};
@@ -20,6 +21,9 @@ pub struct Stamp {
     /// HEAD and whether the clone is shallow, which the history a command
     /// reads starts from (see [`crate::history`]).
     head: Option<String>,
+    /// The work snapshot at its default path, which the walk skips as a
+    /// hidden directory: its size and modification time.
+    snapshot: Option<(u64, Option<SystemTime>)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,10 +68,14 @@ pub fn stamp(root: &Path) -> Result<Stamp, ScanError> {
         })
         .collect();
     let head = crate::history::head_stamp(&root);
+    let snapshot = std::fs::metadata(root.join(crate::work::DEFAULT_PATH))
+        .ok()
+        .map(|meta| (meta.len(), meta.modified().ok()));
     Ok(Stamp {
         files,
         installed,
         head,
+        snapshot,
     })
 }
 

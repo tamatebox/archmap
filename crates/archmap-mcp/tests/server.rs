@@ -294,6 +294,44 @@ async fn impact_lists_the_files_changed_in_the_same_commits_as_the_app_does() {
 }
 
 #[tokio::test]
+async fn query_answers_an_item_of_the_work_snapshot_as_the_app_does() {
+    let repo = Repo::python("work");
+    commit(&repo.0, 1);
+    repo.write(
+        ".archmap/github.json",
+        r#"{"schema": 1, "source": "github", "host": "github.com", "repository": "acme/shop",
+            "fetched_at": "2026-10-03T09:00:00Z",
+            "range": {"since_rule": "all", "bound": 5000, "issues": 1, "pull_requests": 0},
+            "relation_types": ["closed_by"],
+            "items": [{"kind": "issue", "number": 7, "id": "I_7", "title": "Run fails",
+                       "state": "open", "created_at": "2026-01-01T00:00:00Z",
+                       "updated_at": "2026-01-01T00:00:00Z"}],
+            "relations": []}"#,
+    );
+    let client = connect(Server::new(repo.0.clone())).await;
+    let ws = Workspace::scan(&repo.0, ScanMode::Full).unwrap();
+    for format in [Format::Text, Format::Json] {
+        let expected = ws
+            .query(&QueryRequest {
+                target: "#7",
+                depth: DEFAULT_DEPTH,
+                format,
+                verbose: false,
+            })
+            .unwrap()
+            .output;
+        let mut args = serde_json::json!({"target": "#7"});
+        if format == Format::Json {
+            args["format"] = "json".into();
+        }
+        assert_eq!(ok(&call(&client, "query", args).await), expected);
+    }
+    let text = ok(&call(&client, "query", serde_json::json!({"target": "#7"})).await);
+    assert!(text.starts_with("#7 issue: Run fails\n  open\n"), "{text}");
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn every_tool_answers_on_a_fixture() {
     let client = connect(Server::new(fixture("simple-python-project"))).await;
     let summary = ok(&call(&client, "summary", serde_json::json!({})).await);

@@ -135,6 +135,13 @@ fn query(ws: &Workspace, request: &QueryRequest) -> Result<Answer> {
     } = *request;
     let target = unquote(target);
     let root = ws.root();
+    // an issue or a pull request of the work snapshot
+    if let Some(item) = crate::work::target(root, target) {
+        return Ok(Answer {
+            output: crate::work::answer(ws, item, target, format, verbose)?,
+            found: Found::One,
+        });
+    }
     reject_outside(root, target)?;
     let full = ws.graph();
     let rolled = full.rollup(depth);

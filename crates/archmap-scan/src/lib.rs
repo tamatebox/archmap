@@ -24,6 +24,7 @@ mod test_code;
 pub mod typescript;
 mod uses;
 mod walk;
+pub mod work;
 
 pub use analyzer::Analyzer;
 pub use context::RepoContext;

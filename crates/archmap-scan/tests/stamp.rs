@@ -168,3 +168,16 @@ fn a_commit_changes_the_stamp_though_no_file_does() {
         "second"
     ])));
 }
+
+#[test]
+fn a_new_work_snapshot_changes_the_stamp_though_the_walk_skips_it() {
+    let repo = Repo::new("snapshot");
+    assert!(changes(&repo, |root| {
+        std::fs::create_dir_all(root.join(".archmap")).unwrap();
+        std::fs::write(root.join(".archmap/github.json"), "{}").unwrap();
+    }));
+    // anything else written there is the scan's own output
+    assert!(!changes(&repo, |root| {
+        std::fs::write(root.join(".archmap/graph.json"), "{}").unwrap();
+    }));
+}

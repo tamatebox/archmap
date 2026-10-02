@@ -11,6 +11,7 @@
 
 mod check;
 mod co_change;
+mod fetch;
 mod impact;
 mod impact_text;
 mod not_traced;
@@ -21,17 +22,21 @@ mod resolve;
 mod summary;
 mod target;
 mod views;
+mod work;
+mod work_line;
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
 use archmap_core::history::History;
+use archmap_core::work::Snapshot;
 use archmap_core::ArchitectureGraph;
 use archmap_scan::{ScanOptions, ScanReport};
 use serde::Serialize;
 
 pub use check::{load_rules, CheckAnswer, Rules, RULES_FILE};
+pub use fetch::{fetch_github, FetchRequest, DEFAULT_MAX_ITEMS};
 pub use target::reject_outside;
 
 /// Depth that `summary`, `query` and `impact` roll up to unless told
@@ -108,6 +113,10 @@ pub struct Workspace {
     /// The root's committed git history, read on the first command that
     /// needs it.
     history: OnceLock<History>,
+    /// Where the work snapshot is read from, and what it held when first
+    /// read.
+    snapshot_path: PathBuf,
+    snapshot: OnceLock<Result<Option<Snapshot>, String>>,
 }
 
 impl Workspace {
@@ -122,7 +131,17 @@ impl Workspace {
             root: root.to_path_buf(),
             report,
             history: OnceLock::new(),
+            snapshot_path: root.join(archmap_scan::work::DEFAULT_PATH),
+            snapshot: OnceLock::new(),
         })
+    }
+
+    /// Read the work snapshot from `path` instead of the root's default
+    /// (`.archmap/github.json`).
+    pub fn with_snapshot(mut self, path: &Path) -> Workspace {
+        self.snapshot_path = path.to_path_buf();
+        self.snapshot = OnceLock::new();
+        self
     }
 
     /// The root as given to [`Workspace::scan`]; path targets are read
@@ -149,9 +168,36 @@ impl Workspace {
         })
     }
 
+    /// Where the work snapshot is read from, relative to the root when it
+    /// is inside it.
+    fn snapshot_path(&self) -> String {
+        let path = self
+            .snapshot_path
+            .strip_prefix(&self.root)
+            .unwrap_or(&self.snapshot_path);
+        path.to_string_lossy().replace('\\', "/")
+    }
+
+    /// The work snapshot, read once: `Ok(None)` when there is none.
+    fn snapshot(&self) -> &Result<Option<Snapshot>, String> {
+        self.snapshot
+            .get_or_init(|| archmap_scan::work::read(&self.snapshot_path))
+    }
+
     /// The Markdown summary at `depth`; `verbose` lists everything.
     pub fn summary(&self, depth: usize, verbose: bool) -> String {
-        summary::render(self.graph(), &self.report.root, depth, verbose)
+        let work = match self.snapshot() {
+            Ok(Some(snapshot)) => Some(work_line::range_line(snapshot)),
+            Ok(None) => None,
+            Err(error) => Some(format!("unreadable: {error}")),
+        };
+        summary::render(
+            self.graph(),
+            &self.report.root,
+            depth,
+            verbose,
+            work.as_deref(),
+        )
     }
 }
 

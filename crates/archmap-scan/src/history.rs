@@ -141,6 +141,75 @@ pub(crate) fn head_stamp(root: &Path) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
+/// The URL of the root's `origin` remote, as git configures it.
+pub fn origin_url(root: &Path) -> Option<String> {
+    let out = run(root, &["remote", "get-url", "origin"]).ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+/// Where a commit that a history read does not hold stands in the local
+/// repository.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalCommit {
+    /// The repository has no such object.
+    Missing,
+    /// An ancestor of HEAD that the bounded read did not reach.
+    BeyondRead,
+    /// Present, but HEAD does not contain it (another branch).
+    NotInHead,
+}
+
+/// Look `shas` up in the repository at `root`: one `cat-file
+/// --batch-check` for them all, then `merge-base --is-ancestor` for each
+/// present one, in the same hardened environment as the history read (a
+/// partial clone fetches nothing). `None` when git cannot answer.
+pub fn local_commits(root: &Path, shas: &[String]) -> Option<BTreeMap<String, LocalCommit>> {
+    use std::io::Write;
+    let mut child = git(root)
+        .args(["cat-file", "--batch-check=%(objectname) %(objecttype)"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    {
+        let mut stdin = child.stdin.take()?;
+        for sha in shas {
+            // an object name only: anything else could name a revision
+            if !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+                continue;
+            }
+            writeln!(stdin, "{sha}").ok()?;
+        }
+    }
+    let out = child.wait_with_output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let mut found = BTreeMap::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(sha), kind) = (fields.next(), fields.next()) else {
+            continue;
+        };
+        let state = match kind {
+            Some("commit") => {
+                let ancestor = run(root, &["merge-base", "--is-ancestor", sha, "HEAD"]).ok()?;
+                match ancestor.status.code() {
+                    Some(0) => LocalCommit::BeyondRead,
+                    Some(1) => LocalCommit::NotInHead,
+                    _ => return None,
+                }
+            }
+            _ => LocalCommit::Missing,
+        };
+        found.insert(sha.to_owned(), state);
+    }
+    Some(found)
+}
+
 /// The arguments of the log that lists the commits and their changes.
 fn log_args(bound: usize, renames: Renames) -> Vec<String> {
     let mut args: Vec<String> = [

@@ -73,11 +73,14 @@ The graph is meant to be consumed by agents as much as by humans:
   starting with what the scan could not see
 - `archmap scan` writes the full graph for tools, export and debugging; agents never need to read it,
   because `summary`, `query` and `impact` return the parts they need
-- `archmap query` answers "what does component X expose and depend on", and for a Rust or
-  TS/JS symbol "where is it used"
+- `archmap query` answers "what does component X expose and depend on", for a Rust or
+  TS/JS symbol "where is it used", and for an issue or pull request (`'#123'`) the links
+  GitHub records for it and its commits in the local history
 - `archmap impact` answers "if I touch this file or component, what else might be affected",
   with the import statements to open, the tests to run again and the files changed in the
   same commits in the git history
+- `archmap fetch github` writes a snapshot of the issues, pull requests and links behind
+  changes, the one command that reaches the network
 - `archmap check` tells an agent or CI whether a change broke a declared dependency rule,
   and points out structural signals that are observations, not failures
 - every fact points to `file:line` evidence, so an agent can verify and jump to the source
@@ -111,7 +114,10 @@ behavior and known gaps are in [analyzers.md](docs/reference/analyzers.md).
 Besides code, `impact` reads the root's committed git history with the git
 CLI ([history.md](docs/reference/history.md)): commits, their parents and
 times, and the files each changed, renames included; never uncommitted
-changes, authors or messages, and never the network.
+changes, authors or messages, and never the network. `query '#123'` and
+`summary` read the issues, pull requests and links that `archmap fetch
+github` wrote ([work.md](docs/reference/work.md)); no other command
+fetches.
 No analyzer sees runtime coupling (HTTP, databases, queues, subprocesses,
 configuration-driven loading) or follows a module loaded by a name computed
 at runtime, and nothing is inferred; `summary`, `query` and `impact` say what
@@ -202,7 +208,7 @@ comes later.
 | 3 Rules & Declared Architecture | declared components and layers, cycles, forbidden dependencies, drift, CI `check` | done: deny rules, layers, allow lists, coverage, cycles with a file-level reading, undeclared imports, stale declarations; structural signals |
 | 4 Deep Static Analysis | precise symbol resolution, callers and reference graph, type relationships, selective data flow, test-to-code links; on demand for one selected area | started: where a Rust or TS/JS symbol is used, read on demand by `query`; agent traces point first to callers and references, then selective data flow |
 | 5 Cross-system Graph | OpenAPI, Terraform, databases, HTTP, events, CI/build/deploy relationships | planned |
-| 6 Change & Work Graph | 6A local git history: commits, renames and the files changed together; 6B issues, pull requests and their explicit links from a fetched GitHub snapshot; 6C code to work and work to code at query time, Issue → PR → Commit → File | 6A: files changed in the same commits in `impact`; 6B and 6C planned |
+| 6 Change & Work Graph | 6A local git history: commits, renames and the files changed together; 6B issues, pull requests and their explicit links from a fetched GitHub snapshot; 6C code to work and work to code at query time, Issue → PR → Commit → File | 6A: files changed in the same commits in `impact`; 6B: `fetch github` and `query '#123'`, issues, pull requests and their links from a snapshot ([work.md](docs/reference/work.md)); 6C planned |
 | 7 Semantic Enrichment | LLM naming, responsibilities, intent and other semantic interpretations, stored separately as inferred facts | planned |
 | 8 Agent Interface | plugin and skill for agents; MCP server over the same engine | MCP server (`archmap mcp`), plugin and skill |
 | 9 Incremental / Runtime | incremental scans and caches; runtime traces and other observed execution relationships | planned |

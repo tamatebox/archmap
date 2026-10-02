@@ -19,6 +19,7 @@ mod model;
 pub mod rules;
 pub mod signals;
 mod uses;
+pub mod work;
 
 pub use evidence::{via_place, Evidence, Scope, WHOLE_MODULE};
 pub use fragment::GraphFragment;

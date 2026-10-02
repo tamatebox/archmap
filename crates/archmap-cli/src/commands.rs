@@ -97,10 +97,15 @@ pub fn query(
     depth: usize,
     format: ReportFormat,
     verbose: bool,
+    snapshot: Option<&Path>,
 ) -> Result<ExitCode> {
     // fails before scanning; the shared layer checks again for every interface
     archmap_app::reject_outside(Path::new(path), target)?;
-    let answer = run_scan(path, ScanMode::Full)?.query(&QueryRequest {
+    let mut workspace = run_scan(path, ScanMode::Full)?;
+    if let Some(snapshot) = snapshot {
+        workspace = workspace.with_snapshot(snapshot);
+    }
+    let answer = workspace.query(&QueryRequest {
         target,
         depth,
         format: format.into(),
@@ -173,4 +178,10 @@ fn print_answer(answer: Answer) -> ExitCode {
         Found::One => ExitCode::SUCCESS,
         Found::Candidates => ExitCode::from(1),
     }
+}
+
+pub fn fetch_github(path: &str, request: &archmap_app::FetchRequest) -> Result<ExitCode> {
+    let written = archmap_app::fetch_github(Path::new(path), request)?;
+    print!("{written}");
+    Ok(ExitCode::SUCCESS)
 }

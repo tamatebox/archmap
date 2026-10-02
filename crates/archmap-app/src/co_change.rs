@@ -213,7 +213,7 @@ fn commit(c: &CommitRef, file: &CoChanged) -> String {
     line
 }
 
-fn short(id: &str) -> &str {
+pub(crate) fn short(id: &str) -> &str {
     id.get(..7).unwrap_or(id)
 }
 
@@ -322,7 +322,7 @@ fn history_line(section: &CoChangeSection, view: &CoChange) -> String {
 }
 
 /// The UTC date of a time in seconds since the epoch, as `2026-01-14`.
-fn date(time: i64) -> String {
+pub(crate) fn date(time: i64) -> String {
     // days to a civil date, after Howard Hinnant's `civil_from_days`
     let z = time.div_euclid(86_400) + 719_468;
     let era = z.div_euclid(146_097);

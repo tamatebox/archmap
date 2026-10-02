@@ -131,6 +131,8 @@ archmap query src/shop/users.py --path ../some-python-repo                 # one
 archmap query shop.users --path ../some-python-repo                        # the same file
 archmap query src/lib/money.ts --path fixtures/simple-ts-project
 archmap query lib/money.ts --path fixtures/simple-ts-project               # the same file by name
+archmap query '#123'                     # an issue or pull request of the work snapshot
+archmap query acme/shop#123 --snapshot ../shop-github.json
 ```
 
 `query` works on top of the rolled-up graph, for a component, a symbol or a
@@ -143,6 +145,18 @@ that file, with the statements that import it, even where it folds into an
 ancestor. How a target is looked up, and what happens when it names several
 things, is the same for `query` and `impact`: see
 [How a target is found](#how-a-target-is-found).
+
+An issue or a pull request, `'#123'` (quoted: after a space, a shell reads
+`#` as the start of a comment) or `owner/name#123`, answers from the work
+snapshot, `.archmap/github.json` under the root unless `--snapshot` names
+another (see [work.md](work.md)): its state, the links GitHub records for it
+by type and by the end it is, a pull request's commits matched to the local
+git history by SHA, or why one is not (`no local commit with the same sha`,
+`an ancestor of HEAD beyond the history read`, `in the repository, not in
+HEAD's history`), and in `Not traced` the links its end cannot see. An item
+outside the snapshot's range says so with the links that name it; another
+repository's item, `not in this snapshot (it holds acme/shop)`; without a
+snapshot, where it looked. A file of the same name is read as the file.
 
 `query` prints compact text by default: public symbols with their location
 in source order (by file, then line; JSON keeps them by id),
@@ -553,6 +567,33 @@ name from the same file is not affected. Two things widen or narrow it:
   the first step through their `via` evidence.
 - A statement that only loads the file (a side-effect import) is not in the
   first step, although code that runs on load may call the symbol.
+
+## fetch github
+
+```bash
+archmap fetch github                          # the root's origin on github.com, into .archmap/github.json
+archmap fetch github --repo acme/shop --since 2026-01-01
+archmap fetch github --repo ghe.example.com/acme/shop --no-titles -o ../shop-github.json
+```
+
+`fetch github` writes the work snapshot that `query '#N'` and `summary`'s
+Coverage read: the issues and pull requests updated since a date, newest
+first up to `--max-items` (5,000) of each, and the links GitHub records
+between them, through GitHub's GraphQL API with the gh CLI as transport.
+gh holds the token (`GH_TOKEN`, `GITHUB_TOKEN` or its login, per host, for
+its active account: with several accounts, choose with `GH_CONFIG_DIR` or
+`GH_TOKEN`); archmap never reads it. The repository is `--repo
+OWNER/NAME`, else the root's `origin` when it is on github.com; another
+host (an SSH alias included) is named with `--repo HOST/OWNER/NAME` and
+must be one gh is logged in to, since a clone can name any `origin`. The
+date is `--since`, else the committer date of the oldest commit the local
+history read holds, else (in a shallow clone, or with fewer than 100
+commits) 365 days before the fetch; `--all` reads every item. The snapshot
+is written whole or not at all, beside `scan`'s output unless `-o` names
+another file, and the command prints what it wrote. `--no-titles` keeps
+numbers, states and times only. What a snapshot holds, the link types and
+what each fetch asks GitHub are in [work.md](work.md). It is the only
+command that reaches the network; the MCP server does not offer it.
 
 ## How a target is found
 
