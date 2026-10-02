@@ -777,10 +777,11 @@ impl ArchitectureGraph {
         found
     }
 
-    /// Each file that imports something, below an entry file that runs
-    /// first, with that entry file and whether the file is test code: what
-    /// its imports load or not, an import without an edge (`import pytest`)
-    /// or a dynamic one makes it known.
+    /// Each file the graph knows below an entry file that runs first, with
+    /// that entry file and whether the file is test code: one that imports
+    /// something, whatever its import loads (an import without an edge such
+    /// as `import pytest`, a dynamic one), or that defines a public symbol,
+    /// as a module that imports only the standard library does.
     fn files_below_entries<'g>(&'g self, index: &PathIndex<'g>) -> Vec<(&'g str, &'g str, bool)> {
         let mut importers: BTreeMap<&str, bool> = BTreeMap::new();
         let evidence = self
@@ -792,6 +793,11 @@ impl ArchitectureGraph {
             .chain(self.dynamic_imports.iter().map(|i| &i.evidence));
         for e in evidence {
             *importers.entry(e.file.as_str()).or_insert(true) &= e.test;
+        }
+        // a symbol carries no test mark: its file counts as test code only
+        // through its imports
+        for e in self.symbols.values().flat_map(|s| s.location()) {
+            importers.entry(e.file.as_str()).or_insert(false);
         }
         let mut above: BTreeMap<&ComponentId, Vec<(ComponentId, &str)>> = BTreeMap::new();
         let mut found = Vec::new();
@@ -2281,8 +2287,25 @@ mod tests {
     fn change_impact_reaches_what_runs_an_entry_file_first() {
         let graph = packages_graph();
         let ids = |s: &BTreeSet<ComponentId>| s.iter().map(|c| c.0.clone()).collect::<Vec<_>>();
-        // a test that imports only what maps to no component, for its fixtures
+        // a module that imports only the standard library, which the scan
+        // records nothing of, still defines its public names
         let mut graph = graph;
+        let mut utils = Component::new("shop.utils", "shop.utils", ComponentKind::Module);
+        utils.path = Some("src/shop/utils".into());
+        utils.parent = Some("shop".into());
+        utils
+            .evidence
+            .push(Evidence::new("src/shop/utils/__init__.py").with_note("package"));
+        graph.add_component(utils);
+        graph.add_symbol(Symbol {
+            id: SymbolId::new("shop.utils::clock::now"),
+            name: "now".into(),
+            kind: SymbolKind::Function,
+            component: "shop.utils".into(),
+            signature: None,
+            evidence: vec![Evidence::new("src/shop/utils/clock.py").at_line(3)],
+        });
+        // a test that imports only what maps to no component, for its fixtures
         graph.unmapped_imports.push(crate::UnmappedImport {
             from: "shop.billing.tests".into(),
             module: "pytest".into(),
@@ -2295,7 +2318,10 @@ mod tests {
         let reach = graph.change_impact(ChangeSeed::File("src/shop/__init__.py"), 9);
         // app and the nested project import a module below it; a file of a
         // subpackage needs it run
-        assert_eq!(ids(&reach.direct), ["app", "lib.core", "shop.billing"]);
+        assert_eq!(
+            ids(&reach.direct),
+            ["app", "lib.core", "shop.billing", "shop.utils"]
+        );
         // the tests below the package as well as outside it
         assert_eq!(
             reach.tests.iter().map(String::as_str).collect::<Vec<_>>(),
