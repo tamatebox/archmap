@@ -55,6 +55,8 @@ fn split(text: &str, skip: &BTreeSet<u32>) -> (Vec<Chain>, Vec<(String, u32)>) {
     let mut i = 0;
     // the last character of code before the current one, apart from spaces
     let mut previous = ' ';
+    // the string that starts next is an f-string, whose `{…}` hold code
+    let mut formatted = false;
     while i < chars.len() {
         let c = chars[i];
         if c == '\n' {
@@ -103,8 +105,24 @@ fn split(text: &str, skip: &BTreeSet<u32>) -> (Vec<Chain>, Vec<(String, u32)>) {
                 i += 1;
             }
             if !skip.contains(&start) {
-                strings.push((content, start));
+                match std::mem::take(&mut formatted) {
+                    // its text is a string, what it formats is code
+                    true => {
+                        let (text, fields) = formatted_fields(&content);
+                        strings.push((text, start));
+                        for field in fields {
+                            let (inner, quoted) = split(&field, &BTreeSet::new());
+                            chains.extend(inner.into_iter().map(|c| Chain {
+                                line: start + c.line - 1,
+                                ..c
+                            }));
+                            strings.extend(quoted.into_iter().map(|(q, l)| (q, start + l - 1)));
+                        }
+                    }
+                    false => strings.push((content, start)),
+                }
             }
+            formatted = false;
             previous = c;
             continue;
         }
@@ -139,6 +157,7 @@ fn split(text: &str, skip: &BTreeSet<u32>) -> (Vec<Chain>, Vec<(String, u32)>) {
                 && (chars[i] == '"' || chars[i] == '\'')
                 && chain.len() <= 2
                 && chain.chars().all(|ch| "rRbBuUfF".contains(ch));
+            formatted = prefix && chain.contains(['f', 'F']);
             if !prefix && !skip.contains(&line) {
                 chains.push(Chain {
                     text: chain,
@@ -155,6 +174,46 @@ fn split(text: &str, skip: &BTreeSet<u32>) -> (Vec<Chain>, Vec<(String, u32)>) {
         i += 1;
     }
     (chains, strings)
+}
+
+/// An f-string's text, apart from what it formats, and the code of each
+/// replacement field (`{charge.pay(order)!r:>10}`), the braces an escaped
+/// `{{` or `}}` writes left in the text.
+fn formatted_fields(content: &str) -> (String, Vec<String>) {
+    let chars: Vec<char> = content.chars().collect();
+    let (mut text, mut fields) = (String::new(), Vec::new());
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '{' | '}' if chars.get(i + 1) == Some(&chars[i]) => {
+                text.push(chars[i]);
+                i += 2;
+            }
+            '{' => {
+                // up to the brace that closes it, past nested brackets
+                let mut depth = 0;
+                let mut field = String::new();
+                i += 1;
+                while i < chars.len() {
+                    match chars[i] {
+                        '{' | '[' | '(' => depth += 1,
+                        '}' if depth == 0 => break,
+                        '}' | ']' | ')' => depth -= 1,
+                        _ => {}
+                    }
+                    field.push(chars[i]);
+                    i += 1;
+                }
+                fields.push(field);
+                i += 1;
+            }
+            c => {
+                text.push(c);
+                i += 1;
+            }
+        }
+    }
+    (text, fields)
 }
 
 fn is_name_start(c: char) -> bool {
@@ -270,7 +329,7 @@ mod tests {
         for text in [
             "import x as m\nreload(m)\nm.f()\n",
             "import x as m\nif value is m:\n    pass\nm.f()\n",
-            "import x as m\nprint(f\"{m.g()}\")\nm.f()\n",
+            "import x as m\nprint(f\"m.g is {m.g()}\")\nm.f()\n",
             "import x as m\ndef h(a: \"m.Thing\"):\n    m.f()\n",
             "import x as m\n'''uses m.g\n'''\nm.f()\n",
             "import x as m\nf = m.__dict__[\"g\"]\nm.f()\n",
@@ -279,6 +338,24 @@ mod tests {
         }
         // reading nothing is no proof of taking nothing
         assert_eq!(read("import x as m\n", "m").names(), None);
+    }
+
+    #[test]
+    fn what_an_f_string_formats_is_read_as_code() {
+        let reads = read(
+            "import x as m\nprint(f\"{m.g()} and {m.h!r:>10} {{as is}}\")\nm.f()\n",
+            "m",
+        );
+        assert_eq!(
+            reads.attributes,
+            [
+                ("g".to_owned(), 2),
+                ("h".to_owned(), 2),
+                ("f".to_owned(), 3)
+            ]
+        );
+        assert!(reads.in_strings.is_empty(), "{reads:?}");
+        assert_eq!(reads.names().unwrap().len(), 3);
     }
 
     #[test]

@@ -426,11 +426,12 @@ fn a_python_symbol_is_taken_by_name_through_a_module_binding() {
     // read through the package, a submodule or an `as` name; the package
     // only passes it on
     assert_eq!(
-        section(&out, "Imported by: 5 (1 re-export)"),
+        section(&out, "Imported by: 6 (1 re-export)"),
         [
             "  store/aliased.py:1",
             "  store/app.py:1 (via store/billing/__init__.py:2)",
             "  store/billing/__init__.py:2 (export)",
+            "  store/formatted.py:1",
             "  store/other.py:1",
             "  spec/test_pay.py:1 (test)",
         ]
@@ -438,10 +439,9 @@ fn a_python_symbol_is_taken_by_name_through_a_module_binding() {
     // the files that may use anything of it; not one that reads another
     // name through it
     assert_eq!(
-        section(&out, "May use: 4 (imports the whole module)"),
+        section(&out, "May use: 3 (imports the whole module)"),
         [
             "  store/annotated.py:1",
-            "  store/formatted.py:1",
             "  store/passed.py:1",
             "  store/unused.py:1",
         ]

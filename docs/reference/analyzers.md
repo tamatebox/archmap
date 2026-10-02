@@ -168,8 +168,9 @@ into the model in [graph.md](graph.md); how the commands present it is in
   module the statement binds (a submodule in `from pkg import sub`, `import pkg.sub`, either with
   `as`), the names the rest of the file reads through it (`pay` for `sub.pay(order)` or
   `pkg.sub.pay(order)`), or `*` when the file also uses the module itself (passes, compares or
-  assigns it, or reads a dunder of it such as `__dict__`), mentions it in a string (an f-string, an
-  annotation, a docstring) or reads nothing through it; `*` for `from pkg import *`, and nothing for a package the statement only passes on the
+  assigns it, or reads a dunder of it such as `__dict__`), mentions it in a string (an annotation, a
+  docstring, the text of an f-string, whose `{…}` fields are read as code) or reads nothing through
+  it; `*` for `from pkg import *`, and nothing for a package the statement only passes on the
   way (the parent `__init__.py` of a subpackage, or what is left of a module the scan did not read);
   when a name list cannot be read whole, the module's own file, if the statement points at it, also
   gets `*`
