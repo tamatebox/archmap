@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
 use archmap_core::{
-    ArchitectureGraph, ComponentId, ComponentKind, DynamicImport, Edge, EdgeKind, Evidence, Scope,
-    Symbol, SymbolKind, UnmappedImport, UnmappedReason,
+    ArchitectureGraph, Component, ComponentId, ComponentKind, DynamicImport, Edge, EdgeKind,
+    Evidence, Scope, Symbol, SymbolKind, UnmappedImport, UnmappedReason,
 };
 
 use crate::not_traced::NotTraced;
@@ -79,7 +79,7 @@ pub fn render(
         QueryResult::NotMapped(_) => (None, false),
     };
     if let Some(not_traced) = not_traced {
-        truncated |= self::not_traced(&mut out, not_traced, caps.locations, no_importers);
+        truncated |= self::not_traced(&mut out, not_traced, caps.locations, no_importers, false);
     }
     if truncated {
         let _ = writeln!(
@@ -99,23 +99,15 @@ fn component(
     caps: &Caps,
 ) -> bool {
     let c = view.component;
-    let mut head = format!("{} ({}", c.name, component_kind(c.kind));
-    if let Some(language) = &c.language {
-        let _ = write!(head, ", {language}");
-    }
-    head.push(')');
-    if let Some(path) = &c.path {
-        let _ = write!(head, " at {path}");
-    }
-    let _ = writeln!(out, "{head}, depth {}", view.depth);
-    let _ = writeln!(out, "id: {}", c.id);
-    if let Some(from) = &view.folded_from {
-        let _ = writeln!(out, "folded from: {}", display(full, from));
-    }
-    if let Some(subpath) = &view.subpath {
-        let _ = writeln!(out, "subpath: {subpath}");
-    }
-    let mut truncated = namesakes(out, &view.also_named, &view.also_at_path, caps);
+    component_head(
+        out,
+        c,
+        view.depth,
+        view.folded_from.as_ref(),
+        view.subpath.as_deref(),
+        full,
+    );
+    let mut truncated = namesakes(out, &view.also_named, &view.also_at_path, caps.neighbors);
 
     if !view.children.is_empty() {
         let total = view.children.len();
@@ -380,19 +372,8 @@ fn file(
     caps: &Caps,
 ) -> bool {
     let component = view.component.as_ref().and_then(|id| rolled.component(id));
-    let mut head = format!("{} (file)", view.file);
-    if let Some(c) = component {
-        let _ = write!(head, " in {} ({}", c.name, component_kind(c.kind));
-        if let Some(language) = &c.language {
-            let _ = write!(head, ", {language}");
-        }
-        head.push(')');
-    }
-    let _ = writeln!(out, "{head}, depth {}", view.depth);
-    if let Some(c) = component {
-        let _ = writeln!(out, "id: {}", c.id);
-    }
-    let mut truncated = namesakes(out, &view.also_named, &view.also_at_path, caps);
+    file_head(out, &view.file, component, view.depth);
+    let mut truncated = namesakes(out, &view.also_named, &view.also_at_path, caps.neighbors);
 
     let total = view.symbols.len();
     let shown = total.min(caps.symbols);
@@ -634,6 +615,27 @@ fn sites(
         .iter()
         .filter(|i| i.evidence.note.as_deref() == Some("export"))
         .count();
+    let _ = writeln!(
+        out,
+        "\n{}",
+        statements_title(title, note, list.len(), shown, exports)
+    );
+    for importer in list.iter().take(shown) {
+        let _ = writeln!(out, "  {}", import_location(importer.evidence, 0, false));
+    }
+    shown < list.len()
+}
+
+/// `Imported by: 6, showing 5 (1 re-export)`: the heading of a list of
+/// import statements, with what it notes about them and how many of them
+/// are re-exports.
+pub(crate) fn statements_title(
+    title: &str,
+    note: Option<&str>,
+    total: usize,
+    shown: usize,
+    exports: usize,
+) -> String {
     let mut notes: Vec<String> = note.map(str::to_owned).into_iter().collect();
     if exports > 0 {
         notes.push(plural(exports, "re-export"));
@@ -642,15 +644,9 @@ fn sites(
         true => String::new(),
         false => format!(" ({})", notes.join("; ")),
     };
-    let _ = writeln!(out, "\n{title}: {}{notes}", count(list.len(), shown));
-    for importer in list.iter().take(shown) {
-        let _ = writeln!(out, "  {}", import_location(importer.evidence, 0, false));
-    }
-    shown < list.len()
+    format!("{title}: {}{notes}", count(total, shown))
 }
 
-/// `def pay(user: User) -> Payment  src/shop/billing/charge.py:25`. The
-/// signature stands alone when it already names the symbol.
 /// Symbols as the source orders them, by file and then line; JSON keeps
 /// them by id, a stable order to diff.
 fn in_source_order<'a>(symbols: impl IntoIterator<Item = &'a Symbol>) -> Vec<&'a Symbol> {
@@ -660,7 +656,9 @@ fn in_source_order<'a>(symbols: impl IntoIterator<Item = &'a Symbol>) -> Vec<&'a
     sorted
 }
 
-fn symbol_line(symbol: &Symbol) -> String {
+/// `def pay(user: User) -> Payment  src/shop/billing/charge.py:25`. The
+/// signature stands alone when it already names the symbol.
+pub(crate) fn symbol_line(symbol: &Symbol) -> String {
     let qualified = symbol.name.contains('.') || symbol.name.contains("::");
     let what = match &symbol.signature {
         Some(signature) if !qualified => signature.clone(),
@@ -673,14 +671,60 @@ fn symbol_line(symbol: &Symbol) -> String {
     }
 }
 
+/// The first lines of an answer about a component: `name (kind, language)
+/// at path, depth N`, its id, and the component asked for when it folds
+/// into this one, and the package subpath asked for.
+pub(crate) fn component_head(
+    out: &mut String,
+    c: &Component,
+    depth: usize,
+    folded_from: Option<&ComponentId>,
+    subpath: Option<&str>,
+    full: &ArchitectureGraph,
+) {
+    let mut head = format!("{} ({}", c.name, component_kind(c.kind));
+    if let Some(language) = &c.language {
+        let _ = write!(head, ", {language}");
+    }
+    head.push(')');
+    if let Some(path) = &c.path {
+        let _ = write!(head, " at {path}");
+    }
+    let _ = writeln!(out, "{head}, depth {depth}");
+    let _ = writeln!(out, "id: {}", c.id);
+    if let Some(from) = folded_from {
+        let _ = writeln!(out, "folded from: {}", display(full, from));
+    }
+    if let Some(subpath) = subpath {
+        let _ = writeln!(out, "subpath: {subpath}");
+    }
+}
+
+/// The first lines of an answer about a file: `file (file) in name (kind,
+/// language), depth N`, and the id of the component that holds it.
+pub(crate) fn file_head(out: &mut String, file: &str, component: Option<&Component>, depth: usize) {
+    let mut head = format!("{file} (file)");
+    if let Some(c) = component {
+        let _ = write!(head, " in {} ({}", c.name, component_kind(c.kind));
+        if let Some(language) = &c.language {
+            let _ = write!(head, ", {language}");
+        }
+        head.push(')');
+    }
+    let _ = writeln!(out, "{head}, depth {depth}");
+    if let Some(c) = component {
+        let _ = writeln!(out, "id: {}", c.id);
+    }
+}
+
 /// The `also named:` and `also at this path:` lines: the other components
-/// that share the name or the path of the one answered for. Whether a list
-/// was cut.
-fn namesakes(
+/// that share the name or the path of the one answered for, `cap` of each.
+/// Whether a list was cut.
+pub(crate) fn namesakes(
     out: &mut String,
     also_named: &[&ComponentId],
     also_at_path: &[&ComponentId],
-    caps: &Caps,
+    cap: usize,
 ) -> bool {
     let mut truncated = false;
     for (label, ids) in [
@@ -692,7 +736,7 @@ fn namesakes(
         }
         let shown: Vec<String> = ids
             .iter()
-            .take(caps.neighbors)
+            .take(cap)
             .map(|id| shell_word(id.as_str()))
             .collect();
         let mut line = format!("{label}: {}", shown.join(", "));
@@ -726,7 +770,7 @@ pub(crate) fn display<'a>(graph: &'a ArchitectureGraph, id: &'a ComponentId) -> 
 /// the re-export it went through when its note says so, and `(local)` when
 /// it sits inside a function body, so it runs only when the function is
 /// called.
-fn import_location(evidence: &Evidence, more_files: usize, show_target: bool) -> String {
+pub(crate) fn import_location(evidence: &Evidence, more_files: usize, show_target: bool) -> String {
     let mut out = location(evidence);
     if let Some(target) = evidence.target.as_ref().filter(|_| show_target) {
         let _ = write!(out, " -> {target}");
@@ -775,7 +819,7 @@ fn location(evidence: &Evidence) -> String {
     }
 }
 
-fn count(total: usize, shown: usize) -> String {
+pub(crate) fn count(total: usize, shown: usize) -> String {
     if shown < total {
         format!("{total}, showing {shown}")
     } else {
@@ -813,17 +857,22 @@ pub(crate) fn symbol_kind(kind: SymbolKind) -> &'static str {
     }
 }
 
-/// The `Not traced` section at the end of `query`. A script is said where
-/// the text shows importers, and so is a symbol nothing imports, so not
-/// again here; `no_importers` says a file nothing imports when asked to.
-/// Shows `cap` locations per kind; returns whether some were left out.
+/// The `Not traced` section at the end of `query` and `impact`. `query`
+/// says a script where its text shows importers, and a symbol nothing
+/// imports, so not again here: `script` and `no_importers` say them when
+/// asked to. Shows `cap` locations per kind; returns whether some were left
+/// out.
 pub(crate) fn not_traced(
     out: &mut String,
     found: &NotTraced,
     cap: usize,
     no_importers: bool,
+    script: bool,
 ) -> bool {
     let mut lines = Vec::new();
+    if let Some(note) = found.script.filter(|_| script) {
+        lines.push(format!("  {note}"));
+    }
     if let Some(why) = found.no_importers.filter(|_| no_importers) {
         lines.push(format!("  no importers: {why}"));
     }

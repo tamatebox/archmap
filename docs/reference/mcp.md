@@ -47,17 +47,19 @@ favor of tool parameters and server configuration. Targets are paths
 |---|---|
 | `summary` | `path?`, `depth?` |
 | `query` | `target`, `path?`, `depth?`, `format?` (`text` or `json`) |
-| `impact` | `target`, `path?`, `depth?`, `verbose?` |
+| `impact` | `target`, `path?`, `depth?`, `format?`, `verbose?` |
 | `check` | `path?`, `config?`, `depth?`, `format?` |
 
 The parameters mirror the CLI's flags, and their defaults are the CLI's:
 `depth` is 2 for every tool, as `DEFAULT_DEPTH`, so an agent that never
 sets it always reads the same components (one that sets it should keep the
-value across calls); text answers are capped and `format: json` (for `impact`, which
-answers in JSON, `verbose`) gives every entry. `summary --verbose` and
-`query --verbose` have no parameter: JSON carries everything, and summary's
-`omitted:` lines name the query for the rest. `check`'s `config` is a rules
-file inside the root, relative to it; the rules are read on every call.
+value across calls); text answers are capped and `format: json` gives every
+entry, except that `impact`'s JSON caps its statements, test files and
+locations too, and its `verbose` lists every entry, in text and in JSON.
+`summary --verbose` and `query --verbose` have no parameter: JSON carries
+everything, and summary's `omitted:` lines name the query for the rest.
+`check`'s `config` is a rules file inside the root, relative to it; the
+rules are read on every call.
 
 Every tool is read-only. A target that names several things answers with
 its candidates, an ordinary result, as are `check`'s findings; a tool error

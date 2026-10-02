@@ -1,7 +1,10 @@
-//! What `query` returns: built by [`crate::query`], rendered as JSON there
-//! or as text by [`crate::query_text`].
+//! What `query` and `impact` return: built by [`crate::query`] and
+//! [`crate::impact`], rendered as JSON there or as text by
+//! [`crate::query_text`] and [`crate::impact_text`].
 
-use archmap_core::{Component, ComponentId, DynamicImport, Edge, Evidence, Symbol, UnmappedImport};
+use archmap_core::{
+    Component, ComponentId, DynamicImport, Edge, Evidence, Symbol, SymbolId, UnmappedImport,
+};
 use serde::Serialize;
 
 use crate::not_traced::NotTraced;
@@ -126,4 +129,108 @@ pub struct Importer<'a> {
     pub from: &'a ComponentId,
     #[serde(flatten)]
     pub evidence: &'a Evidence,
+}
+
+/// What `archmap impact` returns: rendered as JSON by [`crate::impact`],
+/// or as text by [`crate::impact_text`] from the same lists.
+#[derive(Debug, Serialize)]
+pub struct ImpactResult<'a> {
+    /// The target as given on the command line.
+    pub requested: &'a str,
+    pub depth: usize,
+    /// The component that changes; `null` for an import name that no
+    /// component carries, given in `module`.
+    pub target: Option<ComponentId>,
+    /// For an import name that no component carries: that name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub module: Option<String>,
+    /// The component that owns the request, when it is folded into `target`
+    /// at this depth.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub folded_from: Option<ComponentId>,
+    /// For a symbol: its id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<SymbolId>,
+    /// For a package subpath (`react-dom/client`): the part after the
+    /// package name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subpath: Option<String>,
+    /// Other components with the target's name, and at its path.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub also_named: Vec<ComponentId>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub also_at_path: Vec<ComponentId>,
+    /// Components that directly depend on the target.
+    pub direct: Vec<ComponentId>,
+    /// Every component that transitively depends on the target.
+    pub transitive: Vec<ComponentId>,
+    /// Files that reach the target only through test code, and a changed
+    /// component's own test files: the tests to run again.
+    pub tests: TestFiles,
+    /// For a file, or a component that is one file: the statements that
+    /// import the file directly. For a symbol: those that take its name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub importers: Option<ImportSites<'a>>,
+    /// For a symbol: the statements that take its file whole.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub may_use: Option<ImportSites<'a>>,
+    /// What could reach the target unseen, from what analyzers record.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub not_traced: Option<NotTraced>,
+    /// What the answer is about, for the first lines of the text.
+    #[serde(skip)]
+    pub(crate) about: About<'a>,
+}
+
+/// What an answer is about, for the first lines of the text.
+#[derive(Debug)]
+pub(crate) enum About<'a> {
+    /// The component that `target` names.
+    Component,
+    /// A file, which `target` holds.
+    File(String),
+    Symbol(&'a Symbol),
+    /// An import name that no component carries, given in `module`.
+    ImportName,
+}
+
+/// How many import statements `impact` shows of each list, in text and
+/// JSON alike; the rest is counted.
+pub(crate) const MAX_IMPORT_SITES: usize = 5;
+
+/// How many test files `impact` shows, in text and JSON alike; the rest is
+/// counted.
+pub(crate) const MAX_TEST_FILES: usize = 20;
+
+#[derive(Debug, Serialize)]
+pub struct TestFiles {
+    pub total: usize,
+    /// The first ones by path.
+    pub shown: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ImportSites<'a> {
+    /// False when no evidence names imported files for the file's language:
+    /// the importers are unknown, not absent.
+    pub recorded: bool,
+    pub total: usize,
+    pub shown: Vec<ImportSite<'a>>,
+    /// How many of all the statements are re-exports, for the text.
+    #[serde(skip)]
+    pub(crate) exports: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ImportSite<'a> {
+    pub file: String,
+    pub line: Option<u32>,
+    /// The importing component, at the roll-up depth.
+    pub component: ComponentId,
+    /// The statement is test code.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub test: bool,
+    /// The statement's evidence, for the marks of the text.
+    #[serde(skip)]
+    pub(crate) evidence: &'a Evidence,
 }

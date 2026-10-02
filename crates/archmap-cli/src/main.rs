@@ -96,9 +96,10 @@ enum Command {
         /// Containment depth to roll modules up to, as in `summary`.
         #[arg(long, default_value_t = archmap_app::DEFAULT_DEPTH)]
         depth: usize,
-        #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
-        format: OutputFormat,
-        /// List every importer and test file instead of the first few.
+        /// Compact text with capped lists, or JSON.
+        #[arg(long, value_enum, default_value_t = ReportFormat::Text)]
+        format: ReportFormat,
+        /// List every entry instead of capped lists, in text and in JSON.
         #[arg(long)]
         verbose: bool,
     },

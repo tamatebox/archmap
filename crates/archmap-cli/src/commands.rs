@@ -113,16 +113,15 @@ pub fn impact(
     path: &str,
     target: &str,
     depth: usize,
-    format: OutputFormat,
+    format: ReportFormat,
     verbose: bool,
 ) -> Result<ExitCode> {
-    // impact prints JSON, its only format
-    let OutputFormat::Json = format;
     // fails before scanning; the shared layer checks again for every interface
     archmap_app::reject_outside(Path::new(path), target)?;
     let answer = run_scan(path, ScanMode::Full)?.impact(&ImpactRequest {
         target,
         depth,
+        format: format.into(),
         verbose,
     })?;
     Ok(print_answer(answer))

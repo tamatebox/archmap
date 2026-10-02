@@ -5,60 +5,16 @@ use std::collections::BTreeSet;
 use anyhow::{Context, Result};
 use archmap_core::{
     ArchitectureGraph, ChangeSeed, Component, ComponentId, ComponentKind, Edge, Evidence, Symbol,
-    SymbolId, UnmappedImport,
+    UnmappedImport,
 };
-use serde::Serialize;
 
-use crate::not_traced::{not_traced, NotTraced, Own, Place, Subject};
+use crate::not_traced::{not_traced, Own, Place, Subject};
 use crate::resolve::{resolve, Resolved};
 use crate::target::{component_file, fold, namesakes, reject_outside, unquote};
+use crate::views::{
+    About, ImpactResult, ImportSite, ImportSites, TestFiles, MAX_IMPORT_SITES, MAX_TEST_FILES,
+};
 use crate::{Answer, Format, Found, ImpactRequest, Workspace};
-
-#[derive(Debug, Serialize)]
-pub struct ImpactResult<'a> {
-    /// The target as given on the command line.
-    pub requested: &'a str,
-    pub depth: usize,
-    /// The component that changes; `null` for an import name that no
-    /// component carries, given in `module`.
-    pub target: Option<ComponentId>,
-    /// For an import name that no component carries: that name.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub module: Option<String>,
-    /// The component that owns the request, when it is folded into `target`
-    /// at this depth.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub folded_from: Option<ComponentId>,
-    /// For a symbol: its id.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub symbol: Option<SymbolId>,
-    /// For a package subpath (`react-dom/client`): the part after the
-    /// package name.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub subpath: Option<String>,
-    /// Other components with the target's name, and at its path.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub also_named: Vec<ComponentId>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub also_at_path: Vec<ComponentId>,
-    /// Components that directly depend on the target.
-    pub direct: Vec<ComponentId>,
-    /// Every component that transitively depends on the target.
-    pub transitive: Vec<ComponentId>,
-    /// Files that reach the target only through test code, and a changed
-    /// component's own test files: the tests to run again.
-    pub tests: TestFiles,
-    /// For a file, or a component that is one file: the statements that
-    /// import the file directly. For a symbol: those that take its name.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub importers: Option<ImportSites>,
-    /// For a symbol: the statements that take its file whole.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub may_use: Option<ImportSites>,
-    /// What could reach the target unseen, from what analyzers record.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub not_traced: Option<NotTraced>,
-}
 
 /// What a resolved target is, for what could not be traced to it.
 enum Traced<'g> {
@@ -68,77 +24,76 @@ enum Traced<'g> {
     Symbol(&'g Symbol),
 }
 
-/// How many import sites `impact` shows for a file; the rest is counted.
-const MAX_IMPORT_SITES: usize = 5;
-
-/// How many test files `impact` shows; the rest is counted.
-const MAX_TEST_FILES: usize = 20;
-
-#[derive(Debug, Serialize)]
-pub struct TestFiles {
-    pub total: usize,
-    /// The first ones by path.
-    pub shown: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ImportSites {
-    /// False when no evidence names imported files for the file's language:
-    /// the importers are unknown, not absent.
-    pub recorded: bool,
-    pub total: usize,
-    pub shown: Vec<ImportSite>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ImportSite {
-    pub file: String,
-    pub line: Option<u32>,
-    /// The importing component, at the roll-up depth.
-    pub component: ComponentId,
-    /// The statement is test code.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub test: bool,
-}
-
-fn import_sites(full: &ArchitectureGraph, depth: usize, file: &str, cap: usize) -> ImportSites {
+fn import_sites<'a>(
+    full: &'a ArchitectureGraph,
+    depth: usize,
+    file: &str,
+    cap: usize,
+) -> ImportSites<'a> {
     let facts = full.file_facts(file);
     sites_of(full, depth, &facts.importers, facts.importers_recorded, cap)
 }
 
-/// One site per statement, sorted by place; the first few shown.
-fn sites_of(
+fn sites_of<'a>(
     full: &ArchitectureGraph,
     depth: usize,
-    statements: &[(&Edge, &Evidence)],
+    statements: &[(&'a Edge, &'a Evidence)],
     recorded: bool,
     cap: usize,
-) -> ImportSites {
+) -> ImportSites<'a> {
+    let statements = statements.iter().map(|(edge, e)| (&edge.from, *e));
+    sites(full, depth, statements, recorded, cap)
+}
+
+/// One site per statement, production code first, then by place; the first
+/// `cap` shown. A statement that takes values and types from the file shows
+/// as what runs, as `query` shows it.
+fn sites<'a>(
+    full: &ArchitectureGraph,
+    depth: usize,
+    statements: impl Iterator<Item = (&'a ComponentId, &'a Evidence)>,
+    recorded: bool,
+    cap: usize,
+) -> ImportSites<'a> {
     let mut sites: Vec<ImportSite> = Vec::new();
-    for (edge, e) in statements {
-        if !sites.iter().any(|s| s.file == e.file && s.line == e.line) {
-            sites.push(ImportSite {
+    for (from, e) in statements {
+        match sites
+            .iter_mut()
+            .find(|s| s.file == e.file && s.line == e.line)
+        {
+            Some(site) => {
+                if site.evidence.type_only && !e.type_only {
+                    site.evidence = e;
+                }
+            }
+            None => sites.push(ImportSite {
                 file: e.file.clone(),
                 line: e.line,
-                component: full.ancestor_at(&edge.from, depth),
+                component: full.ancestor_at(from, depth),
                 test: e.test,
-            });
+                evidence: e,
+            }),
         }
     }
     // production code first
     sites.sort_by(|a, b| (a.test, &a.file, a.line).cmp(&(b.test, &b.file, b.line)));
     let total = sites.len();
+    let exports = sites
+        .iter()
+        .filter(|s| s.evidence.note.as_deref() == Some("export"))
+        .count();
     sites.truncate(cap);
     ImportSites {
         recorded,
         total,
         shown: sites,
+        exports,
     }
 }
 
 impl Workspace {
-    /// `impact` as JSON, or the candidates when the target names several
-    /// things.
+    /// `impact` as text or JSON, or the candidates when the target names
+    /// several things.
     pub fn impact(&self, request: &ImpactRequest) -> Result<Answer> {
         impact(self, request)
     }
@@ -148,6 +103,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
     let ImpactRequest {
         target,
         depth,
+        format,
         verbose,
     } = *request;
     let target = unquote(target);
@@ -172,15 +128,16 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
     let (at, reach) = match resolve(full, &rolled, root, target)? {
         Resolved::Candidates(candidates) => {
             return Ok(Answer {
-                output: candidates.render(full, target, Format::Json)?,
+                output: candidates.render(full, target, format)?,
                 found: Found::Candidates,
             })
         }
         Resolved::ImportName(module) => {
+            let result = import_name_impact(full, depth, target, &module, caps);
             return Ok(Answer {
-                output: import_name_impact(full, depth, target, module, caps)?,
+                output: render(&result, format, full, &rolled, verbose)?,
                 found: Found::One,
-            })
+            });
         }
         Resolved::Component(component) => {
             let reach = full.change_impact(ChangeSeed::Component(&component.id), depth);
@@ -280,6 +237,12 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
     };
     let not_traced = not_traced(full, &subject, caps.sites);
 
+    let about = match traced {
+        Traced::Component(_) => About::Component,
+        Traced::File(file, _) => About::File(file),
+        Traced::Symbol(symbol) => About::Symbol(symbol),
+    };
+
     let (also_named, also_at_path) = full
         .component(&at.id)
         .map(|c| namesakes(full, c))
@@ -304,10 +267,25 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
         importers,
         may_use,
         not_traced,
+        about,
     };
     Ok(Answer {
-        output: crate::json(&result)?,
+        output: render(&result, format, full, &rolled, verbose)?,
         found: Found::One,
+    })
+}
+
+/// `result` as JSON, or as text that lists every entry when `verbose`.
+fn render(
+    result: &ImpactResult,
+    format: Format,
+    full: &ArchitectureGraph,
+    rolled: &ArchitectureGraph,
+    verbose: bool,
+) -> Result<String> {
+    Ok(match format {
+        Format::Json => crate::json(result)?,
+        Format::Text => crate::impact_text::render(result, full, rolled, verbose),
     })
 }
 
@@ -321,14 +299,14 @@ struct Caps {
 /// What changing a module that no component carries may reach: the
 /// components whose production files import it, everything that reaches
 /// those files, and the test files that import it or reach them.
-fn import_name_impact(
-    full: &ArchitectureGraph,
+fn import_name_impact<'a>(
+    full: &'a ArchitectureGraph,
     depth: usize,
-    target: &str,
-    module: String,
+    target: &'a str,
+    module: &'a str,
     caps: Caps,
-) -> Result<String> {
-    let imports: Vec<&UnmappedImport> = full.unmapped_imports_of(&module).collect();
+) -> ImpactResult<'a> {
+    let imports: Vec<&UnmappedImport> = full.unmapped_imports_of(module).collect();
     let (mut direct, mut transitive, mut tests) =
         (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
     let mut followed: BTreeSet<&str> = BTreeSet::new();
@@ -347,27 +325,12 @@ fn import_name_impact(
             tests.extend(reach.tests);
         }
     }
-    let mut sites: Vec<ImportSite> = Vec::new();
-    for import in &imports {
-        let e = &import.evidence;
-        if !sites.iter().any(|s| s.file == e.file && s.line == e.line) {
-            sites.push(ImportSite {
-                file: e.file.clone(),
-                line: e.line,
-                component: full.ancestor_at(&import.from, depth),
-                test: e.test,
-            });
-        }
-    }
-    // production code first
-    sites.sort_by(|a, b| (a.test, &a.file, a.line).cmp(&(b.test, &b.file, b.line)));
-    let total = sites.len();
-    sites.truncate(caps.sites);
-    let result = ImpactResult {
+    let statements = imports.iter().map(|i| (&i.from, &i.evidence));
+    ImpactResult {
         requested: target,
         depth,
         target: None,
-        module: Some(module),
+        module: Some(module.to_owned()),
         folded_from: None,
         symbol: None,
         subpath: None,
@@ -379,13 +342,9 @@ fn import_name_impact(
             total: tests.len(),
             shown: tests.into_iter().take(caps.tests).collect(),
         },
-        importers: Some(ImportSites {
-            recorded: true,
-            total,
-            shown: sites,
-        }),
+        importers: Some(sites(full, depth, statements, true, caps.sites)),
         may_use: None,
         not_traced: None,
-    };
-    crate::json(&result)
+        about: About::ImportName,
+    }
 }

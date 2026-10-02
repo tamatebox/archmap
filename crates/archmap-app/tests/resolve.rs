@@ -54,9 +54,14 @@ fn query_as(ws: &Workspace, target: &str, format: Format) -> Answer {
 }
 
 fn impact(ws: &Workspace, target: &str) -> Answer {
+    impact_as(ws, target, Format::Json)
+}
+
+fn impact_as(ws: &Workspace, target: &str, format: Format) -> Answer {
     ws.impact(&ImpactRequest {
         target,
         depth: DEFAULT_DEPTH,
+        format,
         verbose: false,
     })
     .unwrap()
@@ -128,6 +133,10 @@ fn an_absolute_target_answers_as_its_relative_form() {
         without_request(impact(&ws, absolute)),
         without_request(impact(&ws, "src/shop/users.py"))
     );
+    assert_eq!(
+        impact_as(&ws, absolute, Format::Text).output,
+        impact_as(&ws, "src/shop/users.py", Format::Text).output
+    );
 }
 
 #[test]
@@ -138,10 +147,13 @@ fn a_name_several_components_share_gives_their_ids_and_paths() {
     assert_eq!(answer.found, Found::Candidates, "{}", answer.output);
     assert_eq!(
         answer.output,
-        "`tests` names 2 components; query one of them by id or path:\n  \
+        "`tests` names 2 components; retry with one of them by id or path:\n  \
          a::tests  a/tests  module\n  b::tests  b/tests  module\n"
     );
-    // impact answers in JSON
+    // impact lists them the same way, and in JSON when asked to
+    let text = impact_as(&ws, "tests", Format::Text);
+    assert_eq!(text.found, Found::Candidates);
+    assert_eq!(text.output, answer.output);
     let impact = impact(&ws, "tests");
     assert_eq!(impact.found, Found::Candidates);
     let value: serde_json::Value = serde_json::from_str(&impact.output).unwrap();
@@ -160,10 +172,10 @@ fn query_and_impact_list_the_same_candidates_of_every_kind() {
     let impact = impact(&ws, "helper");
     assert_eq!(query.found, Found::Candidates);
     assert_eq!(impact.found, Found::Candidates);
-    // impact answers in JSON, as query does when asked for it
+    assert_eq!(impact_as(&ws, "helper", Format::Text).output, query.output);
     assert_eq!(query_as(&ws, "helper", Format::Json).output, impact.output);
     for expected in [
-        "`helper` names 2 symbols and a directory; query one of them by id or path:\n",
+        "`helper` names 2 symbols and a directory; retry with one of them by id or path:\n",
         "\n  'two::src/(group)/a.ts::helper'  src/(group)/a.ts:1  constant\n",
         // no import anywhere: no names recorded, so no counts
         "\n  two::src/b.ts::helper  src/b.ts:1  constant\n",
@@ -407,6 +419,7 @@ fn a_missing_file_under_a_python_package_is_no_package_subpath() {
         .impact(&ImpactRequest {
             target: "app/nowhere.py",
             depth: DEFAULT_DEPTH,
+            format: Format::Text,
             verbose: false,
         })
         .err()

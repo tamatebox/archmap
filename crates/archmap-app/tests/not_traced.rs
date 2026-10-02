@@ -31,6 +31,7 @@ fn impact(ws: &Workspace, target: &str) -> serde_json::Value {
         .impact(&ImpactRequest {
             target,
             depth: DEFAULT_DEPTH,
+            format: Format::Json,
             verbose: false,
         })
         .unwrap()

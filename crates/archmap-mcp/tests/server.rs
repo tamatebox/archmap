@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use archmap_app::{Format, QueryRequest, ScanMode, Workspace, DEFAULT_DEPTH};
+use archmap_app::{Format, ImpactRequest, QueryRequest, ScanMode, Workspace, DEFAULT_DEPTH};
 use archmap_mcp::Server;
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::service::RunningService;
@@ -157,6 +157,39 @@ async fn query_answers_with_the_shared_layers_text() {
 }
 
 #[tokio::test]
+async fn impact_answers_with_the_shared_layers_text_or_json() {
+    let root = fixture("simple-ts-project");
+    let client = connect(Server::new(root.clone())).await;
+    let ws = Workspace::scan(&root, ScanMode::Full).unwrap();
+    let expected = |format, verbose| {
+        ws.impact(&ImpactRequest {
+            target: "src/lib/money.ts",
+            depth: DEFAULT_DEPTH,
+            format,
+            verbose,
+        })
+        .unwrap()
+        .output
+    };
+    for (args, format, verbose) in [
+        (serde_json::json!({}), Format::Text, false),
+        (serde_json::json!({"verbose": true}), Format::Text, true),
+        (serde_json::json!({"format": "json"}), Format::Json, false),
+        (
+            serde_json::json!({"format": "json", "verbose": true}),
+            Format::Json,
+            true,
+        ),
+    ] {
+        let mut args = args;
+        args["target"] = "src/lib/money.ts".into();
+        let answer = ok(&call(&client, "impact", args.clone()).await);
+        assert_eq!(answer, expected(format, verbose), "{args}");
+    }
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn every_tool_answers_on_a_fixture() {
     let client = connect(Server::new(fixture("simple-python-project"))).await;
     let summary = ok(&call(&client, "summary", serde_json::json!({})).await);
@@ -167,8 +200,10 @@ async fn every_tool_answers_on_a_fixture() {
         serde_json::json!({"target": "src/shop/users.py"}),
     )
     .await);
-    let value: serde_json::Value = serde_json::from_str(&impact).unwrap();
-    assert_eq!(value["target"], "shop::shop");
+    assert!(
+        impact.starts_with("src/shop/users.py (file) in shop (module, python), depth 2\n"),
+        "{impact}"
+    );
     let check = ok(&call(&client, "check", serde_json::json!({})).await);
     assert!(check.starts_with("archmap check: no findings"), "{check}");
     client.cancel().await.unwrap();

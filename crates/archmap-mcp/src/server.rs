@@ -77,7 +77,10 @@ struct ImpactArgs {
     /// Containment depth that modules roll up to. Default 2, as `summary`.
     #[serde(default)]
     depth: Option<u32>,
-    /// List every importer and test file instead of the first few.
+    /// `text` (default) or `json`.
+    #[serde(default)]
+    format: Option<OutputFormat>,
+    /// List every entry instead of capped lists, in text and in JSON.
     #[serde(default)]
     verbose: Option<bool>,
 }
@@ -155,6 +158,7 @@ impl Server {
             target,
             path,
             depth,
+            format,
             verbose,
         } = args;
         let depth = depth_or_default(depth);
@@ -163,6 +167,7 @@ impl Server {
             let answer = ws.impact(&ImpactRequest {
                 target: &target,
                 depth,
+                format: format_or_text(format),
                 verbose: verbose.unwrap_or(false),
             })?;
             Ok(answer.output)

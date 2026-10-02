@@ -326,7 +326,7 @@ impl Candidates<'_> {
             Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
             None => String::new(),
         };
-        let mut out = format!("`{target}` names {names}; query one of them by id or path:\n");
+        let mut out = format!("`{target}` names {names}; retry with one of them by id or path:\n");
         let mut lines = Vec::new();
         for c in &self.components {
             lines.push(format!(

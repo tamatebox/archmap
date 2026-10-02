@@ -148,7 +148,7 @@ fn impact_accepts_component_or_file() {
     ];
     for (target, component, transitive) in expected {
         let out = archmap()
-            .args(["impact", target, "--path"])
+            .args(["impact", target, "--format", "json", "--path"])
             .arg(fixture_root())
             .output()
             .unwrap();
@@ -377,7 +377,12 @@ fn query_folds_deep_components_like_the_summary() {
 
 #[test]
 fn impact_of_a_file_uses_the_summary_depth() {
-    let result = fixture_json(&["impact", "src/shop/integrations/slack/__init__.py"]);
+    let result = fixture_json(&[
+        "impact",
+        "src/shop/integrations/slack/__init__.py",
+        "--format",
+        "json",
+    ]);
     assert_eq!(result["target"], "shop::shop.integrations");
     assert_eq!(result["folded_from"], "shop::shop.integrations.slack");
     assert_eq!(result["direct"], serde_json::json!(["shop::shop"]));
@@ -414,7 +419,7 @@ fn every_summary_component_is_visible_to_query_and_impact() {
         assert!(view.get("folded_from").is_none(), "`{name}` is folded");
         assert_eq!(view["component"]["name"], name);
 
-        let impact = fixture_json(&["impact", name]);
+        let impact = fixture_json(&["impact", name, "--format", "json"]);
         assert!(impact.get("folded_from").is_none());
         for id in impact["transitive"].as_array().unwrap() {
             let dependent = fixture_json(&["query", id.as_str().unwrap(), "--format", "json"]);
@@ -775,7 +780,7 @@ fn check_separates_component_cycles_from_file_cycles_and_reports_signals() {
 fn impact_does_not_travel_through_a_shared_component() {
     let impact = |target: &str| {
         let out = archmap()
-            .args(["impact", target, "--path"])
+            .args(["impact", target, "--format", "json", "--path"])
             .arg(mixed_fixture())
             .output()
             .unwrap();
@@ -940,7 +945,7 @@ fn a_file_imported_by_bare_name_from_its_own_directory_has_that_importer() {
         text.contains("\nImported by: 1\n  scripts  1 import: scripts/report.py:3\n"),
         "{text}"
     );
-    let impact = fixture_json(&["impact", "scripts/helpers.py"]);
+    let impact = fixture_json(&["impact", "scripts/helpers.py", "--format", "json"]);
     assert_eq!(
         impact["importers"]["shown"],
         serde_json::json!([
@@ -976,7 +981,7 @@ fn query_a_rust_file_lists_the_statements_that_import_it() {
 #[test]
 fn impact_of_a_file_lists_the_statements_that_import_it() {
     let out = archmap()
-        .args(["impact", "app/utils/log.py", "--path"])
+        .args(["impact", "app/utils/log.py", "--format", "json", "--path"])
         .arg(mixed_fixture())
         .output()
         .unwrap();
@@ -996,7 +1001,7 @@ fn impact_of_a_file_lists_the_statements_that_import_it() {
     );
     // a component target has no importer list
     let out = archmap()
-        .args(["impact", "app.utils", "--path"])
+        .args(["impact", "app.utils", "--format", "json", "--path"])
         .arg(mixed_fixture())
         .output()
         .unwrap();
@@ -1010,7 +1015,7 @@ fn a_directory_stands_for_the_component_that_owns_it() {
     let by_name = query_text(&python_fixture(), &["shop.billing"]);
     for dir in ["src/shop/billing", "./src/shop/billing/"] {
         assert_eq!(query_text(&python_fixture(), &[dir]), by_name, "{dir}");
-        let impact = fixture_json(&["impact", dir]);
+        let impact = fixture_json(&["impact", dir, "--format", "json"]);
         assert_eq!(impact["target"], "shop::shop.billing", "{dir}");
     }
     // a directory inside a folded component answers for that component
@@ -1187,7 +1192,7 @@ fn query_lists_components_that_share_a_name() {
     std::fs::remove_dir_all(&repo).unwrap();
     assert_eq!(
         stdout,
-        "`tests` names 2 components; query one of them by id or path:\n  \
+        "`tests` names 2 components; retry with one of them by id or path:\n  \
          a::tests  a/tests  module\n  b::tests  b/tests  module\n"
     );
 }
@@ -1195,8 +1200,14 @@ fn query_lists_components_that_share_a_name() {
 #[test]
 fn impact_lists_components_that_share_a_name() {
     let repo = two_projects_with_tests("ambiguous-impact");
-    let stdout = candidates(&["impact", "tests"], &repo);
+    let text = candidates(&["impact", "tests"], &repo);
+    let stdout = candidates(&["impact", "tests", "--format", "json"], &repo);
     std::fs::remove_dir_all(&repo).unwrap();
+    assert_eq!(
+        text,
+        "`tests` names 2 components; retry with one of them by id or path:\n  \
+         a::tests  a/tests  module\n  b::tests  b/tests  module\n"
+    );
     let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(json["requested"], "tests");
     assert_eq!(json["total"], 2);
@@ -1225,7 +1236,8 @@ fn a_shared_name_is_reported_even_when_roll_up_hides_one_component() {
     let stdout = candidates(&["query", "requests", "--depth", "0"], &dir);
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(
-        stdout.starts_with("`requests` names 2 components; query one of them by id or path:\n"),
+        stdout
+            .starts_with("`requests` names 2 components; retry with one of them by id or path:\n"),
         "{stdout}"
     );
     assert!(
@@ -1353,7 +1365,11 @@ fn a_folded_ts_file_is_queried_as_its_file() {
 #[test]
 fn impact_of_a_ts_file_component_lists_its_importers() {
     let text = ts_stdout(&["impact", "lib/money.ts"]);
-    assert!(text.contains("\"file\": \"src/app/page.tsx\""), "{text}");
+    assert!(
+        text.contains("\nImported by: 9, showing 5 (2 re-exports)\n"),
+        "{text}"
+    );
+    assert!(text.contains("\n  src/app/page.tsx:1"), "{text}");
 }
 
 #[test]
@@ -1376,7 +1392,7 @@ fn a_rust_module_without_submodules_is_queried_as_its_file() {
 
 #[test]
 fn impact_names_the_package_file_that_imports() {
-    let text = ts_stdout(&["impact", "src/lib/limits.ts"]);
+    let text = ts_stdout(&["impact", "src/lib/limits.ts", "--format", "json"]);
     assert!(text.contains("\"file\": \"next.config.ts\""), "{text}");
     assert!(text.contains("\"file\": \"scripts/seed.mjs\""), "{text}");
 }
@@ -1482,14 +1498,23 @@ fn query_and_impact_name_other_components_of_the_same_name() {
     }
     // `dup` is the Rust package's id; the TS/JS one was renamed
     let text = query_text(&dir, &["dup"]);
-    let impact = archmap()
-        .args(["impact", "dup", "--path"])
-        .arg(&dir)
-        .output()
-        .unwrap();
+    let impact = |format: &str| {
+        archmap()
+            .args(["impact", "dup", "--format", format, "--path"])
+            .arg(&dir)
+            .output()
+            .unwrap()
+            .stdout
+    };
+    let (impact_text, impact_json) = (impact("text"), impact("json"));
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(text.contains("\nalso named: dup+typescript\n"), "{text}");
-    let impact: serde_json::Value = serde_json::from_slice(&impact.stdout).unwrap();
+    let impact_text = String::from_utf8(impact_text).unwrap();
+    assert!(
+        impact_text.contains("\nalso named: dup+typescript\n"),
+        "{impact_text}"
+    );
+    let impact: serde_json::Value = serde_json::from_slice(&impact_json).unwrap();
     assert_eq!(impact["also_named"], serde_json::json!(["dup+typescript"]));
 }
 
@@ -1622,7 +1647,7 @@ fn several_symbols_of_one_name_count_their_importers() {
     std::fs::remove_dir_all(&dir).unwrap();
     assert_eq!(
         text,
-        "`helper` names 2 symbols; query one of them by id or path:\n  \
+        "`helper` names 2 symbols; retry with one of them by id or path:\n  \
          two::src/a.ts::helper  src/a.ts:1  function  imported by 1, may use 0\n  \
          two::src/b.ts::helper  src/b.ts:1  function  imported by 0, may use 0\n"
     );
@@ -1630,8 +1655,8 @@ fn several_symbols_of_one_name_count_their_importers() {
 
 #[test]
 fn impact_of_a_symbol_starts_at_the_statements_that_take_it() {
-    let symbol = ts_stdout(&["impact", "formatPrice"]);
-    let file = ts_stdout(&["impact", "src/lib/money.ts"]);
+    let symbol = ts_stdout(&["impact", "formatPrice", "--format", "json"]);
+    let file = ts_stdout(&["impact", "src/lib/money.ts", "--format", "json"]);
     // tests/helpers.ts takes another name from money.ts: the file reaches
     // it, the symbol does not
     let tests = |json: &str| -> serde_json::Value {
@@ -1658,7 +1683,7 @@ fn impact_of_a_symbol_starts_at_the_statements_that_take_it() {
 #[test]
 fn impact_of_a_name_several_symbols_share_lists_their_ids() {
     let dir = two_helpers("impact-helpers");
-    let stdout = candidates(&["impact", "helper"], &dir);
+    let stdout = candidates(&["impact", "helper", "--format", "json"], &dir);
     std::fs::remove_dir_all(&dir).unwrap();
     let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(json["candidates"][0]["kind"], "symbol");
@@ -1681,7 +1706,7 @@ fn a_rust_module_symbol_points_at_its_component() {
     );
     assert!(!text.contains("Imported by"), "{text}");
     let out = archmap()
-        .args(["impact", "invoice", "--path"])
+        .args(["impact", "invoice", "--format", "json", "--path"])
         .arg(fixture_root())
         .output()
         .unwrap();
@@ -1748,7 +1773,7 @@ fn helpers_beside_a_directory(name: &str) -> PathBuf {
 fn ids_that_the_shell_would_expand_are_quoted() {
     let dir = helpers_beside_a_directory("quoted");
     let query = candidates(&["query", "helper"], &dir);
-    let impact = candidates(&["impact", "helper"], &dir);
+    let impact = candidates(&["impact", "helper", "--format", "json"], &dir);
     // the quoted id, pasted back as it is shown, picks that symbol
     let picked = query_text(&dir, &["'two::src/(group)/a.ts::helper'"]);
     std::fs::remove_dir_all(&dir).unwrap();
@@ -1866,7 +1891,7 @@ fn test_code_is_marked_and_listed_apart() {
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
     }
-    let json = ts_stdout(&["impact", "src/lib/money.ts"]);
+    let json = ts_stdout(&["impact", "src/lib/money.ts", "--format", "json"]);
     let impact: serde_json::Value = serde_json::from_str(&json).unwrap();
     // the tests to run again, apart from the code that depends on the file
     assert_eq!(
@@ -1874,7 +1899,7 @@ fn test_code_is_marked_and_listed_apart() {
         serde_json::json!(["tests/helpers.ts", "tests/money.test.ts"])
     );
     // importers: production code first, test code marked
-    let impact = fixture_json(&["impact", "src/shop/users.py"]);
+    let impact = fixture_json(&["impact", "src/shop/users.py", "--format", "json"]);
     let sites: Vec<(String, bool)> = impact["importers"]["shown"]
         .as_array()
         .unwrap()
@@ -1969,9 +1994,35 @@ fn summary_and_query_name_a_shared_name_alike() {
 }
 
 #[test]
+fn impact_prints_text_unless_asked_for_json() {
+    let text = ts_stdout(&["impact", "src/lib/types.ts"]);
+    assert!(
+        text.starts_with(
+            "src/lib/types.ts (file) in lib/types.ts (module, typescript), depth 2\n\
+             id: ts-shop::src/lib/types.ts\n\nDirect dependents: 4\n"
+        ),
+        "{text}"
+    );
+    assert_eq!(
+        ts_stdout(&["impact", "src/lib/types.ts", "--format", "text"]),
+        text
+    );
+    let json = ts_stdout(&["impact", "src/lib/types.ts", "--format", "json"]);
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["target"], "ts-shop::src/lib/types.ts");
+    assert_eq!(value["importers"]["total"], 6);
+}
+
+#[test]
 fn impact_lists_every_importer_and_test_with_verbose() {
-    let capped = ts_stdout(&["impact", "src/lib/money.ts"]);
-    let full = ts_stdout(&["impact", "src/lib/money.ts", "--verbose"]);
+    let capped = ts_stdout(&["impact", "src/lib/money.ts", "--format", "json"]);
+    let full = ts_stdout(&[
+        "impact",
+        "src/lib/money.ts",
+        "--format",
+        "json",
+        "--verbose",
+    ]);
     let shown = |json: &str| -> (usize, usize) {
         let value: serde_json::Value = serde_json::from_str(json).unwrap();
         (
@@ -1988,14 +2039,14 @@ fn impact_lists_every_importer_and_test_with_verbose() {
 fn a_path_target_is_read_as_the_root_sees_it() {
     let root = python_fixture().canonicalize().unwrap();
     let absolute = root.join("src/shop/users.py");
-    let expected = fixture_json(&["impact", "src/shop/users.py"]);
+    let expected = fixture_json(&["impact", "src/shop/users.py", "--format", "json"]);
     for target in [
         absolute.to_str().unwrap(),
         "src/shop/../shop/./users.py",
         // the name query also takes for the file
         "shop.users",
     ] {
-        let found = fixture_json(&["impact", target]);
+        let found = fixture_json(&["impact", target, "--format", "json"]);
         assert_eq!(found["target"], expected["target"], "{target}");
         assert_eq!(found["importers"], expected["importers"], "{target}");
     }
@@ -2083,6 +2134,16 @@ fn the_cli_prints_what_the_shared_layer_answers() {
         .unwrap()
         .output
     };
+    let impact = |target, format| {
+        ws.impact(&ImpactRequest {
+            target,
+            depth: DEFAULT_DEPTH,
+            format,
+            verbose: false,
+        })
+        .unwrap()
+        .output
+    };
     let rules = load_rules(&root, None).unwrap();
     let check = ws
         .check(
@@ -2107,13 +2168,11 @@ fn the_cli_prints_what_the_shared_layer_answers() {
         ),
         (
             vec!["impact", "src/shop/users.py", "--path", root_arg],
-            ws.impact(&ImpactRequest {
-                target: "src/shop/users.py",
-                depth: DEFAULT_DEPTH,
-                verbose: false,
-            })
-            .unwrap()
-            .output,
+            impact("src/shop/users.py", Format::Text),
+        ),
+        (
+            vec!["impact", "shop", "--format", "json", "--path", root_arg],
+            impact("shop", Format::Json),
         ),
         (vec!["check", "--path", root_arg], check),
     ];

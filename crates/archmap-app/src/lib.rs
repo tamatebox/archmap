@@ -11,6 +11,7 @@
 
 mod check;
 mod impact;
+mod impact_text;
 mod not_traced;
 mod pairs;
 mod query;
@@ -43,8 +44,8 @@ pub enum ScanMode {
     ManifestsOnly,
 }
 
-/// How `query` and `check` print: compact text with capped lists, or
-/// complete JSON.
+/// How `query`, `impact` and `check` print: compact text with capped
+/// lists, or JSON.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     Text,
@@ -82,7 +83,9 @@ pub enum Found {
 pub struct ImpactRequest<'a> {
     pub target: &'a str,
     pub depth: usize,
-    /// Every importer and test file instead of the first few.
+    pub format: Format,
+    /// Every entry instead of capped lists: every list of the text, and
+    /// every importer, test file and location of the JSON.
     pub verbose: bool,
 }
 

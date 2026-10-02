@@ -216,6 +216,7 @@ archmap impact archmap-core
 archmap impact crates/archmap-scan/src/lib.rs
 archmap impact src/shop/users.py --path ../some-python-repo
 archmap impact formatPrice --path fixtures/simple-ts-project              # a symbol
+archmap impact src/lib/types.ts --path fixtures/simple-ts-project --format json
 ```
 
 `impact` follows imports file by file where the evidence names the imported
@@ -229,46 +230,103 @@ answers as that file. Dependencies without a target file
 (manifests, external packages) are followed component by component, and the
 result is still reported at the roll-up depth. It does not follow the parent
 `__init__.py` that Python runs before a submodule, nor Rust code inside macro
-calls, and a path that names no component or file is an error. `direct` and
-`transitive` follow production code; `tests` counts the files that reach the
-target only through test code, and a changed component's own test files: the
-tests to run again after the change, those beside production code included,
-the first 20 by path shown (`--verbose` lists every one, and every importer).
-A file that production code reaches is not
-repeated there: its unit tests run with its package. For Rust, only test
-code in other crates is recorded: a crate's own unit tests are not, and
-integration tests under `tests/` are not read. For a file target, `importers` lists the statements that
-import the file directly, up to 5 with the total, production code first and
-test code marked `"test": true`, so the next read can go straight to them;
-they include statements inside the target's own component, which `direct`
-leaves out. In
+calls, and a path that names no component or file is an error. Direct and
+transitive dependents follow production code; the tests to run again are the
+files that reach the target only through test code, and a changed
+component's own test files, those beside production code included. A file
+that production code reaches is not repeated there: its unit tests run with
+its package. For Rust, only test code in other crates is recorded: a crate's
+own unit tests are not, and integration tests under `tests/` are not read. In
 `fixtures/mixed-utils-project`, `app.utils` and `app.core` depend on each
 other, so following components a change anywhere in `app.utils` reaches
 `app.core` and `app.models`; following files, `app/utils/log.py` reaches
 both and `app/utils/registry.py` reaches neither.
 
+`impact` prints compact text by default, written the way `query` writes its
+answers:
+
+```text
+src/lib/types.ts (file) in lib/types.ts (module, typescript), depth 2
+id: ts-shop::src/lib/types.ts
+
+Direct dependents: 4
+  ts-shop
+  app/checkout.ts
+  app/page.tsx
+  lib/money.ts
+
+Imported by: 6, showing 5 (1 re-export)
+  src/app/checkout.ts:8 (via src/index.ts:8) (type)
+  src/app/checkout.ts:9 (via src/index.ts:8) (type)
+  src/app/page.tsx:2 (type)
+  src/index.ts:8 (export) (type)  in ts-shop
+  src/lib/money.ts:4 (type)
+
+Transitive dependents: 2 more (6 in all)
+  scripts/report.cjs
+  app/lazy.tsx
+
+Tests to run again: 2
+  tests/helpers.ts
+  tests/money.test.ts
+
+Not traced:
+  dynamic: 2 calls load modules by computed names, which may be this: scripts/report.cjs:4, src/app/lazy.tsx:7
+
+Lists are capped; verbose lists every entry.
+```
+
+The first lines name the target as `query` names it: a component, a file
+with the component that holds it, a symbol's line with its component and its
+id, or an import name. `Direct dependents` are the components with a file
+that imports the target. The target's own component is never one of them:
+when none is left, the heading says whether the target's importers are all
+inside its own component or all in test code. `Imported by` lists the
+statements that import a file, or a component that is one file, and for a
+symbol those that take its name, with `May use` for those that take its file
+whole: one statement per line, production code first, located and marked as
+`query` marks them, and followed by the component it is in unless that
+component is the file itself. They include the statements inside the
+target's own component. A whole component (a package, a directory, an
+external dependency) gets no statement list: the answer names the `query`
+that shows where it is imported. `Transitive dependents` are the
+components reached only through others, so the direct ones are not repeated,
+and the heading counts everything reached. A test file that is the target is
+among the tests to run again, marked `(the target itself)`. `Not traced` ends
+the answer as in `query`, and gives a script's note too.
+
+Lists show 30 components, 5 statements, 20 test files and 3 locations per
+kind of `Not traced`, and their headings count the rest (`6, showing 5`); an
+answer with a capped list ends by saying so, and `--verbose` lists every
+entry. `--format json` gives the same lists as fields, the output earlier
+versions printed by default: `direct` and `transitive` (which includes
+`direct`) in full; `importers` and `may_use` as `{"recorded", "total",
+"shown"}` with 5 statements, each with its `file`, `line`, the `component` it
+is in and `"test": true` in test code, `recorded` being false when no
+evidence names imported files for the language; `tests` as `{"total",
+"shown"}` with 20 files by path; `not_traced` with 5 locations per kind; and
+for an import name `module`, with `target` `null`. `--verbose` lists every
+entry there too.
+
 `impact` also takes a symbol, by name or by id, and an import name that no
-component carries, which starts from the files that import it: `direct`
-names their components, `importers` lists the statements, and `module` names
-it while `target` is `null`. For a symbol, the first step goes only through the
-statements that `query` lists for the symbol: those that take its name
-(`importers`) and those that take its file whole (`may_use`); every later
-step is file by file as above, and dependencies without a target file on
-the symbol's component are kept. So a file that imports another name from
-the same file is not affected. Two things widen or narrow it:
+component carries, which starts from the files that import it: the direct
+dependents are their components, and `Imported by` lists the statements. For
+a symbol, the first step goes only through the statements that `query` lists
+for the symbol: those that take its name (`Imported by`) and those that take
+its file whole (`May use`); every later step is file by file as above, and
+dependencies without a target file on the symbol's component are kept. So a
+file that imports another name from the same file is not affected. Two
+things widen or narrow it:
 
 - A re-export takes the name, so the re-exporting file is in the first step
-  (`direct`, unless it sits in the symbol's own component, as a Python
-  `__init__.py` usually does), and from there every importer of that file is
-  `transitive`, those that take other names included: a TS/JS barrel's
-  `export { X } from`, and a Python `__init__.py`'s `from .m import X`, whose
-  importers (`from pkg import X`) are only `transitive` (Python does not
-  follow re-exports).
+  (a direct dependent, unless it sits in the symbol's own component, as a
+  Python `__init__.py` usually does), and from there every importer of that
+  file is a transitive dependent, those that take other names included: a
+  TS/JS barrel's `export { X } from`, and a Python `__init__.py`'s
+  `from .m import X`, whose importers (`from pkg import X`) are only
+  transitive dependents (Python does not follow re-exports).
 - A statement that only loads the file (a side-effect import) is not in the
   first step, although code that runs on load may call the symbol.
-
-`importers` and `may_use` show 5 statements with their total, as for a file;
-`query <symbol> --format json` lists them all.
 
 ## How a target is found
 
@@ -299,7 +357,7 @@ symbols with their location, kind and importer counts, files (production
 code before tests), and directories as `./<path>`. A component id that is also the id of a symbol other than the
 module itself, and a name with `/` that is also another path under the root,
 give candidates too. Text shows the first 10 and counts the rest; JSON
-(`query --format json`, and `impact`, which prints JSON) has every one as
+(`--format json`) has every one as
 `{"requested", "total", "candidates": [{"kind", "id" or "path", ...}]}`,
 a directory's `path` written as `./<path>`. Retry with one of the ids, or
 with the path as `./<path>`.
@@ -311,17 +369,17 @@ argument is wrong), and 1 only for a result to act on: candidates here,
 findings in `check`.
 
 When an id or a path answers for one component while others share its name
-(`dup` and `dup+typescript` after an id collision) or its path, `query`
-names them on `also named:` and `also at this path:` lines (for a file,
-those of the component it is), and `impact` in `also_named` and
+(`dup` and `dup+typescript` after an id collision) or its path, `query` and
+`impact` name them on `also named:` and `also at this path:` lines (for a
+file, those of the component it is), and their JSON in `also_named` and
 `also_at_path`.
 
 ## What a result could not trace
 
 `query` and `impact` end with what could reach their target without an
 edge showing it, from what the analyzers record and only when something
-applies: `Not traced` in `query`'s text and `not_traced` in the JSON of
-both. The target's own imports without an edge stay under `Not mapped`.
+applies: `Not traced` in their text and `not_traced` in their JSON. The
+target's own imports without an edge stay under `Not mapped`.
 
 - `dynamic`: calls elsewhere in the target's language (TypeScript and
   JavaScript count as one) that load modules by computed names
@@ -339,13 +397,15 @@ both. The target's own imports without an edge stay under `Not mapped`.
   together) that no analyzer read, counted from Coverage. For Rust the
   answer says why: the analyzer reads only `src/`, so `tests/`, `benches/`,
   `examples/` and `build.rs` are among them.
-- `script`, in JSON: the target is a script, whose globals no import names;
-  the value says so.
+- `script`: the target is a script, whose globals no import names; the value
+  says so. `impact`'s text gives it here, and `query`'s where it lists the
+  target's importers, when there are none.
 - `no_importers`: the target's importers are recorded and none exists; the
   value says why that is no proof of no use (only import statements are
   read, so a file that a framework, a test runner or a command loads by
-  name or path has none). `query`'s text shows it for a file. It is left
-  out for a test file, which its runner loads, and for a script.
+  name or path has none). `query`'s text shows it for a file, `impact`'s for
+  a file or a symbol. It is left out for a test file, which its runner
+  loads, and for a script.
 
 Gaps that no analyzer records yet are not counted: module paths inside Rust
 macro calls, imports in a Rust crate's own unit tests.

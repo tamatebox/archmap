@@ -63,6 +63,7 @@ fn impact_answers_in_json_for_the_component_that_holds_a_file() {
         .impact(&ImpactRequest {
             target: "src/shop/users.py",
             depth: DEFAULT_DEPTH,
+            format: Format::Json,
             verbose: false,
         })
         .unwrap()

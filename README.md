@@ -74,15 +74,19 @@ The graph is meant to be consumed by agents as much as by humans:
 - `archmap scan` writes the full graph for tools, export and debugging; agents never need to read it,
   because `summary`, `query` and `impact` return the parts they need
 - `archmap query` answers "what does component X expose and depend on"
-- `archmap impact` answers "if I touch this file or component, what else might be affected"
+- `archmap impact` answers "if I touch this file or component, what else might be affected",
+  with the import statements to open and the tests to run again
 - `archmap check` tells an agent or CI whether a change broke a declared dependency rule,
   and points out structural signals that are observations, not failures
 - every fact points to `file:line` evidence, so an agent can verify and jump to the source
 
-Agent-facing output stays small however large the repository is: `summary`
-aims at about 8 KiB, lists are capped at 30 entries, and a capped list ends
-in an `omitted:` line that names the query showing the rest. `--verbose`
-lifts the caps and `--format json` adds every piece of evidence.
+Agent-facing output stays small however large the repository is: `summary`,
+`query`, `impact` and `check` print capped text by default. `summary` aims
+at about 8 KiB, lists are capped at 30 entries, and a capped list counts
+what it leaves out: `summary` ends it in an `omitted:` line naming the query
+that shows the rest, and `query` and `impact` write `N, showing M` in its
+heading. `--verbose` lifts the caps and `--format json` adds every piece of
+evidence.
 
 The same four commands are MCP tools: `archmap mcp` serves them over stdio
 with the same answers, since the CLI and the server share one layer
