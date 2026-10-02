@@ -96,27 +96,28 @@ fn the_dynamic_imports_of_the_target_itself_stay_under_not_mapped() {
 
 #[test]
 fn a_rust_target_counts_the_files_its_analyzer_did_not_read() {
-    let ws = scan(&fixture("simple-rust-workspace"));
-    let text = query(&ws, "crates/app/src/config.rs", Format::Text);
-    // the Rust analyzer reads src/ only, by design: say which files these are
+    let ws = scan(&fixture("rust-cargo-targets"));
+    let text = query(&ws, "kiosk/src/till.rs", Format::Text);
+    // test data no Cargo target loads is not read, by design: say which
+    // files these are
     assert!(
         text.ends_with(
-            "\nNot traced:\n  not read: 1 of 9 rust files: the Rust analyzer reads only src/, so \
-             tests/, benches/, examples/ and build.rs are among them, as is any file that failed \
-             to parse\n"
+            "\nNot traced:\n  not read: 1 of 11 rust files: the Rust analyzer reads src/ and what \
+             the other Cargo targets load, so files outside src/ that no target loads, such as \
+             test data, are among them, as is any file that failed to parse\n"
         ),
         "{text}"
     );
-    let json = impact(&ws, "crates/app/src/config.rs");
+    let json = impact(&ws, "kiosk/src/till.rs");
     let not_read = &json["not_traced"]["not_read"];
     assert_eq!(not_read["languages"], serde_json::json!(["rust"]));
     assert_eq!(
         (&not_read["files"], &not_read["read"]),
-        (&9.into(), &8.into())
+        (&11.into(), &10.into())
     );
     assert!(not_read["note"]
         .as_str()
-        .is_some_and(|n| n.contains("only src/")));
+        .is_some_and(|n| n.contains("no target loads")));
 }
 
 const NO_IMPORTERS: &str = "no import of it was found: only import statements are read, \

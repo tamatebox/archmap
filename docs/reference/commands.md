@@ -250,8 +250,8 @@ transitive dependents follow production code; the tests to run again are the
 files that reach the target only through test code, and a changed
 component's own test files, those beside production code included. A file
 that production code reaches is not repeated there: its unit tests run with
-its package. For Rust, only test code in other crates is recorded: a crate's
-own unit tests are not, and integration tests under `tests/` are not read. In
+its package. For Rust, a crate's own unit tests are not recorded, while
+tests, examples and benches, crates of their own, are listed. In
 `fixtures/mixed-utils-project`, `app.utils` and `app.core` depend on each
 other, so following components a change anywhere in `app.utils` reaches
 `app.core` and `app.models`; following files, `app/utils/log.py` reaches
@@ -432,8 +432,9 @@ target's own imports without an edge stay under `Not mapped`.
   import of the target.
 - `not_read`: files of the target's language (TypeScript and JavaScript
   together) that no analyzer read, counted from Coverage. For Rust the
-  answer says why: the analyzer reads only `src/`, so `tests/`, `benches/`,
-  `examples/` and `build.rs` are among them.
+  answer says why: the analyzer reads `src/` and what the other Cargo
+  targets load, so the files outside `src/` that no target loads, such as
+  test data, are among them.
 - `script`: the target is a script, whose globals no import names; the value
   says so. `impact`'s text gives it here, and `query`'s where it lists the
   target's importers, when there are none.

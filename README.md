@@ -100,7 +100,7 @@ Details: [commands](docs/reference/commands.md), [MCP server](docs/reference/mcp
 
 | Language | Read from |
 |---|---|
-| [Rust](docs/reference/analyzers.md#rust) | `Cargo.toml` packages and dependencies; module files reached from `src/lib.rs` and `src/main.rs`; `pub` items; `use` declarations and module paths in code |
+| [Rust](docs/reference/analyzers.md#rust) | `Cargo.toml` packages and dependencies; module files reached from `src/lib.rs`, `src/main.rs` and the tests, examples, benches and build script Cargo finds beside them; `pub` items; `use` declarations and module paths in code |
 | [Python](docs/reference/analyzers.md#python) | `pyproject.toml`, `setup.py` / `setup.cfg` and requirements files; packages and namespace packages; public top-level definitions; `import` statements, scanned line by line and followed through the names modules bind from others, those under `if TYPE_CHECKING:` apart |
 | [TypeScript / JavaScript](docs/reference/analyzers.md#typescript-and-javascript) | `package.json` packages, workspaces and dependencies; directories and files; exported declarations, CommonJS exports and the globals of scripts; `import`, `export ... from`, `require`, `import()` and test mocks, resolved through tsconfig paths, workspace links and re-exports, imports of types only apart |
 
@@ -139,9 +139,8 @@ What works today, by the [roadmap](#roadmap) phase it belongs to:
 
 The gaps behind the marks:
 
-- Rust modules: only the module tree reached from `src/lib.rs` and
-  `src/main.rs`; other Cargo targets have none, and `tests/`, `benches/`,
-  `examples/` and `build.rs` are not read.
+- Rust modules: the binaries under `src/bin/` and the targets that
+  `Cargo.toml` declares have no module tree.
 - Rust imports: code inside macro calls (`vec![..]`, `println!(..)`) is not
   read.
 - Python `query` and `impact` on a symbol: a statement that takes a package

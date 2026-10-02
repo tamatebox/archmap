@@ -548,36 +548,41 @@ fn missing_root_is_an_error() {
 }
 
 #[test]
-fn coverage_counts_only_the_files_under_src() {
+fn coverage_counts_the_files_of_every_target() {
     let graph = scan_fixture();
-    // crates/app/tests/smoke.rs is seen but not read
+    // crates/app/tests/smoke.rs is an integration test, read like src/
     assert_eq!(
         graph.meta.coverage["rust"],
         LanguageCoverage {
             files: 9,
-            read: Some(8),
+            read: Some(9),
             scripts: 0
         }
     );
 }
 
 #[test]
-fn a_dev_dependency_used_under_src_is_an_import_without_an_edge() {
+fn a_dev_dependency_used_in_test_code_is_an_import_without_an_edge() {
     let graph = scan_fixture();
+    let unmapped = |file: &str, line: u32| UnmappedImport {
+        from: id("app"),
+        module: "assert_cmd".into(),
+        reason: UnmappedReason::DeclaredNotRequired,
+        provided_by: vec![],
+        evidence: Evidence::new(file)
+            .at_line(line)
+            .with_note("use")
+            .in_scope(Scope::Module)
+            .in_test(true),
+    };
     assert_eq!(
         graph.unmapped_imports,
-        vec![UnmappedImport {
-            from: id("app"),
-            module: "assert_cmd".into(),
-            reason: UnmappedReason::DeclaredNotRequired,
-            provided_by: vec![],
+        vec![
             // written in a `#[cfg(test)]` module: test code
-            evidence: Evidence::new("crates/app/src/main.rs")
-                .at_line(14)
-                .with_note("use")
-                .in_scope(Scope::Module)
-                .in_test(true),
-        }]
+            unmapped("crates/app/src/main.rs", 14),
+            // an integration test, whose crate is test code
+            unmapped("crates/app/tests/smoke.rs", 1),
+        ]
     );
     assert!(graph.component(&id("ext:cargo:assert_cmd")).is_none());
 }

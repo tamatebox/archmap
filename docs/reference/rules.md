@@ -53,7 +53,9 @@ closed set: any other dependency on a declared component is unexpected, and
 an allowed dependency the code no longer has is stale. Coverage requires
 every component under its selectors to belong to a declaration, judged at
 the roll-up depth and for leaves only, so a container such as `src` counts
-as covered by what it contains.
+as covered by what it contains. Test code counts too: a module that a Rust
+test loads (`tests/common/mod.rs`) is a component of its package, so a
+declaration that selects only the package's `src` leaves it uncovered.
 
 Rules count what an import loads and, through re-exports, the component
 that defines what it takes (its `via` evidence, see [graph.md](graph.md)). A
@@ -64,8 +66,9 @@ through a TS/JS barrel. `impact`, on the other hand, takes no `__init__.py`
 for a barrel and goes on from it to everything that imports it.
 
 Rules are about production code. `deny`, `layers` and `allow` leave out
-imports in test code (test files and directories, `#[cfg(test)]`; see
-[graph.md](graph.md)), so a test may import what its code may not, and an
+imports in test code (test files and directories, `#[cfg(test)]`, a Rust
+test, example or bench; see [graph.md](graph.md)), so a test may import what
+its code may not, and an
 allowance that only tests use is stale. Undeclared imports count in test
 code too: a missing declaration breaks the test run as well. A route
 directory named `test` or `tests` (`app/test/page.tsx` in frameworks whose

@@ -697,14 +697,12 @@ fn query_text_is_a_compact_drill_down() {
     }
     assert!(!text.contains("Lists are capped"), "nothing was cut");
 
+    // every Rust file of the fixture is read, its integration test included
     let symbols = query_text(&fixture_root(), &["greet"]);
     assert_eq!(
         symbols,
         "Symbols matching `greet`: 1\n  pub fn greet(user: &User) -> String  crates/lib_core/src/lib.rs:28  in lib_core\n\
-         \nImported by: 2\n  crates/app/src/config.rs:12 (local)\n  crates/app/src/main.rs:2\n\
-         \nNot traced:\n  not read: 1 of 9 rust files: the Rust analyzer reads only src/, so \
-         tests/, benches/, examples/ and build.rs are among them, as is any file that failed to \
-         parse\n"
+         \nImported by: 2\n  crates/app/src/config.rs:12 (local)\n  crates/app/src/main.rs:2\n"
     );
 }
 
@@ -1183,11 +1181,13 @@ fn an_import_name_without_an_edge_lists_where_it_is_imported() {
         ),
         "{google}"
     );
-    // Rust dev-dependencies are imported by crate name
+    // Rust dev-dependencies are imported by crate name, in unit tests and in
+    // integration tests alike
     let rust = query_text(&fixture_root(), &["assert_cmd"]);
     assert!(
         rust.contains(
-            "\n  assert_cmd  extra or dev dependency  1 import: crates/app/src/main.rs:14 (test)\n"
+            "\n  assert_cmd  extra or dev dependency  2 imports: crates/app/src/main.rs:14 (test), \
+             crates/app/tests/smoke.rs:1 (test)\n"
         ),
         "{rust}"
     );

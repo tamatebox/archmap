@@ -85,8 +85,9 @@ pub(crate) struct NotRead {
 }
 
 /// What the Rust analyzer leaves unread.
-pub(crate) const RUST_NOT_READ: &str = "the Rust analyzer reads only src/, so tests/, benches/, \
-     examples/ and build.rs are among them, as is any file that failed to parse";
+pub(crate) const RUST_NOT_READ: &str = "the Rust analyzer reads src/ and what the other Cargo \
+     targets load, so files outside src/ that no target loads, such as test data, are among them, \
+     as is any file that failed to parse";
 
 /// The target as far as what could reach it unseen is concerned.
 pub(crate) struct Subject<'a> {

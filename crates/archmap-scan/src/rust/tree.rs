@@ -1,15 +1,19 @@
 //! Module trees of the crate targets, and `use` path resolution over them.
 //!
-//! The library (`src/lib.rs`) and the binary (`src/main.rs`) of a package
-//! are separate crates, each with a tree of logical modules found by
-//! following `mod` declarations from its root file: `mod a;` loads `a.rs` or
-//! `a/mod.rs` in the declaring module's directory. Inline modules
-//! (`mod a { .. }`) are nodes too, so that paths resolve as the compiler
-//! resolves them, but a component is a file: an inline module belongs to the
-//! component of its file, and a file that both crates declare is one
-//! component. A file under `src/` that no root reaches (a binary in
-//! `src/bin/`, a `#[path]` module) belongs to its package, at the module path
-//! its location suggests, with no crate root to resolve `crate::` against.
+//! Every Cargo target of a package is a separate crate with a tree of
+//! logical modules found by following `mod` declarations from its root file:
+//! `mod a;` loads `a.rs` or `a/mod.rs` in the declaring module's directory.
+//! Inline modules (`mod a { .. }`) are nodes too, so that paths resolve as
+//! the compiler resolves them, but a component is a file: an inline module
+//! belongs to the component of its file, and a file that several crates
+//! declare is one component. Every root belongs to its package. The modules
+//! of the library (`src/lib.rs`) and of the binary `src/main.rs` are named by
+//! their module paths; those of the other targets (`tests/`, `examples/`,
+//! `benches/`, `build.rs`) by their paths in the package, so that they never
+//! meet a library module of the same module path. A file under `src/` that no
+//! root reaches (a binary in `src/bin/`, a `#[path]` module) belongs to its
+//! package, at the module path its location suggests, with no crate root to
+//! resolve `crate::` against; outside `src/`, only what roots reach is read.
 //!
 //! Resolution follows a `use` path through modules and through the `use`
 //! declarations it meets (re-exports, globs), as precisely as the facts
@@ -50,6 +54,87 @@ pub(super) struct ResolvedPackage {
     pub other_packages: BTreeMap<String, ComponentId>,
     /// Crate names of `[dev-dependencies]`, which have no edges.
     pub dev_imports: BTreeSet<String>,
+}
+
+/// The kind of a Cargo target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum TargetKind {
+    Lib,
+    Bin,
+    Test,
+    Example,
+    Bench,
+    Build,
+}
+
+impl TargetKind {
+    /// Tests, examples and benches may use `[dev-dependencies]` and are no
+    /// part of the package's library and binaries: their code is test code.
+    pub fn is_test(self) -> bool {
+        matches!(
+            self,
+            TargetKind::Test | TargetKind::Example | TargetKind::Bench
+        )
+    }
+}
+
+/// A target of a package other than its library and its `src/main.rs`
+/// binary: its kind, its root file (relative to the repository root) and
+/// the name of its crate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Target {
+    pub kind: TargetKind,
+    pub root: PathBuf,
+    pub crate_name: String,
+}
+
+/// The targets Cargo finds by default among the files of the package in
+/// `dir`, besides `src/lib.rs` and `src/main.rs`: `tests/<n>.rs` and
+/// `tests/<n>/main.rs`, the same under `examples/` and `benches/`, and
+/// `build.rs`. Sorted by root.
+pub(super) fn default_targets<'a>(
+    dir: &Path,
+    files: impl IntoIterator<Item = &'a Path>,
+) -> Vec<Target> {
+    let mut targets: Vec<Target> = files
+        .into_iter()
+        .filter_map(|file| {
+            let rel = file.strip_prefix(dir).ok()?;
+            let parts: Vec<&str> = rel.iter().filter_map(|p| p.to_str()).collect();
+            let (kind, name) = match parts.as_slice() {
+                ["build.rs"] => (TargetKind::Build, "build_script_build"),
+                [kind, file] => (kind_of(kind)?, file.strip_suffix(".rs")?),
+                [kind, name, "main.rs"] => (kind_of(kind)?, *name),
+                _ => return None,
+            };
+            Some(Target {
+                kind,
+                root: file.to_path_buf(),
+                crate_name: name.replace('-', "_"),
+            })
+        })
+        .collect();
+    targets.sort_by(|a, b| a.root.cmp(&b.root));
+    targets
+}
+
+/// The kind of the targets Cargo finds in a directory of a package.
+fn kind_of(directory: &str) -> Option<TargetKind> {
+    match directory {
+        "tests" => Some(TargetKind::Test),
+        "examples" => Some(TargetKind::Example),
+        "benches" => Some(TargetKind::Bench),
+        _ => None,
+    }
+}
+
+/// What a crate's tree is: its target's kind, and whether its modules are
+/// named by their paths in the package (every target but the library and
+/// `src/main.rs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Tree {
+    pub kind: TargetKind,
+    pub by_path: bool,
 }
 
 /// A parsed source file of an internal package.
@@ -100,15 +185,31 @@ pub(super) struct Forest {
     pub nodes: Vec<Node>,
     /// Package index -> root node of its library.
     pub libs: BTreeMap<usize, usize>,
+    /// Root node -> what its crate's tree is.
+    pub trees: BTreeMap<usize, Tree>,
     /// Component of each file, by file index.
     pub owners: Vec<ComponentId>,
     pub modules: Vec<ModuleComponent>,
     /// `#[macro_export]` macros by crate root and name -> defining module.
     pub macros: BTreeMap<(usize, String), usize>,
+    /// Files a `mod` declaration loads that exist but were not read: the
+    /// modules of roots outside `src/`, read only once a root reaches them.
+    pub missing: BTreeSet<PathBuf>,
     pub warnings: Vec<String>,
 }
 
 impl Forest {
+    /// The tree `node` belongs to; `None` for a file that no root reaches.
+    pub fn tree(&self, node: usize) -> Option<Tree> {
+        self.trees.get(&self.nodes[node].root?).copied()
+    }
+
+    /// Whether `node` is in a test, example or bench target, all of whose
+    /// code is test code.
+    pub fn in_test_target(&self, node: usize) -> bool {
+        self.tree(node).is_some_and(|t| t.kind.is_test())
+    }
+
     /// Is `node` inside the subtree of `ancestor` (and not `ancestor` itself)?
     pub fn is_descendant(&self, node: usize, ancestor: usize) -> bool {
         let mut current = node;
@@ -167,32 +268,59 @@ impl Forest {
     }
 }
 
-/// Build the module trees of every package's library and binary, and give
-/// every file its component. `unreadable` holds the files under `src/` that
-/// could not be read or parsed, which a `mod` declaration may still name.
+/// Build the module trees of every package's targets, and give every file
+/// its component. `targets` holds, by package, the targets other than the
+/// library and `src/main.rs`. `unreadable` holds the files that could not be
+/// read or parsed, which a `mod` declaration may still name; `on_disk`, every
+/// `.rs` file of the repository, so that a module outside `src/` that was
+/// not read yet is named in `missing`.
 pub(super) fn build(
     files: &[SourceFile],
     unreadable: &BTreeSet<PathBuf>,
     packages: &[ResolvedPackage],
+    targets: &[Vec<Target>],
+    on_disk: &BTreeSet<&Path>,
 ) -> Forest {
     let index: BTreeMap<&Path, usize> = files
         .iter()
         .enumerate()
         .map(|(i, f)| (f.rel.as_path(), i))
         .collect();
+    let shared = Shared {
+        files,
+        index: &index,
+        unreadable,
+        on_disk,
+        packages,
+    };
     let mut forest = Forest::default();
     let mut owners: Vec<Option<ComponentId>> = vec![None; files.len()];
+    // the roots of the targets, which stay their package's files
+    let mut root_files: BTreeSet<usize> = BTreeSet::new();
+    let mut later: Vec<(usize, String)> = Vec::new();
 
     for (p, package) in packages.iter().enumerate() {
-        let targets = [
-            ("lib.rs", package.crate_name.clone()),
-            ("main.rs", package.name.replace('-', "_")),
+        let own = [
+            (TargetKind::Lib, "lib.rs", package.crate_name.clone()),
+            (TargetKind::Bin, "main.rs", package.name.replace('-', "_")),
         ];
-        for (root_file, crate_name) in targets {
-            let Some(&file) = index.get(package.dir.join("src").join(root_file).as_path()) else {
+        let other = targets
+            .get(p)
+            .into_iter()
+            .flatten()
+            .map(|t| (t.kind, t.root.clone(), t.crate_name.clone()));
+        for (kind, root_path, crate_name) in own
+            .into_iter()
+            .map(|(kind, file, name)| (kind, package.dir.join("src").join(file), name))
+            .chain(other)
+        {
+            let Some(&file) = index.get(root_path.as_path()) else {
                 continue;
             };
+            let by_path = !matches!(kind, TargetKind::Lib)
+                && !(kind == TargetKind::Bin && root_path == package.dir.join("src/main.rs"));
             owners[file].get_or_insert_with(|| package.id.clone());
+            root_files.insert(file);
             let root = forest.push(Node {
                 package: p,
                 root: None,
@@ -205,21 +333,40 @@ pub(super) fn build(
                 unloaded: BTreeSet::new(),
             });
             forest.nodes[root].root = Some(root);
-            if root_file == "lib.rs" {
+            forest.trees.insert(root, Tree { kind, by_path });
+            if kind == TargetKind::Lib {
                 forest.libs.insert(p, root);
             }
-            let mut grower = Grower {
-                files,
-                index: &index,
-                unreadable,
-                packages,
-                crate_name,
-                owners: &mut owners,
-                forest: &mut forest,
-                seen: BTreeSet::from([file]),
-            };
-            grower.grow(root, true);
+            // the library's and the binary's modules first, then, once every
+            // root has its owner, the other targets'
+            if by_path {
+                later.push((root, crate_name));
+            } else {
+                Grower {
+                    shared,
+                    root_files: &root_files,
+                    crate_name,
+                    by_path,
+                    owners: &mut owners,
+                    forest: &mut forest,
+                    seen: BTreeSet::from([file]),
+                }
+                .grow(root, true);
+            }
         }
+    }
+    for (root, crate_name) in later {
+        let file = forest.nodes[root].file;
+        Grower {
+            shared,
+            root_files: &root_files,
+            crate_name,
+            by_path: true,
+            owners: &mut owners,
+            forest: &mut forest,
+            seen: BTreeSet::from([file]),
+        }
+        .grow(root, true);
     }
 
     for (f, file) in files.iter().enumerate() {
@@ -239,17 +386,16 @@ pub(super) fn build(
             children: BTreeMap::new(),
             unloaded: BTreeSet::new(),
         });
-        let mut grower = Grower {
-            files,
-            index: &index,
-            unreadable,
-            packages,
+        Grower {
+            shared,
+            root_files: &root_files,
             crate_name: String::new(),
+            by_path: false,
             owners: &mut owners,
             forest: &mut forest,
             seen: BTreeSet::from([f]),
-        };
-        grower.grow(root, false);
+        }
+        .grow(root, false);
     }
 
     for (n, node) in forest.nodes.iter().enumerate() {
@@ -268,13 +414,24 @@ pub(super) fn build(
     forest
 }
 
-struct Grower<'a> {
+/// What growing every tree reads.
+#[derive(Clone, Copy)]
+struct Shared<'a> {
     files: &'a [SourceFile],
     index: &'a BTreeMap<&'a Path, usize>,
     unreadable: &'a BTreeSet<PathBuf>,
+    on_disk: &'a BTreeSet<&'a Path>,
     packages: &'a [ResolvedPackage],
+}
+
+struct Grower<'a> {
+    shared: Shared<'a>,
+    /// The roots of the targets, which stay their package's files.
+    root_files: &'a BTreeSet<usize>,
     /// Crate name that module names start with.
     crate_name: String,
+    /// Whether modules are named by their paths in the package.
+    by_path: bool,
     owners: &'a mut Vec<Option<ComponentId>>,
     forest: &'a mut Forest,
     /// Files already in this tree.
@@ -285,7 +442,7 @@ impl Grower<'_> {
     /// Add the inline modules of `node` and, when `follow` is set, the files
     /// its `mod` declarations load.
     fn grow(&mut self, node: usize, follow: bool) {
-        let (files, packages) = (self.files, self.packages);
+        let (files, packages) = (self.shared.files, self.shared.packages);
         let (file, module) = (self.forest.nodes[node].file, self.forest.nodes[node].module);
         let facts = &files[file].parsed.modules[module];
         for (name, &inline) in &facts.inline {
@@ -306,24 +463,36 @@ impl Grower<'_> {
             let child = self
                 .forest
                 .add_child(node, &decl.name, loaded, 0, decl.test);
-            let path = self.forest.nodes[child].path.join("::");
-            let package = &packages[self.forest.nodes[node].package];
-            // A file that the other crate of the package declared already
-            // keeps its component.
-            let id = self.owners[loaded]
-                .get_or_insert_with(|| ComponentId::new(format!("{}::{path}", package.name)))
-                .clone();
-            let parent = self.owners[file]
-                .clone()
-                .expect("a declaring file has an owner");
-            self.forest.modules.push(ModuleComponent {
-                id,
-                name: format!("{}::{path}", self.crate_name),
-                file: loaded,
-                parent,
-                declared_in: file,
-                line: decl.line,
-            });
+            // a root that another root loads (an old-style `tests/common.rs`)
+            // stays its package's file
+            if !self.root_files.contains(&loaded) {
+                let package = &packages[self.forest.nodes[node].package];
+                let (id, name) = if self.by_path {
+                    let rel = &files[loaded].rel;
+                    let rel = display_path(rel.strip_prefix(&package.dir).unwrap_or(rel));
+                    (format!("{}::{rel}", package.name), rel)
+                } else {
+                    let path = self.forest.nodes[child].path.join("::");
+                    let name = format!("{}::{path}", self.crate_name);
+                    (format!("{}::{path}", package.name), name)
+                };
+                // A file that another crate of the package declared already
+                // keeps its component.
+                let id = self.owners[loaded]
+                    .get_or_insert_with(|| ComponentId::new(id))
+                    .clone();
+                let parent = self.owners[file]
+                    .clone()
+                    .expect("a declaring file has an owner");
+                self.forest.modules.push(ModuleComponent {
+                    id,
+                    name,
+                    file: loaded,
+                    parent,
+                    declared_in: file,
+                    line: decl.line,
+                });
+            }
             self.grow(child, true);
         }
     }
@@ -331,7 +500,11 @@ impl Grower<'_> {
     /// The file that `mod name;` in `node` loads, warning when there is none.
     fn load(&mut self, node: usize, decl: &ModDecl) -> Option<usize> {
         let file = self.forest.nodes[node].file;
-        let at = format!("{}:{}", display_path(&self.files[file].rel), decl.line);
+        let at = format!(
+            "{}:{}",
+            display_path(&self.shared.files[file].rel),
+            decl.line
+        );
         if decl.path_attr {
             self.forest.warnings.push(format!(
                 "{at}: `mod {}` has a #[path] attribute, which is not followed",
@@ -346,11 +519,20 @@ impl Grower<'_> {
         ];
         let found: Vec<usize> = candidates
             .iter()
-            .filter_map(|c| self.index.get(c.as_path()).copied())
+            .filter_map(|c| self.shared.index.get(c.as_path()).copied())
             .collect();
         if found.is_empty() {
+            let unreadable = self.shared.unreadable;
+            // a module outside `src/`, read once a root reaches it
+            let unread = candidates
+                .iter()
+                .find(|c| self.shared.on_disk.contains(c.as_path()) && !unreadable.contains(*c));
+            if let Some(unread) = unread {
+                self.forest.missing.insert(unread.clone());
+                return None;
+            }
             // a file that failed to parse has a warning of its own
-            if !candidates.iter().any(|c| self.unreadable.contains(c)) {
+            if !candidates.iter().any(|c| unreadable.contains(c)) {
                 self.forest.warnings.push(format!(
                     "{at}: no file for `mod {}` (expected {} or {})",
                     decl.name,
@@ -381,7 +563,7 @@ impl Grower<'_> {
             let name = n.path.last().expect("an inline module has a name");
             return self.module_dir(parent).join(name);
         }
-        let rel = &self.files[n.file].rel;
+        let rel = &self.shared.files[n.file].rel;
         let dir = rel.parent().unwrap_or(Path::new(""));
         if n.parent.is_none() || rel.file_name().is_some_and(|f| f == "mod.rs") {
             dir.to_path_buf()
@@ -787,8 +969,13 @@ impl<'a> Resolver<'a> {
         if let Some(target) = package.import_targets.get(name) {
             return Some(self.crate_root(target));
         }
-        // a binary names its own package's library
-        (name == package.crate_name)
+        // a binary, a test, an example or a bench names its own package's
+        // library; a build script does not link it
+        let links = self
+            .forest
+            .tree(at)
+            .is_none_or(|t| t.kind != TargetKind::Build);
+        (links && name == package.crate_name)
             .then(|| self.forest.libs.get(&p).copied().map(Pos::Module))
             .flatten()
     }
@@ -873,7 +1060,7 @@ mod tests {
     }
 
     fn forest(files: &[SourceFile], packages: &[ResolvedPackage]) -> Forest {
-        build(files, &BTreeSet::new(), packages)
+        build(files, &BTreeSet::new(), packages, &[], &BTreeSet::new())
     }
 
     fn describe(forest: &Forest, files: &[SourceFile], resolved: Resolved) -> String {
@@ -957,6 +1144,73 @@ mod tests {
         );
         assert_eq!(mp("crates/a/tests/it.rs"), None);
         assert_eq!(mp("crates/a/build.rs"), None);
+    }
+
+    #[test]
+    fn cargo_finds_the_targets_beside_src_by_their_place() {
+        let files = [
+            "pkg/build.rs",
+            "pkg/tests/total.rs",
+            "pkg/tests/multi-file/main.rs",
+            "pkg/tests/common/mod.rs",
+            "pkg/tests/ui/broken.rs",
+            "pkg/examples/demo.rs",
+            "pkg/benches/speed.rs",
+            "pkg/src/lib.rs",
+            "pkg/scripts/tool.rs",
+        ];
+        let targets = default_targets(Path::new("pkg"), files.iter().map(Path::new));
+        let found: Vec<(TargetKind, &str, &str)> = targets
+            .iter()
+            .map(|t| (t.kind, t.root.to_str().unwrap(), t.crate_name.as_str()))
+            .collect();
+        // neither a module of a test nor a file deeper in `tests/` is one
+        assert_eq!(
+            found,
+            [
+                (TargetKind::Bench, "pkg/benches/speed.rs", "speed"),
+                (TargetKind::Build, "pkg/build.rs", "build_script_build"),
+                (TargetKind::Example, "pkg/examples/demo.rs", "demo"),
+                (
+                    TargetKind::Test,
+                    "pkg/tests/multi-file/main.rs",
+                    "multi_file"
+                ),
+                (TargetKind::Test, "pkg/tests/total.rs", "total"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_build_script_does_not_name_the_library() {
+        let packages = [package("kiosk", "", &[])];
+        let files = files(
+            &[
+                ("src/lib.rs", "pub fn total() {}\n"),
+                ("tests/total.rs", "use kiosk::total;\n"),
+                ("build.rs", "use kiosk::total;\n"),
+            ],
+            &packages,
+        );
+        let targets = [default_targets(
+            Path::new(""),
+            files.iter().map(|f| f.rel.as_path()),
+        )];
+        let forest = build(
+            &files,
+            &BTreeSet::new(),
+            &packages,
+            &targets,
+            &BTreeSet::new(),
+        );
+        assert_eq!(
+            resolved(&forest, &files, &packages, "tests/total.rs"),
+            vec![row("kiosk::total", "src/lib.rs")]
+        );
+        assert_eq!(
+            resolved(&forest, &files, &packages, "build.rs"),
+            vec![row("kiosk::total", "nothing")]
+        );
     }
 
     #[test]
@@ -1470,7 +1724,7 @@ pub fn h(_: crate::Thing) {}
         );
         // broken.rs exists but did not parse: its own warning says so
         let unreadable = BTreeSet::from([PathBuf::from("src/broken.rs")]);
-        let forest = build(&files, &unreadable, &packages);
+        let forest = build(&files, &unreadable, &packages, &[], &BTreeSet::new());
         assert_eq!(
             forest.warnings,
             vec![

@@ -7,10 +7,13 @@
 //!   (path / workspace dependencies are resolved to internal packages,
 //!   everything else becomes an `External` component)
 //! - every file that a `mod` declaration loads, following the module trees
-//!   of `src/lib.rs` and `src/main.rs`, becomes a `Module` component whose
+//!   of `src/lib.rs`, `src/main.rs` and the tests, examples, benches and
+//!   build script Cargo finds beside them, becomes a `Module` component whose
 //!   parent is the component of the declaring file (see [`tree`]); crate
 //!   roots and files no root reaches belong to the package
-//! - `pub` items and `pub` inherent methods under `src/` become symbols
+//! - `pub` items and `pub` inherent methods become symbols
+//! - the files of tests, examples and benches are test code, by the kind of
+//!   their Cargo target
 //! - `use` declarations become `Import` edges to the module that defines
 //!   what they name, through re-exports and globs, with the evidence naming
 //!   that module's file; an external crate is named without a file
@@ -20,12 +23,13 @@
 //! - a re-export from the subtree of the file's own module (`pub use
 //!   child::Item`) is how the module presents its contents, a relation other
 //!   than an import: it is followed when resolving other paths, never an edge
-//! - `use` in `#[cfg(test)]` code is no dependency of the package on itself
+//! - `use` in `#[cfg(test)]` code is no dependency of its crate on itself
 //! - a `use` of a `[dev-dependencies]` crate becomes an [`UnmappedImport`]
 //!
 //! Not extracted (yet): which items a module uses after importing them (call
 //! and reference graphs), code inside macro calls, trait impls, `#[path]`
-//! modules, and targets other than `src/lib.rs` and `src/main.rs`.
+//! modules, the binaries under `src/bin/` and the targets `Cargo.toml`
+//! declares.
 
 mod manifest;
 mod source;
@@ -37,14 +41,14 @@ use std::path::{Path, PathBuf};
 
 use archmap_core::{
     Component, ComponentId, ComponentKind, Edge, EdgeKind, Evidence, Scope, Symbol, SymbolId,
-    UnmappedImport, UnmappedReason, WHOLE_MODULE,
+    SymbolKind, UnmappedImport, UnmappedReason, WHOLE_MODULE,
 };
 
 use crate::analyzer::AnalyzerOutput;
 use crate::context::display_path;
 use crate::{Analyzer, RepoContext, ScanError};
 use source::UseDecl;
-use tree::{Resolved, ResolvedPackage, SourceFile};
+use tree::{Resolved, ResolvedPackage, SourceFile, Target};
 
 pub use manifest::{CargoDependency, CargoPackage, CargoWorkspace, DependencyKind, ParsedManifest};
 
@@ -82,47 +86,45 @@ impl Analyzer for RustAnalyzer {
     }
 }
 
-/// Read every file under a package's `src/`, place it in the module trees,
-/// and emit modules, symbols and imports.
+/// Read every file under a package's `src/`, the roots of its other Cargo
+/// targets and the files their `mod` declarations load, place them in the
+/// module trees, and emit modules, symbols and imports. Nothing else outside
+/// `src/` is read: what no target reaches there is test data or input.
 fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut AnalyzerOutput) {
+    let on_disk: BTreeSet<&Path> = ctx.files_with_extension("rs").collect();
+    let targets: Vec<Vec<Target>> = packages
+        .iter()
+        .enumerate()
+        .map(|(p, package)| {
+            let own = on_disk
+                .iter()
+                .copied()
+                .filter(|f| owning_package(packages, f) == Some(p));
+            tree::default_targets(&package.dir, own)
+        })
+        .collect();
+
     let mut files = Vec::new();
     let mut unreadable = BTreeSet::new();
-    for rel in ctx.files_with_extension("rs") {
-        let Some(package) = owning_package(packages, rel) else {
-            continue;
-        };
-        if tree::module_path(&packages[package].dir, rel).is_none() {
-            continue; // not under src/
-        }
-        let text = match ctx.read_to_string(rel) {
-            Ok(text) => text,
-            Err(err) => {
-                output
-                    .warnings
-                    .push(format!("{}: {err}", display_path(rel)));
-                unreadable.insert(rel.to_path_buf());
-                continue;
-            }
-        };
-        let parsed = match source::parse_file(&text) {
-            Ok(parsed) => parsed,
-            Err(err) => {
-                output
-                    .warnings
-                    .push(format!("{}: parse error: {err}", display_path(rel)));
-                unreadable.insert(rel.to_path_buf());
-                continue;
-            }
-        };
-        *output.read.entry(LANGUAGE.to_owned()).or_default() += 1;
-        files.push(SourceFile {
-            rel: rel.to_path_buf(),
-            package,
-            parsed,
-        });
+    let roots = targets.iter().flatten().map(|t| t.root.as_path());
+    let under_src = on_disk.iter().copied().filter(|rel| {
+        owning_package(packages, rel)
+            .is_some_and(|p| tree::module_path(&packages[p].dir, rel).is_some())
+    });
+    for rel in under_src.chain(roots) {
+        read_source(ctx, packages, rel, &mut files, &mut unreadable, output);
     }
-
-    let forest = tree::build(&files, &unreadable, packages);
+    // the modules outside `src/` that roots reach, read as the trees grow
+    let forest = loop {
+        let forest = tree::build(&files, &unreadable, packages, &targets, &on_disk);
+        let before = files.len() + unreadable.len();
+        for rel in &forest.missing {
+            read_source(ctx, packages, rel, &mut files, &mut unreadable, output);
+        }
+        if files.len() + unreadable.len() == before {
+            break forest;
+        }
+    };
     output.warnings.extend(forest.warnings.iter().cloned());
     for module in &forest.modules {
         let mut component = Component::new(module.id.clone(), &module.name, ComponentKind::Module);
@@ -141,22 +143,51 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
     let mut paths: BTreeMap<(usize, PathTarget), PathHit> = BTreeMap::new();
     // the names all paths from a file to a file take
     let mut path_names: BTreeMap<(usize, PathTarget), BTreeSet<String>> = BTreeMap::new();
+    // the modules whose symbols are out, once for a file several crates load
+    let mut emitted: BTreeSet<(usize, usize)> = BTreeSet::new();
     for (n, node) in forest.nodes.iter().enumerate() {
         let package = &packages[node.package];
         let file = display_path(&files[node.file].rel);
         let facts = &files[node.file].parsed.modules[node.module];
         let owner = &forest.owners[node.file];
+        // all code of a test, an example or a bench is test code
+        let test_target = forest.in_test_target(n);
 
-        if facts.public {
+        if facts.public && emitted.insert((node.file, node.module)) {
+            // a symbol of a target other than the library and `src/main.rs`
+            // takes its file's place in the package, as no module path names
+            // it apart from the library's
+            let base: Vec<String> = if forest.tree(n).is_some_and(|t| t.by_path) {
+                let rel = &files[node.file].rel;
+                let rel = display_path(rel.strip_prefix(&package.dir).unwrap_or(rel));
+                let in_file = forest.nodes[forest.file_module(n)].path.len();
+                std::iter::once(format!("{}::{rel}", package.name))
+                    .chain(node.path[in_file..].iter().cloned())
+                    .collect()
+            } else {
+                std::iter::once(package.name.clone())
+                    .chain(node.path.iter().cloned())
+                    .collect()
+            };
             for symbol in &facts.symbols {
-                let id = std::iter::once(&package.name)
-                    .chain(&node.path)
-                    .chain(std::iter::once(&symbol.name))
-                    .map(String::as_str)
-                    .collect::<Vec<_>>()
-                    .join("::");
-                // test code defines it: a `#[cfg(test)]` module, or its own mark
-                let test = node.test || symbol.test;
+                // a `pub mod` with a file of its own is that file's component
+                let module_file = (symbol.kind == SymbolKind::Module)
+                    .then(|| node.children.get(&symbol.name))
+                    .flatten()
+                    .map(|&child| forest.nodes[child].file)
+                    .filter(|&f| f != node.file && forest.owners[f] != package.id);
+                let id = match module_file {
+                    Some(f) => forest.owners[f].as_str().to_owned(),
+                    None => base
+                        .iter()
+                        .chain(std::iter::once(&symbol.name))
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join("::"),
+                };
+                // test code defines it: a test target, a `#[cfg(test)]`
+                // module, or its own mark
+                let test = node.test || symbol.test || test_target;
                 let mut evidence = vec![Evidence::new(&file).at_line(symbol.line).in_test(test)];
                 // a method is reached through its type, which an inherent impl
                 // may take from another file of its crate
@@ -195,7 +226,7 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
         // bind (`use crate::graph;`), with their evidence
         let mut brought: BTreeMap<&str, (&UseDecl, bool)> = BTreeMap::new();
         for decl in &facts.uses {
-            let in_test = node.test || decl.test;
+            let in_test = node.test || decl.test || test_target;
             let evidence = Evidence::new(&file)
                 .at_line(decl.line)
                 .in_scope(decl.scope)
@@ -212,10 +243,10 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
                     // what the file's module re-exports from its own subtree
                     let reexport =
                         decl.reexport && forest.is_descendant(target, forest.file_module(n));
-                    // test code is compiled only for tests: no dependency of
-                    // the package on itself
+                    // a crate's unit tests are no dependency of the crate on
+                    // itself; a test target is a crate of its own
                     let test =
-                        (node.test || decl.test) && forest.nodes[target].package == node.package;
+                        (node.test || decl.test) && !test_target && same_crate(&forest, n, target);
                     if within_file || reexport || test {
                         continue;
                     }
@@ -329,7 +360,7 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
                 } => {
                     let target_file = forest.nodes[target].file;
                     let test =
-                        (node.test || path.test) && forest.nodes[target].package == node.package;
+                        (node.test || path.test) && !test_target && same_crate(&forest, n, target);
                     if target_file == node.file || test {
                         continue;
                     }
@@ -349,7 +380,7 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
             }
             let hit = PathHit {
                 rank: (
-                    node.test || path.test,
+                    node.test || path.test || test_target,
                     path.scope != Scope::Module,
                     path.line,
                 ),
@@ -402,6 +433,51 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
                 provided_by: Vec::new(),
                 evidence: evidence.with_note("path"),
             }),
+        }
+    }
+}
+
+/// Whether module `target` is in the crate of module `node`: the same root
+/// of the same package, the files no root reaches counting as one crate.
+fn same_crate(forest: &tree::Forest, node: usize, target: usize) -> bool {
+    let (a, b) = (&forest.nodes[node], &forest.nodes[target]);
+    a.package == b.package && a.root == b.root
+}
+
+/// Read and parse `rel` once into `files`, or warn and keep it among the
+/// `unreadable` files.
+fn read_source(
+    ctx: &RepoContext,
+    packages: &[ResolvedPackage],
+    rel: &Path,
+    files: &mut Vec<SourceFile>,
+    unreadable: &mut BTreeSet<PathBuf>,
+    output: &mut AnalyzerOutput,
+) {
+    let Some(package) = owning_package(packages, rel) else {
+        return;
+    };
+    if unreadable.contains(rel) || files.iter().any(|f| f.rel == rel) {
+        return;
+    }
+    let parsed = match ctx.read_to_string(rel) {
+        Ok(text) => source::parse_file(&text).map_err(|err| format!("parse error: {err}")),
+        Err(err) => Err(err.to_string()),
+    };
+    match parsed {
+        Ok(parsed) => {
+            *output.read.entry(LANGUAGE.to_owned()).or_default() += 1;
+            files.push(SourceFile {
+                rel: rel.to_path_buf(),
+                package,
+                parsed,
+            });
+        }
+        Err(err) => {
+            output
+                .warnings
+                .push(format!("{}: {err}", display_path(rel)));
+            unreadable.insert(rel.to_path_buf());
         }
     }
 }
