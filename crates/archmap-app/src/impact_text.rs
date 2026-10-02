@@ -327,8 +327,8 @@ fn transitive(
             dependent_name(rolled, dependent),
             dependent.distance
         );
-        if let Some(from) = &dependent.from_shown {
-            let _ = write!(line, ", through {from}");
+        if let Some(through) = &dependent.through_shown {
+            let _ = write!(line, ", through {through}");
         }
         if let Some(declared) = &dependent.declared_in {
             let _ = write!(
@@ -353,17 +353,17 @@ fn transitive(
 /// the files of its own it is reached through (`ts-shop (src/index.ts)`).
 fn dependent_name(rolled: &ArchitectureGraph, dependent: &Dependent) -> String {
     let name = display(rolled, &dependent.id);
-    match dependent.through.len() {
+    match dependent.files.len() {
         0 => name.to_owned(),
         n => {
-            let shown = &dependent.through[..n.min(MAX_THROUGH)];
+            let shown = &dependent.files[..n.min(MAX_FILES)];
             format!("{name} ({})", with_more(shown, n))
         }
     }
 }
 
 /// How many files a component that holds the target names.
-const MAX_THROUGH: usize = 3;
+const MAX_FILES: usize = 3;
 
 /// The test files to run again after the change: a changed test file is
 /// one of them. Those left out because their mocks replace a module on the

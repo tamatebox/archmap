@@ -519,11 +519,11 @@ components`); an answer with a capped list ends by saying so, and
 its evidence, whatever `--verbose` says, and for a busy target runs large:
 `direct` and `transitive` (which includes `direct`) as objects with the
 component's `id`, its `distance` (1 for a direct one), for one that holds
-the target the files of it reached as `through`, for a direct one its
-`imports` (`{"production", "tests"}`), and for one further its `from` (a
-file's path or a component's id) and, where a declaration or an import
-that names no file was the way, `declared_in` or `imported_in` (`{"file",
-"line"}`), in the text's order;
+the target the files of it reached as `files`, for a direct one its
+`imports` (`{"production", "tests"}`), and for one further what it was
+reached `through` (a file's path or a component's id) and, where a
+declaration or an import that names no file was the way, `declared_in` or
+`imported_in` (`{"file", "line"}`), in the text's order;
 `importers`, `imports_below` and `may_use` as `{"recorded", "total",
 "statements"}`, each statement its evidence (`file`, `line`, `note`,
 `target`, `scope`, `names`, `test`, `type_only`, `replaces`) with the

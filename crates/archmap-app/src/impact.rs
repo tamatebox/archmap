@@ -457,12 +457,12 @@ fn dependents(
         };
         // a component that holds the target is reached through files of
         // its own, not as a whole
-        let through = match holders.contains(id) {
+        let files = match holders.contains(id) {
             false => Vec::new(),
             true => reach.files.get(id).cloned().unwrap_or_default(),
         };
         let hop = (distance > 1).then(|| reach.from.get(id)).flatten();
-        let (from, from_shown, declared_in, imported_in) = match hop {
+        let (through, through_shown, declared_in, imported_in) = match hop {
             Some(Hop::File(file)) => (Some(file.clone()), Some(file.clone()), None, None),
             Some(Hop::Component {
                 id,
@@ -479,12 +479,12 @@ fn dependents(
         Dependent {
             id: id.clone(),
             distance,
-            through,
+            files,
             imports: (distance == 1).then(|| counted.get(id).copied()).flatten(),
-            from,
+            through,
             declared_in,
             imported_in,
-            from_shown,
+            through_shown,
         }
     };
     let mut direct: Vec<Dependent> = reach.direct.iter().map(dependent).collect();

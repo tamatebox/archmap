@@ -243,27 +243,27 @@ pub struct Dependent {
     /// For a component that holds the target: the files of it the change
     /// reaches, nearest first.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub through: Vec<String>,
+    pub files: Vec<String>,
     /// For a direct dependent: its statements that `importers`, `imports_below`
     /// and `may_use` list, counted in production code and in tests.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub imports: Option<Statements>,
-    /// For one beyond the direct dependents: what the walk reached it from
-    /// at that distance, a file its file imports or the id of a component
-    /// it depends on as a whole.
+    /// For one beyond the direct dependents: what the walk reached it
+    /// through at that distance, a file its file imports or the id of a
+    /// component it depends on as a whole.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub from: Option<String>,
-    /// Where a manifest of its own declares the component of `from`, when
-    /// that declaration was the way.
+    pub through: Option<String>,
+    /// Where a manifest of its own declares the component of `through`,
+    /// when that declaration was the way.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub declared_in: Option<Location>,
-    /// Where a file of its own imports the component of `from` without
+    /// Where a file of its own imports the component of `through` without
     /// naming a file of it, when that import was the way.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub imported_in: Option<Location>,
-    /// `from` as the text writes it: a file's path, a component's name.
+    /// `through` as the text writes it: a file's path, a component's name.
     #[serde(skip)]
-    pub(crate) from_shown: Option<String>,
+    pub(crate) through_shown: Option<String>,
 }
 
 /// Where a statement is written.

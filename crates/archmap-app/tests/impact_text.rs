@@ -568,7 +568,7 @@ fn a_component_that_holds_the_target_names_the_files_of_it_reached() {
         serde_json::json!({
             "id": "ts-shop",
             "distance": 1,
-            "through": ["src/index.ts"],
+            "files": ["src/index.ts"],
             "imports": {"production": 2, "tests": 0}
         })
     );
@@ -643,7 +643,7 @@ fn a_dependent_a_declaration_reaches_names_what_it_declares_and_where() {
         serde_json::json!({
             "id": "top",
             "distance": 2,
-            "from": "mid",
+            "through": "mid",
             "declared_in": {"file": "top/Cargo.toml", "line": 6}
         })
     );
