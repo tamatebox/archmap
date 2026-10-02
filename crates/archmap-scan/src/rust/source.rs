@@ -742,6 +742,14 @@ impl Wallet {
     pub fn open(&self) {}
 }
 #[cfg(test)]
+impl Wallet {
+    pub fn empty() -> Self {
+        Wallet
+    }
+}
+#[cfg(any(test, feature = \"x\"))]
+pub fn maybe() {}
+#[cfg(test)]
 pub mod support {
     pub fn helper() {}
 }
@@ -762,6 +770,10 @@ pub mod support {
                 ("Wallet", false),
                 ("Wallet::sample", true),
                 ("Wallet::open", false),
+                // the whole `impl` only for tests
+                ("Wallet::empty", true),
+                // compiled outside tests too
+                ("maybe", false),
                 ("support", true),
             ]
         );
