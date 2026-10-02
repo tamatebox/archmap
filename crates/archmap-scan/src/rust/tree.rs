@@ -53,8 +53,10 @@ pub(super) struct ResolvedPackage {
     /// declare, by crate name: tried last, for dependencies the manifest
     /// reader misses (target-specific tables).
     pub other_packages: BTreeMap<String, ComponentId>,
-    /// Crate names of `[dev-dependencies]`, which have no edges.
-    pub dev_imports: BTreeSet<String>,
+    /// Crate names of `[dev-dependencies]`, which have no edges, with where
+    /// each is declared (`declared in crates/app/Cargo.toml:10
+    /// ([dev-dependencies])`).
+    pub dev_imports: BTreeMap<String, String>,
     /// What the manifest says of the package's targets.
     pub declared: DeclaredTargets,
 }
@@ -1092,7 +1094,7 @@ impl<'a> Resolver<'a> {
 
     fn unknown_crate(&self, at: usize, name: &str) -> Pos {
         let package = &self.packages[self.forest.nodes[at].package];
-        if package.dev_imports.contains(name) {
+        if package.dev_imports.contains_key(name) {
             Pos::DevOnly(name.to_owned())
         } else {
             Pos::Nothing
@@ -1134,7 +1136,7 @@ mod tests {
                 .map(|(n, id)| (n.to_string(), ComponentId::new(*id)))
                 .collect(),
             other_packages: BTreeMap::new(),
-            dev_imports: BTreeSet::new(),
+            dev_imports: BTreeMap::new(),
             declared: DeclaredTargets::default(),
         }
     }

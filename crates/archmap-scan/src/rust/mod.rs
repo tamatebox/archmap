@@ -305,12 +305,13 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
                 // declared only in `[dev-dependencies]`, for tests: an import
                 // without an edge
                 Resolved::DevOnly(module) => {
+                    let note = dev_note(decl.note, &module, package);
                     output.fragment.push_unmapped_import(UnmappedImport {
                         from: owner.clone(),
                         module,
                         reason: UnmappedReason::DeclaredNotRequired,
                         provided_by: Vec::new(),
-                        evidence: evidence.with_note(decl.note),
+                        evidence: evidence.with_note(note),
                     });
                 }
                 Resolved::Nothing => {}
@@ -457,14 +458,26 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
                 Edge::new(owner, id, EdgeKind::Import)
                     .with_evidence(evidence.with_note(note("path", hit.via, &files))),
             ),
-            PathTarget::DevOnly(module) => output.fragment.push_unmapped_import(UnmappedImport {
-                from: owner,
-                module,
-                reason: UnmappedReason::DeclaredNotRequired,
-                provided_by: Vec::new(),
-                evidence: evidence.with_note("path"),
-            }),
+            PathTarget::DevOnly(module) => {
+                let note = dev_note("path", &module, &packages[files[file].package]);
+                output.fragment.push_unmapped_import(UnmappedImport {
+                    from: owner,
+                    module,
+                    reason: UnmappedReason::DeclaredNotRequired,
+                    provided_by: Vec::new(),
+                    evidence: evidence.with_note(note),
+                })
+            }
         }
+    }
+}
+
+/// The note of an import of the dev-dependency `module`, written as `kind`:
+/// `use assert_cmd, declared in crates/app/Cargo.toml:10 ([dev-dependencies])`.
+fn dev_note(kind: &str, module: &str, package: &ResolvedPackage) -> String {
+    match package.dev_imports.get(module) {
+        Some(declared) => format!("{kind} {module}, {declared}"),
+        None => kind.to_owned(),
     }
 }
 
@@ -601,12 +614,22 @@ fn manifest_pass(
         output.fragment.push_component(component);
 
         let mut import_targets: BTreeMap<String, ComponentId> = BTreeMap::new();
-        let mut dev_imports: BTreeSet<String> = BTreeSet::new();
+        let mut dev_imports: BTreeMap<String, String> = BTreeMap::new();
         let workspace = nearest_workspace(&workspaces, &pkg.dir);
 
         for dep in &pkg.dependencies {
             if dep.kind == DependencyKind::Dev {
-                dev_imports.insert(dep.import_name());
+                // where it is declared, for the notes of its imports
+                let at = match dep.line {
+                    Some(line) => format!("{manifest_file}:{line}"),
+                    None => manifest_file.clone(),
+                };
+                let name = match dep.name == dep.import_name() {
+                    true => String::new(),
+                    false => format!(" as {}", dep.name),
+                };
+                let declared = format!("declared{name} in {at} ({})", dep.kind.section());
+                dev_imports.insert(dep.import_name(), declared);
                 continue;
             }
             let dep = resolve_workspace_dep(dep, workspace, &manifest_file, &mut output.warnings);

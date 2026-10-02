@@ -82,7 +82,8 @@ into the model in [graph.md](graph.md); how the commands present it is in
   example or a bench is a crate of its own, and keeps every import of the library and of its own
   modules, `#[test] fn` bodies included
 - a `use` of a `[dev-dependencies]` crate (in a test module, a test, an example or a bench) is an
-  import without an edge
+  import without an edge, noted with where the manifest declares it (`use assert_cmd, declared in
+  crates/app/Cargo.toml:10 ([dev-dependencies])`)
 - imports and paths in `#[cfg(test)]` and `#[test]` code, and every import of a test, an example
   or a bench, carry `test` in their evidence (see [graph.md](graph.md)): a target's kind is a fact of
   Cargo, as they may use `[dev-dependencies]` and are no part of the library and the binaries; path

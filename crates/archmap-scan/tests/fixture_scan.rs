@@ -571,7 +571,8 @@ fn a_dev_dependency_used_in_test_code_is_an_import_without_an_edge() {
         provided_by: vec![],
         evidence: Evidence::new(file)
             .at_line(line)
-            .with_note("use")
+            // where the manifest declares it, as for Python and TS/JS
+            .with_note("use assert_cmd, declared in crates/app/Cargo.toml:10 ([dev-dependencies])")
             .in_scope(Scope::Module)
             .in_test(true),
     };
