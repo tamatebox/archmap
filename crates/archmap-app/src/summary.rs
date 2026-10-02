@@ -114,11 +114,19 @@ struct Section {
     listed: usize,
 }
 
-pub fn render(graph: &ArchitectureGraph, depth: usize, verbose: bool) -> String {
-    render_with(graph, depth, Limits::new(verbose))
+pub fn render(graph: &ArchitectureGraph, root: &Path, depth: usize, verbose: bool) -> String {
+    render_with(graph, &root_name(root), depth, Limits::new(verbose))
 }
 
-fn render_with(graph: &ArchitectureGraph, depth: usize, limits: Limits) -> String {
+/// The name `summary` gives the root: its directory's, or the path as it
+/// is for a root without one (`/`).
+fn root_name(root: &Path) -> String {
+    root.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| root.display().to_string())
+}
+
+fn render_with(graph: &ArchitectureGraph, root: &str, depth: usize, limits: Limits) -> String {
     let rolled = graph.rollup(depth);
     let internal: Vec<&Component> = rolled
         .components
@@ -205,6 +213,7 @@ fn render_with(graph: &ArchitectureGraph, depth: usize, limits: Limits) -> Strin
     loop {
         let mut out = header(
             graph,
+            root,
             depth,
             internal.len(),
             lists[0].listed,
@@ -231,6 +240,7 @@ fn render_with(graph: &ArchitectureGraph, depth: usize, limits: Limits) -> Strin
 
 fn header(
     graph: &ArchitectureGraph,
+    root: &str,
     depth: usize,
     at_depth: usize,
     listed: usize,
@@ -238,13 +248,9 @@ fn header(
     external_dependencies: usize,
 ) -> String {
     let mut out = String::new();
-    let name = Path::new(&graph.meta.root)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| graph.meta.root.clone());
     let full_internal = graph.components.values().filter(|c| is_internal(c)).count();
     let _ = writeln!(out, "# archmap summary");
-    let _ = writeln!(out, "root: {name}");
+    let _ = writeln!(out, "root: {root}");
     let _ = writeln!(out, "depth: {depth}");
     if listed < at_depth {
         let _ = writeln!(
@@ -905,7 +911,6 @@ mod tests {
 
     fn graph(components: Vec<Component>, edges: Vec<Edge>) -> ArchitectureGraph {
         let mut graph = ArchitectureGraph::default();
-        graph.meta.root = "repo".to_owned();
         for c in components {
             graph.add_component(c);
         }
@@ -960,7 +965,7 @@ mod tests {
 
     #[test]
     fn packages_come_first_and_modules_fill_the_cap_by_rank() {
-        let out = render_with(&two_packages(), 2, limits(4, 30, 20));
+        let out = render_with(&two_packages(), "repo", 2, limits(4, 30, 20));
         assert_eq!(
             section(&out, "Components"),
             "p  package  path: p\n  p::a\nq  package  path: q\n  q::d\n\
@@ -974,7 +979,7 @@ mod tests {
 
     #[test]
     fn verbose_lists_every_component() {
-        let out = render_with(&two_packages(), 2, Limits::new(true));
+        let out = render_with(&two_packages(), "repo", 2, Limits::new(true));
         assert_eq!(
             section(&out, "Components"),
             "p  package  path: p\n  p::a\n  p::b\n  p::c\nq  package  path: q\n  q::d\n"
@@ -1001,14 +1006,14 @@ mod tests {
 
     #[test]
     fn a_module_that_cannot_fit_with_its_ancestors_is_skipped() {
-        let out = render_with(&nested(), 2, limits(2, 30, 20));
+        let out = render_with(&nested(), "repo", 2, limits(2, 30, 20));
         assert_eq!(
             section(&out, "Components"),
             "p  package  path: p\n  p::y\n\
              omitted: 2 modules  in: p 2  next: query <component>\n"
         );
 
-        let out = render_with(&nested(), 2, limits(3, 30, 20));
+        let out = render_with(&nested(), "repo", 2, limits(3, 30, 20));
         assert_eq!(
             section(&out, "Components"),
             "p  package  path: p\n  p::x\n    p::x::deep\n\
@@ -1028,7 +1033,7 @@ mod tests {
                 import("b", "c", 1),
             ],
         );
-        let out = render_with(&graph, 2, limits(3, 30, 20));
+        let out = render_with(&graph, "repo", 2, limits(3, 30, 20));
         assert_eq!(
             section(&out, "Components"),
             "a  package  path: a\nb  package  path: b\nc  package  path: c\n\
@@ -1056,7 +1061,7 @@ mod tests {
                 import("p::a", "r", 3),
             ],
         );
-        let out = render_with(&graph, 2, limits(30, 3, 20));
+        let out = render_with(&graph, "repo", 2, limits(30, 3, 20));
         assert_eq!(
             section(&out, "Internal dependencies"),
             "p::a -> r  imports: 3\np::a -> q  imports: 1\nq -> p::b  imports: 2\n\
@@ -1084,13 +1089,13 @@ mod tests {
                 test_import("p::e", "p::b", 2),
             ],
         );
-        let out = render_with(&graph, 1, limits(30, 2, 20));
+        let out = render_with(&graph, "repo", 1, limits(30, 2, 20));
         assert_eq!(
             section(&out, "Internal dependencies"),
             "p::c -> p::b  imports: 3\np::e -> p::b  imports: 2  tests: 2\n\
              omitted: 2 dependencies  from: p::a 1, p::d 1  next: query <component>\n"
         );
-        let out = render_with(&graph, 1, limits(30, 30, 20));
+        let out = render_with(&graph, "repo", 1, limits(30, 30, 20));
         assert!(
             section(&out, "Internal dependencies").contains("p::d -> p::b  tests: 4\n"),
             "{out}"
@@ -1120,7 +1125,7 @@ mod tests {
                 import("p::b", "p::a", 1),
             ],
         );
-        let out = render_with(&graph, 1, limits(30, 30, 20));
+        let out = render_with(&graph, "repo", 1, limits(30, 30, 20));
         assert_eq!(
             section(&out, "Internal dependencies"),
             "p::b -> p::a  imports: 1\n\
@@ -1132,7 +1137,7 @@ mod tests {
         );
         // another file of p that imports p::a depends on it
         let graph = graph_with(&graph, vec![from("p/config.ts", 1)]);
-        let out = render_with(&graph, 1, limits(30, 30, 20));
+        let out = render_with(&graph, "repo", 1, limits(30, 30, 20));
         assert!(
             section(&out, "Internal dependencies").contains("p -> p::a  imports: 1\n"),
             "{out}"
@@ -1190,7 +1195,7 @@ mod tests {
             signature: None,
             evidence: vec![Evidence::new("lib/money.ts").at_line(1)],
         });
-        let out = render_with(&graph, 2, limits(30, 30, 20));
+        let out = render_with(&graph, "repo", 2, limits(30, 30, 20));
         assert_eq!(
             section(&out, "Internal dependencies"),
             "app -> lib  imports: 1\napp -> lib::money  imports: 1\n"
@@ -1228,11 +1233,18 @@ mod tests {
                 )),
             ],
         );
-        let out = render_with(&graph, 3, limits(30, 30, 20));
+        let out = render_with(&graph, "repo", 3, limits(30, 30, 20));
         assert_eq!(
             section(&out, "Internal dependencies"),
             "app -> shapes  imports: 1\napp -> shapes::circle  imports: 1\n"
         );
+    }
+
+    #[test]
+    fn the_root_is_named_by_its_directory() {
+        assert_eq!(root_name(Path::new("/work/shop")), "shop");
+        // a root without a name of its own
+        assert_eq!(root_name(Path::new("/")), "/");
     }
 
     #[test]
@@ -1253,7 +1265,7 @@ mod tests {
             ],
             vec![import("p::a", "p::types", 2), import("p::a", "q::types", 1)],
         );
-        let out = render_with(&graph, 1, limits(30, 30, 20));
+        let out = render_with(&graph, "repo", 1, limits(30, 30, 20));
         assert_eq!(
             section(&out, "Internal dependencies"),
             "p::a -> p::types  imports: 2\np::a -> q::types  imports: 1\n"
@@ -1277,7 +1289,7 @@ mod tests {
             Edge::new(format!("p{i}"), "ext:cargo:serde", EdgeKind::Dependency)
                 .with_evidence(Evidence::new(format!("p{i}/Cargo.toml")))
         }));
-        let out = render_with(&graph, 1, limits(30, 30, 20));
+        let out = render_with(&graph, "repo", 1, limits(30, 30, 20));
         assert!(
             section(&out, "External dependencies").starts_with(
                 "serde  declared: p1/Cargo.toml, p2/Cargo.toml, p3/Cargo.toml, +2 more  importers"
@@ -1309,7 +1321,7 @@ mod tests {
                 test_import("p::t", "ext:cargo:proptest", 1),
             ],
         );
-        let out = render_with(&graph, 1, limits(30, 30, 20));
+        let out = render_with(&graph, "repo", 1, limits(30, 30, 20));
         assert_eq!(
             section(&out, "External dependencies"),
             "proptest  importers: 0  test importers: 1\nserde  importers: 1  top: p::a 2  test importers: 1\n"
@@ -1342,7 +1354,7 @@ mod tests {
                     .with_evidence(Evidence::new("Cargo.toml").at_line(3)),
             ],
         );
-        let out = render_with(&graph, 2, limits(30, 30, 2));
+        let out = render_with(&graph, "repo", 2, limits(30, 30, 2));
         assert_eq!(
             section(&out, "External dependencies"),
             "x1  importers: 3  top: p::a 1, p::b 1, p::c 1\n\
@@ -1375,6 +1387,7 @@ mod tests {
         let graph = long_named(40);
         let capped_only = render_with(
             &graph,
+            "repo",
             2,
             Limits {
                 budget: usize::MAX,
@@ -1383,7 +1396,7 @@ mod tests {
         );
         assert!(capped_only.len() > BUDGET, "the test needs a long summary");
 
-        let out = render_with(&graph, 2, Limits::new(false));
+        let out = render_with(&graph, "repo", 2, Limits::new(false));
         assert!(out.len() <= BUDGET, "{} bytes:\n{out}", out.len());
         for heading in ["Components", "Internal dependencies"] {
             let n = listed(&out, heading);
@@ -1397,6 +1410,7 @@ mod tests {
     fn lists_keep_their_floor_even_over_the_budget() {
         let out = render_with(
             &long_named(40),
+            "repo",
             2,
             Limits {
                 budget: 1000,
@@ -1424,7 +1438,7 @@ mod tests {
                 edges.push(import(&name(p, m), &format!("ext:cargo:lib{}", m % 25), 1));
             }
         }
-        let out = render_with(&graph(components, edges), 2, Limits::new(false));
+        let out = render_with(&graph(components, edges), "repo", 2, Limits::new(false));
         assert!(out.len() <= BUDGET, "{} bytes:\n{out}", out.len());
         assert!(
             out.contains(" shown of 500 at depth, 500 in the full graph\n"),

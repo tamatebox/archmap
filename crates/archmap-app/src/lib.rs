@@ -133,7 +133,7 @@ impl Workspace {
 
     /// The Markdown summary at `depth`; `verbose` lists everything.
     pub fn summary(&self, depth: usize, verbose: bool) -> String {
-        summary::render(self.graph(), depth, verbose)
+        summary::render(self.graph(), &self.report.root, depth, verbose)
     }
 }
 

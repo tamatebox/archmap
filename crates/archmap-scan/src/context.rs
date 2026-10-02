@@ -44,10 +44,6 @@ impl RepoContext {
         &self.root
     }
 
-    pub fn root_display(&self) -> String {
-        self.root.display().to_string()
-    }
-
     pub fn options(&self) -> &ScanOptions {
         &self.options
     }

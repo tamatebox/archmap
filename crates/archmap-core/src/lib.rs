@@ -28,4 +28,4 @@ pub use model::{
 /// Version of the JSON schema emitted by [`ArchitectureGraph`].
 ///
 /// Bump when a breaking change is made to the serialized shape.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;

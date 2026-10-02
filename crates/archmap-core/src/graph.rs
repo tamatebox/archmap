@@ -12,10 +12,8 @@ use crate::{
 /// Information about how a graph was produced.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GraphMeta {
-    /// Repository root as given to the scanner.
-    #[serde(default)]
-    pub root: String,
-    /// Names of the analyzers that contributed fragments.
+    /// Names of the analyzers that contributed fragments. No root: the
+    /// graph of a commit is the same in every checkout.
     #[serde(default)]
     pub analyzers: Vec<String>,
     /// Version of the tool that produced the graph.
@@ -1873,7 +1871,7 @@ mod tests {
         let json = serde_json::to_string(&graph).unwrap();
         let back: ArchitectureGraph = serde_json::from_str(&json).unwrap();
         assert_eq!(graph, back);
-        assert!(json.contains("\"schema_version\":3"));
+        assert!(json.contains("\"schema_version\":4"));
         assert!(json.contains("\"kind\":\"import\""));
     }
 }

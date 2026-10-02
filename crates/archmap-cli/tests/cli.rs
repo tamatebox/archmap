@@ -35,7 +35,7 @@ fn scan_writes_graph_under_dot_archmap_by_default() {
     let graph: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(repo.join(".archmap/graph.json")).unwrap())
             .unwrap();
-    assert_eq!(graph["schema_version"], 3);
+    assert_eq!(graph["schema_version"], 4);
     // only the graph is written; whether to ignore it is the repository's call
     let written: Vec<String> = std::fs::read_dir(repo.join(".archmap"))
         .unwrap()
@@ -90,7 +90,7 @@ fn scan_emits_json_graph_to_stdout_with_dash() {
     );
 
     let graph: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid json");
-    assert_eq!(graph["schema_version"], 3);
+    assert_eq!(graph["schema_version"], 4);
     assert_eq!(graph["components"]["app"]["kind"], "package");
     assert!(graph["symbols"]["lib_core::greet"].is_object());
     assert!(graph["edges"]
@@ -2380,4 +2380,36 @@ fn a_statement_counts_for_a_barrel_unless_every_name_passes_through() {
         query.contains("\n  ui            2 imports, 1 through re-exports: "),
         "{query}"
     );
+}
+
+#[test]
+fn two_checkouts_of_one_commit_give_one_graph() {
+    // a worktree takes another directory name; the manifest names the
+    // project, as code that no manifest names takes the directory's name
+    let graphs: Vec<String> = ["checkout-main", "checkout-feature"]
+        .iter()
+        .map(|name| {
+            let repo = temp_repo(name);
+            std::fs::write(repo.join("pyproject.toml"), "[project]\nname = \"shop\"\n").unwrap();
+            let out = archmap()
+                .arg("scan")
+                .arg(&repo)
+                .args(["-o", "-"])
+                .output()
+                .unwrap();
+            let summary = archmap()
+                .arg("summary")
+                .arg(&repo)
+                .args(["-o", "-"])
+                .output()
+                .unwrap();
+            std::fs::remove_dir_all(&repo).unwrap();
+            // the summary still names the directory it maps
+            let summary = String::from_utf8_lossy(&summary.stdout).into_owned();
+            let dir = repo.file_name().unwrap().to_string_lossy().into_owned();
+            assert!(summary.contains(&format!("\nroot: {dir}\n")), "{summary}");
+            String::from_utf8(out.stdout).unwrap()
+        })
+        .collect();
+    assert_eq!(graphs[0], graphs[1]);
 }

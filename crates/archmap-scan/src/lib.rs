@@ -44,6 +44,9 @@ pub struct ScanOptions {
 #[derive(Debug)]
 pub struct ScanReport {
     pub graph: ArchitectureGraph,
+    /// The root that was scanned, canonical. The graph leaves it out, so
+    /// that two checkouts of a commit give the same graph.
+    pub root: PathBuf,
     /// Non-fatal problems (unparseable file, unreadable manifest, ...).
     pub warnings: Vec<String>,
 }
@@ -73,7 +76,6 @@ pub fn scan_with(
 ) -> Result<ScanReport, ScanError> {
     let ctx = RepoContext::load(root, options.clone())?;
     let mut graph = ArchitectureGraph::new(GraphMeta {
-        root: ctx.root_display(),
         analyzers: Vec::new(),
         tool_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
         coverage: BTreeMap::new(),
@@ -102,7 +104,11 @@ pub fn scan_with(
 
     graph.meta.coverage = coverage(ctx.files(), read, scripts);
     graph.normalize();
-    Ok(ScanReport { graph, warnings })
+    Ok(ScanReport {
+        graph,
+        root: ctx.root().to_path_buf(),
+        warnings,
+    })
 }
 
 /// Files of each recognized language, with how many an analyzer read and

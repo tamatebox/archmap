@@ -7,7 +7,7 @@ feeds and every command ([commands.md](commands.md)) reads.
 
 ```text
 ArchitectureGraph
-├── meta:       { root, analyzers, tool_version, coverage: { language -> { files, read?, scripts? } } }
+├── meta:       { analyzers, tool_version, coverage: { language -> { files, read?, scripts? } } }
 ├── components: { id -> Component { kind: package | module | script | external, language, path, parent?, evidence } }
 ├── symbols:    { id -> Symbol { kind: function | struct | enum | trait | ..., component, signature, evidence } }
 ├── edges:      [ Edge { from, to, kind: import | dependency | call | http | database | event | unknown, evidence } ]
@@ -79,7 +79,10 @@ imports or exports (see [analyzers.md](analyzers.md)): its top-level
 declarations are global, so they are its symbols and no edge shows who uses
 them. `meta.coverage` counts scripts per language, files that belong to
 their package without being a component of their own included. The JSON
-carries `schema_version: 3`.
+carries `schema_version: 4`, and no path of the machine that scanned: two
+checkouts of one commit give the same graph wherever they sit, as long as
+manifests name the packages (code that no manifest names takes the root
+directory's name). `summary` names the root it scans by its directory.
 
 ## Ids and merging
 
