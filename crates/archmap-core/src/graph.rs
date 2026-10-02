@@ -815,14 +815,18 @@ impl ArchitectureGraph {
             Node::Component(c) => Some(self.ancestor_at(c, depth)),
         };
         // the first node on the way to `node` that `folded` does not hold:
-        // the file (or component) it was reached from
+        // the file it was reached from, or where reached from a component
+        // (a manifest's declaration), the file of its own that names it
         let hop = |node: Node, folded: &ComponentId| {
             let mut at = node;
             while let Some(&from) = parent.get(&at) {
                 if folded_of(&from).as_ref() != Some(folded) {
-                    return Some(match from {
-                        Node::File(f) | Node::Passes(f) | Node::Relays(f) => f.to_owned(),
-                        Node::Component(c) => c.to_string(),
+                    return Some(match (from, at) {
+                        (Node::File(f) | Node::Passes(f) | Node::Relays(f), _) => f.to_owned(),
+                        (Node::Component(_), Node::File(f) | Node::Passes(f) | Node::Relays(f)) => {
+                            f.to_owned()
+                        }
+                        (Node::Component(c), Node::Component(_)) => c.to_string(),
                     });
                 }
                 at = from;
@@ -3422,6 +3426,77 @@ mod tests {
         assert_eq!(
             reach.left_out.keys().collect::<Vec<_>>(),
             ["spec/other.test.ts"]
+        );
+    }
+
+    #[test]
+    fn each_dependent_keeps_its_fewest_steps_and_the_file_it_came_from() {
+        let mut graph = ArchitectureGraph::default();
+        for file in ["lib/a.ts", "lib/b.ts", "app/c.ts", "app/d.ts", "app/e.ts"] {
+            let mut c = Component::new(file, file, ComponentKind::Module);
+            c.path = Some(file.into());
+            graph.add_component(c);
+        }
+        let import = |file: &str, target: &str| {
+            Edge::new(file, target, EdgeKind::Import).with_evidence(
+                Evidence::new(file)
+                    .at_line(1)
+                    .pointing_at(target)
+                    .taking(["x"]),
+            )
+        };
+        // c reaches a through b; d through c and, nearer, a itself; e
+        // through d only
+        graph.add_edges([
+            import("lib/b.ts", "lib/a.ts"),
+            import("app/c.ts", "lib/b.ts"),
+            import("app/d.ts", "app/c.ts"),
+            import("app/d.ts", "lib/a.ts"),
+            import("app/e.ts", "app/d.ts"),
+        ]);
+        let reach = graph.change_impact(ChangeSeed::File("lib/a.ts"), 9);
+        let steps: Vec<(&str, usize, Option<&str>)> = reach
+            .distance
+            .iter()
+            .map(|(id, d)| (id.as_str(), *d, reach.from.get(id).map(String::as_str)))
+            .collect();
+        assert_eq!(
+            steps,
+            [
+                ("app/c.ts", 2, Some("lib/b.ts")),
+                ("app/d.ts", 1, Some("lib/a.ts")),
+                ("app/e.ts", 2, Some("app/d.ts")),
+                ("lib/b.ts", 1, Some("lib/a.ts")),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_dependent_a_declaration_reaches_came_from_its_manifest() {
+        let mut graph = ArchitectureGraph::default();
+        for name in ["core", "mid", "top"] {
+            let mut c = Component::new(name, name, ComponentKind::Package);
+            c.path = Some(name.into());
+            graph.add_component(c);
+        }
+        let declares = |from: &str, to: &str| {
+            Edge::new(from, to, EdgeKind::Dependency)
+                .with_evidence(Evidence::new(format!("{from}/Cargo.toml")).at_line(7))
+        };
+        graph.add_edges([declares("mid", "core"), declares("top", "mid")]);
+        let reach = graph.change_impact(ChangeSeed::File("core/src/lib.rs"), 9);
+        let steps: Vec<(&str, usize, Option<&str>)> = reach
+            .distance
+            .iter()
+            .map(|(id, d)| (id.as_str(), *d, reach.from.get(id).map(String::as_str)))
+            .collect();
+        // the file that writes the declaration, not the component it names
+        assert_eq!(
+            steps,
+            [
+                ("mid", 1, Some("mid/Cargo.toml")),
+                ("top", 2, Some("top/Cargo.toml")),
+            ]
         );
     }
 

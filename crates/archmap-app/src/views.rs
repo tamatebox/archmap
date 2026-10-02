@@ -179,10 +179,12 @@ pub struct ImpactResult<'a> {
     pub also_named: Vec<ComponentId>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub also_at_path: Vec<ComponentId>,
-    /// Components that directly depend on the target.
-    pub direct: Vec<ComponentId>,
-    /// Every component that transitively depends on the target.
-    pub transitive: Vec<ComponentId>,
+    /// Components that directly depend on the target, those with the most
+    /// statements into it in production code first, ties by name.
+    pub direct: Vec<Dependent>,
+    /// Every component that transitively depends on the target, `direct`
+    /// included, nearest first, ties by name.
+    pub transitive: Vec<Dependent>,
     /// Files that reach the target only through test code, and a changed
     /// component's own test files: the tests to run again.
     pub tests: TestFiles,
@@ -225,6 +227,30 @@ pub(crate) const MAX_IMPORT_SITES: usize = 5;
 /// How many test files `impact` shows, in text and JSON alike; the rest is
 /// counted.
 pub(crate) const MAX_TEST_FILES: usize = 20;
+
+/// A component that depends on the target.
+#[derive(Debug, Clone, Serialize)]
+pub struct Dependent {
+    pub id: ComponentId,
+    /// The fewest steps from the target: 1 for a direct dependent.
+    pub distance: usize,
+    /// For a direct dependent: its statements that `importers`, `imports_below`
+    /// and `may_use` list, counted in production code and in tests.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub imports: Option<Statements>,
+    /// For one beyond the direct dependents: the file the walk reached it
+    /// from at that distance, which its file imports, or its own manifest
+    /// where that declares the way (a component where no file does).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+}
+
+/// Statements counted in production code and in tests.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct Statements {
+    pub production: usize,
+    pub tests: usize,
+}
 
 #[derive(Debug, Serialize)]
 pub struct TestFiles {
@@ -272,6 +298,8 @@ pub struct ImportSites<'a> {
     /// the importers are unknown, not absent.
     pub recorded: bool,
     pub total: usize,
+    /// Every statement, production code first; the text shows the first.
+    #[serde(rename = "statements")]
     pub shown: Vec<ImportSite<'a>>,
     /// How many of all the statements are re-exports, for the text.
     #[serde(skip)]
@@ -280,18 +308,20 @@ pub struct ImportSites<'a> {
 
 #[derive(Debug, Serialize)]
 pub struct ImportSite<'a> {
+    #[serde(skip)]
     pub file: String,
+    #[serde(skip)]
     pub line: Option<u32>,
     /// The importing component, at the roll-up depth.
     pub component: ComponentId,
     /// The statement is test code.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(skip)]
     pub test: bool,
     /// For a symbol: the barrel the statement reaches it through, a file
     /// that passes it on, when the statement takes that file.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub through: Option<&'a str>,
-    /// The statement's evidence, for the marks of the text.
-    #[serde(skip)]
+    /// The statement's evidence, every field of it in JSON.
+    #[serde(flatten)]
     pub(crate) evidence: &'a Evidence,
 }

@@ -7,6 +7,26 @@ fn fixture_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/simple-rust-workspace")
 }
 
+/// The ids of impact's `direct` or `transitive`, in order.
+fn ids(dependents: &serde_json::Value) -> serde_json::Value {
+    dependents
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["id"].clone())
+        .collect()
+}
+
+/// Where impact's statements are, and the component each is in.
+fn sites(statements: &serde_json::Value) -> serde_json::Value {
+    statements
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| serde_json::json!({"file": s["file"], "line": s["line"], "component": s["component"]}))
+        .collect()
+}
+
 fn archmap() -> Command {
     Command::new(env!("CARGO_BIN_EXE_archmap"))
 }
@@ -137,12 +157,13 @@ fn impact_accepts_component_or_file() {
         (
             "crates/lib_core/src/billing.rs",
             "lib_core::billing",
+            // nearest first
             serde_json::json!([
                 "app",
-                "app::config",
                 "lib_core::api::v1",
                 "lib_core::billing::invoice",
-                "lib_core::store"
+                "lib_core::store",
+                "app::config"
             ]),
         ),
     ];
@@ -155,7 +176,7 @@ fn impact_accepts_component_or_file() {
         assert!(out.status.success(), "target {target}");
         let result: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
         assert_eq!(result["target"], component);
-        assert_eq!(result["transitive"], transitive);
+        assert_eq!(ids(&result["transitive"]), transitive);
     }
 }
 
@@ -385,13 +406,13 @@ fn impact_of_a_file_uses_the_summary_depth() {
     ]);
     assert_eq!(result["target"], "shop::shop.integrations");
     assert_eq!(result["folded_from"], "shop::shop.integrations.slack");
-    assert_eq!(result["direct"], serde_json::json!(["shop::shop"]));
+    assert_eq!(ids(&result["direct"]), serde_json::json!(["shop::shop"]));
     // followed file by file: src/shop/__init__.py imports slack, and runs
     // before any module below it, so tests.unit, which imports only
     // shop/users.py, is reached through it
     assert_eq!(
-        result["transitive"],
-        serde_json::json!(["shop::scripts", "shop::shop", "shop::shop.billing"])
+        ids(&result["transitive"]),
+        serde_json::json!(["shop::shop", "shop::scripts", "shop::shop.billing"])
     );
     // the tests to run again
     assert_eq!(
@@ -481,7 +502,7 @@ fn every_summary_component_is_visible_to_query_and_impact() {
 
         let impact = fixture_json(&["impact", name, "--format", "json"]);
         assert!(impact.get("folded_from").is_none());
-        for id in impact["transitive"].as_array().unwrap() {
+        for id in ids(&impact["transitive"]).as_array().unwrap() {
             let dependent = fixture_json(&["query", id.as_str().unwrap(), "--format", "json"]);
             assert!(
                 dependent.get("folded_from").is_none(),
@@ -872,11 +893,14 @@ fn impact_does_not_travel_through_a_shared_component() {
     // core is used only by utils/store.py, which nothing else imports: the
     // component graph would claim models too, through utils
     let core = impact("app/core/__init__.py");
-    assert_eq!(core["transitive"], serde_json::json!(["mixed::app.utils"]));
+    assert_eq!(
+        ids(&core["transitive"]),
+        serde_json::json!(["mixed::app.utils"])
+    );
     // the logger really is used by core and models
     let log = impact("app/utils/log.py");
     assert_eq!(
-        log["direct"],
+        ids(&log["direct"]),
         serde_json::json!(["mixed::app.core", "mixed::app.models"])
     );
     // a path that exists nowhere is an error, not an empty answer
@@ -1025,7 +1049,7 @@ fn a_file_imported_by_bare_name_from_its_own_directory_has_that_importer() {
     );
     let impact = fixture_json(&["impact", "scripts/helpers.py", "--format", "json"]);
     assert_eq!(
-        impact["importers"]["shown"],
+        sites(&impact["importers"]["statements"]),
         serde_json::json!([
             {"file": "scripts/report.py", "line": 3, "component": "shop::scripts"}
         ])
@@ -1071,7 +1095,7 @@ fn impact_of_a_file_lists_the_statements_that_import_it() {
     let result: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(result["importers"]["total"], 2);
     assert_eq!(
-        result["importers"]["shown"],
+        sites(&result["importers"]["statements"]),
         serde_json::json!([
             {"file": "app/core/__init__.py", "line": 1, "component": "mixed::app.core"},
             {"file": "app/models/__init__.py", "line": 1, "component": "mixed::app.models"}
@@ -2039,7 +2063,7 @@ fn test_code_is_marked_and_listed_apart() {
     );
     // importers: production code first, test code marked
     let impact = fixture_json(&["impact", "src/shop/users.py", "--format", "json"]);
-    let sites: Vec<(String, bool)> = impact["importers"]["shown"]
+    let sites: Vec<(String, bool)> = impact["importers"]["statements"]
         .as_array()
         .unwrap()
         .iter()
@@ -2237,13 +2261,15 @@ fn impact_lists_every_importer_and_test_with_verbose() {
     let shown = |json: &str| -> (usize, usize) {
         let value: serde_json::Value = serde_json::from_str(json).unwrap();
         (
-            value["importers"]["shown"].as_array().unwrap().len(),
+            value["importers"]["statements"].as_array().unwrap().len(),
             value["importers"]["total"].as_u64().unwrap() as usize,
         )
     };
-    let (capped_shown, total) = shown(&capped);
-    assert_eq!(capped_shown, 5);
-    assert_eq!(shown(&full), (total, total));
+    // JSON lists every statement, verbose or not; verbose lifts the text's caps
+    let (listed, total) = shown(&capped);
+    assert!(total > 5, "{capped}");
+    assert_eq!(listed, total);
+    assert_eq!(capped, full);
 }
 
 #[test]
@@ -2694,7 +2720,7 @@ fn impact_reaches_an_importer_through_the_barrel_alone() {
         .as_array()
         .unwrap()
         .iter()
-        .filter_map(|id| id.as_str())
+        .filter_map(|d| d["id"].as_str())
         .collect();
     assert!(direct.contains(&"ts-shop::src/app/checkout.ts"), "{json}");
 }

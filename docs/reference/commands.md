@@ -406,10 +406,10 @@ src/lib/types.ts (file) in lib/types.ts (module, typescript), depth 2
 id: ts-shop::src/lib/types.ts
 
 Direct dependents: 4
-  ts-shop
-  app/checkout.ts
-  app/page.tsx
-  lib/money.ts
+  app/checkout.ts  2 imports
+  app/page.tsx  1 import
+  lib/money.ts  1 import
+  ts-shop  1 import
 
 Imported by: 6, showing 5 (1 re-export)
   src/app/checkout.ts:8 (via src/index.ts:8) (type)
@@ -417,10 +417,11 @@ Imported by: 6, showing 5 (1 re-export)
   src/app/page.tsx:2 (type)
   src/index.ts:8 (export) (type)  in ts-shop
   src/lib/money.ts:4 (type)
+  1 more in: tests/money.test.ts 1
 
 Transitive dependents: 2 more (6 in all)
-  scripts/report.cjs
-  app/lazy.tsx
+  app/lazy.tsx  2 steps, through src/lib/money.ts
+  scripts/report.cjs  2 steps, through src/lib/money.ts
 
 Tests to run again: 2
   tests/helpers.ts
@@ -428,6 +429,7 @@ Tests to run again: 2
 
 Not traced:
   dynamic: 2 calls load modules by computed names, which may be this: scripts/report.cjs:4, src/app/lazy.tsx:7
+  barrels: 1 file passes on what may change, and only what takes it from there is followed; a rename, a removal or an error on load also breaks whatever else loads that file: src/index.ts:8
 
 Lists are capped; verbose lists every entry.
 ```
@@ -461,21 +463,35 @@ and the heading counts everything reached. A test file that is the target is
 among the tests to run again, marked `(the target itself)`. `Not traced` ends
 the answer as in `query`, and gives a script's note too.
 
-Lists show 30 components, 5 statements, 20 test files and 3 locations per
-kind of `Not traced`, and their headings count the rest (`6, showing 5`); an
-answer with a capped list ends by saying so, and `--verbose` lists every
-entry. `--format json` gives the same lists as fields, the output earlier
-versions printed by default: `direct` and `transitive` (which includes
-`direct`) in full; `importers`, `imports_below` and `may_use` as
-`{"recorded", "total", "shown"}` with 5 statements, each with its `file`, `line`, the `component` it
-is in, `"test": true` in test code and, for a symbol, the barrel it went
-through as `through`, `recorded` being false when no
-evidence names imported files for the language; `tests` as `{"total",
-"shown"}` with 20 files by path, and `left_out` as `{"total", "shown"}`
-with 20 test files and the `mocks` of each, by `file`, `line` and the
-`target` it replaces, when a mock left one out; `not_traced` with 5 locations per kind; and
-for an import name `module`, with `target` `null`. `--verbose` lists every
-entry there too.
+Direct dependents come with their statements into the target that the
+lists below hold, those with most in production code first, written as
+`query` counts neighbors (`app/checkout.ts  2 imports, 1 in tests`), and
+transitive dependents nearest first, with their steps from the target and
+the file the walk reached them from, or their own manifest where its
+declaration was the way (`app/lazy.tsx  2 steps, through
+src/lib/money.ts`); ties go by the name shown. Lists show 30 components, 5 statements, 20 test files
+and 3 locations per kind of `Not traced`, and their headings count the rest
+(`6, showing 5`); a capped statement list ends with the components the rest
+are in, most first (`13 more in: app/x 5, app/y 4, app/z 2, +2 more
+components`); an answer with a capped list ends by saying so, and
+`--verbose` lists every entry. `--format json` lists every entry with all
+its evidence, whatever `--verbose` says, and for a busy target runs large:
+`direct` and `transitive` (which includes `direct`) as objects with the
+component's `id`, its `distance` (1 for a direct one), for a direct one its
+`imports` (`{"production", "tests"}`), and for one further its `from`, in
+the text's order;
+`importers`, `imports_below` and `may_use` as `{"recorded", "total",
+"statements"}`, each statement its evidence (`file`, `line`, `note`,
+`target`, `scope`, `names`, `test`, `type_only`, `replaces`) with the
+`component` it is in and, for a symbol, the barrel it went through as
+`through`, `recorded` being false when no evidence names imported files for
+the language; `tests` as `{"total", "shown"}` with every file by path, and
+`left_out` as `{"total", "shown"}` with every test file and the `mocks` of
+each, by `file`, `line` and the `target` it replaces, when a mock left one
+out; `not_traced` with every location of each kind; and for an import name
+`module`, with `target` `null`. Earlier versions capped this JSON unless
+`--verbose`, listed `direct` and `transitive` as ids and the statements as
+`shown`.
 
 `impact` also takes a symbol, by name or by id, and an import name that no
 component carries, which starts from the files that import it, all at once:

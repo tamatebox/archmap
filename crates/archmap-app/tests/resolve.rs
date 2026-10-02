@@ -353,9 +353,13 @@ fn impact_on_an_import_name_follows_the_files_that_import_it() {
         answer.output
     );
     assert!(value["target"].is_null(), "{}", answer.output);
-    assert_eq!(value["direct"], serde_json::json!(["shop::scripts"]));
-    assert_eq!(value["importers"]["shown"][0]["file"], "scripts/report.py");
-    assert_eq!(value["importers"]["shown"][0]["line"], 2);
+    assert_eq!(value["direct"][0]["id"], "shop::scripts");
+    assert_eq!(value["direct"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        value["importers"]["statements"][0]["file"],
+        "scripts/report.py"
+    );
+    assert_eq!(value["importers"]["statements"][0]["line"], 2);
 }
 
 #[test]

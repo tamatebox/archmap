@@ -12,8 +12,8 @@ use crate::not_traced::{barrels, not_traced, Narrowed, NotTraced, Own, Place, Su
 use crate::resolve::{resolve, Resolved};
 use crate::target::{component_file, fold, namesakes, reject_outside, unquote};
 use crate::views::{
-    About, ImpactResult, ImportSite, ImportSites, LeftOut, MockCall, MockingTest, TestFiles,
-    MAX_IMPORT_SITES, MAX_TEST_FILES,
+    About, Dependent, ImpactResult, ImportSite, ImportSites, LeftOut, MockCall, MockingTest,
+    Statements, TestFiles,
 };
 use crate::{Answer, Format, Found, ImpactRequest, Workspace};
 
@@ -140,15 +140,10 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
     } = *request;
     let target = unquote(target);
     let root = ws.root();
-    let caps = match verbose {
-        true => Caps {
-            sites: usize::MAX,
-            tests: usize::MAX,
-        },
-        false => Caps {
-            sites: MAX_IMPORT_SITES,
-            tests: MAX_TEST_FILES,
-        },
+    // the answer lists everything; the text shows the first of each list
+    let caps = Caps {
+        sites: usize::MAX,
+        tests: usize::MAX,
     };
     reject_outside(root, target)?;
     let full = ws.graph();
@@ -271,7 +266,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
             }
         }
     };
-    let mut not_traced = not_traced(full, &subject, caps.sites);
+    let mut not_traced = not_traced(full, &subject, usize::MAX);
     // the barrels past which the reach went on by names only
     let narrowed = match &traced {
         Traced::File(file, _) => Some(Narrowed::File(file)),
@@ -279,7 +274,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
         Traced::Component(_) => None,
     };
     if let Some(found) =
-        narrowed.and_then(|n| barrels(full, n, &reach.relayed, &reach.tests, caps.sites))
+        narrowed.and_then(|n| barrels(full, n, &reach.relayed, &reach.tests, usize::MAX))
     {
         not_traced.get_or_insert_with(NotTraced::default).barrels = Some(found);
     }
@@ -295,13 +290,21 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
         .map(|c| namesakes(full, c))
         .unwrap_or_default();
     let owned = |ids: Vec<&ComponentId>| ids.into_iter().cloned().collect();
+    // the statements of each direct dependent into the target: those the
+    // lists hold, or for a whole component those into its files
+    let lists = importers.iter().chain(&imports_below).chain(&may_use);
+    let mut counted = counts(lists.flat_map(|sites| &sites.shown));
+    if let About::Component = about {
+        counted = into_component(full, depth, &at.id);
+    }
+    let (direct, transitive) = dependents(full, &reach, &counted, 0);
     let result = ImpactResult {
         also_named: owned(also_named),
         also_at_path: owned(also_at_path),
         requested: target,
         depth,
-        direct: reach.direct.into_iter().collect(),
-        transitive: reach.transitive.into_iter().collect(),
+        direct,
+        transitive,
         tests: test_files(reach.tests, reach.left_out, caps.tests),
         target: Some(at.id),
         module: None,
@@ -334,11 +337,113 @@ fn render(
     })
 }
 
-/// How many import sites and test files `impact` shows.
+/// How many import sites and test files `impact` lists.
 #[derive(Clone, Copy)]
 struct Caps {
     sites: usize,
     tests: usize,
+}
+
+/// The statements of `sites` by the component each is in.
+fn counts<'s>(
+    sites: impl Iterator<Item = &'s ImportSite<'s>>,
+) -> BTreeMap<ComponentId, Statements> {
+    let mut counted: BTreeMap<ComponentId, Statements> = BTreeMap::new();
+    let mut seen: BTreeSet<(&str, Option<u32>)> = BTreeSet::new();
+    for site in sites {
+        if !seen.insert((site.file.as_str(), site.line)) {
+            continue;
+        }
+        let entry = counted.entry(site.component.clone()).or_default();
+        match site.test {
+            true => entry.tests += 1,
+            false => entry.production += 1,
+        }
+    }
+    counted
+}
+
+/// The statements into the files of `component` and below from outside it,
+/// by the component each is in at `depth`.
+fn into_component(
+    full: &ArchitectureGraph,
+    depth: usize,
+    component: &ComponentId,
+) -> BTreeMap<ComponentId, Statements> {
+    let inside = |file: &str| {
+        full.component_for_path(file)
+            .is_some_and(|c| full.containment_path(&c.id).contains(component))
+    };
+    let mut counted: BTreeMap<ComponentId, Statements> = BTreeMap::new();
+    let mut seen: BTreeSet<(&str, Option<u32>)> = BTreeSet::new();
+    for (edge, e) in full
+        .edges
+        .iter()
+        .filter(|e| e.kind == archmap_core::EdgeKind::Import)
+        .flat_map(|edge| edge.evidence.iter().map(move |e| (edge, e)))
+    {
+        let into = e.target.as_deref().is_some_and(inside);
+        if !into || inside(&e.file) || !seen.insert((e.file.as_str(), e.line)) {
+            continue;
+        }
+        let entry = counted
+            .entry(full.ancestor_at(&edge.from, depth))
+            .or_default();
+        match e.test {
+            true => entry.tests += 1,
+            false => entry.production += 1,
+        }
+    }
+    counted
+}
+
+/// The direct and the transitive dependents of `reach`, with their
+/// statements and distances: the direct ones by their statements in
+/// production code, then all, the transitive ones nearest first, each tie
+/// by the name the text shows, then id; `beyond` steps added to the walk's
+/// distances.
+fn dependents(
+    full: &ArchitectureGraph,
+    reach: &archmap_core::Reach,
+    counted: &BTreeMap<ComponentId, Statements>,
+    beyond: usize,
+) -> (Vec<Dependent>, Vec<Dependent>) {
+    let name = |id: &ComponentId| {
+        full.component(id)
+            .map_or_else(|| id.to_string(), |c| c.name.clone())
+    };
+    let dependent = |id: &ComponentId| {
+        let distance = match reach.direct.contains(id) {
+            true => 1,
+            false => reach.distance.get(id).map_or(1, |d| d + beyond),
+        };
+        Dependent {
+            id: id.clone(),
+            distance,
+            imports: (distance == 1).then(|| counted.get(id).copied()).flatten(),
+            from: (distance > 1)
+                .then(|| reach.from.get(id).cloned())
+                .flatten(),
+        }
+    };
+    let mut direct: Vec<Dependent> = reach.direct.iter().map(dependent).collect();
+    direct.sort_by(|a, b| {
+        let key = |d: &Dependent| {
+            let s = d.imports.unwrap_or_default();
+            (
+                std::cmp::Reverse(s.production),
+                std::cmp::Reverse(s.production + s.tests),
+            )
+        };
+        key(a)
+            .cmp(&key(b))
+            .then_with(|| name(&a.id).cmp(&name(&b.id)))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    let mut transitive: Vec<Dependent> = reach.transitive.iter().map(dependent).collect();
+    transitive
+        .sort_by(|a, b| (a.distance, name(&a.id), &a.id).cmp(&(b.distance, name(&b.id), &b.id)));
+    (direct, transitive)
 }
 
 /// What changing a module that no component carries may reach: the
@@ -366,14 +471,18 @@ fn import_name_impact<'a>(
     // every production importer at once, so that a file one of them reaches
     // through production code is no test of another
     let seeds: Vec<&str> = seeds.into_iter().collect();
-    let reach = full.change_impact(ChangeSeed::Importers(&seeds), depth);
-    let mut transitive = direct.clone();
-    transitive.extend(reach.transitive);
-    tests.extend(reach.tests);
+    let mut reach = full.change_impact(ChangeSeed::Importers(&seeds), depth);
+    // the importers' components are the direct dependents of the name, and
+    // what reaches them is one step further
+    reach.transitive.extend(direct.iter().cloned());
+    reach.direct = direct;
+    tests.extend(reach.tests.iter().cloned());
     // a test that imports the name itself is one to run again anyway
-    let mut left_out = reach.left_out;
+    let mut left_out = std::mem::take(&mut reach.left_out);
     left_out.retain(|file, _| !tests.contains(file));
     let statements = imports.iter().map(|i| (&i.from, &i.evidence));
+    let importers = sites(full, depth, statements, true, caps.sites);
+    let (direct, transitive) = dependents(full, &reach, &counts(importers.shown.iter()), 1);
     ImpactResult {
         requested: target,
         depth,
@@ -384,10 +493,10 @@ fn import_name_impact<'a>(
         subpath: None,
         also_named: Vec::new(),
         also_at_path: Vec::new(),
-        direct: direct.into_iter().collect(),
-        transitive: transitive.into_iter().collect(),
+        direct,
+        transitive,
         tests: test_files(tests, left_out, caps.tests),
-        importers: Some(sites(full, depth, statements, true, caps.sites)),
+        importers: Some(importers),
         imports_below: None,
         may_use: None,
         not_traced: None,

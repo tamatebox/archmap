@@ -330,18 +330,10 @@ fn neighbors<'a>(
                 .collect();
             let more = n.imports.len().saturating_sub(caps.locations);
             truncated |= more > 0;
-            let mut counts = Vec::new();
-            let production = of_kind(n, Counted::Production);
-            if production > 0 {
-                counts.push(plural(production, "import"));
-            }
-            match of_kind(n, Counted::Test) {
-                0 => {}
-                tests if counts.is_empty() => {
-                    counts.push(format!("{} in tests", plural(tests, "import")))
-                }
-                tests => counts.push(format!("{tests} in tests")),
-            }
+            let mut counts: Vec<String> =
+                import_counts(of_kind(n, Counted::Production), of_kind(n, Counted::Test))
+                    .into_iter()
+                    .collect();
             for (kind, what) in [
                 (Counted::Through, "through re-exports"),
                 (Counted::Entry, "of its entry file"),
@@ -1043,6 +1035,20 @@ pub(crate) fn count(total: usize, shown: usize) -> String {
         format!("{total}, showing {shown}")
     } else {
         total.to_string()
+    }
+}
+
+/// Statements counted in production code and in tests, as neighbors write
+/// them: `3 imports, 1 in tests`, `1 import in tests`; `None` for none.
+pub(crate) fn import_counts(production: usize, tests: usize) -> Option<String> {
+    match (production, tests) {
+        (0, 0) => None,
+        (0, tests) => Some(format!("{} in tests", plural(tests, "import"))),
+        (production, 0) => Some(plural(production, "import")),
+        (production, tests) => Some(format!(
+            "{}, {tests} in tests",
+            plural(production, "import")
+        )),
     }
 }
 

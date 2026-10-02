@@ -115,21 +115,22 @@ fn a_file_answers_with_its_dependents_statements_tests_and_blind_spots() {
          id: ts-shop::src/lib/types.ts\n\
          \n\
          Direct dependents: 4\n  \
-           ts-shop\n  \
-           app/checkout.ts\n  \
-           app/page.tsx\n  \
-           lib/money.ts\n\
+           app/checkout.ts  2 imports\n  \
+           app/page.tsx  1 import\n  \
+           lib/money.ts  1 import\n  \
+           ts-shop  1 import\n\
          \n\
          Imported by: 6, showing 5 (1 re-export)\n  \
            src/app/checkout.ts:8 (via src/index.ts:8) (type)\n  \
            src/app/checkout.ts:9 (via src/index.ts:8) (type)\n  \
            src/app/page.tsx:2 (type)\n  \
            src/index.ts:8 (export) (type)  in ts-shop\n  \
-           src/lib/money.ts:4 (type)\n\
+           src/lib/money.ts:4 (type)\n  \
+           1 more in: tests/money.test.ts 1\n\
          \n\
          Transitive dependents: 2 more (6 in all)\n  \
-           scripts/report.cjs\n  \
-           app/lazy.tsx\n\
+           app/lazy.tsx  2 steps, through src/lib/money.ts\n  \
+           scripts/report.cjs  2 steps, through src/lib/money.ts\n\
          \n\
          Tests to run again: 2\n  \
            tests/helpers.ts\n  \
@@ -161,7 +162,10 @@ fn every_list_is_capped_and_says_how_many_it_shows() {
         .len(),
         30
     );
-    assert_eq!(section(&out, "Imported by: 60, showing 5").len(), 5);
+    // and the components the statements not shown are in
+    let importers = section(&out, "Imported by: 60, showing 5");
+    assert_eq!(importers.len(), 6);
+    assert!(importers[5].starts_with("  55 more in: "), "{importers:?}");
     assert_eq!(
         section(&out, "Tests to run again: 25, showing 20").len(),
         20
@@ -302,7 +306,7 @@ fn a_barrel_leads_on_only_to_what_may_take_the_files_names() {
     let url = text(&ws, "src/url.ts");
     assert_eq!(
         section(&url, "Direct dependents: 2"),
-        ["  app/link.ts", "  storage.ts"]
+        ["  app/link.ts  1 import", "  storage.ts  1 import"]
     );
     assert!(
         url.contains("\nTransitive dependents: none beyond the direct ones\n"),
@@ -320,11 +324,11 @@ fn a_barrel_leads_on_only_to_what_may_take_the_files_names() {
     assert_eq!(
         transitive,
         [
-            "  ts-reexports",
-            "  app/boot.ts",
-            "  app/cart.ts",
-            "  app/report.ts",
-            "  app/tag.ts"
+            "  app/boot.ts  2 steps, through src/shop/index.ts",
+            "  app/cart.ts  2 steps, through src/checkout.ts",
+            "  app/report.ts  2 steps, through src/shop/index.ts",
+            "  app/tag.ts  2 steps, through src/shop/index.ts",
+            "  ts-reexports  2 steps, through src/shop/index.ts"
         ]
     );
     for other in [
@@ -334,7 +338,7 @@ fn a_barrel_leads_on_only_to_what_may_take_the_files_names() {
         "app/press.ts",
     ] {
         assert!(
-            !money.contains(&format!("  {other}\n")),
+            !money.contains(&format!("  {other}  ")),
             "{other} in:\n{money}"
         );
     }
@@ -348,7 +352,7 @@ fn a_barrel_leads_on_only_to_what_may_take_the_files_names() {
         "app/sale.ts",
     ] {
         assert!(
-            shop.contains(&format!("  {reached}\n")),
+            shop.contains(&format!("  {reached}  ")),
             "{reached} in:\n{shop}"
         );
     }

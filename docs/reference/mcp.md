@@ -54,8 +54,8 @@ The parameters mirror the CLI's flags, and their defaults are the CLI's:
 `depth` is 2 for every tool, as `DEFAULT_DEPTH`, so an agent that never
 sets it always reads the same components (one that sets it should keep the
 value across calls); text answers are capped and `format: json` gives every
-entry, except that `impact`'s JSON caps its statements, test files and
-locations too, and its `verbose` lists every entry, in text and in JSON.
+entry with all its evidence, which for a busy target runs large, and
+`impact`'s `verbose` lists every entry in text.
 `summary --verbose` and `query --verbose` have no parameter: JSON carries
 everything, and summary's `omitted:` lines name the query for the rest.
 `check`'s `config` is a rules file inside the root, relative to it; the

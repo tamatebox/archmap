@@ -5,15 +5,16 @@
 //! counted, and what could not be traced at the end. `verbose` lifts the
 //! caps; JSON carries the same lists as fields.
 
+use std::collections::BTreeMap;
 use std::fmt::Write;
 
 use archmap_core::{ArchitectureGraph, ComponentId};
 
 use crate::query_text::{
-    component_head, count, display, file_head, import_location, namesakes, not_traced, place,
-    shell_word, statements_title, symbol_line, with_more,
+    component_head, count, display, file_head, import_counts, import_location, namesakes,
+    not_traced, place, shell_word, statements_title, symbol_line, with_more,
 };
-use crate::views::{About, ImpactResult, ImportSites, MAX_IMPORT_SITES, MAX_TEST_FILES};
+use crate::views::{About, Dependent, ImpactResult, ImportSites, MAX_IMPORT_SITES, MAX_TEST_FILES};
 
 /// Default caps, lifted by `verbose`; statements and test files are capped
 /// as the JSON caps them.
@@ -156,13 +157,22 @@ fn direct(
         let _ = writeln!(out, "\nDirect dependents: none{why}");
         return false;
     }
-    let ids: Vec<&ComponentId> = result.direct.iter().collect();
-    let shown = ids.len().min(caps.components);
-    let _ = writeln!(out, "\nDirect dependents: {}", count(ids.len(), shown));
-    for id in &ids[..shown] {
-        let _ = writeln!(out, "  {}", display(rolled, id));
+    let shown = result.direct.len().min(caps.components);
+    let _ = writeln!(
+        out,
+        "\nDirect dependents: {}",
+        count(result.direct.len(), shown)
+    );
+    // those with the most statements into the target first
+    for dependent in &result.direct[..shown] {
+        let mut line = format!("  {}", display(rolled, &dependent.id));
+        let counted = dependent.imports.unwrap_or_default();
+        if let Some(counts) = import_counts(counted.production, counted.tests) {
+            let _ = write!(line, "  {counts}");
+        }
+        let _ = writeln!(out, "{line}");
     }
-    shown < ids.len()
+    shown < result.direct.len()
 }
 
 /// The statements that import the target, where they are recorded.
@@ -227,6 +237,7 @@ fn statements(
     let shown = sites.shown.len().min(caps.statements);
     let heading = statements_title(title, note, sites.total, shown, sites.exports);
     let _ = writeln!(out, "\n{heading}");
+    let rest = &sites.shown[shown..];
     for site in &sites.shown[..shown] {
         let mut line = import_location(site.evidence, 0, false);
         if let Some(barrel) = site.through {
@@ -240,6 +251,34 @@ fn statements(
         }
         let _ = writeln!(out, "  {line}");
     }
+    // where the statements not shown are, the components with most first
+    if !rest.is_empty() {
+        let mut by_component: BTreeMap<&ComponentId, usize> = BTreeMap::new();
+        for site in rest {
+            *by_component.entry(&site.component).or_default() += 1;
+        }
+        let mut most: Vec<(&ComponentId, usize)> = by_component.into_iter().collect();
+        most.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+        let places: Vec<String> = most
+            .iter()
+            .take(caps.locations)
+            .map(|(id, n)| format!("{} {n}", display(rolled, id)))
+            .collect();
+        let mut line = format!("  {} more in: {}", rest.len(), places.join(", "));
+        if most.len() > places.len() {
+            let _ = write!(
+                line,
+                ", +{} more {}",
+                most.len() - places.len(),
+                if most.len() - places.len() == 1 {
+                    "component"
+                } else {
+                    "components"
+                }
+            );
+        }
+        let _ = writeln!(out, "{line}");
+    }
     shown < sites.total
 }
 
@@ -250,10 +289,11 @@ fn transitive(
     rolled: &ArchitectureGraph,
     caps: &Caps,
 ) -> bool {
-    let further: Vec<&ComponentId> = result
+    // nearest first, each with the file it was reached from
+    let further: Vec<&Dependent> = result
         .transitive
         .iter()
-        .filter(|id| !result.direct.contains(id))
+        .filter(|d| d.distance > 1)
         .collect();
     if result.transitive.is_empty() {
         let _ = writeln!(out, "\nTransitive dependents: none");
@@ -278,8 +318,16 @@ fn transitive(
         heading
     };
     let _ = writeln!(out, "\nTransitive dependents: {heading}");
-    for id in &further[..shown] {
-        let _ = writeln!(out, "  {}", display(rolled, id));
+    for dependent in &further[..shown] {
+        let mut line = format!(
+            "  {}  {} steps",
+            display(rolled, &dependent.id),
+            dependent.distance
+        );
+        if let Some(from) = &dependent.from {
+            let _ = write!(line, ", through {from}");
+        }
+        let _ = writeln!(out, "{line}");
     }
     shown < further.len()
 }
