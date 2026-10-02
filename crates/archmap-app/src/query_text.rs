@@ -1279,8 +1279,12 @@ pub(crate) fn not_traced(
     }
     if let Some(b) = &found.barrels {
         let (what, from, them) = match b.total {
-            1 => ("1 file passes it on".to_owned(), "there", "that file"),
-            n => (format!("{n} files pass it on"), "them", "them"),
+            1 => (
+                "1 file passes on what may change".to_owned(),
+                "there",
+                "that file",
+            ),
+            n => (format!("{n} files pass on what may change"), "them", "them"),
         };
         let places: Vec<String> = b
             .shown

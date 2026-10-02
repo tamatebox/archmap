@@ -1,5 +1,8 @@
+from store.billing.money import cents
+
+
 def pay(order):
-    return order
+    return cents(order)
 
 
 def refund(order):

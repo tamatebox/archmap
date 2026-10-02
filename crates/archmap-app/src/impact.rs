@@ -278,7 +278,9 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
         Traced::Symbol(symbol) => Some(Narrowed::Symbol(symbol)),
         Traced::Component(_) => None,
     };
-    if let Some(found) = narrowed.and_then(|n| barrels(full, n, &reach.tests, caps.sites)) {
+    if let Some(found) =
+        narrowed.and_then(|n| barrels(full, n, &reach.relayed, &reach.tests, caps.sites))
+    {
         not_traced.get_or_insert_with(NotTraced::default).barrels = Some(found);
     }
 

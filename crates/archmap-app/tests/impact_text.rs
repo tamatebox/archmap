@@ -138,7 +138,7 @@ fn a_file_answers_with_its_dependents_statements_tests_and_blind_spots() {
          Not traced:\n  \
            dynamic: 2 calls load modules by computed names, which may be this: \
            scripts/report.cjs:4, src/app/lazy.tsx:7\n  \
-           barrels: 1 file passes it on, and only what takes it from there is followed; a \
+           barrels: 1 file passes on what may change, and only what takes it from there is followed; a \
            rename, a removal or an error on load also breaks whatever else loads that file: \
            src/index.ts:8\n\
          \n\
@@ -460,10 +460,29 @@ fn a_python_package_that_only_passes_a_name_on_is_followed_by_that_name() {
     );
     assert!(
         out.contains(
-            "\n  barrels: 1 file passes it on, and only what takes it from there is followed; \
+            "\n  barrels: 1 file passes on what may change, and only what takes it from there is followed; \
              a rename, a removal or an error on load also breaks whatever else loads that file: \
              store/billing/__init__.py:2 (runs first; 2 test files that load it or a module \
              below it are not listed)\n"
+        ),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_package_entry_reached_through_its_re_exports_runs_nothing_below_it() {
+    let ws = scan(&fixture("python-bindings"));
+    // money.py reaches the package's `__init__.py` only through the names it
+    // passes on from charge.py: not a test that imports a module below it
+    let out = text(&ws, "store/billing/money.py");
+    assert_eq!(
+        section(&out, "Tests to run again: 2"),
+        ["  spec/test_pay.py", "  spec/test_refund.py"]
+    );
+    assert!(
+        out.contains(
+            "store/billing/__init__.py:2 (runs first; 1 test file that loads it or a module \
+             below it is not listed)"
         ),
         "{out}"
     );

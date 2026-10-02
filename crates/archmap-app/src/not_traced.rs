@@ -103,11 +103,14 @@ pub(crate) enum Narrowed<'a> {
 
 /// The re-exports that pass the names of `target` on: for a file, the
 /// statements that re-export from it; for a symbol, those that re-export
-/// its name. Each counts the test files that load its file (or, for a
-/// package's entry file, a module below it) that `listed` does not hold.
+/// its name; and the package entry files in `relayed`, which the reach went
+/// on from only through their re-exports, at their first. Each counts the
+/// test files that load its file (or, for a package's entry file, a module
+/// below it) that `listed` does not hold.
 pub(crate) fn barrels(
     full: &ArchitectureGraph,
     target: Narrowed,
+    relayed: &BTreeSet<String>,
     listed: &BTreeSet<String>,
     cap: usize,
 ) -> Option<Barrels> {
@@ -129,6 +132,11 @@ pub(crate) fn barrels(
             .filter(|e| e.passes_on())
             .collect(),
     };
+    statements.extend(
+        imports()
+            .filter(|e| e.passes_on() && relayed.contains(&e.file))
+            .filter(|e| e.target.as_deref().is_some_and(|t| t != e.file)),
+    );
     // each file once, at its first such statement
     statements.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
     statements.dedup_by(|a, b| a.file == b.file);
