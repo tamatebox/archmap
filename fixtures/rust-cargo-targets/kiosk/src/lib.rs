@@ -1,4 +1,5 @@
 pub mod till;
+pub mod util;
 
 pub fn total() -> u32 {
     till::sum() + 1

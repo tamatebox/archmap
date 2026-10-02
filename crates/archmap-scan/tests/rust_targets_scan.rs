@@ -39,13 +39,13 @@ fn every_cargo_target_is_read_and_test_data_is_not() {
     assert_eq!(
         graph.meta.coverage["rust"],
         LanguageCoverage {
-            files: 11,
-            read: Some(10),
+            files: 15,
+            read: Some(14),
             scripts: 0
         }
     );
-    // the roots belong to their package; a module a test loads is a
-    // component named by its path, under the package
+    // the roots belong to their package; a module a test or a binary under
+    // `src/bin/` loads is a component named by its path, under the package
     let components: Vec<(&str, &str, &str, Option<&str>)> = graph
         .components
         .values()
@@ -63,6 +63,13 @@ fn every_cargo_target_is_read_and_test_data_is_not() {
         [
             ("depot", "depot", "depot", None),
             ("kiosk", "kiosk", "kiosk", None),
+            // a binary's `util` and the library's, apart
+            (
+                "kiosk::src/bin/tool/util.rs",
+                "src/bin/tool/util.rs",
+                "kiosk/src/bin/tool/util.rs",
+                Some("kiosk")
+            ),
             (
                 "kiosk::tests/common/mod.rs",
                 "tests/common/mod.rs",
@@ -73,6 +80,12 @@ fn every_cargo_target_is_read_and_test_data_is_not() {
                 "kiosk::till",
                 "kiosk::till",
                 "kiosk/src/till.rs",
+                Some("kiosk")
+            ),
+            (
+                "kiosk::util",
+                "kiosk::util",
+                "kiosk/src/util.rs",
                 Some("kiosk")
             ),
         ]
@@ -87,6 +100,9 @@ fn the_symbols_of_other_targets_take_their_files() {
         [
             ("depot::idle".to_owned(), false),
             ("kiosk::helper".to_owned(), false),
+            // a binary's symbols are production code under their files too
+            ("kiosk::src/bin/report.rs::helper".to_owned(), false),
+            ("kiosk::src/bin/tool/util.rs::run".to_owned(), false),
             // a test's `pub fn helper` meets neither the library's nor the
             // other test's
             ("kiosk::tests/common/mod.rs::call".to_owned(), true),
@@ -100,7 +116,31 @@ fn the_symbols_of_other_targets_take_their_files() {
             ("kiosk::till".to_owned(), false),
             ("kiosk::till::sum".to_owned(), false),
             ("kiosk::total".to_owned(), false),
+            ("kiosk::util".to_owned(), false),
+            ("kiosk::util::shared".to_owned(), false),
         ]
+    );
+}
+
+#[test]
+fn a_binary_under_src_bin_is_a_production_crate_of_its_own() {
+    let graph = fixture();
+    let row = |line: u32, target: &str, test: bool| (line, target.to_owned(), test);
+    // its own `mod util;` and the library's `util`, apart
+    assert_eq!(
+        imports_in(&graph, "kiosk/src/bin/tool/main.rs"),
+        BTreeSet::from([
+            row(4, "kiosk/src/bin/tool/util.rs", false),
+            row(5, "kiosk/src/util.rs", false),
+        ])
+    );
+    // its unit tests use the library, another crate, as test code
+    assert_eq!(
+        imports_in(&graph, "kiosk/src/bin/report.rs"),
+        BTreeSet::from([
+            row(1, "kiosk/src/lib.rs", false),
+            row(11, "kiosk/src/lib.rs", true),
+        ])
     );
 }
 

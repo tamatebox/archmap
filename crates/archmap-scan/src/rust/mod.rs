@@ -7,8 +7,8 @@
 //!   (path / workspace dependencies are resolved to internal packages,
 //!   everything else becomes an `External` component)
 //! - every file that a `mod` declaration loads, following the module trees
-//!   of `src/lib.rs`, `src/main.rs` and the tests, examples, benches and
-//!   build script Cargo finds beside them, becomes a `Module` component whose
+//!   of `src/lib.rs`, `src/main.rs` and the binaries, tests, examples,
+//!   benches and build script Cargo finds beside them, becomes a `Module` component whose
 //!   parent is the component of the declaring file (see [`tree`]); crate
 //!   roots and files no root reaches belong to the package
 //! - `pub` items and `pub` inherent methods become symbols
@@ -28,8 +28,7 @@
 //!
 //! Not extracted (yet): which items a module uses after importing them (call
 //! and reference graphs), code inside macro calls, trait impls, `#[path]`
-//! modules, the binaries under `src/bin/` and the targets `Cargo.toml`
-//! declares.
+//! modules, and the targets `Cargo.toml` declares.
 
 mod manifest;
 mod source;

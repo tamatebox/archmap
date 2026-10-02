@@ -8,10 +8,10 @@
 //! belongs to the component of its file, and a file that several crates
 //! declare is one component. Every root belongs to its package. The modules
 //! of the library (`src/lib.rs`) and of the binary `src/main.rs` are named by
-//! their module paths; those of the other targets (`tests/`, `examples/`,
-//! `benches/`, `build.rs`) by their paths in the package, so that they never
-//! meet a library module of the same module path. A file under `src/` that no
-//! root reaches (a binary in `src/bin/`, a `#[path]` module) belongs to its
+//! their module paths; those of the other targets (`src/bin/`, `tests/`,
+//! `examples/`, `benches/`, `build.rs`) by their paths in the package, so that
+//! they never meet a library module of the same module path. A file under
+//! `src/` that no root reaches (a `#[path]` module) belongs to its
 //! package, at the module path its location suggests, with no crate root to
 //! resolve `crate::` against; outside `src/`, only what roots reach is read.
 //!
@@ -89,7 +89,8 @@ pub(super) struct Target {
 }
 
 /// The targets Cargo finds by default among the files of the package in
-/// `dir`, besides `src/lib.rs` and `src/main.rs`: `tests/<n>.rs` and
+/// `dir`, besides `src/lib.rs` and `src/main.rs`: the binaries
+/// `src/bin/<n>.rs` and `src/bin/<n>/main.rs`, `tests/<n>.rs` and
 /// `tests/<n>/main.rs`, the same under `examples/` and `benches/`, and
 /// `build.rs`. Sorted by root.
 pub(super) fn default_targets<'a>(
@@ -103,6 +104,8 @@ pub(super) fn default_targets<'a>(
             let parts: Vec<&str> = rel.iter().filter_map(|p| p.to_str()).collect();
             let (kind, name) = match parts.as_slice() {
                 ["build.rs"] => (TargetKind::Build, "build_script_build"),
+                ["src", "bin", file] => (TargetKind::Bin, file.strip_suffix(".rs")?),
+                ["src", "bin", name, "main.rs"] => (TargetKind::Bin, *name),
                 [kind, file] => (kind_of(kind)?, file.strip_suffix(".rs")?),
                 [kind, name, "main.rs"] => (kind_of(kind)?, *name),
                 _ => return None,
@@ -1157,6 +1160,9 @@ mod tests {
             "pkg/examples/demo.rs",
             "pkg/benches/speed.rs",
             "pkg/src/lib.rs",
+            "pkg/src/bin/tool.rs",
+            "pkg/src/bin/multi/main.rs",
+            "pkg/src/bin/multi/util.rs",
             "pkg/scripts/tool.rs",
         ];
         let targets = default_targets(Path::new("pkg"), files.iter().map(Path::new));
@@ -1164,13 +1170,16 @@ mod tests {
             .iter()
             .map(|t| (t.kind, t.root.to_str().unwrap(), t.crate_name.as_str()))
             .collect();
-        // neither a module of a test nor a file deeper in `tests/` is one
+        // neither a module of a test or a binary nor a file deeper in
+        // `tests/` is one
         assert_eq!(
             found,
             [
                 (TargetKind::Bench, "pkg/benches/speed.rs", "speed"),
                 (TargetKind::Build, "pkg/build.rs", "build_script_build"),
                 (TargetKind::Example, "pkg/examples/demo.rs", "demo"),
+                (TargetKind::Bin, "pkg/src/bin/multi/main.rs", "multi"),
+                (TargetKind::Bin, "pkg/src/bin/tool.rs", "tool"),
                 (
                     TargetKind::Test,
                     "pkg/tests/multi-file/main.rs",
@@ -1229,7 +1238,17 @@ mod tests {
             ],
             &packages,
         );
-        let forest = forest(&files, &packages);
+        let targets = [default_targets(
+            Path::new(""),
+            files.iter().map(|f| f.rel.as_path()),
+        )];
+        let forest = build(
+            &files,
+            &BTreeSet::new(),
+            &packages,
+            &targets,
+            &BTreeSet::new(),
+        );
         assert!(forest.warnings.is_empty(), "{:?}", forest.warnings);
         let owners: Vec<&str> = forest.owners.iter().map(|o| o.as_str()).collect();
         assert_eq!(
@@ -1273,11 +1292,12 @@ mod tests {
                 row("crate::Settings", "src/main.rs"),
             ]
         );
-        // a file no root reaches has no `crate::` to resolve against
+        // a binary under `src/bin/` is a crate of its own, whose `crate::` is
+        // itself, and it names the library as `src/main.rs` does
         assert_eq!(
             resolved(&forest, &files, &packages, "src/bin/tool.rs"),
             vec![
-                row("crate::x", "nothing"),
+                row("crate::x", "src/bin/tool.rs"),
                 row("app_cli::config", "src/config.rs")
             ]
         );
