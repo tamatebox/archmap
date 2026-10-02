@@ -15,7 +15,7 @@ ArchitectureGraph
 ├── dynamic_imports:  [ DynamicImport { from, call, evidence } ]
 └── unread_macros:    [ UnreadMacro { from, name, names?, evidence } ]
 
-Evidence { file, line?, note?, target?, scope?: module | local, names?, test?, type_only? }
+Evidence { file, line?, note?, target?, scope?: module | local, names?, test?, type_only?, replaces? }
 ```
 
 `line` is the line a statement or a declaration is written on: a manifest's
@@ -97,6 +97,17 @@ it is taken, so `deny`, `layers`, `allow`, `query` and `impact` count every
 import, but cycles and signals count only imports that run in production:
 an edge closes a cycle only through evidence that is neither `type_only` nor
 `test`. Only the TS/JS and Python analyzers set it.
+
+`replaces` marks a test's mock that puts a stand-in in place of `target` for
+every module its file's run loads, so that file never runs the target's code
+nor what reaches it only through the target (a TS/JS `vi.mock` or
+`jest.mock` with a factory that never loads the real module). It is a fact
+about the statement, apart from the test path rule, under which a file below
+`__mocks__` is test code. Its `names` are those the stand-in gives the
+module, which the file still depends on: `impact` follows such a test file
+only along ways that pass none of the modules it replaces, apart from one
+whose stand-in gives a name the change may alter, and lists the test files
+it leaves out. Only the TS/JS analyzer sets it.
 
 A symbol's evidence with a `target` says how the symbol is reached rather
 than where it is: a Rust method whose type another file defines carries

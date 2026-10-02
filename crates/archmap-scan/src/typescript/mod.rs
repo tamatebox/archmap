@@ -284,6 +284,7 @@ impl Analyzer for TypeScriptAnalyzer {
                 linked: &linked,
                 file: read.file,
                 test: test_code(read.file, package, &manifests),
+                replaced: replaced(&read.imports, &read.resolved),
             };
             for (import, resolved) in read.imports.iter().zip(&read.resolved) {
                 match resolved {
@@ -330,6 +331,26 @@ impl Analyzer for TypeScriptAnalyzer {
         output.warnings.extend(problems);
         Ok(output)
     }
+}
+
+/// The files a mock in a file replaces for the file's whole run: those a
+/// hoisted mock's factory stands in for, but not one the file also runs or
+/// keeps real through another module call.
+fn replaced<'a>(imports: &[ImportStatement], resolved: &'a [Resolved]) -> BTreeSet<&'a Path> {
+    let file = |r: &'a Resolved| match r {
+        Resolved::File(file) => Some(file.as_path()),
+        _ => None,
+    };
+    let pairs = || imports.iter().zip(resolved);
+    let real: BTreeSet<&Path> = pairs()
+        .filter(|(i, _)| source::LOADS_REAL.contains(&i.note))
+        .filter_map(|(_, r)| file(r))
+        .collect();
+    pairs()
+        .filter(|(i, _)| i.replaces)
+        .filter_map(|(_, r)| file(r))
+        .filter(|f| !real.contains(f))
+        .collect()
 }
 
 /// The directories of a Next.js package whose subdirectories are URL
@@ -687,6 +708,8 @@ struct Imports<'a> {
     file: &'a Path,
     /// The file is test code.
     test: bool,
+    /// The files a mock in the file replaces for its whole run.
+    replaced: BTreeSet<&'a Path>,
 }
 
 impl Imports<'_> {
@@ -793,13 +816,15 @@ impl Imports<'_> {
                         _ => from.clone(),
                     }
                 };
+                let replaces = import.replaces && self.replaced.contains(target.as_path());
                 output.fragment.push_edge(
                     Edge::new(from.clone(), to, EdgeKind::Import).with_evidence(
                         self.evidence(import)
                             .type_only(type_only)
                             .with_note(import.note)
                             .pointing_at(display_path(target))
-                            .taking(names.iter().cloned()),
+                            .taking(names.iter().cloned())
+                            .replacing(replaces),
                     ),
                 );
             }

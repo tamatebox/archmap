@@ -47,6 +47,12 @@ pub struct Evidence {
     /// the compiler erases, or an import under `if TYPE_CHECKING:`).
     #[serde(default, skip_serializing_if = "is_false")]
     pub type_only: bool,
+    /// The statement replaces `target` for every module its file's run
+    /// loads (a test's `vi.mock` with a factory that never loads the real
+    /// module): the file depends on the names it replaces, while nothing
+    /// that reaches it only through `target` runs for it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub replaces: bool,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -76,6 +82,7 @@ impl Evidence {
             names: BTreeSet::new(),
             test: false,
             type_only: false,
+            replaces: false,
         }
     }
 
@@ -106,6 +113,11 @@ impl Evidence {
 
     pub fn type_only(mut self, type_only: bool) -> Self {
         self.type_only = type_only;
+        self
+    }
+
+    pub fn replacing(mut self, replaces: bool) -> Self {
+        self.replaces = replaces;
         self
     }
 
@@ -239,6 +251,14 @@ mod tests {
         assert!(!noted("import"));
         assert!(!noted("exports.a"));
         assert!(!Evidence::new("a.ts").re_exports());
+    }
+
+    #[test]
+    fn a_mock_that_replaces_its_target_is_marked_only_when_it_does() {
+        let marked = serde_json::to_string(&Evidence::new("a.test.ts").replacing(true)).unwrap();
+        assert!(marked.ends_with(r#""replaces":true}"#), "{marked}");
+        let plain = serde_json::to_string(&Evidence::new("a.test.ts")).unwrap();
+        assert_eq!(plain, r#"{"file":"a.test.ts"}"#);
     }
 
     #[test]

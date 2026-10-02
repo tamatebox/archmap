@@ -283,7 +283,8 @@ impl ArchitectureGraph {
             .map(|(file, _)| file)
             .collect();
         let (mut reach, production, _) = self.reach(seed, depth, false, &test_code);
-        let (_, with_tests, seeds) = self.reach(seed, depth, true, &test_code);
+        let (through_tests, with_tests, seeds) = self.reach(seed, depth, true, &test_code);
+        reach.left_out = through_tests.left_out;
         // a changed test is a test to run again too
         reach.tests = with_tests
             .difference(&production)
@@ -331,20 +332,25 @@ impl ArchitectureGraph {
         tests: bool,
         test_code: &BTreeSet<&'s str>,
     ) -> (Reach, BTreeSet<&'s str>, BTreeSet<&'s str>) {
-        // what depends on each node, and whether through production code
-        let mut dependents: BTreeMap<Node, BTreeMap<Node, bool>> = BTreeMap::new();
-        let mut depend = |target: Node<'s>, importer: Node<'s>, production: bool| {
-            *dependents
+        // what depends on each node, and how
+        let mut dependents: BTreeMap<Node, BTreeMap<Node, Link>> = BTreeMap::new();
+        let mut depend = |target: Node<'s>, importer: Node<'s>, link: Link| {
+            dependents
                 .entry(target)
                 .or_default()
                 .entry(importer)
-                .or_default() |= production;
+                .or_default()
+                .add(link);
         };
         let mut files: BTreeSet<&str> = BTreeSet::new();
         // the statements that pass on the names they take from a file, by
         // that file: what loads a barrel of a changed file is followed only
         // where it may take those names
-        let mut passing: BTreeMap<&str, BTreeMap<&str, bool>> = BTreeMap::new();
+        let mut passing: BTreeMap<&str, BTreeMap<&str, Link>> = BTreeMap::new();
+        // the statements that a walk through re-exports led to a file, by
+        // that file, with the files they load: a mock that replaces one of
+        // those hides the file from them
+        let mut walked: BTreeMap<&str, BTreeMap<&str, BTreeMap<&str, Link>>> = BTreeMap::new();
         // a declaration says a package is installed, not that a symbol of it
         // is used
         let symbol = matches!(seed, ChangeSeed::Symbol(_));
@@ -366,19 +372,32 @@ impl ArchitectureGraph {
                 if importer == target {
                     continue;
                 }
-                match target {
-                    Node::File(t) if e.passes_on() => {
-                        *passing
+                let loaded = e.via().and_then(|place| Some(place.rsplit_once(':')?.0));
+                match (target, loaded) {
+                    (Node::File(t), Some(loaded)) => {
+                        walked
                             .entry(t)
                             .or_default()
                             .entry(e.file.as_str())
-                            .or_default() |= !e.test;
+                            .or_default()
+                            .entry(loaded)
+                            .or_default()
+                            .add(Link::of(e));
                     }
-                    _ => depend(target, importer, !e.test),
+                    (Node::File(t), None) if e.passes_on() => {
+                        passing
+                            .entry(t)
+                            .or_default()
+                            .entry(e.file.as_str())
+                            .or_default()
+                            .add(Link::of(e));
+                    }
+                    _ => depend(target, importer, Link::of(e)),
                 }
             }
             if edge.evidence.is_empty() && edge.from != edge.to {
-                depend(Node::Component(&edge.to), Node::Component(&edge.from), true);
+                let link = Link::running(true);
+                depend(Node::Component(&edge.to), Node::Component(&edge.from), link);
             }
         }
         let index = PathIndex::new(self);
@@ -391,7 +410,11 @@ impl ArchitectureGraph {
         for (entry, importer, test) in statements.chain(self.files_below_entries(&index)) {
             if tests || !test {
                 files.insert(entry);
-                depend(Node::File(entry), Node::File(importer), !test);
+                depend(
+                    Node::File(entry),
+                    Node::File(importer),
+                    Link::running(!test),
+                );
             }
         }
         let owners: BTreeMap<&str, &ComponentId> = files
@@ -415,25 +438,28 @@ impl ArchitectureGraph {
         let stands_for =
             |f: &str, c: &ComponentId| named.get(c).is_none_or(|files| files.contains(f));
 
-        // where the walk starts, and at what distance
-        let mut start: Vec<(Node, usize)> = Vec::new();
+        // where the walk starts, at what distance, and for a statement that
+        // takes a symbol, the file it loads and whether it takes types only
+        let mut start: Vec<Start> = Vec::new();
         // the files reached through production code, which stand for their
         // components; a seed does when it is no test
         let mut production: BTreeSet<Node> = BTreeSet::new();
-        // the files that changed, whose barrels pass their names on
+        // the files that changed, whose barrels pass their names on, and for
+        // a symbol, the file it is reached through and the name it goes by
         let mut changed: BTreeSet<&str> = BTreeSet::new();
+        let mut symbol_name: Option<(&str, &str)> = None;
         let target = match seed {
             ChangeSeed::File(file) => {
-                start.push((Node::File(file), 0));
+                start.push((Node::File(file), 0, None));
                 changed.insert(file);
                 if !test_code.contains(file) {
                     production.insert(Node::File(file));
                 }
                 owner_of(file).map(|c| self.ancestor_at(c, depth))
             }
-            ChangeSeed::Files(files) => {
+            ChangeSeed::Importers(files) => {
                 for &file in files {
-                    start.push((Node::File(file), 0));
+                    start.push((Node::File(file), 0, None));
                     changed.insert(file);
                     if !test_code.contains(file) {
                         production.insert(Node::File(file));
@@ -445,7 +471,16 @@ impl ArchitectureGraph {
                 // the first step goes only through the statements that take
                 // the symbol by name or take its file whole; dependencies
                 // without file detail on its component stay, like the latter
-                start.push((Node::Component(&symbol.component), 0));
+                start.push((Node::Component(&symbol.component), 0, None));
+                // the file and name a mock replaces it by
+                let reached = symbol
+                    .evidence
+                    .iter()
+                    .find_map(|e| Some((e.target.as_deref()?, e.names.iter().next()?.as_str())));
+                symbol_name = reached.or_else(|| {
+                    let at = symbol.location()?;
+                    Some((at.file.as_str(), reached_name(&symbol.name)))
+                });
                 if let Some(found) = self.symbol_importers(symbol) {
                     let statements: Vec<&Evidence> = found
                         .by_name
@@ -465,7 +500,10 @@ impl ArchitectureGraph {
                         true => Node::Passes(e.file.as_str()),
                         false => Node::File(e.file.as_str()),
                     };
-                    start.extend(statements.iter().map(|e| (node(e), 1)));
+                    start.extend(statements.iter().map(|e| {
+                        let loads = e.target.as_deref().map(|t| (t, e.type_only));
+                        (node(e), 1, loads)
+                    }));
                     production.extend(statements.iter().filter(|e| !e.test).map(node));
                 }
                 Some(self.ancestor_at(&symbol.component, depth))
@@ -476,7 +514,7 @@ impl ArchitectureGraph {
                     .keys()
                     .filter(|id| self.containment_path(id).contains(component))
                     .collect();
-                start.extend(subtree.iter().map(|id| (Node::Component(id), 0)));
+                start.extend(subtree.iter().map(|id| (Node::Component(id), 0, None)));
                 // its files that a statement loads or is written in, and its
                 // tests, which are tests to run again whatever they import
                 let tests = test_code.iter().filter(|file| {
@@ -489,7 +527,7 @@ impl ArchitectureGraph {
                     .map(|(file, _)| *file)
                     .chain(tests.copied())
                     .collect();
-                start.extend(own.iter().map(|file| (Node::File(file), 0)));
+                start.extend(own.iter().map(|file| (Node::File(file), 0, None)));
                 changed.extend(own.iter().copied());
                 production.extend(
                     own.iter()
@@ -500,95 +538,221 @@ impl ArchitectureGraph {
             }
         };
         // what the barrels of the changed files lead to
-        let passed = self.passed_on(&changed, tests);
+        let barrels = self.passed_on(&changed, tests);
+        let passed = &barrels.links;
 
         // 0-1 BFS: a file reached through production code puts its component
         // in reach at no cost. One reached through test code alone (a test,
         // or a Rust file through its unit tests) is no part of what the
         // component's dependents load: a test a package owns would reach the
-        // manifests that declare the package.
-        let mut distance: BTreeMap<Node, usize> = BTreeMap::new();
-        let mut queue: VecDeque<Node> = VecDeque::new();
-        start.sort_by_key(|(_, d)| *d);
-        for (node, d) in start {
-            if let Entry::Vacant(slot) = distance.entry(node) {
-                slot.insert(d);
-                queue.push_back(node);
-            }
-        }
-        while let Some(node) = queue.pop_front() {
-            let d = distance[&node];
-            let mut next: Vec<(Node, usize)> = Vec::new();
-            if let Node::File(f) | Node::Passes(f) = node {
-                let stands =
-                    |owner: &&ComponentId| production.contains(&node) && stands_for(f, owner);
-                if let Some(owner) = owner_of(f).filter(stands) {
-                    next.push((Node::Component(owner), d));
+        // manifests that declare the package. The files in `cut` run for
+        // nothing: the walk enters and leaves them only through statements
+        // that take types, and takes no symbol from them otherwise.
+        let walk = |cut: &BTreeSet<&'s str>| -> BTreeMap<Node<'s>, usize> {
+            let blocked = |node: &Node| match node {
+                Node::File(f) | Node::Passes(f) => cut.contains(f),
+                Node::Component(_) => false,
+            };
+            let mut production = production.clone();
+            let mut distance: BTreeMap<Node, usize> = BTreeMap::new();
+            let mut queue: VecDeque<Node> = VecDeque::new();
+            let mut first: Vec<(Node, usize)> = start
+                .iter()
+                .filter(|(node, _, loads)| {
+                    !blocked(node)
+                        && loads.is_none_or(|(loaded, types)| types || !cut.contains(loaded))
+                })
+                .map(|(node, d, _)| (*node, *d))
+                .collect();
+            first.sort_by_key(|(_, d)| *d);
+            for (node, d) in first {
+                if let Entry::Vacant(slot) = distance.entry(node) {
+                    slot.insert(d);
+                    queue.push_back(node);
                 }
             }
-            let mut links: Vec<(Node, bool)> = Vec::new();
-            match node {
-                Node::Passes(barrel) => {
-                    links.extend(
-                        passed
-                            .get(barrel)
-                            .into_iter()
-                            .flatten()
-                            .map(|(n, p)| (*n, *p)),
-                    );
-                }
-                _ => {
-                    links.extend(
-                        dependents
-                            .get(&node)
-                            .into_iter()
-                            .flatten()
-                            .map(|(n, p)| (*n, *p)),
-                    );
-                    // a barrel of a changed file passes its names on, and
-                    // any other barrel the names of what it loads
-                    if let Node::File(f) = node {
-                        let pass = |importer: &'s str| match changed.contains(f)
-                            && !changed.contains(importer)
-                        {
-                            true => Node::Passes(importer),
-                            false => Node::File(importer),
-                        };
-                        links.extend(
-                            passing
-                                .get(f)
-                                .into_iter()
-                                .flatten()
-                                .map(|(importer, p)| (pass(importer), *p)),
-                        );
+            while let Some(node) = queue.pop_front() {
+                let d = distance[&node];
+                let here = blocked(&node);
+                let mut next: Vec<(Node, usize)> = Vec::new();
+                if let (Node::File(f) | Node::Passes(f), false) = (node, here) {
+                    let stands =
+                        |owner: &&ComponentId| production.contains(&node) && stands_for(f, owner);
+                    if let Some(owner) = owner_of(f).filter(stands) {
+                        next.push((Node::Component(owner), d));
                     }
                 }
-            }
-            for (n, through_production) in links {
-                // reached through production code only now: it stands for
-                // its component from where it was reached before
-                if through_production && production.insert(n) {
-                    if let (Node::File(f) | Node::Passes(f), Some(&at)) = (n, distance.get(&n)) {
-                        if let Some(owner) = owner_of(f).filter(|c| stands_for(f, c)) {
-                            next.push((Node::Component(owner), at));
+                let mut links: Vec<(Node, Link)> = Vec::new();
+                match node {
+                    Node::Passes(barrel) => {
+                        links.extend(
+                            passed
+                                .get(barrel)
+                                .into_iter()
+                                .flatten()
+                                .map(|(n, p)| (*n, *p)),
+                        );
+                    }
+                    _ => {
+                        links.extend(
+                            dependents
+                                .get(&node)
+                                .into_iter()
+                                .flatten()
+                                .map(|(n, p)| (*n, *p)),
+                        );
+                        // a barrel of a changed file passes its names on, and
+                        // any other barrel the names of what it loads
+                        if let Node::File(f) = node {
+                            for (importer, through) in walked.get(f).into_iter().flatten() {
+                                let mut open = through
+                                    .iter()
+                                    .filter(|(loaded, link)| link.types || !cut.contains(*loaded))
+                                    .map(|(_, link)| *link);
+                                if let Some(mut link) = open.next() {
+                                    open.for_each(|other| link.add(other));
+                                    links.push((Node::File(importer), link));
+                                }
+                            }
+                            let pass = |importer: &'s str| match changed.contains(f)
+                                && !changed.contains(importer)
+                            {
+                                true => Node::Passes(importer),
+                                false => Node::File(importer),
+                            };
+                            links.extend(
+                                passing
+                                    .get(f)
+                                    .into_iter()
+                                    .flatten()
+                                    .map(|(importer, p)| (pass(importer), *p)),
+                            );
                         }
                     }
                 }
-                next.push((n, d + 1));
-            }
-            for (n, nd) in next {
-                if distance.get(&n).is_none_or(|&old| nd < old) {
-                    distance.insert(n, nd);
-                    if nd == d {
-                        queue.push_front(n);
-                    } else {
-                        queue.push_back(n);
+                let open = |(n, link): &(Node, Link)| link.types || !(here || blocked(n));
+                for (n, link) in links.into_iter().filter(open) {
+                    // reached through production code only now: it stands for
+                    // its component from where it was reached before
+                    if link.production && production.insert(n) && !blocked(&n) {
+                        if let (Node::File(f) | Node::Passes(f), Some(&at)) = (n, distance.get(&n))
+                        {
+                            if let Some(owner) = owner_of(f).filter(|c| stands_for(f, c)) {
+                                next.push((Node::Component(owner), at));
+                            }
+                        }
+                    }
+                    next.push((n, d + 1));
+                }
+                for (n, nd) in next {
+                    if distance.get(&n).is_none_or(|&old| nd < old) {
+                        distance.insert(n, nd);
+                        if nd == d {
+                            queue.push_front(n);
+                        } else {
+                            queue.push_back(n);
+                        }
                     }
                 }
             }
-        }
+            distance
+        };
+        let mut distance = walk(&BTreeSet::new());
 
-        let mut reach = Reach::default();
+        // A test file whose mock replaces a module for its whole run (a
+        // `vi.mock` with a factory) reaches the change only along a way that
+        // passes none of those modules, apart from one whose mock gives it a
+        // name the change may alter (of a changed file, of a barrel that
+        // passes a changed file's names on, the symbol), which the test
+        // depends on. One that a statement taking a symbol starts from
+        // depends on the symbol's name the same way.
+        let mut out: Vec<(&str, Vec<&Evidence>)> = Vec::new();
+        if tests {
+            let alters = |target: &str, names: &BTreeSet<String>| {
+                let any = names.contains(WHOLE_MODULE);
+                let passes = distance.contains_key(&Node::Passes(target));
+                match (seed, symbol_name) {
+                    // the importers of a module that changed keep their names
+                    (ChangeSeed::Importers(_), _) => false,
+                    (ChangeSeed::Symbol(_), Some((file, name))) => {
+                        (target == file || passes) && (any || names.contains(name))
+                    }
+                    (ChangeSeed::Symbol(_), None) => false,
+                    _ if changed.contains(target) => any || barrels.exported.may_have(names),
+                    _ => passes && (any || barrels.may_pass(target, names)),
+                }
+            };
+            // the names a statement gives what it loads, as its file and, through
+            // re-exports, the files that define them declare them
+            let mut given: BTreeMap<(&str, Option<u32>), BTreeSet<String>> = BTreeMap::new();
+            for e in self
+                .edges
+                .iter()
+                .filter(|e| e.kind == EdgeKind::Import)
+                .flat_map(|e| &e.evidence)
+                .filter(|e| e.replaces || e.via().is_some())
+            {
+                given
+                    .entry((e.file.as_str(), e.line))
+                    .or_default()
+                    .extend(e.names.iter().cloned());
+            }
+            let mut mocks: BTreeMap<&str, Vec<&Evidence>> = BTreeMap::new();
+            for e in self
+                .edges
+                .iter()
+                .filter(|e| e.kind == EdgeKind::Import)
+                .flat_map(|e| &e.evidence)
+                .filter(|e| e.replaces)
+            {
+                let names = &given[&(e.file.as_str(), e.line)];
+                if e.target.as_deref().is_some_and(|t| !alters(t, names)) {
+                    mocks.entry(e.file.as_str()).or_default().push(e);
+                }
+            }
+            let starts: BTreeSet<&str> = start
+                .iter()
+                .filter_map(|(node, _, _)| match node {
+                    Node::File(f) | Node::Passes(f) => Some(*f),
+                    Node::Component(_) => None,
+                })
+                .collect();
+            // one walk per set of replaced modules
+            let mut walked: BTreeMap<BTreeSet<&str>, BTreeMap<Node, usize>> = BTreeMap::new();
+            for (file, mocks) in mocks {
+                if starts.contains(file) || !distance.contains_key(&Node::File(file)) {
+                    continue;
+                }
+                let cut: BTreeSet<&str> =
+                    mocks.iter().filter_map(|e| e.target.as_deref()).collect();
+                let other = walked.entry(cut.clone()).or_insert_with(|| walk(&cut));
+                if !other.contains_key(&Node::File(file)) {
+                    // the mocks of the modules the change reaches, in order
+                    let reached = |e: &&Evidence| {
+                        e.target.as_deref().is_some_and(|t| {
+                            distance.contains_key(&Node::File(t))
+                                || distance.contains_key(&Node::Passes(t))
+                        })
+                    };
+                    let mut mocks: Vec<&Evidence> = mocks.into_iter().filter(reached).collect();
+                    mocks.sort_by_key(|e| e.line);
+                    out.push((file, mocks));
+                }
+            }
+            for (file, _) in &out {
+                distance.remove(&Node::File(file));
+                distance.remove(&Node::Passes(file));
+            }
+        }
+        let left_out = out
+            .into_iter()
+            .map(|(file, mocks)| (file.to_owned(), mocks.into_iter().cloned().collect()))
+            .collect();
+
+        let mut reach = Reach {
+            left_out,
+            ..Reach::default()
+        };
         let (mut files, mut seeds) = (BTreeSet::new(), BTreeSet::new());
         for (node, d) in &distance {
             if let Node::File(f) | Node::Passes(f) = node {
@@ -628,14 +792,10 @@ impl ArchitectureGraph {
     /// `tests`. The other statements take the barrel's own names or names
     /// defined elsewhere; one that takes a name a changed file defines
     /// points at the file through its `via` evidence anyway.
-    fn passed_on<'s>(
-        &'s self,
-        changed: &BTreeSet<&'s str>,
-        tests: bool,
-    ) -> BTreeMap<&'s str, BTreeMap<Node<'s>, bool>> {
-        let mut links: BTreeMap<&str, BTreeMap<Node, bool>> = BTreeMap::new();
+    fn passed_on<'s>(&'s self, changed: &BTreeSet<&'s str>, tests: bool) -> Barrels<'s> {
+        let mut links: BTreeMap<&str, BTreeMap<Node, Link>> = BTreeMap::new();
         if changed.is_empty() {
-            return links;
+            return Barrels::default();
         }
         // the statements that load each file, and the `via` evidence of each
         // statement
@@ -767,13 +927,22 @@ impl ArchitectureGraph {
                     true => Node::Passes(file),
                     false => Node::File(file),
                 };
-                *links.entry(barrel).or_default().entry(node).or_default() |= !e.test;
+                links
+                    .entry(barrel)
+                    .or_default()
+                    .entry(node)
+                    .or_default()
+                    .add(Link::of(e));
                 if e.passes_on() && passes.entry(file).or_default().extend(taken) {
                     queue.push_back(file);
                 }
             }
         }
-        links
+        Barrels {
+            links,
+            passes,
+            exported,
+        }
     }
 
     /// The names the files in `changed` may export: those they define,
@@ -795,7 +964,8 @@ impl ArchitectureGraph {
             .flat_map(|e| &e.evidence)
             .chain(self.unmapped_imports.iter().map(|i| &i.evidence));
         for e in imports {
-            if let Some(target) = e.target.as_deref() {
+            // what a mock gives a module says nothing of what it exports
+            if let Some(target) = e.target.as_deref().filter(|_| !e.replaces) {
                 taken
                     .entry(target)
                     .or_default()
@@ -1287,10 +1457,11 @@ pub enum ChangeSeed<'a> {
     Component(&'a ComponentId),
     /// One file, relative to the repository root.
     File(&'a str),
-    /// Files changed together, relative to the repository root, with no
-    /// component of their own left out: what imports a module that no
-    /// component carries.
-    Files(&'a [&'a str]),
+    /// The files that import a module that changed outside them (one that
+    /// no component carries), relative to the repository root, with no
+    /// component of their own left out. They did not change, so a test
+    /// whose mock replaces one of them does not run what changed through it.
+    Importers(&'a [&'a str]),
     /// A symbol: its first step goes only through the statements that take
     /// it by name or take its file whole (see
     /// [`ArchitectureGraph::symbol_importers`]), then file by file.
@@ -1307,6 +1478,10 @@ pub struct Reach {
     /// Files that reach the change only through test code, directly or
     /// not: the tests to run again, those beside production code included.
     pub tests: BTreeSet<String>,
+    /// Test files left out of `tests`: they reach the change only through
+    /// modules their mocks replace for their whole run, each with those
+    /// mocks.
+    pub left_out: BTreeMap<String, Vec<Evidence>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1317,6 +1492,41 @@ enum Node<'a> {
     /// on: what loads it is followed only through the statements that may
     /// take those names. Reached otherwise, it is a [`Node::File`] too.
     Passes(&'a str),
+}
+
+/// Where a walk starts, at what distance, and for a statement that takes a
+/// symbol, the file it loads and whether it takes types only.
+type Start<'a> = (Node<'a>, usize, Option<(&'a str, bool)>);
+
+/// How an importer depends on what it loads: through production code, and
+/// through a statement that takes types only, of which a mock replaces
+/// nothing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Link {
+    production: bool,
+    types: bool,
+}
+
+impl Link {
+    fn of(e: &Evidence) -> Self {
+        Link {
+            production: !e.test,
+            types: e.type_only,
+        }
+    }
+
+    /// A dependency that runs, through production code when `production`.
+    fn running(production: bool) -> Self {
+        Link {
+            production,
+            types: false,
+        }
+    }
+
+    fn add(&mut self, other: Link) {
+        self.production |= other.production;
+        self.types |= other.types;
+    }
 }
 
 /// What a barrel passes on of the changed files, by the names it exports
@@ -1332,12 +1542,44 @@ struct Passed<'a> {
     any: bool,
 }
 
+/// What the barrels of the changed files lead to (see
+/// [`ArchitectureGraph::passed_on`]), and what they pass on.
+#[derive(Debug, Default)]
+struct Barrels<'a> {
+    links: BTreeMap<&'a str, BTreeMap<Node<'a>, Link>>,
+    passes: BTreeMap<&'a str, Passed<'a>>,
+    exported: Exported<'a>,
+}
+
+impl Barrels<'_> {
+    /// Whether `barrel` may pass on one of `names` from a changed file.
+    fn may_pass(&self, barrel: &str, names: &BTreeSet<String>) -> bool {
+        let Some(passed) = self.passes.get(barrel) else {
+            return false;
+        };
+        names.iter().map(String::as_str).any(|name| {
+            passed.exact.contains(name)
+                || passed.possible.contains(name)
+                || passed.any
+                    && name != "default"
+                    && (self.exported.open || self.exported.names.contains(name))
+        })
+    }
+}
+
 /// What the changed files may export, by name.
 #[derive(Debug, Default)]
 struct Exported<'a> {
     names: BTreeSet<&'a str>,
     /// One re-exports from outside the scan, whose names are not known.
     open: bool,
+}
+
+impl Exported<'_> {
+    /// Whether one of `names` may be one the changed files export.
+    fn may_have(&self, names: &BTreeSet<String>) -> bool {
+        self.open || names.iter().any(|n| self.names.contains(n.as_str()))
+    }
 }
 
 impl<'a> Passed<'a> {
@@ -2867,6 +3109,238 @@ mod tests {
             .contains(&ComponentId::new("app/calendar.ts")));
     }
 
+    /// `orders.ts` imports `pricing.ts` and a type of `types.ts`,
+    /// `checkout.ts` imports `orders.ts` and `index.ts` re-exports it; tests
+    /// mock `orders.ts` or `index.ts` with a factory and reach them
+    /// directly, through `checkout.ts`, through the barrel or by a type of
+    /// `orders.ts`, beside one that loads `orders.ts` for real.
+    fn mocked_orders() -> ArchitectureGraph {
+        let mut graph = ArchitectureGraph::default();
+        let files = [
+            "lib/pricing.ts",
+            "lib/types.ts",
+            "lib/orders.ts",
+            "lib/checkout.ts",
+            "lib/index.ts",
+            "spec/direct.test.ts",
+            "spec/typed.test.ts",
+            "spec/through.test.ts",
+            "spec/barrel.test.ts",
+            "spec/real.test.ts",
+        ];
+        for file in files {
+            let mut c = Component::new(file, file, ComponentKind::Module);
+            c.path = Some(file.into());
+            graph.add_component(c);
+        }
+        let statement = |file: &str, line: u32, note: &str, target: &str, names: &[&str]| {
+            Edge::new(file, target, EdgeKind::Import).with_evidence(
+                Evidence::new(file)
+                    .at_line(line)
+                    .with_note(note)
+                    .pointing_at(target)
+                    .taking(names.iter().copied())
+                    .in_test(file.starts_with("spec/"))
+                    .replacing(note == "vi.mock"),
+            )
+        };
+        let typed = |file: &str, line: u32, target: &str, names: &[&str]| {
+            let mut edge = statement(file, line, "import", target, names);
+            edge.evidence[0].type_only = true;
+            edge
+        };
+        graph.add_edges([
+            statement("lib/orders.ts", 1, "import", "lib/pricing.ts", &["price"]),
+            typed("lib/orders.ts", 2, "lib/types.ts", &["Price"]),
+            typed("spec/typed.test.ts", 1, "lib/orders.ts", &["Line"]),
+            statement("spec/typed.test.ts", 2, "vi.mock", "lib/orders.ts", &["*"]),
+            statement(
+                "lib/checkout.ts",
+                1,
+                "import",
+                "lib/orders.ts",
+                &["placeOrder"],
+            ),
+            statement("lib/index.ts", 1, "export", "lib/orders.ts", &["*"]),
+            statement(
+                "spec/direct.test.ts",
+                1,
+                "import",
+                "lib/orders.ts",
+                &["placeOrder"],
+            ),
+            statement("spec/direct.test.ts", 2, "vi.mock", "lib/orders.ts", &["*"]),
+            statement(
+                "spec/through.test.ts",
+                1,
+                "import",
+                "lib/checkout.ts",
+                &["checkout"],
+            ),
+            statement(
+                "spec/through.test.ts",
+                2,
+                "vi.mock",
+                "lib/orders.ts",
+                &["*"],
+            ),
+            statement(
+                "spec/barrel.test.ts",
+                1,
+                "import",
+                "lib/index.ts",
+                &["placeOrder"],
+            ),
+            statement(
+                "spec/barrel.test.ts",
+                1,
+                "import via lib/index.ts:1",
+                "lib/orders.ts",
+                &["placeOrder"],
+            ),
+            statement("spec/barrel.test.ts", 2, "vi.mock", "lib/index.ts", &["*"]),
+            statement(
+                "spec/real.test.ts",
+                1,
+                "import",
+                "lib/checkout.ts",
+                &["checkout"],
+            ),
+        ]);
+        graph
+    }
+
+    #[test]
+    fn a_test_reaches_nothing_through_a_module_its_mock_replaces() {
+        let graph = mocked_orders();
+        let reach = |seed: ChangeSeed| graph.change_impact(seed, 9);
+        let tests = |reach: &Reach| reach.tests.iter().cloned().collect::<Vec<_>>();
+        // what the mocked module imports reaches only the test that loads it
+        let pricing = reach(ChangeSeed::File("lib/pricing.ts"));
+        assert_eq!(tests(&pricing), ["spec/real.test.ts"]);
+        // while its types are the real module's, which a mock replaces not
+        let types = reach(ChangeSeed::File("lib/types.ts"));
+        assert!(types.tests.contains("spec/typed.test.ts"));
+        // each test left out names its mock
+        let left: Vec<(&str, Vec<String>)> = pricing
+            .left_out
+            .iter()
+            .map(|(file, mocks)| {
+                let at = mocks
+                    .iter()
+                    .map(|m| format!("{}:{}", m.file, m.line.unwrap()))
+                    .collect();
+                (file.as_str(), at)
+            })
+            .collect();
+        assert_eq!(
+            left,
+            [
+                (
+                    "spec/barrel.test.ts",
+                    vec!["spec/barrel.test.ts:2".to_owned()]
+                ),
+                (
+                    "spec/direct.test.ts",
+                    vec!["spec/direct.test.ts:2".to_owned()]
+                ),
+                (
+                    "spec/through.test.ts",
+                    vec!["spec/through.test.ts:2".to_owned()]
+                ),
+                (
+                    "spec/typed.test.ts",
+                    vec!["spec/typed.test.ts:2".to_owned()]
+                ),
+            ]
+        );
+        // the mocked module itself: its names are what the mocks replace
+        let orders = reach(ChangeSeed::File("lib/orders.ts"));
+        assert_eq!(
+            tests(&orders),
+            [
+                "spec/barrel.test.ts",
+                "spec/direct.test.ts",
+                "spec/real.test.ts",
+                "spec/through.test.ts",
+                "spec/typed.test.ts"
+            ]
+        );
+        assert!(orders.left_out.is_empty());
+        // and a symbol of it, which the direct test takes by name
+        let place = Symbol {
+            component: "lib/orders.ts".into(),
+            ..symbol(
+                "lib/orders.ts::placeOrder",
+                "placeOrder",
+                vec![Evidence::new("lib/orders.ts").at_line(2)],
+            )
+        };
+        let symbol = reach(ChangeSeed::Symbol(&place));
+        assert_eq!(
+            tests(&symbol),
+            [
+                "spec/barrel.test.ts",
+                "spec/direct.test.ts",
+                "spec/real.test.ts",
+                "spec/through.test.ts",
+                "spec/typed.test.ts"
+            ]
+        );
+        // a module that imports what changed outside the scan did not change
+        let importers = reach(ChangeSeed::Importers(&["lib/orders.ts"]));
+        assert_eq!(tests(&importers), ["spec/real.test.ts"]);
+    }
+
+    #[test]
+    fn a_mock_of_a_barrel_hides_the_change_unless_it_gives_a_name_passed_on() {
+        let mut graph = ArchitectureGraph::default();
+        let files = [
+            "lib/url.ts",
+            "lib/storage.ts",
+            "spec/keyed.test.ts",
+            "spec/other.test.ts",
+        ];
+        for file in files {
+            let mut c = Component::new(file, file, ComponentKind::Module);
+            c.path = Some(file.into());
+            graph.add_component(c);
+        }
+        let statement = |file: &str, line: u32, note: &str, names: &[&str]| {
+            let target = match file {
+                "lib/storage.ts" => "lib/url.ts",
+                _ => "lib/storage.ts",
+            };
+            Edge::new(file, target, EdgeKind::Import).with_evidence(
+                Evidence::new(file)
+                    .at_line(line)
+                    .with_note(note)
+                    .pointing_at(target)
+                    .taking(names.iter().copied())
+                    .in_test(file.starts_with("spec/"))
+                    .replacing(note == "vi.mock"),
+            )
+        };
+        // the module re-exports one name beside its own; both tests take it
+        // whole and mock it, one with that name, one with another
+        graph.add_edges([
+            statement("lib/storage.ts", 1, "export", &["fileUrl"]),
+            statement("spec/keyed.test.ts", 1, "import", &["*"]),
+            statement("spec/keyed.test.ts", 2, "vi.mock", &["fileUrl"]),
+            statement("spec/other.test.ts", 1, "import", &["*"]),
+            statement("spec/other.test.ts", 2, "vi.mock", &["upload"]),
+        ]);
+        let reach = graph.change_impact(ChangeSeed::File("lib/url.ts"), 9);
+        assert_eq!(
+            reach.tests.iter().collect::<Vec<_>>(),
+            ["spec/keyed.test.ts"]
+        );
+        assert_eq!(
+            reach.left_out.keys().collect::<Vec<_>>(),
+            ["spec/other.test.ts"]
+        );
+    }
+
     #[test]
     fn a_changed_test_is_one_to_run_again_whatever_it_imports() {
         let mut graph = ArchitectureGraph::default();
@@ -3003,7 +3477,7 @@ mod tests {
         };
         graph.add_edges([import("b", 1, false), import("a", 9, true)]);
         // a file one of them reaches through production code is no test
-        let reach = graph.change_impact(ChangeSeed::Files(&["a.rs", "b.rs"]), 2);
+        let reach = graph.change_impact(ChangeSeed::Importers(&["a.rs", "b.rs"]), 2);
         assert!(reach.tests.is_empty(), "{:?}", reach.tests);
         assert_eq!(
             reach.direct.iter().map(|c| c.as_str()).collect::<Vec<_>>(),

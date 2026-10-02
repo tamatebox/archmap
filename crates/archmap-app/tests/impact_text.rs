@@ -350,3 +350,60 @@ fn a_barrel_leads_on_only_to_what_may_take_the_files_names() {
         );
     }
 }
+
+#[test]
+fn a_test_whose_mock_replaces_a_module_on_the_way_is_left_out() {
+    let ws = scan(&fixture("ts-mocks"));
+    // what the mocked module imports: those tests that run it stay
+    let pricing = text(&ws, "src/pricing.ts");
+    assert_eq!(
+        section(&pricing, "Tests to run again: 7"),
+        [
+            "  tests/actual.test.ts",
+            "  tests/auto.test.ts",
+            "  tests/both.test.ts",
+            "  tests/helper.test.ts",
+            "  tests/inside.test.ts",
+            "  tests/original.test.ts",
+            "  tests/passed.test.ts",
+            "  left out: 5 test files reach it only through modules their mocks replace: \
+             tests/barrel.test.ts:4 (mocks src/index.ts), tests/jest.test.ts:3 (mocks \
+             src/orders.ts), tests/replaced.test.ts:4 (mocks src/orders.ts), +2 more",
+        ]
+    );
+    // a test that takes types of the mocked module: a mock replaces no type
+    let types = text(&ws, "src/types.ts");
+    assert_eq!(
+        section(&types, "Tests to run again: 1"),
+        ["  tests/typed.test.ts"]
+    );
+    // a module that re-exports a name: only the mock that gives that name
+    // depends on it
+    let url = text(&ws, "src/url.ts");
+    assert_eq!(
+        section(&url, "Tests to run again: 1"),
+        ["  tests/link.test.ts"]
+    );
+    // a mock of the changed file, or of a barrel of it, that gives it a
+    // name it exports, the default by its declared name too; not one that
+    // gives it none of its names
+    let audio = text(&ws, "src/audio.ts");
+    assert_eq!(
+        section(&audio, "Tests to run again: 2"),
+        [
+            "  tests/default.test.ts",
+            "  tests/media.test.ts",
+            "  left out: 1 test file reaches it only through a module its mock replaces: \
+             tests/unrelated.test.ts:4 (mocks src/audio.ts)",
+        ]
+    );
+    // the mocked module itself: the mocks replace its names
+    let orders = text(&ws, "src/orders.ts");
+    assert!(orders.contains("\nTests to run again: 11\n"), "{orders}");
+    assert!(!orders.contains("left out"), "{orders}");
+    let every = impact(&ws, "src/orders.ts", DEFAULT_DEPTH, true);
+    assert!(
+        every.contains("\n  tests/replaced.test.ts:4 (mock) (test)\n"),
+        "{every}"
+    );
+}

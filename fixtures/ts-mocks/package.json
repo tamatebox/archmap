@@ -1,0 +1,9 @@
+{
+  "name": "ts-mocks",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "jest": "^29.0.0",
+    "vitest": "^3.0.0"
+  }
+}

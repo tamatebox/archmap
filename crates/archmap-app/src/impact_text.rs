@@ -10,8 +10,8 @@ use std::fmt::Write;
 use archmap_core::{ArchitectureGraph, ComponentId};
 
 use crate::query_text::{
-    component_head, count, display, file_head, import_location, namesakes, not_traced, shell_word,
-    statements_title, symbol_line,
+    component_head, count, display, file_head, import_location, namesakes, not_traced, place,
+    shell_word, statements_title, symbol_line, with_more,
 };
 use crate::views::{About, ImpactResult, ImportSites, MAX_IMPORT_SITES, MAX_TEST_FILES};
 
@@ -285,15 +285,16 @@ fn transitive(
 }
 
 /// The test files to run again after the change: a changed test file is
-/// one of them.
+/// one of them. Those left out because their mocks replace a module on the
+/// way are counted at the end, located at their first such mock.
 fn tests(out: &mut String, result: &ImpactResult, caps: &Caps) -> bool {
     let total = result.tests.total;
+    let shown = result.tests.shown.len().min(caps.tests);
     if total == 0 {
         let _ = writeln!(out, "\nTests to run again: none");
-        return false;
+    } else {
+        let _ = writeln!(out, "\nTests to run again: {}", count(total, shown));
     }
-    let shown = result.tests.shown.len().min(caps.tests);
-    let _ = writeln!(out, "\nTests to run again: {}", count(total, shown));
     for file in &result.tests.shown[..shown] {
         match &result.about {
             About::File(target) if target == file => {
@@ -304,5 +305,25 @@ fn tests(out: &mut String, result: &ImpactResult, caps: &Caps) -> bool {
             }
         }
     }
-    shown < total
+    let left = &result.tests.left_out;
+    if left.total == 0 {
+        return shown < total;
+    }
+    let what = match left.total {
+        1 => "1 test file reaches it only through a module its mock replaces".to_owned(),
+        n => format!("{n} test files reach it only through modules their mocks replace"),
+    };
+    let places: Vec<String> = left
+        .shown
+        .iter()
+        .take(caps.locations)
+        .filter_map(|test| test.mocks.first())
+        .map(|mock| format!("{} (mocks {})", place(&mock.file, mock.line), mock.target))
+        .collect();
+    let _ = writeln!(
+        out,
+        "  left out: {what}: {}",
+        with_more(&places, left.total)
+    );
+    shown < total || places.len() < left.total
 }

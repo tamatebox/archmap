@@ -256,7 +256,8 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
 - calls with a written-out specifier (a string, or a template without substitutions) anywhere in a file
   become `import` edges too, noted with the call: `require`, `import()`, and the module calls of Vitest
   and Jest (`vi.mock`, `vi.doMock`, `vi.unmock`, `vi.importActual`, `vi.importMock`, `jest.mock`,
-  `jest.doMock`, `jest.unmock`, `jest.requireActual`, `jest.requireMock`); inside a function body
+  `jest.doMock`, `jest.unmock`, `jest.requireActual`, `jest.requireMock`, `jest.createMockFromModule`,
+  `jest.genMockFromModule`); inside a function body
   (`lazy(() => import('./chart'))`) their evidence is `local`; a `require`, or an `import()` awaited, takes
   the names its result is destructured into at once or the property read from it
   (`const { pad, trim: t } = require('./format')`, `const { run } = await import('./job')`,
@@ -358,9 +359,22 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   rule above, so its imports carry `test`.
 - The names that a `require` or an `import()` takes later (`import('./m').then((m) => m.a)`, a result
   kept in a variable and read afterwards, an assignment that destructures it, `({ a } = require('m'))`)
-  and the names a mock replaces are not read: such calls take the whole module, so `query` on a symbol
-  lists them under `May use`. A `vi.mock` with a factory, which
+  and the names of a mock that loads the real module are not read: such calls take the whole module,
+  so `query` on a symbol lists them under `May use`. A `vi.mock` with a factory, which
   never loads the real module, is an edge all the same, noted `vi.mock`.
+- A mock replaces its module for the file's whole run (evidence `replaces`) only when it runs before
+  the file's imports and its factory is a function written in place that names no `importOriginal`,
+  loads no module and calls nothing bound outside it but Vitest's and Jest's methods and the
+  language's globals: `vi.mock('./orders', () => ({ placeOrder: vi.fn() }))`, outside any function,
+  for a file that loads `./orders` for real nowhere else (`vi.importActual`, `jest.requireActual`).
+  Such a mock takes the names its factory's object gives the module (`placeOrder`, `default` by the
+  name the module declares for it), none for `() => ({})`, and the whole module when the factory
+  returns anything else or spreads an object. Other mocks are read as loading the module: one without a factory, which a `__mocks__` file
+  may answer, a factory passed by name or that calls a helper, `vi.doMock`, a mock inside
+  `describe`, and mocks in setup files, which no test file names. Jest's ESM mocks
+  (`jest.unstable_mockModule`) are not read, and a mocked path that only a test runner's own
+  aliases resolve (Vite's `resolve.alias`, Jest's `moduleNameMapper`) maps to no file, so neither
+  hides a module.
 - A `require` that a function takes as a parameter (a bundle's module wrapper, AMD's `define`) is
   not Node's and gives nothing, but a committed UMD bundle (`module.exports =
   factory(require('jquery'))`) reads as code that imports `jquery`; list such files in an `.ignore`

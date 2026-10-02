@@ -11,12 +11,13 @@ use std::path::Path;
 use archmap_core::{SymbolKind, WHOLE_MODULE};
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    Argument, AssignmentExpression, AssignmentPattern, AssignmentTarget, BindingPattern,
-    CallExpression, Class, ClassElement, Declaration, Decorator, ExportDefaultDeclarationKind,
-    Expression, FormalParameter, FormalParameters, Function, ImportDeclarationSpecifier,
-    ImportExpression, MethodDefinitionKind, NewExpression, ObjectProperty, ObjectPropertyKind,
-    Statement, StaticMemberExpression, TSAccessibility, TSImportEqualsDeclaration, TSImportType,
-    TSImportTypeQualifier, TSModuleReference, VariableDeclarator,
+    Argument, ArrowFunctionBody, AssignmentExpression, AssignmentPattern, AssignmentTarget,
+    BindingPattern, CallExpression, Class, ClassElement, Declaration, Decorator,
+    ExportDefaultDeclarationKind, Expression, FormalParameter, FormalParameters, Function,
+    IdentifierReference, ImportDeclarationSpecifier, ImportExpression, MethodDefinitionKind,
+    NewExpression, ObjectProperty, ObjectPropertyKind, Statement, StaticMemberExpression,
+    TSAccessibility, TSImportEqualsDeclaration, TSImportType, TSImportTypeQualifier,
+    TSModuleReference, VariableDeclarator,
 };
 use oxc_ast::AstKind;
 use oxc_ast_visit::{walk, Visit};
@@ -51,6 +52,10 @@ pub(crate) struct ImportStatement {
     pub types: BTreeSet<String>,
     /// Inside a function body, so it runs only when the function is called.
     pub local: bool,
+    /// A mock outside any function (`vi.mock`, `jest.mock`, which run before
+    /// the file's imports) whose factory never loads the real module: the
+    /// file gets the factory's stand-in for it.
+    pub replaces: bool,
 }
 
 /// A call that loads a module by a name computed at runtime.
@@ -65,7 +70,7 @@ pub(crate) struct DynamicCall {
 /// Calls that load a module named by their first argument; `vi.mock` and
 /// `jest.mock` with a factory never load the real one, which their note
 /// keeps apart.
-const MODULE_CALLS: [&str; 10] = [
+const MODULE_CALLS: [&str; 12] = [
     "vi.mock",
     "vi.doMock",
     "vi.unmock",
@@ -76,6 +81,23 @@ const MODULE_CALLS: [&str; 10] = [
     "jest.unmock",
     "jest.requireActual",
     "jest.requireMock",
+    "jest.createMockFromModule",
+    "jest.genMockFromModule",
+];
+
+/// Module calls through which a file runs a module's real code, or keeps
+/// it, whatever a mock of the module in the file replaces.
+pub(crate) const LOADS_REAL: [&str; 10] = [
+    "vi.doMock",
+    "vi.unmock",
+    "vi.importActual",
+    "vi.importMock",
+    "jest.doMock",
+    "jest.unmock",
+    "jest.requireActual",
+    "jest.requireMock",
+    "jest.createMockFromModule",
+    "jest.genMockFromModule",
 ];
 
 #[derive(Debug, Default)]
@@ -173,6 +195,7 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
             names,
             types,
             local: false,
+            replaces: false,
         };
         let whole = || vec![WHOLE_MODULE.to_owned()];
         let whole_if = |types: bool| match types {
@@ -639,6 +662,7 @@ impl Calls<'_> {
             names: vec![name],
             types,
             local,
+            replaces: false,
         });
     }
 
@@ -694,12 +718,33 @@ impl<'a> Visit<'a> for Calls<'_> {
         if let (Some(note), Some(first)) = (note, it.arguments.first()) {
             match first.as_expression().and_then(literal) {
                 Some(specifier) => {
+                    // a mock that runs before the imports and stands in for
+                    // the whole module, which takes the names it gives it
+                    let hoisted =
+                        matches!(note, "vi.mock" | "jest.mock") && self.functions.is_empty();
+                    let replaces = hoisted && stands_in(it);
                     let names = match note {
                         "require" => self.names_of(it.span.start),
+                        _ if replaces => {
+                            factory_keys(it).unwrap_or_else(|| vec![WHOLE_MODULE.to_owned()])
+                        }
                         _ => vec![WHOLE_MODULE.to_owned()],
                     };
-                    for name in names {
+                    let before = self.imports.len();
+                    for name in names.iter().cloned() {
                         self.import(specifier.clone(), it.span.start, note, name, false);
+                    }
+                    if names.is_empty() {
+                        // a factory that gives the module no name
+                        self.import(specifier.clone(), it.span.start, note, String::new(), false);
+                        if let Some(mock) = self.imports.last_mut() {
+                            mock.names.clear();
+                        }
+                    }
+                    if replaces && self.imports.len() > before {
+                        if let Some(mock) = self.imports.last_mut() {
+                            mock.replaces = true;
+                        }
                     }
                 }
                 // a mock of a computed name loads nothing to point at
@@ -762,6 +807,191 @@ impl<'a> Visit<'a> for Calls<'_> {
             true,
         );
         walk::walk_ts_import_type(self, it);
+    }
+}
+
+/// Whether a mock call's factory, its second argument, stands in for the
+/// module without loading the real one: a function written in place that
+/// never names its first parameter (`importOriginal`), loads no module and
+/// calls nothing bound outside it but Vitest's and Jest's own methods and
+/// the language's globals, since such a function may load the real module.
+fn stands_in(call: &CallExpression) -> bool {
+    let Some(factory) = call.arguments.get(1).and_then(|a| a.as_expression()) else {
+        return false;
+    };
+    let params = match factory.without_parentheses() {
+        Expression::ArrowFunctionExpression(f) => &f.params,
+        Expression::FunctionExpression(f) => &f.params,
+        _ => return false,
+    };
+    let mut bound = Bindings::default();
+    bound.visit_expression(factory);
+    let mut original = LoadsOriginal {
+        parameter: params
+            .items
+            .first()
+            .and_then(|p| p.pattern.get_identifier_name())
+            .map(|name| name.to_string()),
+        own: bound.0,
+        found: false,
+    };
+    original.visit_expression(factory);
+    !original.found
+}
+
+/// The names a mock's factory gives the module, when it returns an object
+/// written out (`() => ({ placeOrder: vi.fn() })`, or such an object after
+/// `return`); none for a spread, a computed key or any other value.
+fn factory_keys(call: &CallExpression) -> Option<Vec<String>> {
+    let factory = call.arguments.get(1)?.as_expression()?;
+    let body = match factory.without_parentheses() {
+        Expression::ArrowFunctionExpression(f) => match &f.body {
+            ArrowFunctionBody::FunctionBody(body) => &body.statements,
+            value => return object_keys(value.as_expression()?),
+        },
+        Expression::FunctionExpression(f) => &f.body.as_ref()?.statements,
+        _ => return None,
+    };
+    let mut returned = body.iter().filter_map(|s| match s {
+        Statement::ReturnStatement(r) => r.argument.as_ref(),
+        _ => None,
+    });
+    match (returned.next(), returned.next()) {
+        (Some(value), None) => object_keys(value),
+        _ => None,
+    }
+}
+
+/// The keys of an object written out, apart from `__esModule`.
+fn object_keys(value: &Expression) -> Option<Vec<String>> {
+    let Expression::ObjectExpression(object) = value.without_parentheses() else {
+        return None;
+    };
+    let mut keys = Vec::new();
+    for property in &object.properties {
+        let ObjectPropertyKind::ObjectProperty(p) = property else {
+            return None;
+        };
+        if p.computed {
+            return None;
+        }
+        let key = p.key.static_name()?;
+        if key != "__esModule" {
+            keys.push(key.into_owned());
+        }
+    }
+    Some(keys)
+}
+
+/// Calls that load a module's real code, or build a mock from it.
+const LOADS_ORIGINAL: [&str; 6] = [
+    "vi.importActual",
+    "vi.importMock",
+    "jest.requireActual",
+    "jest.requireMock",
+    "jest.createMockFromModule",
+    "jest.genMockFromModule",
+];
+
+/// What a mock's factory may call without loading a module: the test
+/// frameworks' objects and the language's and runtime's globals.
+const CALLABLE: [&str; 27] = [
+    "vi",
+    "jest",
+    "expect",
+    "Array",
+    "BigInt",
+    "Boolean",
+    "Buffer",
+    "Date",
+    "Error",
+    "Headers",
+    "JSON",
+    "Map",
+    "Math",
+    "Number",
+    "Object",
+    "Promise",
+    "Reflect",
+    "RegExp",
+    "Request",
+    "Response",
+    "Set",
+    "String",
+    "Symbol",
+    "TypeError",
+    "URL",
+    "WeakMap",
+    "console",
+];
+
+/// The names a factory binds itself: its parameters and declarations.
+#[derive(Default)]
+struct Bindings(BTreeSet<String>);
+
+impl<'a> Visit<'a> for Bindings {
+    fn visit_binding_identifier(&mut self, it: &oxc_ast::ast::BindingIdentifier<'a>) {
+        self.0.insert(it.name.to_string());
+    }
+}
+
+/// Finds, in a mock's factory, what may load the real module: its
+/// `importOriginal` parameter named, a module loaded, or a call of
+/// something bound outside it.
+struct LoadsOriginal {
+    parameter: Option<String>,
+    own: BTreeSet<String>,
+    found: bool,
+}
+
+impl LoadsOriginal {
+    /// A call of `callee`, through members and calls (`vi.fn().mockReturnValue`).
+    fn calls(&mut self, callee: &Expression) {
+        if let Some(name) = callee_root(callee) {
+            let safe = CALLABLE.contains(&name) || self.own.contains(name);
+            self.found |= !safe || self.parameter.as_deref() == Some(name);
+        }
+    }
+}
+
+impl<'a> Visit<'a> for LoadsOriginal {
+    fn visit_identifier_reference(&mut self, it: &IdentifierReference<'a>) {
+        self.found |= self.parameter.as_deref() == Some(it.name.as_str());
+    }
+
+    fn visit_static_member_expression(&mut self, it: &StaticMemberExpression<'a>) {
+        if let Expression::Identifier(object) = &it.object {
+            let call = format!("{}.{}", object.name, it.property.name);
+            self.found |= LOADS_ORIGINAL.contains(&call.as_str());
+        }
+        walk::walk_static_member_expression(self, it);
+    }
+
+    fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
+        self.calls(&it.callee);
+        walk::walk_call_expression(self, it);
+    }
+
+    fn visit_new_expression(&mut self, it: &NewExpression<'a>) {
+        self.calls(&it.callee);
+        walk::walk_new_expression(self, it);
+    }
+
+    fn visit_import_expression(&mut self, it: &ImportExpression<'a>) {
+        self.found = true;
+        walk::walk_import_expression(self, it);
+    }
+}
+
+/// The name a callee starts from: `vi` for `vi.fn().mockReturnValue`,
+/// `make` for `make()`; none for a function written in place.
+fn callee_root<'e>(callee: &'e Expression) -> Option<&'e str> {
+    match callee.without_parentheses() {
+        Expression::Identifier(name) => Some(name.name.as_str()),
+        Expression::StaticMemberExpression(member) => callee_root(&member.object),
+        Expression::ComputedMemberExpression(member) => callee_root(&member.object),
+        Expression::CallExpression(call) => callee_root(&call.callee),
+        _ => None,
     }
 }
 
@@ -1775,7 +2005,8 @@ export default local;
                 ("a", 1, "require", false, vec!["*"], vec![]),
                 ("b", 4, "import()", true, vec!["*"], vec![]),
                 ("c", 6, "import()", true, vec!["*"], vec![]),
-                ("d", 7, "vi.mock", false, vec!["*"], vec![]),
+                // a factory that gives the module no name
+                ("d", 7, "vi.mock", false, vec![], vec![]),
                 ("e", 8, "jest.requireActual", false, vec!["*"], vec![]),
                 // in a type position: erased
                 ("t", 9, "import", false, vec!["*"], vec!["*"]),
@@ -1789,6 +2020,42 @@ export default local;
             .map(|d| (d.call, d.line, d.local))
             .collect();
         assert_eq!(dynamic, [("require", 3, true), ("import()", 11, false)]);
+    }
+
+    #[test]
+    fn a_hoisted_mock_whose_factory_loads_nothing_replaces_the_module() {
+        let file = parse(
+            Path::new("x.test.ts"),
+            "const mocks = vi.hoisted(() => ({ f: vi.fn() }));\n\
+             function local() { return 1; }\n\
+             vi.mock('a', () => ({ f: vi.fn().mockReturnValue(Buffer.from('x')), g: mocks.f }));\n\
+             jest.mock('b', function () { const own = { f: jest.fn() }; return own; });\n\
+             vi.mock('c', async (importOriginal) => ({ ...(await importOriginal()) }));\n\
+             vi.mock('d', (original) => wrap(original));\n\
+             vi.mock('e', () => ({ ...vi.importActual('e') }));\n\
+             jest.mock('f', () => jest.createMockFromModule('f'));\n\
+             vi.mock('g', () => local());\n\
+             vi.mock('h', () => ({ f: helpers.make() }));\n\
+             vi.mock('i', () => new Fake());\n\
+             vi.mock('j', async () => ({ ...(await import('./k')) }));\n\
+             vi.mock('l', factory);\n\
+             vi.mock('m', { spy: true });\n\
+             vi.mock('n');\n\
+             vi.doMock('o', () => ({}));\n\
+             describe('p', () => { vi.mock('p', () => ({})); });\n",
+        )
+        .unwrap();
+        let replaced: Vec<&str> = file
+            .imports
+            .iter()
+            .filter(|i| i.replaces)
+            .map(|i| i.specifier.as_str())
+            .collect();
+        // a factory of the frameworks' calls, globals and its own bindings;
+        // not one that names `importOriginal`, loads a module, calls what is
+        // bound outside it, is no function written in place, runs later
+        // or inside a function
+        assert_eq!(replaced, ["a", "b"]);
     }
 
     #[test]

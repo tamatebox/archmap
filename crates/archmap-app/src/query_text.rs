@@ -817,6 +817,10 @@ pub(crate) fn import_location(evidence: &Evidence, more_files: usize, show_targe
     if evidence.note.as_deref() == Some("export") {
         out.push_str(" (export)");
     }
+    // a mock that replaces the module for its file's whole run
+    if evidence.replaces {
+        out.push_str(" (mock)");
+    }
     // types only: erased before the program runs
     if evidence.type_only {
         out.push_str(" (type)");
@@ -1001,7 +1005,7 @@ pub(crate) fn not_traced(
     truncated
 }
 
-fn place(file: &str, line: Option<u32>) -> String {
+pub(crate) fn place(file: &str, line: Option<u32>) -> String {
     match line {
         Some(line) => format!("{file}:{line}"),
         None => file.to_owned(),
@@ -1009,7 +1013,7 @@ fn place(file: &str, line: Option<u32>) -> String {
 }
 
 /// `a, b, +N more`: the shown entries, and how many of `total` were left out.
-fn with_more(shown: &[String], total: usize) -> String {
+pub(crate) fn with_more(shown: &[String], total: usize) -> String {
     let mut out = shown.join(", ");
     if total > shown.len() {
         let _ = write!(out, ", +{} more", total - shown.len());

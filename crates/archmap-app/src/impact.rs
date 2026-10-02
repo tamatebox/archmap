@@ -12,7 +12,8 @@ use crate::not_traced::{not_traced, Own, Place, Subject};
 use crate::resolve::{resolve, Resolved};
 use crate::target::{component_file, fold, namesakes, reject_outside, unquote};
 use crate::views::{
-    About, ImpactResult, ImportSite, ImportSites, TestFiles, MAX_IMPORT_SITES, MAX_TEST_FILES,
+    About, ImpactResult, ImportSite, ImportSites, LeftOut, MockCall, MockingTest, TestFiles,
+    MAX_IMPORT_SITES, MAX_TEST_FILES,
 };
 use crate::{Answer, Format, Found, ImpactRequest, Workspace};
 
@@ -290,10 +291,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
         depth,
         direct: reach.direct.into_iter().collect(),
         transitive: reach.transitive.into_iter().collect(),
-        tests: TestFiles {
-            total: reach.tests.len(),
-            shown: reach.tests.into_iter().take(caps.tests).collect(),
-        },
+        tests: test_files(reach.tests, reach.left_out, caps.tests),
         target: Some(at.id),
         module: None,
         folded_from: at.folded_from,
@@ -357,10 +355,13 @@ fn import_name_impact<'a>(
     // every production importer at once, so that a file one of them reaches
     // through production code is no test of another
     let seeds: Vec<&str> = seeds.into_iter().collect();
-    let reach = full.change_impact(ChangeSeed::Files(&seeds), depth);
+    let reach = full.change_impact(ChangeSeed::Importers(&seeds), depth);
     let mut transitive = direct.clone();
     transitive.extend(reach.transitive);
     tests.extend(reach.tests);
+    // a test that imports the name itself is one to run again anyway
+    let mut left_out = reach.left_out;
+    left_out.retain(|file, _| !tests.contains(file));
     let statements = imports.iter().map(|i| (&i.from, &i.evidence));
     ImpactResult {
         requested: target,
@@ -374,14 +375,42 @@ fn import_name_impact<'a>(
         also_at_path: Vec::new(),
         direct: direct.into_iter().collect(),
         transitive: transitive.into_iter().collect(),
-        tests: TestFiles {
-            total: tests.len(),
-            shown: tests.into_iter().take(caps.tests).collect(),
-        },
+        tests: test_files(tests, left_out, caps.tests),
         importers: Some(sites(full, depth, statements, true, caps.sites)),
         imports_below: None,
         may_use: None,
         not_traced: None,
         about: About::ImportName,
+    }
+}
+
+/// The test files to run again, and those left out with the mocks that
+/// replace a module on their way, the first `cap` of each by path.
+fn test_files(
+    tests: BTreeSet<String>,
+    left_out: BTreeMap<String, Vec<Evidence>>,
+    cap: usize,
+) -> TestFiles {
+    TestFiles {
+        total: tests.len(),
+        shown: tests.into_iter().take(cap).collect(),
+        left_out: LeftOut {
+            total: left_out.len(),
+            shown: left_out
+                .into_iter()
+                .take(cap)
+                .map(|(file, mocks)| MockingTest {
+                    file,
+                    mocks: mocks
+                        .into_iter()
+                        .map(|m| MockCall {
+                            file: m.file,
+                            line: m.line,
+                            target: m.target.unwrap_or_default(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+        },
     }
 }

@@ -222,6 +222,39 @@ pub struct TestFiles {
     pub total: usize,
     /// The first ones by path.
     pub shown: Vec<String>,
+    /// The test files left out, which reach the target only through
+    /// modules their mocks replace for their whole run.
+    #[serde(skip_serializing_if = "LeftOut::is_empty")]
+    pub left_out: LeftOut,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct LeftOut {
+    pub total: usize,
+    /// The first ones by path.
+    pub shown: Vec<MockingTest>,
+}
+
+impl LeftOut {
+    fn is_empty(&self) -> bool {
+        self.total == 0
+    }
+}
+
+/// A test file, with its mocks that replace a module on the way.
+#[derive(Debug, Serialize)]
+pub struct MockingTest {
+    pub file: String,
+    pub mocks: Vec<MockCall>,
+}
+
+/// Where a mock is called, and the module it replaces.
+#[derive(Debug, Serialize)]
+pub struct MockCall {
+    pub file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    pub target: String,
 }
 
 #[derive(Debug, Serialize)]

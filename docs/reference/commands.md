@@ -180,7 +180,9 @@ file's language, `Imported by` says it is unknown rather than showing none,
 and for a script, whose declarations are global, it says that what uses them
 is not traced; `query` on a symbol a script declares says the same.
 A TS/JS re-export statement (`export ... from`) is marked `(export)`
-wherever a location is shown: it passes names on rather than uses them.
+wherever a location is shown: it passes names on rather than uses them. A
+test's mock that replaces a module for the test's whole run (a `vi.mock`
+with a factory that never loads the real module) is marked `(mock)`.
 For a Python package's `__init__.py`, which runs before any module below it
 is loaded, a line counts the statements outside the package that import a
 module below it and names the `impact` that lists them (`Imports below: 5
@@ -263,7 +265,19 @@ does not, although loading the barrel runs the changed file too; one that
 takes a name the changed file defines points at it through its `via`
 evidence anyway. A barrel that also imports the changed file for its own
 use, or that code depending on the change imports, leads on through every
-statement that loads it. An `export * as ns` reads like `export *` there,
+statement that loads it. A test file whose mock replaces a module for its
+whole run (marked `(mock)`) reaches the change only along a way that passes
+none of the modules it replaces, since every module its run loads gets the
+mock in their place: it is left out of the tests to run again when every way
+passes one, and the section ends by counting such files at their mocks
+(`left out: 4 test files reach it only through modules their mocks
+replace: tests/replaced.test.ts:4 (mocks src/orders.ts), ...`). A mock that
+gives a module a name the change may alter does not hide it, as the test
+depends on that name: one that a changed file exports, one a barrel passes
+on from such a file, the symbol's name, a default by the name the module
+declares for it. A test that
+another test imports, and a mock in a setup file, are not followed this way.
+An `export * as ns` reads like `export *` there,
 and a named re-export of a package like one of all its names, so such a
 barrel leads on to what takes any name it may pass on. It does not follow the arguments of a Rust macro call
 that are no expressions (`json!`), and a path that
@@ -352,7 +366,9 @@ versions printed by default: `direct` and `transitive` (which includes
 is in, `"test": true` in test code and, for a symbol, the barrel it went
 through as `through`, `recorded` being false when no
 evidence names imported files for the language; `tests` as `{"total",
-"shown"}` with 20 files by path; `not_traced` with 5 locations per kind; and
+"shown"}` with 20 files by path, and `left_out` as `{"total", "shown"}`
+with 20 test files and the `mocks` of each, by `file`, `line` and the
+`target` it replaces, when a mock left one out; `not_traced` with 5 locations per kind; and
 for an import name `module`, with `target` `null`. `--verbose` lists every
 entry there too.
 
@@ -360,7 +376,8 @@ entry there too.
 component carries, which starts from the files that import it, all at once:
 the direct dependents are their components, `Imported by` lists the
 statements, and a file one of them reaches through production code is no test
-to run again for another. For
+to run again for another. Those files did not change, so a test that mocks
+one of them is left out. For
 a symbol, the first step goes only through the statements that `query` lists
 for the symbol: those that take its name (`Imported by`) and those that take
 its file whole (`May use`); every later step is file by file as above, and
