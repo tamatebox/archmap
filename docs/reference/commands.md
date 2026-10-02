@@ -340,8 +340,10 @@ for an import name `module`, with `target` `null`. `--verbose` lists every
 entry there too.
 
 `impact` also takes a symbol, by name or by id, and an import name that no
-component carries, which starts from the files that import it: the direct
-dependents are their components, and `Imported by` lists the statements. For
+component carries, which starts from the files that import it, all at once:
+the direct dependents are their components, `Imported by` lists the
+statements, and a file one of them reaches through production code is no test
+to run again for another. For
 a symbol, the first step goes only through the statements that `query` lists
 for the symbol: those that take its name (`Imported by`) and those that take
 its file whole (`May use`); every later step is file by file as above, and

@@ -343,24 +343,24 @@ fn import_name_impact<'a>(
     caps: Caps,
 ) -> ImpactResult<'a> {
     let imports: Vec<&UnmappedImport> = full.unmapped_imports_of(module).collect();
-    let (mut direct, mut transitive, mut tests) =
-        (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
-    let mut followed: BTreeSet<&str> = BTreeSet::new();
+    let (mut direct, mut tests) = (BTreeSet::new(), BTreeSet::new());
+    let mut seeds: BTreeSet<&str> = BTreeSet::new();
     for import in &imports {
         let file = import.evidence.file.as_str();
         if import.evidence.test {
             tests.insert(file.to_owned());
-            continue;
-        }
-        let component = full.ancestor_at(&import.from, depth);
-        direct.insert(component.clone());
-        transitive.insert(component);
-        if followed.insert(file) {
-            let reach = full.change_impact(ChangeSeed::File(file), depth);
-            transitive.extend(reach.transitive);
-            tests.extend(reach.tests);
+        } else {
+            direct.insert(full.ancestor_at(&import.from, depth));
+            seeds.insert(file);
         }
     }
+    // every production importer at once, so that a file one of them reaches
+    // through production code is no test of another
+    let seeds: Vec<&str> = seeds.into_iter().collect();
+    let reach = full.change_impact(ChangeSeed::Files(&seeds), depth);
+    let mut transitive = direct.clone();
+    transitive.extend(reach.transitive);
+    tests.extend(reach.tests);
     let statements = imports.iter().map(|i| (&i.from, &i.evidence));
     ImpactResult {
         requested: target,

@@ -415,6 +415,15 @@ impl ArchitectureGraph {
                 }
                 owner_of(file).map(|c| self.ancestor_at(c, depth))
             }
+            ChangeSeed::Files(files) => {
+                for &file in files {
+                    start.push((Node::File(file), 0));
+                    if !test_code.contains(file) {
+                        production.insert(Node::File(file));
+                    }
+                }
+                None
+            }
             ChangeSeed::Symbol(symbol) => {
                 // the first step goes only through the statements that take
                 // the symbol by name or take its file whole; dependencies
@@ -1014,6 +1023,10 @@ pub enum ChangeSeed<'a> {
     Component(&'a ComponentId),
     /// One file, relative to the repository root.
     File(&'a str),
+    /// Files changed together, relative to the repository root, with no
+    /// component of their own left out: what imports a module that no
+    /// component carries.
+    Files(&'a [&'a str]),
     /// A symbol: its first step goes only through the statements that take
     /// it by name or take its file whole (see
     /// [`ArchitectureGraph::symbol_importers`]), then file by file.
@@ -2279,6 +2292,33 @@ mod tests {
             ["kiosk/src/main.rs"]
         );
         assert!(reach.direct.is_empty(), "{:?}", reach.direct);
+    }
+
+    #[test]
+    fn files_changed_together_reach_their_tests_in_one_pass() {
+        // x.rs uses b.rs in its code and a.rs in its unit tests
+        let mut graph = ArchitectureGraph::default();
+        for id in ["a", "b", "x"] {
+            let mut c = Component::new(id, id, ComponentKind::Module);
+            c.path = Some(format!("{id}.rs"));
+            graph.add_component(c);
+        }
+        let import = |to: &str, line: u32, test: bool| {
+            Edge::new("x", to, EdgeKind::Import).with_evidence(
+                Evidence::new("x.rs")
+                    .at_line(line)
+                    .pointing_at(format!("{to}.rs"))
+                    .in_test(test),
+            )
+        };
+        graph.add_edges([import("b", 1, false), import("a", 9, true)]);
+        // a file one of them reaches through production code is no test
+        let reach = graph.change_impact(ChangeSeed::Files(&["a.rs", "b.rs"]), 2);
+        assert!(reach.tests.is_empty(), "{:?}", reach.tests);
+        assert_eq!(
+            reach.direct.iter().map(|c| c.as_str()).collect::<Vec<_>>(),
+            ["x"]
+        );
     }
 
     #[test]
