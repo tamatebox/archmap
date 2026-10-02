@@ -812,7 +812,9 @@ fn extras_and_dev_dependencies_say_where_they_are_declared() {
         .and_then(|u| u.evidence.note.as_deref());
     assert_eq!(
         note,
-        Some("import pytest, declared as pytest in pyproject.toml [project.optional-dependencies] dev")
+        Some(
+            "import pytest, declared as pytest in pyproject.toml:7 ([project.optional-dependencies] dev)"
+        )
     );
 }
 

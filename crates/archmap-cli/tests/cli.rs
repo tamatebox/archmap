@@ -1125,7 +1125,7 @@ fn an_import_name_without_an_edge_lists_where_it_is_imported() {
     for expected in [
         "pytest: imports without an edge, depth 2\nin: scripts 1\n",
         "\nNot mapped: 1\n  pytest  extra or dev dependency  1 import: scripts/report.py:2\n",
-        "\nNotes: 1\n  import pytest, declared as pytest in pyproject.toml [project.optional-dependencies] dev\n",
+        "\nNotes: 1\n  import pytest, declared as pytest in pyproject.toml:7 ([project.optional-dependencies] dev)\n",
     ] {
         assert!(pytest.contains(expected), "missing `{expected}` in:\n{pytest}");
     }

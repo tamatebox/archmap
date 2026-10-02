@@ -17,6 +17,13 @@ ArchitectureGraph
 Evidence { file, line?, note?, target?, scope?: module | local, names?, test?, type_only? }
 ```
 
+`line` is the line a statement or a declaration is written on: a manifest's
+declaration of a dependency has one in `Cargo.toml`, `pyproject.toml`, a
+requirements file and `package.json` alike, where the dependency's value
+starts (the table header for a `[dependencies.serde]` table), unless a table
+of a `pyproject.toml` holds a value of a type the format does not allow
+there, when that file's declarations have none.
+
 `target` is the repository file a dependency points at and `scope` says
 where the statement sits: at module level (`module`) or inside a function
 body (`local`). For Python that decides whether it runs when its file loads

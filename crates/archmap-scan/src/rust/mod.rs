@@ -508,20 +508,21 @@ fn manifest_pass(
                 _ => dep.import_name(),
             };
 
+            let mut declared = Evidence::new(&manifest_file).with_note(dep.kind.section());
+            if let Some(line) = dep.line {
+                declared = declared.at_line(line);
+            }
             if internal.is_none() {
                 let mut external =
                     Component::new(target.clone(), &dep.name, ComponentKind::External);
                 external.language = Some(LANGUAGE.to_owned());
-                external
-                    .evidence
-                    .push(Evidence::new(&manifest_file).with_note(dep.kind.section()));
+                external.evidence.push(declared.clone());
                 output.fragment.push_component(external);
             }
 
             import_targets.insert(import_name, target.clone());
             output.fragment.push_edge(
-                Edge::new(id.clone(), target, EdgeKind::Dependency)
-                    .with_evidence(Evidence::new(&manifest_file).with_note(dep.kind.section())),
+                Edge::new(id.clone(), target, EdgeKind::Dependency).with_evidence(declared),
             );
         }
 
@@ -577,6 +578,8 @@ fn resolve_workspace_dep(
             path: ws_dep.path.clone(),
             workspace: false,
             kind: dep.kind,
+            // where the member declares it
+            line: dep.line,
         },
         None => {
             warnings.push(format!(

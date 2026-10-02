@@ -4,6 +4,9 @@ use std::collections::BTreeMap;
 use std::path::{Component as PathComponent, Path, PathBuf};
 
 use serde::Deserialize;
+use toml::Spanned;
+
+use crate::lines::Lines;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DependencyKind {
@@ -34,6 +37,8 @@ pub struct CargoDependency {
     /// `workspace = true`
     pub workspace: bool,
     pub kind: DependencyKind,
+    /// The line the dependency is declared on.
+    pub line: Option<u32>,
 }
 
 impl CargoDependency {
@@ -86,11 +91,11 @@ struct RawManifest {
     lib: Option<RawLib>,
     workspace: Option<RawWorkspace>,
     #[serde(default)]
-    dependencies: BTreeMap<String, RawDependency>,
+    dependencies: BTreeMap<String, Spanned<RawDependency>>,
     #[serde(default, rename = "build-dependencies")]
-    build_dependencies: BTreeMap<String, RawDependency>,
+    build_dependencies: BTreeMap<String, Spanned<RawDependency>>,
     #[serde(default, rename = "dev-dependencies")]
-    dev_dependencies: BTreeMap<String, RawDependency>,
+    dev_dependencies: BTreeMap<String, Spanned<RawDependency>>,
 }
 
 #[derive(Deserialize)]
@@ -106,7 +111,7 @@ struct RawLib {
 #[derive(Deserialize)]
 struct RawWorkspace {
     #[serde(default)]
-    dependencies: BTreeMap<String, RawDependency>,
+    dependencies: BTreeMap<String, Spanned<RawDependency>>,
 }
 
 #[derive(Deserialize)]
@@ -133,28 +138,34 @@ pub fn parse_manifest(text: &str, manifest_path: &Path) -> Result<ParsedManifest
         .map(Path::to_path_buf)
         .unwrap_or_default();
 
-    let convert =
-        |table: &BTreeMap<String, RawDependency>, kind: DependencyKind| -> Vec<CargoDependency> {
-            table
-                .iter()
-                .map(|(name, raw)| match raw {
-                    RawDependency::Version(_) => CargoDependency {
-                        name: name.clone(),
-                        package: None,
-                        path: None,
-                        workspace: false,
-                        kind,
-                    },
-                    RawDependency::Detailed(d) => CargoDependency {
-                        name: name.clone(),
-                        package: d.package.clone(),
-                        path: d.path.as_deref().map(|p| normalize(&dir.join(p))),
-                        workspace: d.workspace,
-                        kind,
-                    },
-                })
-                .collect()
-        };
+    // the line its value starts on
+    let positions = Lines::new(text);
+    let line = |raw: &Spanned<RawDependency>| Some(positions.of(raw.span().start));
+    let convert = |table: &BTreeMap<String, Spanned<RawDependency>>,
+                   kind: DependencyKind|
+     -> Vec<CargoDependency> {
+        table
+            .iter()
+            .map(|(name, raw)| match raw.get_ref() {
+                RawDependency::Version(_) => CargoDependency {
+                    name: name.clone(),
+                    package: None,
+                    path: None,
+                    workspace: false,
+                    kind,
+                    line: line(raw),
+                },
+                RawDependency::Detailed(d) => CargoDependency {
+                    name: name.clone(),
+                    package: d.package.clone(),
+                    path: d.path.as_deref().map(|p| normalize(&dir.join(p))),
+                    workspace: d.workspace,
+                    kind,
+                    line: line(raw),
+                },
+            })
+            .collect()
+    };
 
     let package = raw.package.map(|p| {
         let mut dependencies = convert(&raw.dependencies, DependencyKind::Normal);
@@ -238,6 +249,35 @@ assert_cmd = "2"
         assert_eq!(find("assert_cmd").kind, DependencyKind::Dev);
         assert!(parsed.workspace.is_none());
         assert_eq!(pkg.crate_name(), "app");
+    }
+
+    #[test]
+    fn dependency_declarations_have_lines() {
+        let text = "[package]\nname = \"app\"\n\n[dependencies]\nserde = \"1\"\n\
+                    lib_core = { path = \"../lib_core\" }\n\n[dependencies.tokio]\nversion = \"1\"\n\n\
+                    [dev-dependencies]\nassert_cmd = \"2\"\n\n[workspace.dependencies]\nanyhow = \"1\"\n";
+        let parsed = parse_manifest(text, Path::new("Cargo.toml")).unwrap();
+        let lines: Vec<(&str, Option<u32>)> = parsed
+            .package
+            .as_ref()
+            .unwrap()
+            .dependencies
+            .iter()
+            .map(|d| (d.name.as_str(), d.line))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                ("lib_core", Some(6)),
+                ("serde", Some(5)),
+                ("tokio", Some(8)),
+                ("assert_cmd", Some(12))
+            ]
+        );
+        assert_eq!(
+            parsed.workspace.unwrap().dependencies["anyhow"].line,
+            Some(15)
+        );
     }
 
     #[test]

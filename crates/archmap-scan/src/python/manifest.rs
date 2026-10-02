@@ -1,8 +1,12 @@
 //! Python project manifests: `pyproject.toml` and `requirements*.txt`.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use toml::Value;
+use serde::Deserialize;
+use toml::{Spanned, Value};
+
+use crate::lines::Lines;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PyDependency {
@@ -59,6 +63,9 @@ pub fn requirement_name(spec: &str) -> Option<String> {
 
 pub fn parse_pyproject(text: &str, manifest_path: &Path) -> Result<PyProject, toml::de::Error> {
     let value: Value = toml::from_str(text)?;
+    let lines = declaration_lines(text);
+    let line =
+        |section: &str, name: &str| lines.get(&(section.to_owned(), name.to_owned())).copied();
     let dir = manifest_path
         .parent()
         .map(Path::to_path_buf)
@@ -80,10 +87,11 @@ pub fn parse_pyproject(text: &str, manifest_path: &Path) -> Result<PyProject, to
     {
         for spec in list.iter().filter_map(Value::as_str) {
             if let Some(dep) = requirement_name(spec) {
+                let section = "[project] dependencies";
                 dependencies.push(PyDependency {
+                    line: line(section, &dep),
                     name: dep,
-                    line: None,
-                    section: "[project] dependencies".to_owned(),
+                    section: section.to_owned(),
                 });
             }
         }
@@ -94,15 +102,16 @@ pub fn parse_pyproject(text: &str, manifest_path: &Path) -> Result<PyProject, to
         .and_then(Value::as_table)
     {
         for key in table.keys().filter(|k| k.as_str() != "python") {
+            let (name, section) = (normalize_dist_name(key), "[tool.poetry.dependencies]");
             dependencies.push(PyDependency {
-                name: normalize_dist_name(key),
-                line: None,
-                section: "[tool.poetry.dependencies]".to_owned(),
+                line: line(section, &name),
+                name,
+                section: section.to_owned(),
             });
         }
     }
 
-    let optional_dependencies = optional_declarations(&value, project, poetry);
+    let optional_dependencies = optional_declarations(&value, project, poetry, &lines);
 
     Ok(PyProject {
         name,
@@ -120,12 +129,14 @@ fn optional_declarations(
     value: &Value,
     project: Option<&Value>,
     poetry: Option<&Value>,
+    lines: &BTreeMap<(String, String), u32>,
 ) -> Vec<PyDependency> {
     let mut found = Vec::new();
     let mut add = |name: String, section: String| {
+        let line = lines.get(&(section.clone(), name.clone())).copied();
         found.push(PyDependency {
             name,
-            line: None,
+            line,
             section,
         })
     };
@@ -189,6 +200,104 @@ fn optional_declarations(
     found.sort_by(|a, b| (&a.name, &a.section).cmp(&(&b.name, &b.section)));
     found.dedup();
     found
+}
+
+/// Where each declaration of a `pyproject.toml` is written, by the section
+/// its evidence note names and its normalized name: a second, typed read
+/// that keeps the place of each value. A manifest it cannot read that way
+/// gives no lines.
+fn declaration_lines(text: &str) -> BTreeMap<(String, String), u32> {
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct Manifest {
+        project: ProjectTable,
+        #[serde(rename = "dependency-groups")]
+        groups: BTreeMap<String, Vec<Spanned<Value>>>,
+        tool: ToolTable,
+    }
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct ProjectTable {
+        dependencies: Vec<Spanned<Value>>,
+        #[serde(rename = "optional-dependencies")]
+        extras: BTreeMap<String, Vec<Spanned<Value>>>,
+    }
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct ToolTable {
+        poetry: Poetry,
+        uv: Uv,
+    }
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct Poetry {
+        dependencies: BTreeMap<String, Spanned<Value>>,
+        #[serde(rename = "dev-dependencies")]
+        dev: BTreeMap<String, Spanned<Value>>,
+        group: BTreeMap<String, PoetryGroup>,
+    }
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct PoetryGroup {
+        dependencies: BTreeMap<String, Spanned<Value>>,
+    }
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct Uv {
+        #[serde(rename = "dev-dependencies")]
+        dev: Vec<Spanned<Value>>,
+    }
+
+    let Ok(manifest) = toml::from_str::<Manifest>(text) else {
+        return BTreeMap::new();
+    };
+    let positions = Lines::new(text);
+    let mut lines = BTreeMap::new();
+    let mut at = |section: String, name: String, value: &Spanned<Value>| {
+        let line = positions.of(value.span().start);
+        lines.entry((section, name)).or_insert(line);
+    };
+    let mut lists = vec![(
+        "[project] dependencies".to_owned(),
+        &manifest.project.dependencies,
+    )];
+    for (group, specs) in &manifest.project.extras {
+        lists.push((format!("[project.optional-dependencies] {group}"), specs));
+    }
+    for (group, specs) in &manifest.groups {
+        lists.push((format!("[dependency-groups] {group}"), specs));
+    }
+    lists.push((
+        "[tool.uv] dev-dependencies".to_owned(),
+        &manifest.tool.uv.dev,
+    ));
+    for (section, specs) in lists {
+        for spec in specs {
+            if let Some(name) = spec.get_ref().as_str().and_then(requirement_name) {
+                at(section.clone(), name, spec);
+            }
+        }
+    }
+    let poetry = &manifest.tool.poetry;
+    let mut tables = vec![
+        (
+            "[tool.poetry.dependencies]".to_owned(),
+            &poetry.dependencies,
+        ),
+        ("[tool.poetry.dev-dependencies]".to_owned(), &poetry.dev),
+    ];
+    for (group, table) in &poetry.group {
+        tables.push((
+            format!("[tool.poetry.group.{group}.dependencies]"),
+            &table.dependencies,
+        ));
+    }
+    for (section, table) in tables {
+        for (key, value) in table {
+            at(section.clone(), normalize_dist_name(key), value);
+        }
+    }
+    lines
 }
 
 /// Dependencies from a `requirements.txt`-style file.
@@ -265,6 +374,34 @@ pub fn dev_requirements(path: &Path, project_dir: &Path) -> Option<&'static str>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pyproject_declarations_have_lines() {
+        let text = "[project]\nname = \"shop\"\ndependencies = [\n  \"requests>=2\",\n  \"PyYAML\",\n]\n\n\
+                    [project.optional-dependencies]\ndev = [\"pytest\"]\n\n\
+                    [dependency-groups]\nlint = [\"ruff\", {include-group = \"dev\"}]\n\n\
+                    [tool.poetry.dependencies]\npython = \"^3.11\"\nsqlalchemy = \"^2\"\n\n\
+                    [tool.poetry.group.test.dependencies]\nhypothesis = \"*\"\n\n\
+                    [tool.uv]\ndev-dependencies = [\"mypy\"]\n";
+        let parsed = parse_pyproject(text, Path::new("pyproject.toml")).unwrap();
+        let lines = |deps: &[PyDependency]| -> Vec<(String, Option<u32>)> {
+            deps.iter().map(|d| (d.name.clone(), d.line)).collect()
+        };
+        let at = |name: &str, line| (name.to_owned(), Some(line));
+        assert_eq!(
+            lines(&parsed.dependencies),
+            [at("requests", 4), at("pyyaml", 5), at("sqlalchemy", 16)]
+        );
+        assert_eq!(
+            lines(&parsed.optional_dependencies),
+            [
+                at("hypothesis", 19),
+                at("mypy", 22),
+                at("pytest", 9),
+                at("ruff", 12)
+            ]
+        );
+    }
 
     #[test]
     fn normalizes_names_like_pep_503() {
