@@ -71,6 +71,11 @@ pub struct FileView<'a> {
     /// component. `None` when no evidence names imported files for the
     /// file's language, so importers are unknown rather than absent.
     pub importers: Option<Vec<Edge>>,
+    /// For the entry file of a package that runs before its modules: the
+    /// statements outside the package that import a module below it, which
+    /// run it first, one edge per importing component.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub imports_below: Vec<Edge>,
     pub not_mapped: Vec<&'a UnmappedImport>,
     pub dynamic_imports: Vec<&'a DynamicImport>,
     /// The file is a script, whose declarations are global: no import
@@ -176,6 +181,11 @@ pub struct ImpactResult<'a> {
     /// import the file directly. For a symbol: those that take its name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub importers: Option<ImportSites<'a>>,
+    /// For the entry file of a package that runs before its modules: the
+    /// statements outside the package that import a module below it, which
+    /// run it first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub imports_below: Option<ImportSites<'a>>,
     /// For a symbol: the statements that take its file whole.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub may_use: Option<ImportSites<'a>>,

@@ -411,6 +411,20 @@ fn file(
             );
         }
     }
+    if !view.imports_below.is_empty() {
+        let statements: BTreeSet<(&str, Option<u32>)> = view
+            .imports_below
+            .iter()
+            .flat_map(|e| &e.evidence)
+            .map(|e| (e.file.as_str(), e.line))
+            .collect();
+        let _ = writeln!(
+            out,
+            "\nImports below: {} (they run it first): `impact {}` lists them",
+            statements.len(),
+            shell_word(&view.file)
+        );
+    }
     truncated |= not_mapped(out, &view.not_mapped, &view.dynamic_imports, caps);
     truncated
 }

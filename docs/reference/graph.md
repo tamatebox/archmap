@@ -42,6 +42,13 @@ followed through such barrels to the statements that take them. A statement give
 it points at and re-export it goes through, with all of its names. Every
 analyzer records `names`.
 
+A component's evidence noted `package` names an entry file that runs before
+any file of the component, or of a module below it, is loaded (a Python
+package's `__init__.py`), unlike one noted `index` (a TS/JS `index.*`):
+`impact` reaches such a file from the statements outside the component and
+the modules below it that import a file below it, and from the files below
+it (see [commands.md](commands.md#impact)).
+
 `test` marks a statement in test code, which runs only for tests: for
 Python and TS/JS a file named `*.test.*`, `*.spec.*` (Vitest's type tests
 `*.test-d.*` and `*.spec-d.*` too), `test_*.py`, `*_test.py` or

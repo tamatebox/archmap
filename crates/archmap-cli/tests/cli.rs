@@ -386,8 +386,9 @@ fn impact_of_a_file_uses_the_summary_depth() {
     assert_eq!(result["target"], "shop::shop.integrations");
     assert_eq!(result["folded_from"], "shop::shop.integrations.slack");
     assert_eq!(result["direct"], serde_json::json!(["shop::shop"]));
-    // followed file by file: tests.unit imports only shop/users.py, which
-    // does not use slack, so it is not reached
+    // followed file by file: src/shop/__init__.py imports slack, and runs
+    // before any module below it, so tests.unit, which imports only
+    // shop/users.py, is reached through it
     assert_eq!(
         result["transitive"],
         serde_json::json!(["shop::scripts", "shop::shop", "shop::shop.billing"])
@@ -395,7 +396,66 @@ fn impact_of_a_file_uses_the_summary_depth() {
     // the tests to run again
     assert_eq!(
         result["tests"],
-        serde_json::json!({ "total": 1, "shown": ["tests/test_billing.py"] })
+        serde_json::json!({
+            "total": 2,
+            "shown": ["tests/test_billing.py", "tests/unit/factories.py"]
+        })
+    );
+}
+
+#[test]
+fn impact_of_a_package_entry_file_lists_the_imports_below_it() {
+    let out = archmap()
+        .args(["impact", "src/shop/__init__.py", "--path"])
+        .arg(python_fixture())
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    // statements outside the package that import a module below it, which
+    // run src/shop/__init__.py first; those inside it ran it already
+    assert!(
+        text.contains(
+            "\nImports below: 5 (they run it first)\n  scripts/2024-01-migration/fix.py:1  in scripts\n  \
+             scripts/backfill.py:1  in scripts\n  tests/test_billing.py:1 (test)  in tests\n"
+        ),
+        "{text}"
+    );
+    let json = fixture_json(&["impact", "src/shop/__init__.py", "--format", "json"]);
+    assert_eq!(json["imports_below"]["total"], 5);
+    // query counts them and names the impact that lists them
+    let query = query_text(&python_fixture(), &["src/shop/__init__.py"]);
+    assert!(
+        query.contains(
+            "\nImports below: 5 (they run it first): `impact src/shop/__init__.py` lists them\n"
+        ),
+        "{query}"
+    );
+}
+
+#[test]
+fn a_package_entry_file_that_runs_first_is_no_file_nothing_imports() {
+    let repo = temp_repo("runs-first");
+    std::fs::write(repo.join("pkg/__init__.py"), "import logging\n").unwrap();
+    std::fs::write(repo.join("pkg/sub.py"), "def x():\n    pass\n").unwrap();
+    std::fs::write(repo.join("main.py"), "from pkg.sub import x\n").unwrap();
+    let query = query_text(&repo, &["pkg/__init__.py"]);
+    let impact = archmap()
+        .args(["impact", "pkg/__init__.py", "--path"])
+        .arg(&repo)
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(&repo).unwrap();
+    let impact = String::from_utf8_lossy(&impact.stdout);
+    for text in [query.as_str(), &impact] {
+        assert!(!text.contains("no importers"), "{text}");
+    }
+    assert!(
+        query.contains("\nImports below: 1 (they run it first)"),
+        "{query}"
+    );
+    assert!(
+        impact.contains("\nImports below: 1 (they run it first)\n  main.py:1"),
+        "{impact}"
     );
 }
 

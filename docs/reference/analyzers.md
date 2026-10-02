@@ -95,6 +95,11 @@ into the model in [graph.md](graph.md); how the commands present it is in
   relative to the project; a `src/` without `__init__.py` is the source root
 - importable directories without `__init__.py` that hold Python files become namespace `module`
   components (PEP 420), so `tests/`, `scripts/` or `experiments/` are components of their own
+- an import of a module runs the `__init__.py` of each package above it first, up to the project; a
+  regular package's component records its `__init__.py` with the note `package` (see
+  [graph.md](graph.md)), so `impact` on it lists the statements outside the package that import a
+  module below it, apart from imports of types only and `via` evidence, and goes on from them and
+  from the files below it
 - `import` / `from ... import` (including relative imports) become `import` edges between modules,
   or to a declared external dependency
 - the evidence of each import names the file it loads (`pkg/sub.py`, otherwise `pkg/__init__.py`)
@@ -154,16 +159,16 @@ into the model in [graph.md](graph.md); how the commands present it is in
 - An `__init__.py` is no barrel, since it may use what it imports: a statement that takes a package
   whole (`import shop.billing`, then `shop.billing.pay()`) is in neither of `query`'s lists for `pay`
   when `shop/billing/__init__.py` imports it from another file, and `impact` goes on from the
-  `__init__.py` file by file, to every importer of it.
+  `__init__.py` file by file, to every importer of it and whatever imports a module below it.
 - A file that binds a name twice, such as `from .x import pay` and then `pay = wrap(pay)`, ends the
   walk whichever runs last, so a statement that reaches it keeps only the evidence for the file it
   loads.
 - A name bound by a statement the scan does not read as an assignment (`a, b = …`, `for`, `with … as`)
   is unseen, so a star import whose source binds a name that way may lead to another source of it.
+- `impact` on an `__init__.py` reaches the files below the package from what they import: a file that
+  imports nothing at all is not among them.
 - `from pkg import name` where `pkg/name.py` exists takes that submodule whole, even when
   `pkg/__init__.py` has `from .name import name`, which makes `pkg.name` the object it imports.
-- `impact` does not follow the parent `__init__.py` that Python loads implicitly before a
-  submodule.
 - Only `if TYPE_CHECKING:` and `if <module>.TYPE_CHECKING:` mark imports as types only: an import
   in the `else:` of `if not TYPE_CHECKING:`, under a condition that combines `TYPE_CHECKING` with
   others, or under an alias (`if TC:`) or `if MYPY:` counts as running.

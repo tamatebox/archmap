@@ -68,6 +68,19 @@ fn file_view<'a>(
             },
         )
     });
+    let below = full.imports_below(&facts.file);
+    let imports_below = edges_at_depth(
+        full,
+        depth,
+        &below,
+        |e| &e.from,
+        |from, evidence| Edge {
+            from,
+            to: here.clone(),
+            kind: EdgeKind::Import,
+            evidence,
+        },
+    );
     // the component the file is, or that holds it, before roll-up
     let own = facts.component.and_then(|c| full.component(c));
     let (also_named, also_at_path) = own.map(|c| namesakes(full, c)).unwrap_or_default();
@@ -79,7 +92,8 @@ fn file_view<'a>(
             place: Some(Place::File(&facts.file)),
             own: Own::File(&facts.file),
             script,
-            unreached: importers.as_ref().is_some_and(Vec::is_empty),
+            // a package's entry file runs before the modules below it
+            unreached: importers.as_ref().is_some_and(Vec::is_empty) && below.is_empty(),
         },
         usize::MAX,
     );
@@ -93,6 +107,7 @@ fn file_view<'a>(
         symbols: facts.symbols,
         imports,
         importers,
+        imports_below,
         not_mapped: facts.unmapped_imports,
         dynamic_imports: facts.dynamic_imports,
         script,

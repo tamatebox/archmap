@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Component, ComponentId, DynamicImport, Edge, EdgeKind, Evidence, GraphFragment,
+    Component, ComponentId, ComponentKind, DynamicImport, Edge, EdgeKind, Evidence, GraphFragment,
     LanguageCoverage, Symbol, SymbolId, UnmappedImport, SCHEMA_VERSION, WHOLE_MODULE,
 };
 
@@ -329,6 +329,21 @@ impl ArchitectureGraph {
             }
         }
         let index = PathIndex::new(self);
+        // an entry file that runs first is reached from what loads a file
+        // below it from outside, and from the files below it, which need it
+        let statements = self
+            .statements_loading_first(&index)
+            .into_iter()
+            .map(|(entry, _, e)| (entry, e.file.as_str(), e.test));
+        for (entry, importer, test) in statements.chain(self.files_below_entries(&index)) {
+            if tests || !test {
+                files.insert(entry);
+                dependents
+                    .entry(Node::File(entry))
+                    .or_default()
+                    .insert(Node::File(importer));
+            }
+        }
         let owners: BTreeMap<&str, &ComponentId> = files
             .iter()
             .filter_map(|f| index.owner(f).map(|c| (*f, &c.id)))
@@ -689,6 +704,111 @@ impl ArchitectureGraph {
             through,
             recorded,
         })
+    }
+
+    /// The statements that run `entry` first without naming it, when it is
+    /// the entry file of a component that runs before its files are loaded
+    /// (see [`Evidence::runs_first`]): those outside the component that
+    /// import a file below it, run (not types only) and name the file they
+    /// load (not evidence a walk through re-exports led to). Edge order.
+    pub fn imports_below(&self, entry: &str) -> Vec<(&Edge, &Evidence)> {
+        let index = PathIndex::new(self);
+        self.statements_loading_first(&index)
+            .into_iter()
+            .filter(|(first, _, _)| *first == entry)
+            .map(|(_, edge, e)| (edge, e))
+            .collect()
+    }
+
+    /// The entry files that run before a file of `component` is loaded:
+    /// its own and those of the modules above it, up to the first component
+    /// that is no module, each with its component.
+    fn entries_above(&self, component: &ComponentId) -> Vec<(ComponentId, &str)> {
+        let mut found = Vec::new();
+        // from the component up
+        for id in self.containment_path(component).into_iter().rev() {
+            let Some(c) = self.component(&id) else {
+                break;
+            };
+            if c.kind != ComponentKind::Module {
+                break;
+            }
+            if let Some(entry) = c.evidence.iter().find(|e| e.runs_first()) {
+                found.push((id, entry.file.as_str()));
+            }
+        }
+        found
+    }
+
+    /// Each statement of [`Self::imports_below`], with the entry file it
+    /// runs first.
+    fn statements_loading_first<'g>(
+        &'g self,
+        index: &PathIndex<'g>,
+    ) -> Vec<(&'g str, &'g Edge, &'g Evidence)> {
+        let mut above: BTreeMap<&ComponentId, Vec<(ComponentId, &str)>> = BTreeMap::new();
+        let mut found = Vec::new();
+        for edge in self.edges.iter().filter(|e| e.kind == EdgeKind::Import) {
+            for e in &edge.evidence {
+                let Some(target) = e.target.as_deref() else {
+                    continue;
+                };
+                if e.type_only || e.via().is_some() {
+                    continue;
+                }
+                let Some(owner) = index.owner(target) else {
+                    continue;
+                };
+                let importer = index.owner(&e.file).map(|c| &c.id);
+                for id in std::iter::once(&owner.id).chain(importer) {
+                    above.entry(id).or_insert_with(|| self.entries_above(id));
+                }
+                // an entry that runs before the importer itself is loaded
+                // ran before this statement too
+                let ran = importer.map(|id| &above[id]);
+                for (component, entry) in &above[&owner.id] {
+                    let before = ran.is_some_and(|ran| ran.iter().any(|(c, _)| c == component));
+                    if *entry != target && !before {
+                        found.push((*entry, edge, e));
+                    }
+                }
+            }
+        }
+        found
+    }
+
+    /// Each file that imports something, below an entry file that runs
+    /// first, with that entry file and whether the file is test code: what
+    /// its imports load or not, an import without an edge (`import pytest`)
+    /// or a dynamic one makes it known.
+    fn files_below_entries<'g>(&'g self, index: &PathIndex<'g>) -> Vec<(&'g str, &'g str, bool)> {
+        let mut importers: BTreeMap<&str, bool> = BTreeMap::new();
+        let evidence = self
+            .edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::Import)
+            .flat_map(|e| &e.evidence)
+            .chain(self.unmapped_imports.iter().map(|i| &i.evidence))
+            .chain(self.dynamic_imports.iter().map(|i| &i.evidence));
+        for e in evidence {
+            *importers.entry(e.file.as_str()).or_insert(true) &= e.test;
+        }
+        let mut above: BTreeMap<&ComponentId, Vec<(ComponentId, &str)>> = BTreeMap::new();
+        let mut found = Vec::new();
+        for (file, test) in importers {
+            let Some(owner) = index.owner(file) else {
+                continue;
+            };
+            let entries = above
+                .entry(&owner.id)
+                .or_insert_with(|| self.entries_above(&owner.id));
+            for (_, entry) in entries.iter() {
+                if *entry != file {
+                    found.push((*entry, file, test));
+                }
+            }
+        }
+        found
     }
 
     /// Everything the graph records about `file`: its public symbols, the
@@ -2031,6 +2151,194 @@ mod tests {
         // a whole component starts from all of its files
         let reach = graph.change_impact(ChangeSeed::Component(&"core".into()), 9);
         assert_eq!(ids(&reach.transitive), vec!["pipeline", "util"]);
+    }
+
+    /// A Python layout: `shop` and its subpackages, with entry files that
+    /// run first, a nested project below `shop`, and code outside it.
+    fn packages_graph() -> ArchitectureGraph {
+        let mut graph = ArchitectureGraph::default();
+        let module = |id: &str, path: &str, parent: &str, entry: bool| {
+            let mut c = Component::new(id, id, ComponentKind::Module);
+            c.path = Some(path.into());
+            c.parent = Some(parent.into());
+            if entry {
+                c.evidence
+                    .push(Evidence::new(format!("{path}/__init__.py")).with_note("package"));
+            }
+            c
+        };
+        let mut project = component("proj");
+        project.path = Some(".".into());
+        graph.add_component(project);
+        graph.add_component(module("shop", "src/shop", "proj", true));
+        graph.add_component(module("shop.billing", "src/shop/billing", "shop", true));
+        graph.add_component(module(
+            "shop.billing.tests",
+            "src/shop/billing/tests",
+            "shop.billing",
+            true,
+        ));
+        let mut vendored = component("lib");
+        vendored.path = Some("src/shop/vendor".into());
+        vendored.parent = Some("shop".into());
+        graph.add_component(vendored);
+        graph.add_component(module("lib.core", "src/shop/vendor/core", "lib", true));
+        graph.add_component(module("app", "app", "proj", true));
+        graph.add_component(module("tests", "tests", "proj", false));
+        let import = |from: &str, to: &str, file: &str, target: &str| {
+            Edge::new(from, to, EdgeKind::Import)
+                .with_evidence(Evidence::new(file).at_line(1).pointing_at(target))
+        };
+        let charge = "src/shop/billing/charge.py";
+        graph.add_edges([
+            import("app", "shop.billing", "app/main.py", charge),
+            Edge::new("app", "shop.billing", EdgeKind::Import).with_evidence(
+                Evidence::new("app/types.py")
+                    .at_line(1)
+                    .pointing_at(charge)
+                    .type_only(true),
+            ),
+            Edge::new("app", "shop.billing", EdgeKind::Import).with_evidence(
+                Evidence::new("app/through.py")
+                    .at_line(1)
+                    .pointing_at(charge)
+                    .with_note("import via src/shop/__init__.py:1"),
+            ),
+            import(
+                "app",
+                "lib.core",
+                "app/vendored.py",
+                "src/shop/vendor/core/x.py",
+            ),
+            // a nested project is outside the package it sits in
+            import(
+                "lib.core",
+                "shop.billing",
+                "src/shop/vendor/core/y.py",
+                charge,
+            ),
+            import("shop", "shop.billing", "src/shop/orders.py", charge),
+            import(
+                "shop.billing",
+                "shop.billing",
+                "src/shop/billing/ledger.py",
+                charge,
+            ),
+            Edge::new("shop.billing.tests", "shop.billing", EdgeKind::Import).with_evidence(
+                Evidence::new("src/shop/billing/tests/test_charge.py")
+                    .at_line(1)
+                    .pointing_at(charge)
+                    .in_test(true),
+            ),
+            Edge::new("tests", "shop.billing", EdgeKind::Import).with_evidence(
+                Evidence::new("tests/test_pay.py")
+                    .at_line(1)
+                    .pointing_at(charge)
+                    .in_test(true),
+            ),
+        ]);
+        graph
+    }
+
+    #[test]
+    fn imports_below_an_entry_file_that_runs_first_come_from_outside_it() {
+        let graph = packages_graph();
+        let below = |entry: &str| -> Vec<String> {
+            graph
+                .imports_below(entry)
+                .iter()
+                .map(|(_, e)| e.file.clone())
+                .collect()
+        };
+        // neither types only, nor a walk through re-exports, nor a file of
+        // the package itself, nor code below a nested project
+        assert_eq!(
+            below("src/shop/__init__.py"),
+            [
+                "app/main.py",
+                "src/shop/vendor/core/y.py",
+                "tests/test_pay.py"
+            ]
+        );
+        assert_eq!(
+            below("src/shop/billing/__init__.py"),
+            [
+                "app/main.py",
+                "src/shop/vendor/core/y.py",
+                "src/shop/orders.py",
+                "tests/test_pay.py"
+            ]
+        );
+        assert_eq!(
+            below("src/shop/vendor/core/__init__.py"),
+            ["app/vendored.py"]
+        );
+        // a file that runs nothing first has none
+        assert!(below("src/shop/orders.py").is_empty());
+    }
+
+    #[test]
+    fn change_impact_reaches_what_runs_an_entry_file_first() {
+        let graph = packages_graph();
+        let ids = |s: &BTreeSet<ComponentId>| s.iter().map(|c| c.0.clone()).collect::<Vec<_>>();
+        // a test that imports only what maps to no component, for its fixtures
+        let mut graph = graph;
+        graph.unmapped_imports.push(crate::UnmappedImport {
+            from: "shop.billing.tests".into(),
+            module: "pytest".into(),
+            reason: crate::UnmappedReason::Undeclared,
+            provided_by: Vec::new(),
+            evidence: Evidence::new("src/shop/billing/tests/test_fixtures.py")
+                .at_line(1)
+                .in_test(true),
+        });
+        let reach = graph.change_impact(ChangeSeed::File("src/shop/__init__.py"), 9);
+        // app and the nested project import a module below it; a file of a
+        // subpackage needs it run
+        assert_eq!(ids(&reach.direct), ["app", "lib.core", "shop.billing"]);
+        // the tests below the package as well as outside it
+        assert_eq!(
+            reach.tests.iter().map(String::as_str).collect::<Vec<_>>(),
+            [
+                "src/shop/billing/tests/test_charge.py",
+                "src/shop/billing/tests/test_fixtures.py",
+                "tests/test_pay.py"
+            ]
+        );
+
+        // a change to a module that the package's entry file imports reaches
+        // what runs that entry file
+        let mut graph = packages_graph();
+        graph.add_edges([edge_to(
+            "shop",
+            "shop.billing",
+            "src/shop/__init__.py",
+            "src/shop/billing/rates.py",
+        )]);
+        let reach = graph.change_impact(ChangeSeed::File("src/shop/billing/rates.py"), 9);
+        assert!(
+            reach.transitive.contains(&ComponentId::new("app")),
+            "{reach:?}"
+        );
+
+        // a symbol's first step still goes by the statements that take it
+        let mut graph = packages_graph();
+        graph.add_symbol(Symbol {
+            id: SymbolId::new("shop::VERSION"),
+            name: "VERSION".into(),
+            kind: SymbolKind::Constant,
+            component: "shop".into(),
+            signature: None,
+            evidence: vec![Evidence::new("src/shop/__init__.py").at_line(3)],
+        });
+        let symbol = graph.symbols[&SymbolId::new("shop::VERSION")].clone();
+        let reach = graph.change_impact(ChangeSeed::Symbol(&symbol), 9);
+        assert!(reach.direct.is_empty(), "{reach:?}");
+    }
+
+    fn edge_to(from: &str, to: &str, file: &str, target: &str) -> Edge {
+        Edge::new(from, to, EdgeKind::Import)
+            .with_evidence(Evidence::new(file).at_line(1).pointing_at(target))
     }
 
     #[test]

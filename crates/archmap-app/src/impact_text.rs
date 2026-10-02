@@ -58,6 +58,18 @@ pub(crate) fn render(
     let mut truncated = head(&mut out, result, full, rolled, &caps);
     truncated |= direct(&mut out, result, rolled, &caps);
     truncated |= importers(&mut out, result, full, rolled, &caps);
+    if let Some(below) = &result.imports_below {
+        let note = Some("they run it first");
+        truncated |= statements(
+            &mut out,
+            "Imports below",
+            note,
+            "from",
+            below,
+            rolled,
+            &caps,
+        );
+    }
     if let Some(may_use) = result.may_use.as_ref().filter(|s| s.total > 0) {
         let note = Some("imports the whole module");
         truncated |= statements(&mut out, "May use", note, "whole", may_use, rolled, &caps);

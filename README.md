@@ -128,7 +128,7 @@ What works today, by the [roadmap](#roadmap) phase it belongs to:
 | Imports without an edge, with the reason | 1 | ✅ | ✅ | ✅ |
 | `summary` and `query`, down to one file | 2 | ✅ | ✅ | ✅ |
 | `query` and `impact` on a symbol, by the names imports take | 2 | ✅ | ◐ | ✅ |
-| `impact` file by file | 2 | ✅ | ◐ | ✅ |
+| `impact` file by file | 2 | ✅ | ✅ | ✅ |
 | Test code counted apart from production code | 2 | ✅ | ✅ | ✅ |
 | `check` rules and cycles | 3 | ✅ | ✅ | ◐ |
 | Callers of a symbol | 4 | — | — | — |
@@ -147,9 +147,7 @@ The gaps behind the marks:
 - Python symbols: a statement that takes a package whole (`import pkg`,
   then `pkg.name()`) does not reach a name its `__init__.py` imports from
   another file, and `impact` goes on from that `__init__.py` to every file
-  that imports it.
-- Python `impact`: the parent `__init__.py` that Python loads before a
-  submodule is not followed.
+  that imports it or a module below it.
 - TS/JS imports: aliases defined only in a bundler configuration or a
   `jsconfig.json` are not followed.
 - TS/JS symbols: declarations inside `declare global { .. }` give none.

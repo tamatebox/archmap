@@ -34,6 +34,18 @@ fn import_sites<'a>(
     sites_of(full, depth, &facts.importers, facts.importers_recorded, cap)
 }
 
+/// The statements outside a package that import a module below `file`,
+/// its entry file, which run it first; `None` when there are none.
+fn below_sites<'a>(
+    full: &'a ArchitectureGraph,
+    depth: usize,
+    file: &str,
+    cap: usize,
+) -> Option<ImportSites<'a>> {
+    let below = full.imports_below(file);
+    (!below.is_empty()).then(|| sites_of(full, depth, &below, true, cap))
+}
+
 fn sites_of<'a>(
     full: &ArchitectureGraph,
     depth: usize,
@@ -141,7 +153,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
     let full = ws.graph();
     let rolled = full.rollup(depth);
 
-    let mut importers = None;
+    let (mut importers, mut imports_below) = (None, None);
     let (mut symbol_id, mut may_use, mut subpath) = (None, None, None);
     let traced: Traced;
     let (at, reach) = match resolve(full, &rolled, root, target)? {
@@ -163,6 +175,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
             traced = match component_file(full, root, component) {
                 Some(file) => {
                     importers = Some(import_sites(full, depth, &file, caps.sites));
+                    imports_below = below_sites(full, depth, &file, caps.sites);
                     Traced::File(file, Some(component))
                 }
                 None => Traced::Component(component),
@@ -184,6 +197,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
                 .with_context(|| format!("no component contains `{target}`"))?;
             let reach = full.change_impact(ChangeSeed::File(&file), depth);
             importers = Some(import_sites(full, depth, &file, caps.sites));
+            imports_below = below_sites(full, depth, &file, caps.sites);
             let at = fold(full, depth, &owner.id);
             traced = Traced::File(file, Some(owner));
             (at, reach)
@@ -243,7 +257,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
             place: Some(Place::File(file)),
             own: Own::File(file),
             script: owner.is_some_and(|c| c.kind == ComponentKind::Script),
-            unreached: none_found(&importers),
+            unreached: none_found(&importers) && imports_below.is_none(),
         },
         Traced::Symbol(symbol) => {
             let declared = full.component(&symbol.component);
@@ -286,6 +300,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
         symbol: symbol_id,
         subpath,
         importers,
+        imports_below,
         may_use,
         not_traced,
         about,
@@ -364,6 +379,7 @@ fn import_name_impact<'a>(
             shown: tests.into_iter().take(caps.tests).collect(),
         },
         importers: Some(sites(full, depth, statements, true, caps.sites)),
+        imports_below: None,
         may_use: None,
         not_traced: None,
         about: About::ImportName,

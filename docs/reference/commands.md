@@ -179,6 +179,10 @@ and for a script, whose declarations are global, it says that what uses them
 is not traced; `query` on a symbol a script declares says the same.
 A TS/JS re-export statement (`export ... from`) is marked `(export)`
 wherever a location is shown: it passes names on rather than uses them.
+For a Python package's `__init__.py`, which runs before any module below it
+is loaded, a line counts the statements outside the package that import a
+module below it and names the `impact` that lists them (`Imports below: 5
+(they run it first): ...`); JSON lists them as `imports_below`.
 
 `query` on a symbol (by name, `Class.method` / `Type::method`, or by id)
 lists the statements that import it, from the names their evidence records
@@ -294,7 +298,16 @@ symbol those that take its name, with `May use` for those that take its file
 whole: one statement per line, production code first, located and marked as
 `query` marks them, and followed by the component it is in unless that
 component is the file itself. They include the statements inside the
-target's own component. A whole component (a package, a directory, an
+target's own component. For a Python package's `__init__.py`, which runs
+before any module below it is loaded, `Imports below` lists in the same way
+the statements outside the package that import a module below it
+(`Imports below: 5 (they run it first)`), and their components are direct
+dependents; imports of types only, which never run, and evidence that a walk
+through re-exports led to are not among them. Every later step goes on from
+such a file the same way, and from the files below the package, so a change
+to a file that an `__init__.py` imports reaches whatever imports a module
+below that package, and a top-level package's `__init__.py` can reach most
+of the repository. A whole component (a package, a directory, an
 external dependency) gets no statement list: the answer names the `query`
 that shows where it is imported. `Transitive dependents` are the
 components reached only through others, so the direct ones are not repeated,
@@ -307,8 +320,8 @@ kind of `Not traced`, and their headings count the rest (`6, showing 5`); an
 answer with a capped list ends by saying so, and `--verbose` lists every
 entry. `--format json` gives the same lists as fields, the output earlier
 versions printed by default: `direct` and `transitive` (which includes
-`direct`) in full; `importers` and `may_use` as `{"recorded", "total",
-"shown"}` with 5 statements, each with its `file`, `line`, the `component` it
+`direct`) in full; `importers`, `imports_below` and `may_use` as
+`{"recorded", "total", "shown"}` with 5 statements, each with its `file`, `line`, the `component` it
 is in, `"test": true` in test code and, for a symbol, the barrel it went
 through as `through`, `recorded` being false when no
 evidence names imported files for the language; `tests` as `{"total",
@@ -332,8 +345,9 @@ name from the same file is not affected. Two things widen or narrow it:
   Python `__init__.py` usually does). A TS/JS barrel that only passes the
   name on goes no further than the statements `query` lists through it,
   which are in the first step too; a Python `__init__.py`'s
-  `from .m import X` leads to every importer of the `__init__.py` as a
-  transitive dependent, those that take other names included, while those
+  `from .m import X` leads to every importer of the `__init__.py`, and to
+  whatever imports a module below it, as transitive dependents, those that
+  take other names included, while those
   that take `X` from it (`from pkg import X`) are in the first step through
   their `via` evidence.
 - A statement that only loads the file (a side-effect import) is not in the
@@ -416,7 +430,8 @@ target's own imports without an edge stay under `Not mapped`.
   read, so a file that a framework, a test runner or a command loads by
   name or path has none). `query`'s text shows it for a file, `impact`'s for
   a file or a symbol. It is left out for a test file, which its runner
-  loads, and for a script.
+  loads, for a script, and for a Python package's `__init__.py` that an
+  import of a module below it runs first.
 
 Gaps that no analyzer records yet are not counted: module paths inside Rust
 macro calls, imports in a Rust crate's own unit tests.

@@ -121,6 +121,13 @@ impl Evidence {
         self.note.as_deref() == Some("export")
     }
 
+    /// A component's evidence for an entry file that runs before any file of
+    /// the component, or of a module below it, is loaded: a graph
+    /// convention, the note `package` (a Python package's `__init__.py`).
+    pub fn runs_first(&self) -> bool {
+        self.note.as_deref() == Some("package")
+    }
+
     /// The re-export this evidence went through to the file that defines a
     /// name, when its note says so (see [`via_place`]).
     pub fn via(&self) -> Option<&str> {
