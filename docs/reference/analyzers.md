@@ -21,7 +21,8 @@ into the model in [graph.md](graph.md); how the commands present it is in
   start with the package name) and contained in the component of the file that declares it; an
   inline `mod a { .. }` stays part of its file but keeps its place in the path, and a package's
   library and binary are resolved as the separate crates they are
-- `pub` items and `pub` inherent methods under `src/` become symbols with signatures
+- `pub` items and `pub` inherent methods under `src/` become symbols with signatures; one that only
+  tests compile (`#[cfg(test)]` on it, its `impl` or a module around it) carries `test`
 - `use` declarations become `import` edges to the module that defines what they name, through
   `crate::`, `self::`, `super::`, other internal crates, re-exports, globs (which bring in only
   what the importing module can see) and `#[macro_export]` macros; the evidence names that
@@ -73,6 +74,8 @@ into the model in [graph.md](graph.md); how the commands present it is in
 - A prelude file (`src/prelude.rs`) that re-exports modules which glob-import it forms a cycle
   with them, because only re-exports from a module's own subtree are not edges.
 - Unit tests are left out of dependencies within their crate, so `impact` does not list them.
+- A module that defines no `pub` item and whose only recorded import is a dev-dependency in its unit
+  tests reads as test code, so `impact` on it lists the module itself among the tests to run again.
 - Rust components are finer than Python's: a module file rather than a package directory.
 - Path evidence keeps one line per file and target, the first path's, whatever names the other
   paths take.

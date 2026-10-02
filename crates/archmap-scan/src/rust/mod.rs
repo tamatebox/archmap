@@ -155,7 +155,9 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
                     .map(String::as_str)
                     .collect::<Vec<_>>()
                     .join("::");
-                let mut evidence = vec![Evidence::new(&file).at_line(symbol.line)];
+                // test code defines it: a `#[cfg(test)]` module, or its own mark
+                let test = node.test || symbol.test;
+                let mut evidence = vec![Evidence::new(&file).at_line(symbol.line).in_test(test)];
                 // a method is reached through its type, which an inherent impl
                 // may take from another file of its crate
                 let reached = symbol.owner.as_ref().and_then(|ty| {
@@ -168,6 +170,7 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
                             Evidence::new(&file)
                                 .at_line(line)
                                 .with_note("impl")
+                                .in_test(test)
                                 .pointing_at(display_path(&files[type_file].rel))
                                 .taking([name]),
                         );

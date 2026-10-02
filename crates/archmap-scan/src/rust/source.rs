@@ -114,6 +114,10 @@ pub(super) struct SymbolDecl {
     pub line: u32,
     /// For a method: the self type of its inherent `impl`.
     pub owner: Option<SelfType>,
+    /// Compiled only for tests by an attribute of its own (`#[cfg(test)]` on
+    /// the item, or on a method or its `impl`); a test module marks what it
+    /// holds through the module.
+    pub test: bool,
 }
 
 /// The self type of an inherent `impl` as written, without generics:
@@ -153,6 +157,7 @@ fn collect(items: &[Item], module: usize, file: &mut RustFile) {
         let mut facts = Facts {
             module: &mut file.modules[module],
             public,
+            test,
         };
         match item {
             Item::Use(u) => {
@@ -275,6 +280,7 @@ fn collect(items: &[Item], module: usize, file: &mut RustFile) {
                     let ImplItem::Fn(method) = impl_item else {
                         continue;
                     };
+                    facts.test = test || cfg_test(&method.attrs);
                     if public && imp.trait_.is_none() && is_pub(&method.vis) {
                         let (vis, msig) = (&method.vis, &method.sig);
                         facts.symbol(
@@ -295,10 +301,12 @@ fn collect(items: &[Item], module: usize, file: &mut RustFile) {
     }
 }
 
-/// The module being collected, and whether its `pub` items are symbols.
+/// The module being collected, whether its `pub` items are symbols, and
+/// whether the item at hand is compiled only for tests.
 struct Facts<'a> {
     module: &'a mut ModuleFacts,
     public: bool,
+    test: bool,
 }
 
 impl Facts<'_> {
@@ -324,6 +332,7 @@ impl Facts<'_> {
             signature,
             line,
             owner: None,
+            test: self.test,
         });
     }
 }
@@ -716,6 +725,49 @@ trait T {
             ]
         );
         assert!(decls.iter().all(|d| !d.reexport && !d.test));
+    }
+
+    #[test]
+    fn test_symbols_are_marked() {
+        let text = "\
+#[cfg(test)]
+pub fn fixture() {}
+pub fn production() {}
+pub struct Wallet;
+impl Wallet {
+    #[cfg(test)]
+    pub fn sample() -> Self {
+        Wallet
+    }
+    pub fn open(&self) {}
+}
+#[cfg(test)]
+pub mod support {
+    pub fn helper() {}
+}
+";
+        let file = parse_file(text).unwrap();
+        let marks = |m: usize| -> Vec<(&str, bool)> {
+            file.modules[m]
+                .symbols
+                .iter()
+                .map(|s| (s.name.as_str(), s.test))
+                .collect()
+        };
+        assert_eq!(
+            marks(0),
+            vec![
+                ("fixture", true),
+                ("production", false),
+                ("Wallet", false),
+                ("Wallet::sample", true),
+                ("Wallet::open", false),
+                ("support", true),
+            ]
+        );
+        // what a test module holds is test code through the module
+        assert_eq!(marks(1), vec![("helper", false)]);
+        assert!(file.modules[1].test);
     }
 
     #[test]
