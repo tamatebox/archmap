@@ -149,7 +149,10 @@ pub(crate) fn barrels(
     };
     // how near the way a statement is on: what re-exports the target is
     // nearest, then a relayed entry's statement by the file it re-exports
-    let mut rank: BTreeMap<(&str, Option<u32>), usize> = BTreeMap::new();
+    let mut rank: BTreeMap<(&str, Option<u32>), usize> = statements
+        .iter()
+        .map(|e| ((e.file.as_str(), e.line), 0))
+        .collect();
     for (entry, from) in relayed {
         let re_exports = || {
             imports().filter(move |e| {
@@ -166,8 +169,9 @@ pub(crate) fn barrels(
             continue;
         }
         for e in on_way {
+            // a statement that re-exports the target itself stays nearest
             let at = near(e).map_or(0, |at| at + 1);
-            rank.insert((e.file.as_str(), e.line), at);
+            rank.entry((e.file.as_str(), e.line)).or_insert(at);
             statements.push(e);
         }
     }
@@ -863,5 +867,23 @@ mod tests {
         assert_eq!(named(&["pkg/c.py", "pkg/b.py"]), (1, Some(3), vec![2, 3]));
         // where no file it came from is known, its first, not dropped
         assert_eq!(named(&[]), (1, Some(1), vec![1, 2, 3]));
+        // the target's own re-export stays first, though the walk reaches
+        // the target's file again further on (files that import each other)
+        let relayed = BTreeMap::from([(
+            "pkg/__init__.py".to_owned(),
+            vec!["pkg/a.py".to_owned(), "pkg/c.py".to_owned()],
+        )]);
+        let found = barrels(
+            &full,
+            Narrowed::File("pkg/c.py"),
+            &relayed,
+            &BTreeSet::new(),
+            usize::MAX,
+        )
+        .unwrap();
+        assert_eq!(
+            (found.shown[0].line, found.shown[0].lines.clone()),
+            (Some(3), vec![1, 3])
+        );
     }
 }
