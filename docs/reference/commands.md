@@ -216,9 +216,10 @@ it, but its imports name its own file, so `query` points at its component
 instead, and `impact` answers for that component. What the lists miss:
 
 - A Python `__init__.py` may use what it imports as well as pass it on, so
-  no statement of it is a barrel: a statement that takes the package whole
-  (`import pkg`, then `pkg.pay()`) is in neither list for `pay` when
-  `pkg/__init__.py` imports it from another file.
+  no statement of it is a barrel, and `impact` goes on from it to whatever
+  imports it or a module below it. A statement that binds the package
+  (`import pkg`, then `pkg.pay()`) takes `pay` from it, and through its
+  `via` evidence from the file that defines it.
 - Rust path evidence shows the first path from its file to the target, not
   always one that names the symbol.
 - Code that runs when a file loads (a side-effect import) is listed for

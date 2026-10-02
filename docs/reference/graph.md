@@ -37,7 +37,10 @@ records both.
 it: a default export goes by the name its declaration in `target` gives
 (`default` when `target` declares none or re-exports it), `*` stands for
 the whole module (a namespace import, `export *`), and no names with a
-`target` means the statement only loads the file (a side-effect import).
+`target` means the statement only loads the file (a side-effect import). A
+Python statement that binds a module (`import pkg.sub`, `from pkg import
+sub`) takes the names its file reads through it (`sub.pay`), and `*` when
+the file may take anything of it.
 Through re-exports (for Python, a file that binds a name by importing it
 from another), evidence noted `<note> via <file>:<line>` (one word,
 `import via src/index.ts:2`, `use via src/shapes/mod.rs:2`) names what the

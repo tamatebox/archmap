@@ -407,3 +407,39 @@ fn a_test_whose_mock_replaces_a_module_on_the_way_is_left_out() {
         "{every}"
     );
 }
+
+#[test]
+fn a_python_symbol_is_taken_by_name_through_a_module_binding() {
+    let ws = scan(&fixture("python-bindings"));
+    let out = ws
+        .query(&archmap_app::QueryRequest {
+            target: "pay",
+            depth: DEFAULT_DEPTH,
+            format: Format::Text,
+            verbose: true,
+        })
+        .unwrap()
+        .output;
+    // read through the package, a submodule or an `as` name
+    assert_eq!(
+        section(&out, "Imported by: 5"),
+        [
+            "  store/aliased.py:1",
+            "  store/app.py:1 (via store/billing/__init__.py:1)",
+            "  store/billing/__init__.py:1",
+            "  store/other.py:1",
+            "  spec/test_pay.py:1 (test)",
+        ]
+    );
+    // the files that may use anything of it; not one that reads another
+    // name through it
+    assert_eq!(
+        section(&out, "May use: 4 (imports the whole module)"),
+        [
+            "  store/annotated.py:1",
+            "  store/formatted.py:1",
+            "  store/passed.py:1",
+            "  store/unused.py:1",
+        ]
+    );
+}

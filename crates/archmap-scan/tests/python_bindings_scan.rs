@@ -1,0 +1,55 @@
+//! The Python analyzer on `fixtures/python-bindings`: a statement that binds
+//! a module records the names its file reads through it.
+
+use std::path::Path;
+
+use archmap_scan::{scan, ScanOptions};
+
+#[test]
+fn a_module_binding_takes_the_names_its_file_reads_through_it() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/python-bindings");
+    let report = scan(&root, &ScanOptions::default()).expect("scan succeeds");
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    let mut taken: Vec<String> = report
+        .graph
+        .edges
+        .iter()
+        .flat_map(|e| &e.evidence)
+        .filter(|e| {
+            e.target
+                .as_deref()
+                .is_some_and(|t| t.starts_with("store/billing/"))
+        })
+        .map(|e| {
+            let names: Vec<&str> = e.names.iter().map(String::as_str).collect();
+            format!(
+                "{} {} -> {} {names:?}",
+                e.file,
+                e.note.as_deref().unwrap_or(""),
+                e.target.as_deref().unwrap()
+            )
+        })
+        .collect();
+    taken.sort();
+    assert_eq!(
+        taken,
+        [
+            r#"spec/test_pay.py import -> store/billing/charge.py ["pay"]"#,
+            // through an `as` name, a package's dotted path, a submodule
+            r#"store/aliased.py import -> store/billing/charge.py ["pay"]"#,
+            // used in a string, an f-string or an annotation, itself, or not
+            // at all: anything of it
+            r#"store/annotated.py import -> store/billing/charge.py ["*"]"#,
+            r#"store/app.py import -> store/billing/__init__.py ["pay"]"#,
+            // the package binds the name from its submodule
+            r#"store/app.py import via store/billing/__init__.py:1 -> store/billing/charge.py ["pay"]"#,
+            r#"store/billing/__init__.py relative import -> store/billing/charge.py ["pay"]"#,
+            r#"store/formatted.py import -> store/billing/charge.py ["*"]"#,
+            r#"store/other.py import -> store/billing/charge.py ["pay"]"#,
+            r#"store/passed.py import -> store/billing/charge.py ["*"]"#,
+            r#"store/rated.py import -> store/billing/rates.py ["rate"]"#,
+            r#"store/refunds.py import -> store/billing/charge.py ["refund"]"#,
+            r#"store/unused.py import -> store/billing/charge.py ["*"]"#,
+        ]
+    );
+}

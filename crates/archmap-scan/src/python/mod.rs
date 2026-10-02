@@ -55,6 +55,7 @@
 //! parsed.
 
 mod manifest;
+mod reads;
 mod reexports;
 mod resolve;
 mod source;
@@ -781,6 +782,9 @@ struct Resolved {
     names: Vec<Option<(String, String)>>,
     /// The file of the statement's own module, when the scan read it.
     own: Option<String>,
+    /// The names the file reads through a module the statement binds
+    /// (`charge.pay`), each with that module's file.
+    read: Vec<(String, String)>,
 }
 
 /// A Python file once read, with how its imports resolved.
@@ -854,6 +858,17 @@ fn emit_imports(
             BTreeMap::new();
         let own = own_file(&full, modules, by_dotted, ctx.known_files);
         let mut placed: Vec<Option<(String, String)>> = vec![None; named.len()];
+        let mut read: Vec<(String, String)> = Vec::new();
+        // what the file reads through each name the statement binds
+        let reads_of = |i: usize| -> Option<&BTreeSet<String>> {
+            let (j, _) = import
+                .names
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| *n != WHOLE_MODULE)
+                .nth(i)?;
+            import.reads.get(j)?.as_ref()
+        };
         for (i, candidate) in candidates.iter().enumerate() {
             let Some(idx) = longest_known_prefix(candidate, by_dotted) else {
                 continue;
@@ -873,25 +888,43 @@ fn emit_imports(
             }
             let (target, fallback) = target_file(module, candidate, ctx.known_files);
             let names = files.entry(target.clone()).or_default();
+            // a module the statement binds: the names the file reads
+            // through it, else all of it
+            let mut through =
+                |taken: Option<&BTreeSet<String>>, names: &mut BTreeSet<String>| match (
+                    taken, &target,
+                ) {
+                    (Some(taken), Some(file)) => {
+                        names.extend(taken.iter().cloned());
+                        read.extend(taken.iter().map(|n| (file.clone(), n.clone())));
+                    }
+                    _ => {
+                        names.insert(WHOLE_MODULE.to_owned());
+                    }
+                };
             if is_full {
-                // `import m` and `from m import *` take the whole module; the
-                // package a `from` import passes on the way, or the one left
-                // for a module the scan did not read, gives no name
-                if (import.names.is_empty() || star) && !fallback {
+                // `import m` takes what the file reads through it and `from m
+                // import *` the whole module; the package a `from` import
+                // passes on the way, or the one left for a module the scan
+                // did not read, gives no name
+                if import.names.is_empty() && !fallback {
+                    through(import.reads.first().and_then(Option::as_ref), names);
+                } else if star && !fallback {
                     names.insert(WHOLE_MODULE.to_owned());
                 }
             } else if target.is_some() && target == own {
                 names.insert(named[i].clone());
                 placed[i] = target.map(|t| (t, named[i].clone()));
             } else if !fallback {
-                // a submodule, taken whole
-                names.insert(WHOLE_MODULE.to_owned());
+                // a submodule
+                through(reads_of(i), names);
                 placed[i] = target.map(|t| (t, WHOLE_MODULE.to_owned()));
             }
         }
         resolved.push(Resolved {
             names: placed,
             own: own.clone(),
+            read,
         });
 
         let note = if import.level > 0 {
@@ -1129,7 +1162,8 @@ fn emit_definitions(
             // by defining file, first binding and whether only types travel
             let mut found: BTreeMap<(String, (String, u32), bool), BTreeSet<String>> =
                 BTreeMap::new();
-            for (loaded, name) in resolved.names.iter().flatten() {
+            let taken = resolved.names.iter().flatten().chain(&resolved.read);
+            for (loaded, name) in taken {
                 if name == WHOLE_MODULE || *loaded == read.display {
                     continue;
                 }
@@ -1423,6 +1457,8 @@ mod tests {
             type_only: false,
             in_class: false,
             unread: false,
+            end_line: 1,
+            reads: Vec::new(),
         }
     }
 

@@ -9,6 +9,8 @@ use std::collections::BTreeSet;
 
 use archmap_core::{SymbolKind, WHOLE_MODULE};
 
+use super::reads::{Code, Reads};
+
 /// One `import` or `from ... import` statement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PyImport {
@@ -33,6 +35,12 @@ pub struct PyImport {
     /// The name list could not be read whole: `*` in `names` stands for
     /// what else it may take, and what it binds is unknown.
     pub unread: bool,
+    /// The last line of the statement, which may go on over several.
+    pub end_line: u32,
+    /// For each of `bound`, the names the file reads through it (`charge`
+    /// in `charge.pay`, the module path itself for `import shop.billing`),
+    /// or `None` when it may take anything (see [`Reads::names`]).
+    pub reads: Vec<Option<BTreeSet<String>>>,
 }
 
 /// One public definition.
@@ -102,6 +110,8 @@ pub fn scan_source(text: &str) -> PyFile {
     // Brackets that a statement other than an import or a header left
     // open: the lines inside them go on with it, as a call's arguments.
     let mut brackets: i32 = 0;
+    // for each import, the paths the file reads its bindings through
+    let mut paths: Vec<Vec<String>> = Vec::new();
     let mut i = 0;
 
     while i < lines.len() {
@@ -225,6 +235,13 @@ pub fn scan_source(text: &str) -> PyFile {
                         (Some("as"), Some(alias)) => alias,
                         _ => module.split('.').next().unwrap_or(module),
                     };
+                    // what the file reads it through: the name after `as`,
+                    // else the module's path
+                    let path = match bound == module.split('.').next().unwrap_or(module) {
+                        true => module,
+                        false => bound,
+                    };
+                    paths.push(vec![path.to_owned()]);
                     out.imports.push(PyImport {
                         module: module.to_owned(),
                         level: 0,
@@ -235,6 +252,8 @@ pub fn scan_source(text: &str) -> PyFile {
                         type_only,
                         in_class,
                         unread: false,
+                        end_line: line_no + extra as u32,
+                        reads: Vec::new(),
                     });
                 }
             }
@@ -267,6 +286,7 @@ pub fn scan_source(text: &str) -> PyFile {
                     names.push(WHOLE_MODULE.to_owned());
                     bound.push(WHOLE_MODULE.to_owned());
                 }
+                paths.push(bound.clone());
                 out.imports.push(PyImport {
                     module,
                     level,
@@ -277,6 +297,8 @@ pub fn scan_source(text: &str) -> PyFile {
                     type_only,
                     in_class,
                     unread: open,
+                    end_line: line_no + extra as u32,
+                    reads: Vec::new(),
                 });
             }
             continue;
@@ -369,6 +391,22 @@ pub fn scan_source(text: &str) -> PyFile {
         }
     }
 
+    // what the rest of the file reads through each binding
+    let skip: BTreeSet<u32> = out
+        .imports
+        .iter()
+        .flat_map(|i| i.line..=i.end_line)
+        .collect();
+    let code = Code::new(text, &skip);
+    for (import, paths) in out.imports.iter_mut().zip(paths) {
+        import.reads = paths
+            .iter()
+            .map(|path| match path.as_str() {
+                WHOLE_MODULE => None,
+                path => Reads::names(&code.reads(path)),
+            })
+            .collect();
+    }
     out
 }
 

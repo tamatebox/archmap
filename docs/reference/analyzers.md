@@ -153,11 +153,15 @@ into the model in [graph.md](graph.md); how the commands present it is in
   types only (`type_only`, see [graph.md](graph.md)), since only type checkers enter that block, so it
   closes no cycle; the `else:` branch runs
 - the evidence also records the names the statement takes from that file (see [graph.md](graph.md)):
-  an attribute of the statement's module by name (`VERSION` in `from pkg import VERSION`), `*` for a
-  submodule (`from pkg import sub`), for `import pkg.sub` and for `from pkg import *`, and nothing for
-  a package the statement only passes on the way (the parent `__init__.py` of a subpackage, or what is
-  left of a module the scan did not read); when a name list cannot be read whole, the module's own
-  file, if the statement points at it, also gets `*`
+  an attribute of the statement's module by name (`VERSION` in `from pkg import VERSION`); for a
+  module the statement binds (a submodule in `from pkg import sub`, `import pkg.sub`, either with
+  `as`), the names the rest of the file reads through it (`pay` for `sub.pay(order)` or
+  `pkg.sub.pay(order)`), or `*` when the file also uses the module itself (passes, compares or
+  assigns it, or reads a dunder of it such as `__dict__`), mentions it in a string (an f-string, an
+  annotation, a docstring) or reads nothing through it; `*` for `from pkg import *`, and nothing for a package the statement only passes on the
+  way (the parent `__init__.py` of a subpackage, or what is left of a module the scan did not read);
+  when a name list cannot be read whole, the module's own file, if the statement points at it, also
+  gets `*`
 - a name taken from a file that binds it by importing it from another (`from shop.billing import pay`,
   where `shop/billing/__init__.py` has `from .charge import pay`) also gets evidence for the file that
   defines it, noted `import via <file>:<line>` with the first binding on the way, by the name that
@@ -205,10 +209,15 @@ into the model in [graph.md](graph.md); how the commands present it is in
 
 - Dynamic imports are recorded but not followed, and `sys.path` changes made at runtime are not
   seen.
-- An `__init__.py` is no barrel, since it may use what it imports: a statement that takes a package
-  whole (`import shop.billing`, then `shop.billing.pay()`) is in neither of `query`'s lists for `pay`
-  when `shop/billing/__init__.py` imports it from another file, and `impact` goes on from the
+- An `__init__.py` is no barrel, since it may use what it imports: `impact` goes on from the
   `__init__.py` file by file, to every importer of it and whatever imports a module below it.
+- What a file reads through a module it binds is read from its text, not parsed: an attribute read
+  over two lines (`sub.\` then `pay`), through another name the module is assigned to, or through
+  `getattr` with a literal is not seen, the last two as uses of the module itself; and for
+  `import a.b.c` only the full path counts, so `a.b.helper()`, a name of `a/b/__init__.py`, is
+  recorded for no file. A type comment (`# type: sub.Receipt`) is a comment, so it reads nothing. A
+  submodule read through its package (`import a.b`, then `a.b.rates.rate()`) is a name the package's
+  `__init__.py` gives it, so it reaches `rates.py` only when the file imports that submodule too.
 - A file that binds a name twice, such as `from .x import pay` and then `pay = wrap(pay)`, ends the
   walk whichever runs last, so a statement that reaches it keeps only the evidence for the file it
   loads.
