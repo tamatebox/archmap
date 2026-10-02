@@ -2413,3 +2413,18 @@ fn two_checkouts_of_one_commit_give_one_graph() {
         .collect();
     assert_eq!(graphs[0], graphs[1]);
 }
+
+#[test]
+fn impact_reaches_an_importer_through_the_barrel_alone() {
+    // checkout.ts imports Button from the package's barrel, never from
+    // components/button.tsx itself
+    let json = ts_stdout(&["impact", "src/components/button.tsx", "--format", "json"]);
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let direct: Vec<&str> = value["direct"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|id| id.as_str())
+        .collect();
+    assert!(direct.contains(&"ts-shop::src/app/checkout.ts"), "{json}");
+}
