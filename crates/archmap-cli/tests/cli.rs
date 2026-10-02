@@ -1108,6 +1108,30 @@ fn a_directory_stands_for_the_component_that_owns_it() {
 }
 
 #[test]
+fn a_rust_module_directory_stands_for_its_module() {
+    // the directory that holds a module's `mod.rs`, or the submodules of a
+    // file beside it, answers for that module; `src/` stays the package's,
+    // and so do a directory beside `src/main.rs` and one of an inline module
+    for (dir, id) in [
+        ("crates/lib_core/src/store", "lib_core::store"),
+        ("crates/lib_core/src/billing/", "lib_core::billing"),
+        ("crates/lib_core/src", "lib_core"),
+        ("crates/app/src", "app"),
+        ("crates/lib_core/src/api", "lib_core"),
+    ] {
+        let text = query_text(&fixture_root(), &[dir]);
+        assert!(text.contains(&format!("\nid: {id}\n")), "{dir}: {text}");
+        let out = archmap()
+            .args(["impact", dir, "--format", "json", "--path"])
+            .arg(fixture_root())
+            .output()
+            .unwrap();
+        let impact: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(impact["target"], id, "{dir}");
+    }
+}
+
+#[test]
 fn a_symbol_wins_over_a_directory_of_the_same_name() {
     // `run/` holds no Python code, so only the root component contains it
     let repo = temp_repo("dir-symbol");

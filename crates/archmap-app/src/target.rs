@@ -96,7 +96,9 @@ pub(crate) fn component_file(
 }
 
 /// The component that owns `target` as a directory under the scanned root,
-/// the same for `query` and `impact`. `Err` when no component contains it.
+/// the same for `query` and `impact`: the one whose path it is, else the
+/// one it is the directory of (`module_of_directory`), else the one that
+/// contains it. `Err` when no component contains it.
 pub(crate) fn directory_target<'a>(
     full: &'a ArchitectureGraph,
     root: &Path,
@@ -104,8 +106,76 @@ pub(crate) fn directory_target<'a>(
 ) -> Option<Result<&'a Component>> {
     let relative = root_relative(root, target)?;
     root.join(&relative).is_dir().then(|| {
-        full.component_for_path(&relative)
+        module_of_directory(full, root, &relative)
+            .or_else(|| full.component_for_path(&relative))
             .with_context(|| format!("no component contains `{target}`"))
+    })
+}
+
+/// The component whose files `dir` holds although its path is a file: the
+/// one whose file sits beside `dir` under its name (a Rust `billing.rs` for
+/// `billing/`), else the one whose file sits in `dir` and holds the other
+/// components in it (a Rust `rust/mod.rs`). Every file the graph records in
+/// `dir` must be that component's or below it. `None` when a component has
+/// `dir` for its path, or none fits.
+fn module_of_directory<'a>(
+    full: &'a ArchitectureGraph,
+    root: &Path,
+    dir: &str,
+) -> Option<&'a Component> {
+    let path = |c: &'a Component| c.path.as_deref();
+    if dir.is_empty() || full.components.values().any(|c| path(c) == Some(dir)) {
+        return None;
+    }
+    let prefix = format!("{dir}/");
+    let recorded: BTreeSet<&str> = full
+        .components
+        .values()
+        .filter_map(path)
+        .chain(
+            full.edges
+                .iter()
+                .flat_map(|e| &e.evidence)
+                .map(|e| e.file.as_str()),
+        )
+        .chain(
+            full.symbols
+                .values()
+                .flat_map(|s| &s.evidence)
+                .map(|e| e.file.as_str()),
+        )
+        .filter(|file| file.starts_with(&prefix))
+        .collect();
+    // every recorded file in `dir` is the candidate's or below it
+    let holds_all = |candidate: &Component| {
+        recorded.iter().all(|file| {
+            full.component_for_path(file)
+                .is_some_and(|owner| full.containment_path(&owner.id).contains(&candidate.id))
+        })
+    };
+    let beside: Vec<&Component> = full
+        .components
+        .values()
+        .filter(|c| {
+            path(c)
+                .and_then(|p| p.strip_prefix(dir)?.strip_prefix('.'))
+                .is_some_and(|extension| !extension.is_empty() && !extension.contains('/'))
+        })
+        .collect();
+    if let [only] = beside.as_slice() {
+        return holds_all(only).then_some(*only);
+    }
+    let inside: Vec<&Component> = full
+        .components
+        .values()
+        .filter(|c| path(c).is_some_and(|p| p.starts_with(&prefix)))
+        .collect();
+    inside.iter().copied().find(|head| {
+        let file = path(head).unwrap_or_default();
+        !file[prefix.len()..].contains('/')
+            && root.join(file).is_file()
+            && inside.iter().any(|c| c.parent.as_ref() == Some(&head.id))
+            && holds_all(head)
     })
 }
 

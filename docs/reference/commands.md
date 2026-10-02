@@ -376,6 +376,13 @@ matches decides:
 9. an import name that no component carries
 10. a file name or stem anywhere under the root (`users.py`, `users`)
 
+A directory that no component has for its path answers for the component
+whose files it holds: a Rust module whose `mod.rs` sits in it with its
+submodules (`src/rust/`), or whose file sits beside it under its name
+(`src/billing/` for `src/billing.rs`), when every file recorded in the
+directory is that module's or below it. Any other directory answers for the
+component that contains it, so `src/` stands for its package.
+
 One pair of matching quotes around a target is dropped, so an id copied
 from a shell-quoted list works where no shell removes them. Components that
 share a name and sit at one path (a directory that two analyzers map) answer
