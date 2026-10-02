@@ -409,6 +409,11 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   followed). A statement that takes the symbol under a name a barrel `export { a as b } from` gives it
   is not among the statements `query` lists, so its uses are not read either, and `Not traced` names
   the barrel (`renamed`). `this.m()` names the class's `m`, which a subclass may override.
+- A mock factory's key that names a symbol is no use, and `Used at` lists it apart (`mocked`) only
+  when the factory is a function written in place that returns an object written out; a key of a
+  nested object (`Wallet: { pay: vi.fn() }`) is not read, so a member shows its class's key. A
+  factory passed by name or that builds its object first, `jest.setMock` and Jest's ESM mocks give
+  no key, and a mock that replaces the module then gives its call.
 - A `require` that a function takes as a parameter (a bundle's module wrapper, AMD's `define`) is
   not Node's and gives nothing, but a committed UMD bundle (`module.exports =
   factory(require('jquery'))`) reads as code that imports `jquery`; list such files in an `.ignore`

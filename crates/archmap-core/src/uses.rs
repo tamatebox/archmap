@@ -142,7 +142,7 @@ pub struct Unread {
 
 /// What the uses pass found for one symbol. Every statement it reads ends
 /// in one of its lists: a use through it, `unused`, an escape in its file,
-/// `renamed`, `passed_on`, `values` or `unread`.
+/// `renamed`, `passed_on`, `values`, `mocked` or `unread`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SymbolUses {
     pub uses: Vec<SymbolUse>,
@@ -171,6 +171,14 @@ pub struct SymbolUses {
     /// may be reached unseen (`Rich.open()`, `super.open()`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subclasses: Vec<Evidence>,
+    /// Where a test's mock stands in for the symbol: the key of the object
+    /// its factory returns that names it, or its class for a member
+    /// (`vi.mock('./money', () => ({ formatPrice: vi.fn() }))`), and the call
+    /// of a mock that replaces the module when no key can be read to name
+    /// it. No use, but a place to edit when the symbol is renamed or removed.
+    /// `names` holds the key when it names the symbol otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mocked: Vec<Evidence>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unread: Vec<Unread>,
 }
@@ -190,6 +198,7 @@ impl SymbolUses {
         tidy(&mut self.passed_on);
         tidy(&mut self.values);
         tidy(&mut self.subclasses);
+        tidy(&mut self.mocked);
         tidy(&mut self.unread);
     }
 }

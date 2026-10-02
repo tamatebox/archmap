@@ -20,8 +20,9 @@ use archmap_core::{
 };
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    BindingIdentifier, BindingPattern, ClassElement, Expression, ImportDeclarationSpecifier,
-    ModuleExportName, Program, Statement, TSImportTypeQualifier, TSModuleReference,
+    BindingIdentifier, BindingPattern, CallExpression, ClassElement, Expression,
+    ImportDeclarationSpecifier, ModuleExportName, Program, Statement, TSImportTypeQualifier,
+    TSModuleReference,
 };
 use oxc_ast::AstKind;
 use oxc_parser::Parser;
@@ -29,7 +30,7 @@ use oxc_semantic::{AstNode, AstNodes, NodeId, Semantic, SemanticBuilder, SymbolI
 use oxc_span::{GetSpan, Span};
 
 use super::exports::{Export, MAX_HOPS};
-use super::source::{parse, source_type, ParsedFile};
+use super::source::{factory_object, parse, source_type, written_keys, ParsedFile};
 use crate::lines::Lines;
 
 /// Destructurings followed from one binding: `const { money } = all`, then
@@ -38,6 +39,9 @@ const MAX_DESTRUCTURINGS: usize = 2;
 
 /// Test helpers that return the module they load, as `require` does.
 const RETURNING_HELPERS: [&str; 2] = ["jest.requireActual", "jest.requireMock"];
+
+/// Mocks that take a factory for the module they replace.
+const FACTORY_MOCKS: [&str; 4] = ["vi.mock", "vi.doMock", "jest.mock", "jest.doMock"];
 
 /// Test helpers that return a promise of the module, as `import()` does.
 const PROMISING_HELPERS: [&str; 2] = ["vi.importActual", "vi.importMock"];
@@ -359,7 +363,11 @@ impl<'g> Pass<'g, '_> {
         let word = note_word(evidence);
         let helper = RETURNING_HELPERS.contains(&word) || PROMISING_HELPERS.contains(&word);
         if word.contains('.') && !helper {
-            // a mock call takes the module without a name the code uses
+            // a mock takes the module without a name the code uses; its
+            // factory's keys say where a test stands in for the symbol
+            if FACTORY_MOCKS.contains(&word) {
+                self.mocked(read, by_line, evidence, word, line);
+            }
             return;
         }
         let nodes = read.semantic.nodes();
@@ -481,6 +489,63 @@ impl<'g> Pass<'g, '_> {
             } else {
                 self.out.unused.push(evidence.clone());
             }
+        }
+    }
+
+    /// The keys of a mock's factory that give the symbol's name
+    /// (`formatPrice: vi.fn()`), beside a spread of the real module or not;
+    /// for a mock that stands in for the module whole, the call when no key
+    /// can be read to name it.
+    fn mocked(
+        &mut self,
+        read: &Read,
+        by_line: &BTreeMap<u32, Vec<NodeId>>,
+        evidence: &Evidence,
+        word: &str,
+        line: u32,
+    ) {
+        let nodes = read.semantic.nodes();
+        let calls: Vec<&CallExpression> = by_line
+            .get(&line)
+            .into_iter()
+            .flatten()
+            .filter_map(|&id| match nodes.get_node(id).kind() {
+                AstKind::CallExpression(c)
+                    if loading_callee(&c.callee).as_deref() == Some(word) =>
+                {
+                    Some(c)
+                }
+                _ => None,
+            })
+            .collect();
+        let (call, module) = match (calls.as_slice(), self.loaded(read.file, line)) {
+            ([call], Some(module)) => (*call, module),
+            // only a mock that stands in for the module is read as a statement
+            _ if !evidence.replaces => return,
+            ([], _) => {
+                self.unread(read.file, Some(line), UnreadReason::StatementNotFound);
+                return;
+            }
+            _ => {
+                self.unread(read.file, Some(line), UnreadReason::AmbiguousStatement);
+                return;
+            }
+        };
+        let paths = self.paths_of(module, 0);
+        let before = self.out.mocked.len();
+        if let Some(object) = factory_object(call) {
+            for (key, span) in written_keys(object).0 {
+                if paths.iter().any(|p| p[0] == key) {
+                    // a key named otherwise (a member's class, a renamed
+                    // export) says its name
+                    let other = self.tail.last() != Some(&key);
+                    let names = other.then_some(key);
+                    self.out.mocked.push(evidence_at(read, span).taking(names));
+                }
+            }
+        }
+        if self.out.mocked.len() == before && evidence.replaces {
+            self.out.mocked.push(evidence_at(read, call.span));
         }
     }
 }

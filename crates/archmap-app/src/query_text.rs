@@ -742,6 +742,29 @@ fn used_at(out: &mut String, uses: &SymbolUses, instance_method: bool, caps: &Ca
         let count = what.replace("{}", &plural(list.len(), "import"));
         let _ = writeln!(out, "  {count}: {}", with_more(&places, list.len()));
     }
+    // no use: where a test's mock stands in for it, `as` the key that does
+    // when it names it otherwise
+    if !uses.mocked.is_empty() {
+        let places: Vec<String> = uses
+            .mocked
+            .iter()
+            .take(caps.locations)
+            .map(|e| {
+                let mut place = import_location(e, 0, false);
+                for name in &e.names {
+                    let _ = write!(place, " as {name}");
+                }
+                place
+            })
+            .collect();
+        truncated |= places.len() < uses.mocked.len();
+        let _ = writeln!(
+            out,
+            "  mocked ({}): {}",
+            plural(uses.mocked.len(), "place"),
+            with_more(&places, uses.mocked.len())
+        );
+    }
     truncated
 }
 

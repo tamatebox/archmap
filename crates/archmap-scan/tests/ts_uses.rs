@@ -85,15 +85,23 @@ fn a_function_is_used_through_every_binding_that_reaches_it() {
             "src/view.tsx:11:34 call as all.money.formatPrice via 2",
             // `await vi.importActual(..)`, beside `typeof import(..)`
             "tests/actual.test.ts:3:10 call via 2 (test)",
+            // a mock stands in for the module, but the call names the symbol
+            "tests/mocked.test.ts:8:24 call via 1 (test)",
             "tests/money.test.ts:3:24 call via 1 (test)",
+            "tests/partial.test.ts:8:24 call via 1 (test)",
         ],
         "{:#?}",
         shown(&found)
     );
-    // `send(m)` and the promise of `import()` may use it unseen
+    // `send(m)`, the promise of `import()` and a spread of the real module
+    // into a mock may use it unseen
     assert_eq!(
         places(&found.escapes),
-        ["scripts/lazy.mjs:7", "src/app.ts:8"],
+        [
+            "scripts/lazy.mjs:7",
+            "src/app.ts:8",
+            "tests/partial.test.ts:4"
+        ],
         "{:?}",
         places(&found.escapes)
     );
@@ -142,8 +150,16 @@ fn every_statement_read_ends_in_one_of_the_lists() {
             for (_, statement) in importers.by_name.iter().chain(&importers.may_use) {
                 let (file, line) = (statement.file.as_str(), statement.line);
                 let note = statement.note.as_deref().unwrap_or("");
-                // a mock call takes no name the code uses
-                let mock = note.contains('.') && !note.contains("Actual") && !note.contains("Mock");
+                // a mock call takes no name the code uses, unless it stands
+                // in for the module
+                let helper = [
+                    "jest.requireActual",
+                    "jest.requireMock",
+                    "vi.importActual",
+                    "vi.importMock",
+                ]
+                .contains(&note);
+                let mock = note.contains('.') && !helper && !statement.replaces;
                 if Some(file) == defining || mock {
                     continue;
                 }
@@ -157,6 +173,7 @@ fn every_statement_read_ends_in_one_of_the_lists() {
                     || found.values.iter().any(at)
                     || found.renamed.iter().any(|r| at(&r.evidence))
                     || found.escapes.iter().any(|e| e.file == file)
+                    || found.mocked.iter().any(|e| e.file == file)
                     || found
                         .unread
                         .iter()
@@ -169,6 +186,29 @@ fn every_statement_read_ends_in_one_of_the_lists() {
             }
         }
     }
+}
+
+#[test]
+fn the_keys_of_a_mock_factory_that_name_the_symbol_are_listed_apart_from_uses() {
+    let graph = graph();
+    let found = uses_of(&graph, "formatPrice");
+    // a factory that stands in for the module, and one beside a spread of
+    // the real module
+    assert_eq!(
+        places(&found.mocked),
+        ["tests/mocked.test.ts:4", "tests/partial.test.ts:5"]
+    );
+    assert!(found.mocked.iter().all(|e| e.test));
+    // the calls in those files still name it
+    let shown = shown(&found);
+    for call in ["tests/mocked.test.ts:8:24", "tests/partial.test.ts:8:24"] {
+        assert!(shown.iter().any(|u| u.starts_with(call)), "{shown:#?}");
+    }
+    assert!(found.mocked.iter().all(|e| e.names.is_empty()));
+    // a member's class stands in for it, by the class's name
+    let pay = uses_of(&graph, "Wallet.pay").mocked;
+    assert_eq!(places(&pay), ["tests/mocked.test.ts:5"]);
+    assert_eq!(pay[0].names.iter().collect::<Vec<_>>(), ["Wallet"]);
 }
 
 #[test]

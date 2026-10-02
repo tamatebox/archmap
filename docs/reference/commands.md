@@ -248,12 +248,13 @@ for any other (passed as a value, assigned, compared), then `(test)`; it
 ends in `as <name>` when the code names it otherwise:
 
 ```text
-Used at: 19 in 12 files, showing 10 (18 calls, 1 type)
+Used at: 21 in 14 files, showing 10 (20 calls, 1 type)
   src/app.ts:11 (call) as fp, src/app.ts:11:20 (call) as m.formatPrice, src/app.ts:11:38 (call) as m.formatPrice, +1 more in this file
   src/view.tsx:9 (call) as money.formatPrice, src/view.tsx:10 (call), src/view.tsx:11 (call) as all.money.formatPrice
   ...
   never used (1 import): src/unused.ts:1
   never named (1 import of the whole module): tests/actual.test.ts:2
+  mocked (2 places): tests/mocked.test.ts:4 (test), tests/partial.test.ts:5 (test)
 ```
 
 There is a line per file, production code first, then the files with the
@@ -263,7 +264,14 @@ alike give their column (`src/app.ts:11:20`), counted in characters from 1;
 editors that count UTF-16 code units differ on characters outside the
 Basic Multilingual Plane. `never used` lists the import statements whose
 binding of the symbol nothing uses, and `never named` those that take the
-module whole and never name the symbol. A method that is not static gets
+module whole and never name the symbol. `mocked` lists where a test's mock
+stands in for the symbol, which is no use but a place to edit when it is
+renamed or removed: the key that names it, or its class for a member, in
+the object a `vi.mock`, `vi.doMock`, `jest.mock` or `jest.doMock` factory
+returns (`formatPrice: vi.fn()`), beside a spread of the real module or
+not, `as` the key when it names the symbol otherwise (`as Wallet` for
+`Wallet.pay`), and the mock call itself when a mock that replaces the
+module gives keys that cannot be read. A method that is not static gets
 only the uses through its class and `this` (`Used at: through the class and
 this only: ...`), and `Not traced` says that calls through a value of its
 type (`wallet.pay()`) are not read (`values`), with the imports of the class
@@ -285,7 +293,7 @@ every use with its column, its role, the name it goes by and the import
 statement it goes through (`uses`), and the statements that end otherwise:
 `unused`, `escapes`, `renamed`, `passed_on` (only re-exported), `values` (a
 member's class bound, which values or subclasses may reach it through),
-`subclasses` and `unread`.
+`subclasses`, `mocked` and `unread`.
 A symbol of Rust or Python gets no `Used at`.
 
 ## impact

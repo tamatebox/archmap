@@ -2702,7 +2702,7 @@ fn query_on_a_ts_symbol_lists_where_it_is_used() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/ts-uses");
     let text = query_text(&root, &["formatPrice"]);
     // two uses that would read alike say their columns
-    let used_at = "\nUsed at: 19 in 12 files, showing 10 (18 calls, 1 type)\n\
+    let used_at = "\nUsed at: 21 in 14 files, showing 10 (20 calls, 1 type)\n\
          \x20 src/app.ts:11 (call) as fp, src/app.ts:11:20 (call) as m.formatPrice, \
          src/app.ts:11:38 (call) as m.formatPrice, +1 more in this file\n\
          \x20 src/view.tsx:9 (call) as money.formatPrice, src/view.tsx:10 (call), \
@@ -2716,11 +2716,12 @@ fn query_on_a_ts_symbol_lists_where_it_is_used() {
          \x20 src/relayed.ts:3 (call) as fmt2\n\
          \x20 src/types.ts:4 (type)\n\
          \x20 never used (1 import): src/unused.ts:1\n\
-         \x20 never named (1 import of the whole module): tests/actual.test.ts:2\n";
+         \x20 never named (1 import of the whole module): tests/actual.test.ts:2\n\
+         \x20 mocked (2 places): tests/mocked.test.ts:4 (test), tests/partial.test.ts:5 (test)\n";
     assert!(text.contains(used_at), "{text}");
     for line in [
-        "  whole module: 2 places use the module as a value, which may use this: \
-         scripts/lazy.mjs:7, src/app.ts:8\n",
+        "  whole module: 3 places use the module as a value, which may use this: \
+         scripts/lazy.mjs:7, src/app.ts:8, tests/partial.test.ts:4 (test)\n",
         "  renamed: passed on as `price` by src/index.ts:3; what takes that name is not followed\n",
         "  uses: not read in 1 place: src/two.ts:1 (ambiguous statement)\n",
     ] {
@@ -2755,6 +2756,10 @@ fn query_on_a_ts_symbol_lists_where_it_is_used() {
     );
     assert!(!method.contains("never used"), "{method}");
     assert!(
+        method.contains("  mocked (1 place): tests/mocked.test.ts:5 (test) as Wallet\n"),
+        "{method}"
+    );
+    assert!(
         method.contains(
             "  subclasses: calls through a subclass (Sub.m(), super.m()) are not read; \
              extended at src/rich.ts:3\n"
@@ -2769,7 +2774,7 @@ fn query_on_a_ts_symbol_lists_where_it_is_used() {
         .unwrap();
     let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let uses = value[0]["used_at"]["uses"].as_array().unwrap();
-    assert_eq!(uses.len(), 19);
+    assert_eq!(uses.len(), 21);
     assert_eq!(
         uses[0],
         serde_json::json!({
@@ -2778,6 +2783,10 @@ fn query_on_a_ts_symbol_lists_where_it_is_used() {
             "role": "call",
             "statement": {"file": "scripts/cjs.cjs", "line": 1}
         })
+    );
+    assert_eq!(
+        value[0]["used_at"]["mocked"][0],
+        serde_json::json!({"file": "tests/mocked.test.ts", "line": 4, "test": true})
     );
     // a language without a uses pass says nothing about uses
     let python = query_text(&python_fixture(), &["notify"]);

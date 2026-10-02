@@ -15,14 +15,14 @@ use oxc_ast::ast::{
     BindingPattern, CallExpression, Class, ClassElement, Declaration, Decorator,
     ExportDefaultDeclarationKind, Expression, FormalParameter, FormalParameters, Function,
     IdentifierReference, ImportDeclarationSpecifier, ImportExpression, MethodDefinitionKind,
-    NewExpression, ObjectProperty, ObjectPropertyKind, Statement, StaticMemberExpression,
-    TSAccessibility, TSImportEqualsDeclaration, TSImportType, TSImportTypeQualifier,
-    TSModuleReference, VariableDeclarator,
+    NewExpression, ObjectExpression, ObjectProperty, ObjectPropertyKind, Statement,
+    StaticMemberExpression, TSAccessibility, TSImportEqualsDeclaration, TSImportType,
+    TSImportTypeQualifier, TSModuleReference, VariableDeclarator,
 };
 use oxc_ast::AstKind;
 use oxc_ast_visit::{walk, Visit};
 use oxc_parser::Parser;
-use oxc_span::{GetSpan, SourceType};
+use oxc_span::{GetSpan, SourceType, Span};
 
 use super::exports::{Export, ExportTable};
 
@@ -850,44 +850,60 @@ fn stands_in(call: &CallExpression) -> bool {
 /// written out (`() => ({ placeOrder: vi.fn() })`, or such an object after
 /// `return`); none for a spread, a computed key or any other value.
 fn factory_keys(call: &CallExpression) -> Option<Vec<String>> {
+    let (keys, all) = written_keys(factory_object(call)?);
+    all.then(|| keys.into_iter().map(|(key, _)| key).collect())
+}
+
+/// The object a mock's factory returns when it is written out: an arrow
+/// function's value, or the value of the one `return` at the top of the
+/// factory's body.
+pub(super) fn factory_object<'b, 'a>(
+    call: &'b CallExpression<'a>,
+) -> Option<&'b ObjectExpression<'a>> {
     let factory = call.arguments.get(1)?.as_expression()?;
-    let body = match factory.without_parentheses() {
+    let value = match factory.without_parentheses() {
         Expression::ArrowFunctionExpression(f) => match &f.body {
-            ArrowFunctionBody::FunctionBody(body) => &body.statements,
-            value => return object_keys(value.as_expression()?),
+            ArrowFunctionBody::FunctionBody(body) => returned(&body.statements)?,
+            value => value.as_expression()?,
         },
-        Expression::FunctionExpression(f) => &f.body.as_ref()?.statements,
+        Expression::FunctionExpression(f) => returned(&f.body.as_ref()?.statements)?,
         _ => return None,
     };
-    let mut returned = body.iter().filter_map(|s| match s {
-        Statement::ReturnStatement(r) => r.argument.as_ref(),
-        _ => None,
-    });
-    match (returned.next(), returned.next()) {
-        (Some(value), None) => object_keys(value),
+    match value.without_parentheses() {
+        Expression::ObjectExpression(object) => Some(object),
         _ => None,
     }
 }
 
-/// The keys of an object written out, apart from `__esModule`.
-fn object_keys(value: &Expression) -> Option<Vec<String>> {
-    let Expression::ObjectExpression(object) = value.without_parentheses() else {
-        return None;
-    };
+/// The value of the one `return` with a value at the top of a body.
+fn returned<'b, 'a>(statements: &'b [Statement<'a>]) -> Option<&'b Expression<'a>> {
+    let mut values = statements.iter().filter_map(|s| match s {
+        Statement::ReturnStatement(r) => r.argument.as_ref(),
+        _ => None,
+    });
+    match (values.next(), values.next()) {
+        (Some(value), None) => Some(value),
+        _ => None,
+    }
+}
+
+/// The keys an object writes out, apart from `__esModule`, with their
+/// places, and whether they are all of its keys: nothing is spread into it
+/// and no key is computed.
+pub(super) fn written_keys(object: &ObjectExpression) -> (Vec<(String, Span)>, bool) {
     let mut keys = Vec::new();
+    let mut all = true;
     for property in &object.properties {
-        let ObjectPropertyKind::ObjectProperty(p) = property else {
-            return None;
-        };
-        if p.computed {
-            return None;
-        }
-        let key = p.key.static_name()?;
-        if key != "__esModule" {
-            keys.push(key.into_owned());
+        match property {
+            ObjectPropertyKind::ObjectProperty(p) if !p.computed => match p.key.static_name() {
+                Some(key) if key == "__esModule" => {}
+                Some(key) => keys.push((key.into_owned(), p.key.span())),
+                None => all = false,
+            },
+            _ => all = false,
         }
     }
-    Some(keys)
+    (keys, all)
 }
 
 /// Calls that load a module's real code, or build a mock from it.
