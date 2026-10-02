@@ -245,8 +245,12 @@ fn a_symbol_answers_with_its_line_and_the_statements_that_take_it() {
         "{out}"
     );
     assert!(out.contains("\nImported by: "), "{out}");
+    // checkout.ts:2 takes the barrel that passes the name on whole
     assert!(
-        out.contains("\nMay use: 2 (imports the whole module; 1 re-export)\n"),
+        out.contains(
+            "\nMay use: 3 (imports the whole module; 1 re-export)\n  scripts/report.cjs:8 (local)\n  \
+             src/app/checkout.ts:2 (whole src/index.ts, which passes it on)\n"
+        ),
         "{out}"
     );
 }

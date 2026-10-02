@@ -1,6 +1,6 @@
 //! `impact`: what may be affected when a target changes.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result};
 use archmap_core::{
@@ -45,6 +45,24 @@ fn sites_of<'a>(
     sites(full, depth, statements, recorded, cap)
 }
 
+/// The statements of a symbol, each with the barrel it went through.
+fn symbol_sites<'a>(
+    full: &ArchitectureGraph,
+    depth: usize,
+    statements: &[(&'a Edge, &'a Evidence)],
+    through: &BTreeMap<(&'a str, Option<u32>), &'a str>,
+    recorded: bool,
+    cap: usize,
+) -> ImportSites<'a> {
+    let mut sites = sites_of(full, depth, statements, recorded, cap);
+    for site in &mut sites.shown {
+        site.through = through
+            .get(&(site.evidence.file.as_str(), site.evidence.line))
+            .copied();
+    }
+    sites
+}
+
 /// One site per statement, production code first, then by place; the first
 /// `cap` shown. A statement that takes values and types from the file shows
 /// as what runs, as `query` shows it.
@@ -71,6 +89,7 @@ fn sites<'a>(
                 line: e.line,
                 component: full.ancestor_at(from, depth),
                 test: e.test,
+                through: None,
                 evidence: e,
             }),
         }
@@ -185,17 +204,19 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
             None => {
                 let reach = full.change_impact(ChangeSeed::Symbol(symbol), depth);
                 if let Some(found) = full.symbol_importers(symbol) {
-                    importers = Some(sites_of(
+                    importers = Some(symbol_sites(
                         full,
                         depth,
                         &found.by_name,
+                        &found.through,
                         found.recorded,
                         caps.sites,
                     ));
-                    may_use = Some(sites_of(
+                    may_use = Some(symbol_sites(
                         full,
                         depth,
                         &found.may_use,
+                        &found.through,
                         found.recorded,
                         caps.sites,
                     ));

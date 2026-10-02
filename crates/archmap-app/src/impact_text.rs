@@ -60,7 +60,7 @@ pub(crate) fn render(
     truncated |= importers(&mut out, result, full, rolled, &caps);
     if let Some(may_use) = result.may_use.as_ref().filter(|s| s.total > 0) {
         let note = Some("imports the whole module");
-        truncated |= statements(&mut out, "May use", note, may_use, rolled, &caps);
+        truncated |= statements(&mut out, "May use", note, "whole", may_use, rolled, &caps);
     }
     truncated |= transitive(&mut out, result, rolled, &caps);
     truncated |= tests(&mut out, result, &caps);
@@ -185,7 +185,7 @@ fn importers(
             false
         }
         (Some(sites), _) if sites.recorded => {
-            statements(out, "Imported by", None, sites, rolled, caps)
+            statements(out, "Imported by", None, "from", sites, rolled, caps)
         }
         // not recorded for the language, or a symbol whose importers are
         // unknown
@@ -200,12 +200,14 @@ fn importers(
     }
 }
 
-/// One statement per line, as `query` locates it, with the component it is
+/// One statement per line, as `query` locates it, with the barrel it went
+/// through (`taken`: `from` for the name, `whole`) and the component it is
 /// in unless that component is its file.
 fn statements(
     out: &mut String,
     title: &str,
     note: Option<&str>,
+    taken: &str,
     sites: &ImportSites,
     rolled: &ArchitectureGraph,
     caps: &Caps,
@@ -215,6 +217,9 @@ fn statements(
     let _ = writeln!(out, "\n{heading}");
     for site in &sites.shown[..shown] {
         let mut line = import_location(site.evidence, 0, false);
+        if let Some(barrel) = site.through {
+            let _ = write!(line, " ({taken} {barrel}, which passes it on)");
+        }
         let path = rolled
             .component(&site.component)
             .and_then(|c| c.path.as_deref());

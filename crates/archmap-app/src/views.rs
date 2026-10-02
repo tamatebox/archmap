@@ -235,6 +235,10 @@ pub struct ImportSite<'a> {
     /// The statement is test code.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub test: bool,
+    /// For a symbol: the barrel the statement reaches it through, a file
+    /// that passes it on, when the statement takes that file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub through: Option<&'a str>,
     /// The statement's evidence, for the marks of the text.
     #[serde(skip)]
     pub(crate) evidence: &'a Evidence,
