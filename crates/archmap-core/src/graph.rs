@@ -2172,6 +2172,10 @@ mod tests {
             reach.tests.iter().collect::<Vec<_>>(),
             ["kiosk/billing.test.ts"]
         );
+        // nor does the test, changed, stand for the package
+        let reach = graph.change_impact(ChangeSeed::File("kiosk/billing.test.ts"), 2);
+        assert!(reach.direct.is_empty(), "{:?}", reach.direct);
+        assert!(reach.transitive.is_empty(), "{:?}", reach.transitive);
     }
 
     #[test]
