@@ -477,10 +477,17 @@ impl ArchitectureGraph {
                     .filter(|id| self.containment_path(id).contains(component))
                     .collect();
                 start.extend(subtree.iter().map(|id| (Node::Component(id), 0)));
+                // its files that a statement loads or is written in, and its
+                // tests, which are tests to run again whatever they import
+                let tests = test_code.iter().filter(|file| {
+                    !owners.contains_key(*file)
+                        && index.owner(file).is_some_and(|c| subtree.contains(&c.id))
+                });
                 let own: Vec<&str> = owners
                     .iter()
                     .filter(|(_, owner)| subtree.contains(*owner))
                     .map(|(file, _)| *file)
+                    .chain(tests.copied())
                     .collect();
                 start.extend(own.iter().map(|file| (Node::File(file), 0)));
                 changed.extend(own.iter().copied());
@@ -2858,6 +2865,34 @@ mod tests {
         assert!(reach
             .transitive
             .contains(&ComponentId::new("app/calendar.ts")));
+    }
+
+    #[test]
+    fn a_changed_test_is_one_to_run_again_whatever_it_imports() {
+        let mut graph = ArchitectureGraph::default();
+        let mut web = Component::new("web", "web", ComponentKind::Package);
+        web.path = Some("web".into());
+        graph.add_component(web);
+        let module = ComponentId::new("web::tests/only.test.ts");
+        let mut test = Component::new(module.clone(), "tests/only.test.ts", ComponentKind::Module);
+        test.path = Some("web/tests/only.test.ts".into());
+        test.parent = Some("web".into());
+        graph.add_component(test);
+        // a test that imports only a package it declares for development
+        graph.unmapped_imports.push(UnmappedImport {
+            from: module.clone(),
+            module: "vitest".into(),
+            reason: UnmappedReason::DeclaredNotRequired,
+            provided_by: Vec::new(),
+            evidence: Evidence::new("web/tests/only.test.ts")
+                .at_line(1)
+                .in_test(true),
+        });
+        let reach = graph.change_impact(ChangeSeed::Component(&module), 2);
+        assert_eq!(
+            reach.tests.iter().collect::<Vec<_>>(),
+            ["web/tests/only.test.ts"]
+        );
     }
 
     #[test]

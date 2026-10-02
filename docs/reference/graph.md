@@ -62,7 +62,9 @@ the modules below it that import a file below it, and from the files below
 it that import something or define a public name (see
 [commands.md](commands.md#impact)). Evidence noted `entry` names a file the
 component's dependents load (a Rust library's root, what a TS/JS package's
-`package.json` names and its source root's `index.*`): of the files such a
+`package.json` names and its source root's `index.*`), which need not be
+among the scanned files (a build output, Node's default `index.js` where a
+`package.json` names none): of the files such a
 component owns directly, only those its evidence names (its entries, its
 manifest) stand for it in `impact`, so a binary, a build script or a
 configuration file reaches none of the packages that declare it.
