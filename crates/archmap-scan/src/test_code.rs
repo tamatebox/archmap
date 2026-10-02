@@ -9,12 +9,6 @@ use std::path::Path;
 /// or a file below a directory named `test`, `tests`, `__tests__` or
 /// `__mocks__`.
 pub fn is_test_code(path: &Path) -> bool {
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    let named = [".test.", ".spec.", ".test-d.", ".spec-d."]
-        .iter()
-        .any(|marker| name.contains(marker))
-        || (name.ends_with(".py")
-            && (name.starts_with("test_") || name.ends_with("_test.py") || name == "conftest.py"));
     let below = path.parent().is_some_and(|dir| {
         dir.components().any(|c| {
             matches!(
@@ -23,7 +17,18 @@ pub fn is_test_code(path: &Path) -> bool {
             )
         })
     });
-    named || below
+    is_test_named(path) || below
+}
+
+/// A file named like a test, whatever its directory: the half of
+/// [`is_test_code`] that also tells which Python files give no symbols.
+pub fn is_test_named(path: &Path) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    [".test.", ".spec.", ".test-d.", ".spec-d."]
+        .iter()
+        .any(|marker| name.contains(marker))
+        || (name.ends_with(".py")
+            && (name.starts_with("test_") || name.ends_with("_test.py") || name == "conftest.py"))
 }
 
 #[cfg(test)]

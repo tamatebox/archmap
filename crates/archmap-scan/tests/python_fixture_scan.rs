@@ -205,10 +205,16 @@ fn namespace_directories_stay_in_the_dotted_path() {
 }
 
 #[test]
-fn tests_and_loose_scripts_contribute_imports_but_no_symbols() {
+fn test_files_and_loose_scripts_contribute_imports_but_no_symbols() {
     let graph = scan_fixture();
+    // a test file gives none, a helper below `tests/` in a package does, as
+    // for TS/JS
     assert!(graph.symbols_named("test_pay").next().is_none());
-    assert!(graph.symbols_named("make_user").next().is_none());
+    let helper: Vec<&str> = graph
+        .symbols_named("make_user")
+        .map(|s| s.id.as_str())
+        .collect();
+    assert_eq!(helper, ["shop::tests.unit::factories::make_user"]);
     assert_eq!(graph.symbols_of(&id("shop")).count(), 0);
     assert!(graph.edges.iter().any(|e| e.from == id("shop::tests.unit")
         && e.to == id("shop::shop")

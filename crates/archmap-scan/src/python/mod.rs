@@ -68,7 +68,7 @@ use archmap_core::{
 
 use crate::analyzer::AnalyzerOutput;
 use crate::context::display_path;
-use crate::test_code::is_test_code;
+use crate::test_code::{is_test_code, is_test_named};
 use crate::{Analyzer, RepoContext, ScanError};
 
 pub use manifest::{PyDependency, PyProject};
@@ -203,7 +203,10 @@ impl Analyzer for PythonAnalyzer {
             *output.read.entry(LANGUAGE.to_owned()).or_default() += 1;
             let file_display = display_path(file);
 
-            if in_package_tree && !is_test_file(file) {
+            // a test file is no public interface, while a helper below
+            // `tests/` keeps its symbols, as for TS/JS; the imports of both
+            // count, so that impact still reaches tests
+            if in_package_tree && !is_test_named(file) {
                 emit_symbols(
                     &owner,
                     &symbol_scope(file),
@@ -687,18 +690,6 @@ fn declaring_component(
 fn symbol_scope(file: &Path) -> Option<String> {
     let stem = file.file_stem()?.to_string_lossy();
     (stem != "__init__").then(|| stem.into_owned())
-}
-
-/// Test code is not public interface: its symbols are skipped, but its
-/// imports are kept so that impact analysis still reaches tests. Uses the
-/// pytest discovery conventions.
-fn is_test_file(file: &Path) -> bool {
-    let name = file.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    let in_test_dir = file.parent().is_some_and(|p| {
-        p.components()
-            .any(|c| matches!(c.as_os_str().to_str(), Some("tests" | "test")))
-    });
-    in_test_dir || name.starts_with("test_") || name.ends_with("_test.py") || name == "conftest.py"
 }
 
 fn emit_symbols(
@@ -1412,13 +1403,14 @@ mod tests {
     }
 
     #[test]
-    fn test_files_follow_pytest_conventions() {
-        assert!(is_test_file(Path::new("tests/pipeline/helpers.py")));
-        assert!(is_test_file(Path::new("pkg/test_core.py")));
-        assert!(is_test_file(Path::new("pkg/core_test.py")));
-        assert!(is_test_file(Path::new("conftest.py")));
-        assert!(!is_test_file(Path::new("src/testing_tools/core.py")));
-        assert!(!is_test_file(Path::new("src/contest.py")));
+    fn test_files_go_by_their_names() {
+        // a helper below `tests/` keeps its symbols, as for TS/JS
+        assert!(!is_test_named(Path::new("tests/pipeline/helpers.py")));
+        assert!(is_test_named(Path::new("pkg/test_core.py")));
+        assert!(is_test_named(Path::new("pkg/core_test.py")));
+        assert!(is_test_named(Path::new("conftest.py")));
+        assert!(!is_test_named(Path::new("src/testing_tools/core.py")));
+        assert!(!is_test_named(Path::new("src/contest.py")));
     }
 
     #[test]
