@@ -60,7 +60,8 @@ that defines what it takes (its `via` evidence, see [graph.md](graph.md)). A
 Python `from shop import pay`, where `shop/__init__.py` binds `pay` from
 `shop.billing`, therefore depends on `shop.billing` as well as on `shop`: a
 `deny` from the importer to `shop.billing` finds it, as it finds an import
-through a TS/JS barrel, although `impact` takes no `__init__.py` for a barrel.
+through a TS/JS barrel. `impact`, on the other hand, takes no `__init__.py`
+for a barrel and goes on from it to everything that imports it.
 
 Rules are about production code. `deny`, `layers` and `allow` leave out
 imports in test code (test files and directories, `#[cfg(test)]`; see
