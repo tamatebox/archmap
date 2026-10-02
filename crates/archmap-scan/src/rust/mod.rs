@@ -187,6 +187,9 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
         // share one piece of evidence, with the names they take together
         let mut taken: BTreeMap<(u32, Scope, String, bool, usize), BTreeSet<String>> =
             BTreeMap::new();
+        // the declarations that bring in a module whole, by the name they
+        // bind (`use crate::graph;`), with their evidence
+        let mut brought: BTreeMap<&str, (u32, Scope, String, bool, usize)> = BTreeMap::new();
         for decl in &facts.uses {
             let in_test = node.test || decl.test;
             let evidence = Evidence::new(&file)
@@ -212,8 +215,12 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
                     if within_file || reexport || test {
                         continue;
                     }
+                    let key = (decl.line, decl.scope, note(via), in_test, target_file);
+                    if let (None, Some(binds)) = (&name, decl.binds.as_deref()) {
+                        brought.insert(binds, key.clone());
+                    }
                     taken
-                        .entry((decl.line, decl.scope, note(via), in_test, target_file))
+                        .entry(key)
                         .or_default()
                         .insert(name.unwrap_or_else(|| WHOLE_MODULE.to_owned()));
                 }
@@ -237,6 +244,19 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
                     });
                 }
                 Resolved::Nothing => {}
+            }
+        }
+        // a path in code through such a module (`graph::build()`) takes the
+        // item it names of it, as part of that declaration
+        for path in &facts.paths {
+            let (Some(first), Some(item)) = (path.segments.first(), path.segments.get(1)) else {
+                continue;
+            };
+            if let Some(names) = brought
+                .get(first.as_str())
+                .and_then(|key| taken.get_mut(key))
+            {
+                names.insert(item.clone());
             }
         }
         for ((line, scope, note, in_test, target_file), names) in taken {

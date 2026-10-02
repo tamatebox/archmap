@@ -32,8 +32,9 @@ into the model in [graph.md](graph.md); how the commands present it is in
   `#[derive(..)]` (`crate::summary::render(..)`, `child::run()`, `serde_json::to_string(..)`), is an
   `import` too, noted `path`: one piece of evidence per file and target (the first at module scope,
   else the first), added to the edge a `use` may already give; a path whose first name a `use`
-  brought in is that `use`'s dependency and adds nothing, and what a module does with the names it
-  imported (calls, references) is not recorded
+  brought in is that `use`'s dependency, and when that `use` brings in a module whole (`use
+  crate::graph;`) the item the path names of it (`build` of `graph::build()`) joins the `use`'s names
+  beside `*`; what a module does with the names it imported (calls, references) is not recorded
 - import evidence records the names a statement takes from the file it points at (see
   [graph.md](graph.md)): the item it reaches, by the name its defining module gives it (`Invoice`
   through `pub use billing::invoice::Invoice`, the name before any `as`), `*` for a module itself
@@ -71,8 +72,6 @@ into the model in [graph.md](graph.md); how the commands present it is in
   with them, because only re-exports from a module's own subtree are not edges.
 - Unit tests are left out of dependencies within their crate, so `impact` does not list them.
 - Rust components are finer than Python's: a module file rather than a package directory.
-- A function called through a module that a `use` brought in (`use crate::graph;`, then
-  `graph::build()`) adds no name: the `use` takes the module whole (`*`).
 - Path evidence keeps one line per file and target, the first path's, whatever names the other
   paths take.
 

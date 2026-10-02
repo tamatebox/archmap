@@ -729,3 +729,39 @@ fn imports_in_test_code_are_marked() {
     assert_eq!(mark("crates/app/src/main.rs:14"), [true]);
     assert_eq!(mark("crates/app/src/main.rs:1"), [false]);
 }
+
+#[test]
+fn a_path_through_a_used_module_names_the_item_it_reaches() {
+    let root = std::env::temp_dir().join(format!("archmap-rust-use-module-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    for (file, text) in [
+        ("Cargo.toml", "[package]\nname = \"mini\"\nversion = \"0.1.0\"\n"),
+        ("src/lib.rs", "pub mod graph;\npub mod app;\n"),
+        ("src/graph.rs", "pub fn build() {}\npub fn other() {}\npub struct Node;\n"),
+        (
+            "src/app.rs",
+            "use crate::graph;\nuse crate::graph as g;\n\
+             pub fn run() -> graph::Node {\n    graph::build();\n    g::build();\n    graph::Node\n}\n",
+        ),
+    ] {
+        let path = root.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    let report = scan(&root, &ScanOptions::default()).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    let names: BTreeMap<u32, BTreeSet<String>> = report
+        .graph
+        .edges
+        .iter()
+        .flat_map(|e| &e.evidence)
+        .filter(|e| e.file == "src/app.rs" && e.note.as_deref() == Some("use"))
+        .map(|e| (e.line.unwrap(), e.names.clone()))
+        .collect();
+    let set = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<BTreeSet<_>>();
+    // the module stays taken whole, with the items its paths reach
+    assert_eq!(
+        names,
+        BTreeMap::from([(1, set(&["*", "Node", "build"])), (2, set(&["*", "build"])),])
+    );
+}

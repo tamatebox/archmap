@@ -120,10 +120,10 @@ What works today, by the [roadmap](#roadmap) phase it belongs to:
 | Public symbols with signatures | 1 | ✅ | ✅ | ◐ |
 | Imports resolved to the file they load | 1 | ◐ | ✅ | ◐ |
 | Re-exports followed to the defining file | 1 | ✅ | — | ✅ |
-| Names each import takes | 1 | ◐ | ✅ | ✅ |
+| Names each import takes | 1 | ✅ | ✅ | ✅ |
 | Imports without an edge, with the reason | 1 | ✅ | ✅ | ✅ |
 | `summary` and `query`, down to one file | 2 | ✅ | ✅ | ✅ |
-| `query` and `impact` on a symbol, by the names imports take | 2 | ◐ | ◐ | ✅ |
+| `query` and `impact` on a symbol, by the names imports take | 2 | ✅ | ◐ | ✅ |
 | `impact` file by file | 2 | ✅ | ◐ | ✅ |
 | Test code counted apart from production code | 2 | ✅ | ✅ | ✅ |
 | `check` rules and cycles | 3 | ✅ | ✅ | ◐ |
@@ -140,9 +140,6 @@ The gaps behind the marks:
   `examples/` and `build.rs` are not read.
 - Rust imports: code inside macro calls (`vec![..]`, `println!(..)`) is not
   read.
-- Rust names: a function called through a module that a `use` brought in
-  (`use crate::graph;`, then `graph::build()`) shows only as the whole
-  module (`*`).
 - Python re-exports: `from pkg import name` stops at `pkg/__init__.py`, not
   at the file that defines `name`.
 - Python `impact`: the parent `__init__.py` that Python loads before a

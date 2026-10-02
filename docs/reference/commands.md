@@ -202,10 +202,8 @@ instead, and `impact` answers for that component. What the lists miss:
 - Python does not follow re-exports: `from pkg import pay`, where
   `pkg/__init__.py` re-exports `pay`, is listed for `__init__.py`, not for
   the file that defines `pay`.
-- A Rust function called through a module that a `use` brought in (`use
-  crate::graph;`, then `graph::build()`) is only under `May use`, through
-  that `use`; and Rust path evidence shows the first path from its file to
-  the target, not always one that names the symbol.
+- Rust path evidence shows the first path from its file to the target, not
+  always one that names the symbol.
 - A TS/JS barrel imported as a namespace (`import * as ui from './ui'`) is
   not listed for the files behind the barrel.
 - Code that runs when a file loads (a side-effect import) is listed for
