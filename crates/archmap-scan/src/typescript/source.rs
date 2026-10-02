@@ -423,6 +423,12 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
                 line,
                 type_only: export_type || *binding_type,
             },
+            // a declaration exported under another name; a default keeps
+            // its declared name apart
+            None if !local.is_empty() && local != name && name != "default" => Export::Alias {
+                local: local.clone(),
+                line,
+            },
             None => Export::Local,
         };
         if let Entry::Vacant(slot) = file.exports.names.entry(name) {
@@ -1846,7 +1852,13 @@ export default local;
         let names: BTreeMap<String, Export> = [
             ("local", Export::Local),
             ("f", Export::Local),
-            ("shown", Export::Local),
+            (
+                "shown",
+                Export::Alias {
+                    local: "hidden".into(),
+                    line: 4,
+                },
+            ),
             ("b", reexport(0, "a", 5)),
             ("d", reexport(1, "default", 6)),
             (

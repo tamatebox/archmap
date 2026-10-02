@@ -1173,19 +1173,6 @@ pub(crate) fn not_traced(
             with_more(&places, w.total)
         ));
     }
-    if !found.renamed.is_empty() {
-        let names: Vec<String> = found
-            .renamed
-            .iter()
-            .take(cap)
-            .map(|r| format!("as `{}` by {}", r.name, place(&r.file, r.line)))
-            .collect();
-        truncated |= names.len() < found.renamed.len();
-        lines.push(format!(
-            "  renamed: passed on {}; what takes that name is not followed",
-            with_more(&names, found.renamed.len())
-        ));
-    }
     if let Some(d) = &found.dynamic {
         let what = if d.total == 1 {
             "1 call loads a module by a computed name".to_owned()

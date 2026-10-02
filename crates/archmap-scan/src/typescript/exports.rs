@@ -24,6 +24,30 @@ pub(crate) struct ExportTable {
     pub default_name: Option<String>,
 }
 
+impl ExportTable {
+    /// What each import statement's names are exported as where that is
+    /// another name, by the statement's index: a taken name (as the loaded
+    /// file exports it) to the names this file exports it under, and
+    /// [`WHOLE_MODULE`] to a namespace's names.
+    pub(crate) fn renames(&self) -> BTreeMap<usize, BTreeMap<String, BTreeSet<String>>> {
+        let mut found: BTreeMap<usize, BTreeMap<String, BTreeSet<String>>> = BTreeMap::new();
+        for (exported, export) in &self.names {
+            let (import, taken) = match export {
+                Export::Reexport { import, name, .. } if name != exported => (*import, name),
+                Export::Namespace { import, .. } => (*import, &WHOLE_MODULE.to_owned()),
+                _ => continue,
+            };
+            found
+                .entry(import)
+                .or_default()
+                .entry(taken.clone())
+                .or_default()
+                .insert(exported.clone());
+        }
+        found
+    }
+}
+
 /// Where an exported name comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Export {
@@ -38,6 +62,9 @@ pub(crate) enum Export {
         line: u32,
         type_only: bool,
     },
+    /// Declared in the file under another name, exported at `line` as
+    /// this one: `export { formatPrice as fp }`.
+    Alias { local: String, line: u32 },
     /// The whole module that import statement `import` loads, as a
     /// namespace, re-exported at `line`.
     Namespace {
@@ -236,6 +263,16 @@ impl<'a> Index<'a> {
                     file: file.to_path_buf(),
                     via: None,
                     name: name.to_owned(),
+                    type_only: false,
+                });
+            }
+            // the file's own declaration, by the name it declares, reached
+            // through the specifier that renames it
+            Some(Export::Alias { local, line }) => {
+                return Walk::Found(Found {
+                    file: file.to_path_buf(),
+                    via: via(*line),
+                    name: local.clone(),
                     type_only: false,
                 });
             }

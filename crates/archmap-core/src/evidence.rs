@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -40,6 +40,13 @@ pub struct Evidence {
     /// statement loads the file without taking a name.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub names: BTreeSet<String>,
+    /// For a statement that passes names on (`export ... from`): the names
+    /// it takes (as in `names`) that its file exports under other names,
+    /// with those names (`export { formatPrice as price } from`), and
+    /// [`WHOLE_MODULE`] for a module it exports as a namespace (`export *
+    /// as money from`). Empty when every name keeps its own.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub exported_as: BTreeMap<String, BTreeSet<String>>,
     /// The statement is test code: it runs only for tests.
     #[serde(default, skip_serializing_if = "is_false")]
     pub test: bool,
@@ -80,6 +87,7 @@ impl Evidence {
             target: None,
             scope: None,
             names: BTreeSet::new(),
+            exported_as: BTreeMap::new(),
             test: false,
             type_only: false,
             replaces: false,
@@ -173,6 +181,25 @@ impl Evidence {
     {
         self.names.extend(names.into_iter().map(Into::into));
         self
+    }
+
+    /// Record that the statement's file exports the taken name `taken`
+    /// as `exported`.
+    pub fn exporting(mut self, taken: impl Into<String>, exported: impl Into<String>) -> Self {
+        self.exported_as
+            .entry(taken.into())
+            .or_default()
+            .insert(exported.into());
+        self
+    }
+
+    /// The names the statement's file exports a taken `name` under: its
+    /// own unless the statement renames it.
+    pub fn exported_names<'a>(&'a self, name: &'a str) -> Vec<&'a str> {
+        match self.exported_as.get(name) {
+            Some(names) => names.iter().map(String::as_str).collect(),
+            None => vec![name],
+        }
     }
 }
 

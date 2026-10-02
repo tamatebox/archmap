@@ -197,12 +197,16 @@ use` lists, apart from those, the statements that take that file whole (a
 namespace import, a glob, `import pkg.sub`). Through a TS/JS barrel that
 passes the name on (a statement noted `export` that takes the name or the
 file whole, and so on up a chain of barrels), both lists also hold what
-takes the barrel: its name, where the walk through the barrel found no
-definition, under `Imported by`, the barrel whole under `May use`, each with
-the barrel it went through (`src/app/checkout.ts:2 (whole src/index.ts,
-which passes it on)`); a barrel that renames the name on the way ends the
-chain. Statements that only load the file take no name and are in neither
-list. Both lists show 5 statements,
+takes the barrel: the name it exports the symbol under, where the walk
+through the barrel found no definition, under `Imported by`, the barrel
+whole under `May use`, each with the barrel it went through
+(`src/app/checkout.ts:2 (whole src/index.ts, which passes it on)`). A
+barrel that renames the name (`export { formatPrice as price } from`) is
+followed by the new name, and a namespace it exports (`export * as money
+from`) by what takes that namespace, under `May use`; a name the defining
+file exports under another (`export { formatPrice as fp }`) counts as its
+own, its importers going `(via src/money.ts:5)`. Statements that only load
+the file take no name and are in neither list. Both lists show 5 statements,
 production code first, then by place, and count the rest, and their heading
 counts the re-export statements among them
 (`Imported by: 4 (2 re-exports)`); nothing found reads `none resolved`, with
@@ -282,8 +286,7 @@ member, `Not traced` names the places that extend its class
 a file that extends the class is never `never used` either. `Not traced` also names the
 places that use the symbol's module as a value (`whole module`: passed as an
 argument, `ns[key]`, the promise of an `import()` not awaited), which may use
-it unseen; the barrels that pass it on under another name (`renamed`),
-whose importers by that name the lists leave out; and the statements whose
+it unseen; and the statements whose
 uses were not read, with why (`uses`): two statements on one line that load
 different files (`ambiguous statement`), a line that no longer holds the
 statement because the file changed since the scan (`statement not found`),
@@ -291,7 +294,8 @@ a module that offers no path to the symbol the pass can follow, a parse
 error, or a file gone. `--format json` gives everything under `used_at`:
 every use with its column, its role, the name it goes by and the import
 statement it goes through (`uses`), and the statements that end otherwise:
-`unused`, `escapes`, `renamed`, `passed_on` (only re-exported), `values` (a
+`unused`, `escapes`, `renamed` (passed on under another name), `passed_on`
+(only re-exported), `values` (a
 member's class bound, which values or subclasses may reach it through),
 `subclasses`, `mocked` and `unread`.
 In Rust, each path in code is resolved where it is written, in the

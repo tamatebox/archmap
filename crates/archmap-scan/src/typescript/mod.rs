@@ -287,7 +287,13 @@ impl Analyzer for TypeScriptAnalyzer {
                 test: test_code(read.file, package, &manifests),
                 replaced: replaced(&read.imports, &read.resolved),
             };
-            for (import, resolved) in read.imports.iter().zip(&read.resolved) {
+            // what the file passes on under other names, by statement
+            let renames = modules
+                .get(read.file)
+                .map(|m| m.exports.renames())
+                .unwrap_or_default();
+            let none = BTreeMap::new();
+            for (index, (import, resolved)) in read.imports.iter().zip(&read.resolved).enumerate() {
                 match resolved {
                     // the values a statement takes, and apart from them the
                     // types, which never run
@@ -303,17 +309,41 @@ impl Analyzer for TypeScriptAnalyzer {
                                 .collect()
                         };
                         let (types, values) = (recorded(types), recorded(values));
+                        // keyed as the loaded file exports the names
+                        let exported_as: BTreeMap<String, BTreeSet<String>> = renames
+                            .get(&index)
+                            .into_iter()
+                            .flatten()
+                            .map(|(taken, as_)| match taken.as_str() {
+                                WHOLE_MODULE => (taken.clone(), as_.clone()),
+                                _ => (definitions.recorded(loaded, taken), as_.clone()),
+                            })
+                            .collect();
                         if !values.is_empty() || types.is_empty() {
-                            imports.emit(import, resolved, &values, false, &mut output);
+                            imports.emit(
+                                import,
+                                resolved,
+                                &values,
+                                &exported_as,
+                                false,
+                                &mut output,
+                            );
                         }
                         if !types.is_empty() {
-                            imports.emit(import, resolved, &types, true, &mut output);
+                            imports.emit(import, resolved, &types, &exported_as, true, &mut output);
                         }
                     }
                     _ => {
                         let all_types = !import.names.is_empty()
                             && import.names.iter().all(|n| import.types.contains(n));
-                        imports.emit(import, resolved, &BTreeSet::new(), all_types, &mut output);
+                        imports.emit(
+                            import,
+                            resolved,
+                            &BTreeSet::new(),
+                            &none,
+                            all_types,
+                            &mut output,
+                        );
                     }
                 }
                 // a re-export passes names on without using them
@@ -792,6 +822,7 @@ impl Imports<'_> {
         import: &ImportStatement,
         resolved: &Resolved,
         names: &BTreeSet<String>,
+        exported_as: &BTreeMap<String, BTreeSet<String>>,
         type_only: bool,
         output: &mut AnalyzerOutput,
     ) {
@@ -818,15 +849,20 @@ impl Imports<'_> {
                     }
                 };
                 let replaces = import.replaces && self.replaced.contains(target.as_path());
+                let mut evidence = self
+                    .evidence(import)
+                    .type_only(type_only)
+                    .with_note(import.note)
+                    .pointing_at(display_path(target))
+                    .taking(names.iter().cloned())
+                    .replacing(replaces);
+                for (taken, exported) in exported_as.iter().filter(|(t, _)| names.contains(*t)) {
+                    for name in exported {
+                        evidence = evidence.exporting(taken.clone(), name.clone());
+                    }
+                }
                 output.fragment.push_edge(
-                    Edge::new(from.clone(), to, EdgeKind::Import).with_evidence(
-                        self.evidence(import)
-                            .type_only(type_only)
-                            .with_note(import.note)
-                            .pointing_at(display_path(target))
-                            .taking(names.iter().cloned())
-                            .replacing(replaces),
-                    ),
+                    Edge::new(from.clone(), to, EdgeKind::Import).with_evidence(evidence),
                 );
             }
             Resolved::NotFound => {
@@ -996,7 +1032,11 @@ impl Imports<'_> {
             let Some(definition) = definitions.of(loaded, name) else {
                 continue;
             };
-            if definition.file == self.file || definition.file == loaded {
+            // the loaded file defines it under the name taken, unless it
+            // exports its own declaration under another name
+            if definition.file == self.file
+                || (definition.file == loaded && definition.name == *name)
+            {
                 continue;
             }
             let type_only = import.types.contains(name) || definition.type_only;

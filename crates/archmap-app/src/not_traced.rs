@@ -46,10 +46,6 @@ pub struct NotTraced {
     /// the symbol unseen.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) whole_module: Option<Spots>,
-    /// Statements that pass a symbol on under another name: what takes that
-    /// name is not followed.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(crate) renamed: Vec<RenamedName>,
     /// Statements and files whose uses of a symbol were not read, with why.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) uses: Option<UsesNotRead>,
@@ -263,15 +259,6 @@ pub(crate) struct Spot {
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct RenamedName {
-    pub(crate) file: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) line: Option<u32>,
-    /// The name it passes the symbol on as.
-    pub(crate) name: String,
-}
-
-#[derive(Debug, Serialize)]
 pub(crate) struct UsesNotRead {
     pub(crate) total: usize,
     pub(crate) shown: Vec<UnreadSpot>,
@@ -311,15 +298,6 @@ pub(crate) fn with_uses(
             shown: spots,
         });
     }
-    found.renamed = uses
-        .renamed
-        .iter()
-        .map(|r| RenamedName {
-            file: r.evidence.file.clone(),
-            line: r.evidence.line,
-            name: r.name.clone(),
-        })
-        .collect();
     if !uses.unread.is_empty() {
         found.uses = Some(UsesNotRead {
             total: uses.unread.len(),
@@ -377,7 +355,6 @@ pub(crate) fn with_uses(
         && found.script.is_none()
         && found.no_importers.is_none()
         && found.whole_module.is_none()
-        && found.renamed.is_empty()
         && found.uses.is_none()
         && found.values.is_none()
         && found.subclasses.is_none()

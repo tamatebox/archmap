@@ -54,9 +54,14 @@ never writes again: `impact` follows a changed file or symbol through such
 barrels only to the statements that may take what they pass on. A TS/JS re-export of a package, or of a path that
 matches no file, keeps `export` as the first word of its note (`export
 react-aria, declared in web/package.json:4`): the file passes on names that
-the graph does not list. A statement gives one piece of evidence per file
-it points at and re-export it goes through, with all of its names. Every
-analyzer records `names`.
+the graph does not list. `exported_as` gives, for a TS/JS statement whose
+file passes a taken name on under another, that name's new names (`export
+{ formatPrice as price } from` records `{"formatPrice": ["price"]}`), and
+`*` the names of a module passed on as a namespace (`export * as money
+from`); a name the defining file itself exports under another (`export {
+formatPrice as fp }`) gives its importers `via` evidence at that line. A
+statement gives one piece of evidence per file it points at and re-export
+it goes through, with all of its names. Every analyzer records `names`.
 
 A component's evidence noted `package` names an entry file that runs before
 any file of the component, or of a module below it, is loaded (a Python

@@ -2763,7 +2763,6 @@ fn query_on_a_ts_symbol_lists_where_it_is_used() {
     for line in [
         "  whole module: 3 places use the module as a value, which may use this: \
          scripts/lazy.mjs:7, src/app.ts:8, tests/partial.test.ts:4 (test)\n",
-        "  renamed: passed on as `price` by src/index.ts:3; what takes that name is not followed\n",
         "  uses: not read in 1 place: src/two.ts:1 (ambiguous statement)\n",
     ] {
         assert!(text.contains(line), "{line}\n{text}");
@@ -2832,4 +2831,27 @@ fn query_on_a_ts_symbol_lists_where_it_is_used() {
     // a language without a uses pass says nothing about uses
     let python = query_text(&python_fixture(), &["notify"]);
     assert!(!python.contains("Used at"), "{python}");
+}
+
+#[test]
+fn impact_on_a_symbol_starts_from_every_name_barrels_give_it() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/ts-renames");
+    let out = archmap()
+        .args(["impact", "formatPrice", "--verbose", "--path"])
+        .arg(&root)
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    for line in [
+        "  src/alias.ts:1 (via src/money.ts:5)\n",
+        "  src/back.ts:1 (export) (from src/chain.ts, which passes it on)\n",
+        "  src/chained.ts:1 (via src/chain.ts:1)\n",
+        "  src/rename.ts:1 (via src/index.ts:1)\n",
+        "  src/namespace.ts:1 (whole src/chain.ts, which passes it on)\n",
+        "  src/twonames.ts:1 (from src/both.ts, which passes it on)\n",
+    ] {
+        assert!(text.contains(line), "{line}\n{text}");
+    }
+    // no barrel left unfollowed: nothing said of renames
+    assert!(!text.contains("renamed"), "{text}");
 }

@@ -418,9 +418,11 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   `this.m()` in a subclass that only inherits `m`, what an `import()` or a `vi.importActual()` that is
   not awaited gives (`import('./m').then((m) => m.f())`, named as a `whole module` place), or a member
   kept under another name (`const fp = ns.formatPrice` is one use, and the uses of `fp` are not
-  followed). A statement that takes the symbol under a name a barrel `export { a as b } from` gives it
-  is not among the statements `query` lists, so its uses are not read either, and `Not traced` names
-  the barrel (`renamed`). `this.m()` names the class's `m`, which a subclass may override.
+  followed). `this.m()` names the class's `m`, which a subclass may override.
+- At a barrel, a statement whose walk found the name it takes defined in another file is no importer
+  of the symbol the barrel also passes on; `via` evidence records the names as the defining file
+  declares them, so a barrel whose own renaming re-export shadows that name (`export { x as
+  formatPrice } from './other'`) is not told apart, and its importers are listed (conservatively).
 - A mock factory's key that names a symbol is no use, and `Used at` lists it apart (`mocked`) only
   when the factory is a function written in place that returns an object written out; a key of a
   nested object (`Wallet: { pay: vi.fn() }`) is not read, so a member shows its class's key. A

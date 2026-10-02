@@ -1321,7 +1321,13 @@ impl ArchitectureGraph {
         // the statements that load each file, and those that a walk through
         // re-exports led to the file that defines what they take
         let mut loading: BTreeMap<&str, Vec<(&Edge, &Evidence)>> = BTreeMap::new();
-        let mut walked: BTreeSet<(&str, Option<u32>)> = BTreeSet::new();
+        // where each statement's walks through re-exports led, by the
+        // files they reached and the names there: at a barrel, a statement
+        // whose walk for the name it takes found another definition does
+        // not take this symbol (one that found this symbol's is counted at
+        // its definition); one whose walk found nothing for it, while it
+        // found another name of the statement elsewhere, still may.
+        let mut walked: BTreeMap<(&str, Option<u32>), Vec<&Evidence>> = BTreeMap::new();
         for edge in imports() {
             let to_language = self.component(&edge.to).and_then(|c| c.language.as_deref());
             for e in &edge.evidence {
@@ -1330,31 +1336,50 @@ impl ArchitectureGraph {
                     loading.entry(target).or_default().push((edge, e));
                 }
                 if e.via().is_some() {
-                    walked.insert((e.file.as_str(), e.line));
+                    walked.entry((e.file.as_str(), e.line)).or_default().push(e);
                 }
             }
         }
-        // From the file, then from each barrel that passes the name on: a
-        // statement noted `export` that takes it or its file whole. A
-        // statement that the file itself answers for is recorded there.
+        // From the file, then from each barrel that passes the name on, by
+        // the name it exports it under: a statement noted `export` that
+        // takes it, or its file whole. A statement that the file itself
+        // answers for is recorded there.
         let mut seen: BTreeSet<(&str, Option<u32>)> = BTreeSet::new();
         let (mut by_name, mut may_use) = (Vec::new(), Vec::new());
         let mut through = BTreeMap::new();
         // `None` for the file itself
-        let mut barrels: VecDeque<Option<&str>> = VecDeque::from([None]);
-        let mut visited: BTreeSet<&str> = BTreeSet::new();
-        while let Some(barrel) = barrels.pop_front() {
+        let mut barrels: VecDeque<(Option<&str>, PassedAs)> =
+            VecDeque::from([(None, PassedAs::Name(name.clone()))]);
+        let mut visited: BTreeSet<(&str, PassedAs)> = BTreeSet::new();
+        while let Some((barrel, passed)) = barrels.pop_front() {
             let at = barrel.unwrap_or(file.as_str());
             for &(edge, e) in loading.get(at).into_iter().flatten() {
-                let named = e.names.contains(name.as_str());
-                if !named && !e.names.contains(WHOLE_MODULE) {
+                // a namespace a barrel exports takes the symbol along whole
+                let (named, whole) = match &passed {
+                    PassedAs::Name(n) => (e.names.contains(n), e.names.contains(WHOLE_MODULE)),
+                    PassedAs::Namespace(ns) => (
+                        false,
+                        e.names.contains(ns) || e.names.contains(WHOLE_MODULE),
+                    ),
+                };
+                if !named && !whole {
                     continue;
                 }
                 let statement = (e.file.as_str(), e.line);
                 // the name from a barrel counts where its walk found no
                 // definition; one it found is that definition's
-                if named && barrel.is_some() && walked.contains(&statement) {
-                    continue;
+                let elsewhere = |taken: &str| {
+                    walked.get(&statement).is_some_and(|reached| {
+                        reached.iter().any(|via| {
+                            via.target.as_deref() != Some(file.as_str())
+                                && via.names.contains(taken)
+                        })
+                    })
+                };
+                if let (true, Some(_), PassedAs::Name(taken)) = (named, barrel, &passed) {
+                    if elsewhere(taken) {
+                        continue;
+                    }
                 }
                 if seen.insert(statement) {
                     match named {
@@ -1365,8 +1390,13 @@ impl ArchitectureGraph {
                         through.insert(statement, barrel);
                     }
                 }
-                if e.passes_on() && e.file != file && visited.insert(e.file.as_str()) {
-                    barrels.push_back(Some(e.file.as_str()));
+                if !e.passes_on() || e.file == file {
+                    continue;
+                }
+                for next in passed.through(e, named) {
+                    if visited.insert((e.file.as_str(), next.clone())) {
+                        barrels.push_back((Some(e.file.as_str()), next));
+                    }
                 }
             }
         }
@@ -1881,6 +1911,42 @@ pub(crate) fn strongly_connected<N: Ord + Copy>(
     }
     groups.sort();
     groups
+}
+
+/// What a barrel passes a symbol on as: a name, or a namespace that holds
+/// it (`export * as money from`).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum PassedAs {
+    Name(String),
+    Namespace(String),
+}
+
+impl PassedAs {
+    /// What the file of re-export evidence `e`, which takes this by name
+    /// (`named`) or whole, exports it as: a name under each name the
+    /// statement gives it, a namespace under the namespace's names, or
+    /// itself through `export *`.
+    fn through(&self, e: &Evidence, named: bool) -> Vec<PassedAs> {
+        let namespaces = || -> Vec<PassedAs> {
+            match e.exported_as.get(WHOLE_MODULE) {
+                Some(names) => names.iter().cloned().map(PassedAs::Namespace).collect(),
+                None => vec![self.clone()],
+            }
+        };
+        match (self, named) {
+            (PassedAs::Name(n), true) => e
+                .exported_names(n)
+                .into_iter()
+                .map(|n| PassedAs::Name(n.to_owned()))
+                .collect(),
+            (PassedAs::Namespace(ns), _) if e.names.contains(ns) => e
+                .exported_names(ns)
+                .into_iter()
+                .map(|n| PassedAs::Namespace(n.to_owned()))
+                .collect(),
+            _ => namespaces(),
+        }
+    }
 }
 
 /// Components by the path they cover, to find the owners of many files: a
