@@ -54,7 +54,8 @@ any file of the component, or of a module below it, is loaded (a Python
 package's `__init__.py`), unlike one noted `index` (a TS/JS `index.*`):
 `impact` reaches such a file from the statements outside the component and
 the modules below it that import a file below it, and from the files below
-it (see [commands.md](commands.md#impact)).
+it that import something or define a public name (see
+[commands.md](commands.md#impact)).
 
 `test` marks a statement in test code, which runs only for tests: for
 Python and TS/JS a file named `*.test.*`, `*.spec.*` (Vitest's type tests
@@ -63,7 +64,8 @@ Python and TS/JS a file named `*.test.*`, `*.spec.*` (Vitest's type tests
 `tests`, `__tests__` or `__mocks__` (not `test` or `tests` below the routes
 of a Next.js package, where they are URL segments); for Rust, code under `#[cfg(test)]` or
 `#[test]`, never a path. It is on the evidence of edges, imports without an
-edge and dynamic imports. Rules (`deny`, `layers`, `allow`), cycles and
+edge, dynamic imports and the symbols that test code defines (a helper below
+`tests/`). Rules (`deny`, `layers`, `allow`), cycles and
 signals are about production code and leave it out (an edge counts when
 some of its evidence is outside test code, or it has none, as a manifest
 dependency), `summary` counts test statements apart, `query` marks them

@@ -855,6 +855,15 @@ fn imports_in_test_code_are_marked() {
         .unmapped_imports
         .iter()
         .any(|u| u.evidence.file == "tests/test_billing.py" && u.evidence.test));
+    // and so does a symbol that test code defines
+    let defined_in_tests = |name: &str| -> Vec<bool> {
+        graph
+            .symbols_named(name)
+            .filter_map(|s| s.location().map(|e| e.test))
+            .collect()
+    };
+    assert_eq!(defined_in_tests("make_user"), [true]);
+    assert_eq!(defined_in_tests("pay"), [false]);
 }
 
 #[test]

@@ -702,6 +702,14 @@ fn exported_declarations_of_files_that_are_not_tests_are_symbols() {
             ),
         ])
     );
+    // a helper below `tests/` is test code, which its symbol's evidence says
+    let marked: Vec<&str> = graph
+        .symbols
+        .values()
+        .filter(|s| s.location().is_some_and(|e| e.test))
+        .map(|s| s.id.as_str())
+        .collect();
+    assert_eq!(marked, ["ts-shop::tests/helpers.ts::makeWallet"]);
 }
 
 /// A throwaway repository with `files`, canonicalized.

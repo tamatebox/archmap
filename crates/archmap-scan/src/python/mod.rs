@@ -749,7 +749,9 @@ fn emit_symbols(
             kind: def.kind,
             component: owner.clone(),
             signature: def.signature.clone(),
-            evidence: vec![Evidence::new(file).at_line(def.line)],
+            evidence: vec![Evidence::new(file)
+                .at_line(def.line)
+                .in_test(is_test_code(Path::new(file)))],
         });
     }
 }

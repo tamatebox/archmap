@@ -208,15 +208,16 @@ impl Analyzer for TypeScriptAnalyzer {
                 }
                 scripts.insert(owner.component.clone(), display_path(file));
             }
+            let package = &layout.packages[owner.package];
+            let test = test_code(file, package, &manifests);
             if !layout::is_test_file(file) {
                 let symbols = if script {
                     &parsed.globals
                 } else {
                     &parsed.symbols
                 };
-                emit_symbols(owner, file, symbols, &mut output);
+                emit_symbols(owner, file, symbols, test, &mut output);
             }
-            let package = &layout.packages[owner.package];
             for call in &parsed.dynamic {
                 output.fragment.push_dynamic_import(DynamicImport {
                     from: owner.component.clone(),
@@ -224,7 +225,7 @@ impl Analyzer for TypeScriptAnalyzer {
                     evidence: Evidence::new(display_path(file))
                         .at_line(call.line)
                         .in_scope(scope(call.local))
-                        .in_test(test_code(file, package, &manifests)),
+                        .in_test(test),
                 });
             }
             let own_name = layout.packages[owner.package]
@@ -577,10 +578,13 @@ fn emit_components(
     }
 }
 
+/// The symbols of `file`, a helper below a test directory marked as test
+/// code.
 fn emit_symbols(
     owner: &Owner,
     file: &Path,
     symbols: &[ExportedSymbol],
+    test: bool,
     output: &mut AnalyzerOutput,
 ) {
     for symbol in symbols {
@@ -597,7 +601,9 @@ fn emit_symbols(
             kind: symbol.kind,
             component: owner.component.clone(),
             signature: symbol.signature.clone(),
-            evidence: vec![Evidence::new(display_path(file)).at_line(symbol.line)],
+            evidence: vec![Evidence::new(display_path(file))
+                .at_line(symbol.line)
+                .in_test(test)],
         });
     }
 }

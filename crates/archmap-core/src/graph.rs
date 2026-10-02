@@ -794,10 +794,10 @@ impl ArchitectureGraph {
         for e in evidence {
             *importers.entry(e.file.as_str()).or_insert(true) &= e.test;
         }
-        // a symbol carries no test mark: its file counts as test code only
-        // through its imports
+        // a file whose imports the scan records nothing of is test code by
+        // its symbols' mark
         for e in self.symbols.values().flat_map(|s| s.location()) {
-            importers.entry(e.file.as_str()).or_insert(false);
+            importers.entry(e.file.as_str()).or_insert(e.test);
         }
         let mut above: BTreeMap<&ComponentId, Vec<(ComponentId, &str)>> = BTreeMap::new();
         let mut found = Vec::new();
@@ -2305,6 +2305,18 @@ mod tests {
             signature: None,
             evidence: vec![Evidence::new("src/shop/utils/clock.py").at_line(3)],
         });
+        // a test helper that imports only the standard library: test code by
+        // its symbol's mark
+        graph.add_symbol(Symbol {
+            id: SymbolId::new("shop.billing.tests::factories::make_user"),
+            name: "make_user".into(),
+            kind: SymbolKind::Function,
+            component: "shop.billing.tests".into(),
+            signature: None,
+            evidence: vec![Evidence::new("src/shop/billing/tests/factories.py")
+                .at_line(2)
+                .in_test(true)],
+        });
         // a test that imports only what maps to no component, for its fixtures
         graph.unmapped_imports.push(crate::UnmappedImport {
             from: "shop.billing.tests".into(),
@@ -2326,6 +2338,7 @@ mod tests {
         assert_eq!(
             reach.tests.iter().map(String::as_str).collect::<Vec<_>>(),
             [
+                "src/shop/billing/tests/factories.py",
                 "src/shop/billing/tests/test_charge.py",
                 "src/shop/billing/tests/test_fixtures.py",
                 "tests/test_pay.py"
