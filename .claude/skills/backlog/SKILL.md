@@ -9,7 +9,7 @@ Planned work lives in GitHub issues on tamatebox/archmap. The repository is publ
 
 ## Pick the next task
 
-1. Read the pinned `Plan:` issue (now #62). It is the only place that records the order; the first unchecked item is next. Items without an issue number (a review round, a milestone) are steps the user runs: ask.
+1. A plan issue is optional. When there is one (pinned, its title starts with `Plan:`; `gh issue list --state open --search '"Plan:" in:title'`), it is the only place that records the order, and the first unchecked item is next; items without an issue number (a review round, a milestone) are steps the user runs: ask. Without one, propose candidates from the open issues and let the user choose.
 2. Check whether the item is already in progress: uncommitted changes in the working tree that belong to it, or a plan for it under `docs/superpowers/plans/`, mean another session may be on it. Ask the user before starting.
 3. Issues that share a milestone are decided together at that step, not one by one.
 4. An issue labeled `needs-decision` is not started, and not skipped when later items build on it: bring its open questions and options to the user. Once decided, comment the decision on the issue in a few lines and remove the label; the decision itself lands in CLAUDE.md, README or `docs/reference/` with the change that implements it.
@@ -22,9 +22,9 @@ Planned work lives in GitHub issues on tamatebox/archmap. The repository is publ
 - Search first for an existing one: `gh issue list --state all --search "<words>"`.
 - Body: what is wrong or missing, why it matters, and when it is done, in a few lines. Leave design detail to the change.
 - Reproduce with fixtures under `fixtures/` or a few inline files. A finding from a private repository is rebuilt as such a repro with invented names; never write its name, paths, packages, counts or layout, not even in general terms, nor the sessions that found it.
-- Labels: `bug`, `enhancement` or `documentation` for work; `needs-decision` alone for a design question; `later` for anything recorded but not planned. Remove `later` when the issue enters the plan.
+- Labels: `bug`, `enhancement` or `documentation` for work; `needs-decision` alone for a design question; `later` for anything recorded but not planned. Remove `later` when the issue is planned.
 - Add a milestone only when the user puts the issue into that review.
-- A body names only technical dependencies (`Builds on #1`), never the order; add a planned issue to the plan issue instead.
+- A body names only technical dependencies (`Builds on #1`), never the order, which only a plan issue records.
 - Pass bodies with `--body-file - <<'EOF'`, never `--body "..."`: the shell would run the backticks.
 - Not issues: the roadmap phases (README), principles and settled rulings (CLAUDE.md, commit messages), and agent trials.
 
@@ -32,5 +32,5 @@ Planned work lives in GitHub issues on tamatebox/archmap. The repository is publ
 
 - The change that closes it also updates `docs/reference/`, `README.md` and `plugins/archmap/skills/archmap/SKILL.md` wherever behavior changed. None of them ever cites issue numbers.
 - Suggest `Closes #<n>` in the body of the commit message, on the last commit when the work spans several, so the issue closes on push and links to the commit.
-- After the push, tick the item in the plan issue; tick a milestone step once all of its issues are closed. When the last item is ticked, close the plan issue and propose the next plan.
+- After the push, tick the item in the plan issue, when there is one; tick a milestone step once all of its issues are closed. When the last item is ticked, close the plan issue and propose what comes next.
 - Update any local design note that links the issue.
