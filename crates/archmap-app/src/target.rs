@@ -171,6 +171,10 @@ fn module_of_directory<'a>(
         .values()
         .filter(|c| path(c).is_some_and(|p| p.starts_with(&prefix)))
         .collect();
+    // the head must hold another component there: a lone file in a
+    // directory (a TS source root's only file, the submodule of an inline
+    // Rust module) is no directory's module, and nothing else tells them
+    // apart without knowing the language
     inside.iter().copied().find(|head| {
         let file = path(head).unwrap_or_default();
         !file[prefix.len()..].contains('/')
