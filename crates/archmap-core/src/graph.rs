@@ -321,7 +321,15 @@ impl ArchitectureGraph {
         tests: bool,
         test_code: &BTreeSet<&'s str>,
     ) -> (Reach, BTreeSet<&'s str>, BTreeSet<&'s str>) {
-        let mut dependents: BTreeMap<Node, BTreeSet<Node>> = BTreeMap::new();
+        // what depends on each node, and whether through production code
+        let mut dependents: BTreeMap<Node, BTreeMap<Node, bool>> = BTreeMap::new();
+        let mut depend = |target: Node<'s>, importer: Node<'s>, production: bool| {
+            *dependents
+                .entry(target)
+                .or_default()
+                .entry(importer)
+                .or_default() |= production;
+        };
         let mut files: BTreeSet<&str> = BTreeSet::new();
         // a declaration says a package is installed, not that a symbol of it
         // is used
@@ -342,14 +350,11 @@ impl ArchitectureGraph {
                     None => Node::Component(&edge.to),
                 };
                 if importer != target {
-                    dependents.entry(target).or_default().insert(importer);
+                    depend(target, importer, !e.test);
                 }
             }
             if edge.evidence.is_empty() && edge.from != edge.to {
-                dependents
-                    .entry(Node::Component(&edge.to))
-                    .or_default()
-                    .insert(Node::Component(&edge.from));
+                depend(Node::Component(&edge.to), Node::Component(&edge.from), true);
             }
         }
         let index = PathIndex::new(self);
@@ -362,10 +367,7 @@ impl ArchitectureGraph {
         for (entry, importer, test) in statements.chain(self.files_below_entries(&index)) {
             if tests || !test {
                 files.insert(entry);
-                dependents
-                    .entry(Node::File(entry))
-                    .or_default()
-                    .insert(Node::File(importer));
+                depend(Node::File(entry), Node::File(importer), !test);
             }
         }
         let owners: BTreeMap<&str, &ComponentId> = files
@@ -381,12 +383,18 @@ impl ArchitectureGraph {
 
         // where the walk starts, and at what distance
         let mut start: Vec<(Node, usize)> = Vec::new();
+        // the files reached through production code, which stand for their
+        // components; a seed does when it is no test
+        let mut production: BTreeSet<Node> = BTreeSet::new();
         // barrels the walk reaches a symbol through: they only pass it on,
         // and the statements that reach it through them are in the start
         let mut barrels: BTreeSet<&str> = BTreeSet::new();
         let target = match seed {
             ChangeSeed::File(file) => {
                 start.push((Node::File(file), 0));
+                if !test_code.contains(file) {
+                    production.insert(Node::File(file));
+                }
                 owner_of(file).map(|c| self.ancestor_at(c, depth))
             }
             ChangeSeed::Symbol(symbol) => {
@@ -403,6 +411,12 @@ impl ArchitectureGraph {
                         .filter(|e| tests || !e.test)
                         .collect();
                     start.extend(statements.iter().map(|e| (Node::File(e.file.as_str()), 1)));
+                    production.extend(
+                        statements
+                            .iter()
+                            .filter(|e| !e.test)
+                            .map(|e| Node::File(e.file.as_str())),
+                    );
                     // a file whose every such statement passes the name on
                     let mut only_passes: BTreeMap<&str, bool> = BTreeMap::new();
                     for e in &statements {
@@ -424,20 +438,26 @@ impl ArchitectureGraph {
                     .filter(|id| self.containment_path(id).contains(component))
                     .collect();
                 start.extend(subtree.iter().map(|id| (Node::Component(id), 0)));
-                start.extend(
-                    owners
-                        .iter()
-                        .filter(|(_, owner)| subtree.contains(*owner))
-                        .map(|(file, _)| (Node::File(file), 0)),
+                let own: Vec<&str> = owners
+                    .iter()
+                    .filter(|(_, owner)| subtree.contains(*owner))
+                    .map(|(file, _)| *file)
+                    .collect();
+                start.extend(own.iter().map(|file| (Node::File(file), 0)));
+                production.extend(
+                    own.iter()
+                        .filter(|file| !test_code.contains(*file))
+                        .map(|file| Node::File(file)),
                 );
                 Some(self.ancestor_at(component, depth))
             }
         };
 
-        // 0-1 BFS: a reached file puts its component in reach at no cost,
-        // unless it is a test, which is no part of what the component's
-        // dependents load (a test a package owns would reach the manifests
-        // that declare the package).
+        // 0-1 BFS: a file reached through production code puts its component
+        // in reach at no cost. One reached through test code alone (a test,
+        // or a Rust file through its unit tests) is no part of what the
+        // component's dependents load: a test a package owns would reach the
+        // manifests that declare the package.
         let mut distance: BTreeMap<Node, usize> = BTreeMap::new();
         let mut queue: VecDeque<Node> = VecDeque::new();
         start.sort_by_key(|(_, d)| *d);
@@ -452,19 +472,24 @@ impl ArchitectureGraph {
             let mut next: Vec<(Node, usize)> = Vec::new();
             let mut barrel = false;
             if let Node::File(f) = node {
-                if let Some(owner) = owner_of(f).filter(|_| !test_code.contains(f)) {
+                if let Some(owner) = owner_of(f).filter(|_| production.contains(&node)) {
                     next.push((Node::Component(owner), d));
                 }
                 barrel = barrels.contains(f);
             }
             if !barrel {
-                next.extend(
-                    dependents
-                        .get(&node)
-                        .into_iter()
-                        .flatten()
-                        .map(|n| (*n, d + 1)),
-                );
+                for (&n, &through_production) in dependents.get(&node).into_iter().flatten() {
+                    // reached through production code only now: it stands for
+                    // its component from where it was reached before
+                    if through_production && production.insert(n) {
+                        if let (Node::File(f), Some(&at)) = (n, distance.get(&n)) {
+                            if let Some(owner) = owner_of(f) {
+                                next.push((Node::Component(owner), at));
+                            }
+                        }
+                    }
+                    next.push((n, d + 1));
+                }
             }
             for (n, nd) in next {
                 if distance.get(&n).is_none_or(|&old| nd < old) {
@@ -2185,6 +2210,55 @@ mod tests {
         let reach = graph.change_impact(ChangeSeed::File("kiosk/billing.test.ts"), 2);
         assert!(reach.direct.is_empty(), "{:?}", reach.direct);
         assert!(reach.transitive.is_empty(), "{:?}", reach.transitive);
+    }
+
+    #[test]
+    fn a_file_reached_through_its_tests_alone_stands_for_no_package() {
+        // a binary whose unit tests use one module of its library and whose
+        // code uses another; a dependent declares the package only
+        let mut graph = ArchitectureGraph::default();
+        for (id, kind, path, parent) in [
+            ("kiosk", ComponentKind::Package, "kiosk", None),
+            (
+                "kiosk::till",
+                ComponentKind::Module,
+                "kiosk/src/till.rs",
+                Some("kiosk"),
+            ),
+            (
+                "kiosk::clock",
+                ComponentKind::Module,
+                "kiosk/src/clock.rs",
+                Some("kiosk"),
+            ),
+            ("depot", ComponentKind::Package, "depot", None),
+        ] {
+            let mut c = Component::new(id, id, kind);
+            c.path = Some(path.into());
+            c.parent = parent.map(ComponentId::new);
+            graph.add_component(c);
+        }
+        let import = |to: &str, line: u32, target: &str, test: bool| {
+            Edge::new("kiosk", to, EdgeKind::Import).with_evidence(
+                Evidence::new("kiosk/src/main.rs")
+                    .at_line(line)
+                    .pointing_at(target)
+                    .in_test(test),
+            )
+        };
+        graph.add_edges([
+            import("kiosk::clock", 1, "kiosk/src/clock.rs", false),
+            import("kiosk::till", 9, "kiosk/src/till.rs", true),
+            Edge::new("depot", "kiosk", EdgeKind::Dependency)
+                .with_evidence(Evidence::new("depot/Cargo.toml").with_note("[dependencies]")),
+        ]);
+        let reach = graph.change_impact(ChangeSeed::File("kiosk/src/till.rs"), 2);
+        // its unit tests run again; the package's dependents are not reached
+        assert_eq!(
+            reach.tests.iter().collect::<Vec<_>>(),
+            ["kiosk/src/main.rs"]
+        );
+        assert!(reach.direct.is_empty(), "{:?}", reach.direct);
     }
 
     #[test]

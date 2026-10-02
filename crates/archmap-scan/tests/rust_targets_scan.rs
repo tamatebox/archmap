@@ -39,8 +39,8 @@ fn every_cargo_target_is_read_and_test_data_is_not() {
     assert_eq!(
         graph.meta.coverage["rust"],
         LanguageCoverage {
-            files: 15,
-            read: Some(14),
+            files: 17,
+            read: Some(16),
             scripts: 0
         }
     );
@@ -63,11 +63,23 @@ fn every_cargo_target_is_read_and_test_data_is_not() {
         [
             ("depot", "depot", "depot", None),
             ("kiosk", "kiosk", "kiosk", None),
+            (
+                "kiosk::clock",
+                "kiosk::clock",
+                "kiosk/src/clock.rs",
+                Some("kiosk")
+            ),
             // a binary's `util` and the library's, apart
             (
                 "kiosk::src/bin/tool/util.rs",
                 "src/bin/tool/util.rs",
                 "kiosk/src/bin/tool/util.rs",
+                Some("kiosk")
+            ),
+            (
+                "kiosk::stamp",
+                "kiosk::stamp",
+                "kiosk/src/stamp.rs",
                 Some("kiosk")
             ),
             (
@@ -99,10 +111,14 @@ fn the_symbols_of_other_targets_take_their_files() {
         symbol_marks(&graph),
         [
             ("depot::idle".to_owned(), false),
+            ("kiosk::clock".to_owned(), false),
+            ("kiosk::clock::now".to_owned(), false),
             ("kiosk::helper".to_owned(), false),
             // a binary's symbols are production code under their files too
             ("kiosk::src/bin/report.rs::helper".to_owned(), false),
             ("kiosk::src/bin/tool/util.rs::run".to_owned(), false),
+            ("kiosk::stamp".to_owned(), false),
+            ("kiosk::stamp::mark".to_owned(), false),
             // a test's `pub fn helper` meets neither the library's nor the
             // other test's
             ("kiosk::tests/common/mod.rs::call".to_owned(), true),
@@ -138,10 +154,18 @@ fn a_binary_under_src_bin_is_a_production_crate_of_its_own() {
     assert_eq!(
         imports_in(&graph, "kiosk/src/bin/report.rs"),
         BTreeSet::from([
-            row(1, "kiosk/src/lib.rs", false),
-            row(11, "kiosk/src/lib.rs", true),
+            row(1, "kiosk/src/clock.rs", false),
+            row(11, "kiosk/src/stamp.rs", true),
         ])
     );
+    // reached through its unit tests alone, the binary is a test to run
+    // again, and stands for no package whose dependents would follow
+    let reach = graph.change_impact(ChangeSeed::File("kiosk/src/stamp.rs"), 2);
+    assert_eq!(
+        reach.tests.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["kiosk/src/bin/report.rs"]
+    );
+    assert!(reach.direct.is_empty() && reach.transitive.is_empty());
 }
 
 #[test]

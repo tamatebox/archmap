@@ -239,12 +239,13 @@ target starts from all of its files. Like `query`, it takes a file as
 it and a package subpath for its package, and a component that is one file
 answers as that file. Dependencies without a target file
 (manifests, external packages) are followed component by component, and the
-result is still reported at the roll-up depth. A file reached stands for its
-component there, unless it is test code, which no dependent loads: a test
-that a package owns reaches no manifest that declares the package. A
-production file that dependents do not load, such as a binary's
-`src/main.rs`, still stands for its package and reaches the packages that
-declare it. It does not follow Rust code inside macro calls, and a path that
+result is still reported at the roll-up depth. A file reached through
+production code stands for its component there; one reached through test
+code alone (a test, or a Rust file through its unit tests) does not, since no
+dependent loads it that way: a test that a package owns reaches no manifest
+that declares the package. A production file that dependents do not load,
+such as a binary's `src/main.rs`, still stands for its package and reaches
+the packages that declare it. It does not follow Rust code inside macro calls, and a path that
 names no component or file is an error. Direct and
 transitive dependents follow production code; the tests to run again are the
 files that reach the target only through test code, and a changed

@@ -1,17 +1,17 @@
-use kiosk::total;
+use kiosk::clock::now;
 
 pub fn helper() {}
 
 fn main() {
-    let _ = total();
+    let _ = now();
 }
 
 #[cfg(test)]
 mod tests {
-    use kiosk::helper;
+    use kiosk::stamp::mark;
 
     #[test]
     fn runs() {
-        helper();
+        mark();
     }
 }
