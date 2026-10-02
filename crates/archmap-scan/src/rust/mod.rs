@@ -575,6 +575,11 @@ fn manifest_pass(
     for pkg in &packages {
         let id = ComponentId::new(&pkg.name);
         let manifest_file = display_path(&pkg.manifest_path);
+        if let Some(problem) = &pkg.declared.problem {
+            output.warnings.push(format!(
+                "{manifest_file}: targets not read: {problem}; Cargo's default targets assumed"
+            ));
+        }
 
         let mut component = Component::new(id.clone(), &pkg.name, ComponentKind::Package);
         component.language = Some(LANGUAGE.to_owned());

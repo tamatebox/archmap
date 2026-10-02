@@ -39,8 +39,8 @@ fn every_cargo_target_is_read_and_test_data_is_not() {
     assert_eq!(
         graph.meta.coverage["rust"],
         LanguageCoverage {
-            files: 25,
-            read: Some(22),
+            files: 26,
+            read: Some(23),
             scripts: 0
         }
     );
@@ -101,18 +101,24 @@ fn every_cargo_target_is_read_and_test_data_is_not() {
                 Some("kiosk")
             ),
             ("ledger", "ledger", "ledger", None),
-            // the renamed `src/main.rs` binary's module
+            // modules of the library at `[lib] path`
             (
                 "ledger::cli",
-                "ledger_cli::cli",
-                "ledger/src/cli.rs",
+                "ledger::cli",
+                "ledger/lib/cli.rs",
                 Some("ledger")
             ),
-            // a module of the library at `[lib] path`
             (
                 "ledger::entry",
                 "ledger::entry",
                 "ledger/lib/entry.rs",
+                Some("ledger")
+            ),
+            // the binary's `mod cli;`, which is another file there, by its path
+            (
+                "ledger::src/cli.rs",
+                "src/cli.rs",
+                "ledger/src/cli.rs",
                 Some("ledger")
             ),
         ]
@@ -149,9 +155,11 @@ fn the_symbols_of_other_targets_take_their_files() {
             ("kiosk::total".to_owned(), false),
             ("kiosk::util".to_owned(), false),
             ("kiosk::util::shared".to_owned(), false),
-            ("ledger::cli::run".to_owned(), false),
+            ("ledger::cli".to_owned(), false),
+            ("ledger::cli::lib_side".to_owned(), false),
             ("ledger::entry".to_owned(), false),
             ("ledger::entry::post".to_owned(), false),
+            ("ledger::src/cli.rs::run".to_owned(), false),
         ]
     );
 }
@@ -367,4 +375,27 @@ pub mod support {
     );
     // a file that defines production code is no test, whatever else it holds
     assert_eq!(graph.test_code().get("src/lib.rs"), Some(&false));
+}
+
+#[test]
+fn targets_the_manifest_cannot_give_are_reported() {
+    let root = repo("unread-targets");
+    write(
+        &root,
+        "Cargo.toml",
+        "[package]\nname = \"odd\"\nversion = \"0.1.0\"\n\n[[bin]]\nname = \"x\"\npath = 7\n",
+    );
+    write(&root, "src/main.rs", "fn main() {}\n");
+    let report = scan(&root, &ScanOptions::default()).expect("scan succeeds");
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.starts_with("Cargo.toml: targets not read: ")
+                && w.ends_with("; Cargo's default targets assumed")),
+        "{:?}",
+        report.warnings
+    );
+    // the package and its default targets stay
+    assert!(report.graph.component(&ComponentId::new("odd")).is_some());
 }

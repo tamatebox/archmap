@@ -91,7 +91,7 @@ impl TargetKind {
 pub struct CargoTarget {
     pub kind: TargetKind,
     pub name: Option<String>,
-    /// `path`, relative to the package directory.
+    /// `path`, relative to the repository root.
     pub path: Option<PathBuf>,
 }
 
@@ -99,15 +99,17 @@ pub struct CargoTarget {
 /// finds by itself. A manifest whose targets cannot be read says nothing.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DeclaredTargets {
-    /// `[lib] path`, relative to the package directory.
+    /// `[lib] path`, relative to the repository root.
     pub lib_path: Option<PathBuf>,
     pub targets: Vec<CargoTarget>,
     /// `package.build`: `Some(None)` for `false`, `Some(Some(path))` for a
-    /// path relative to the package directory.
+    /// path relative to the repository root.
     pub build: Option<Option<PathBuf>>,
     /// The kinds Cargo does not look for, by `autolib`, `autobins`,
     /// `autotests`, `autoexamples` or `autobenches = false`.
     pub undiscovered: BTreeSet<TargetKind>,
+    /// Why the target tables could not be read, when they could not.
+    pub problem: Option<String>,
 }
 
 impl CargoPackage {
@@ -217,14 +219,20 @@ struct RawTarget {
 
 /// What the manifest says of its package's targets, or nothing when they
 /// cannot be read.
-fn declared_targets(text: &str) -> DeclaredTargets {
-    let Ok(raw) = toml::from_str::<RawTargets>(text) else {
-        return DeclaredTargets::default();
+fn declared_targets(text: &str, dir: &Path) -> DeclaredTargets {
+    let raw = match toml::from_str::<RawTargets>(text) {
+        Ok(raw) => raw,
+        Err(err) => {
+            return DeclaredTargets {
+                problem: Some(err.message().to_owned()),
+                ..DeclaredTargets::default()
+            }
+        }
     };
     let settings = &raw.package;
     let build = match &settings.build {
         Some(toml::Value::Boolean(false)) => Some(None),
-        Some(toml::Value::String(path)) => Some(Some(PathBuf::from(path))),
+        Some(toml::Value::String(path)) => Some(Some(normalize(&dir.join(path)))),
         _ => None,
     };
     let undiscovered = [
@@ -249,15 +257,16 @@ fn declared_targets(text: &str) -> DeclaredTargets {
         list.into_iter().map(move |t| CargoTarget {
             kind,
             name: t.name,
-            path: t.path.map(PathBuf::from),
+            path: t.path.map(|p| normalize(&dir.join(p))),
         })
     })
     .collect();
     DeclaredTargets {
-        lib_path: raw.lib.path.map(PathBuf::from),
+        lib_path: raw.lib.path.map(|p| normalize(&dir.join(p))),
         targets,
         build,
         undiscovered,
+        problem: None,
     }
 }
 
@@ -358,7 +367,7 @@ pub fn parse_manifest(text: &str, manifest_path: &Path) -> Result<ParsedManifest
             manifest_path: manifest_path.to_path_buf(),
             dir: dir.clone(),
             dependencies,
-            declared: declared_targets(text),
+            declared: declared_targets(text, &dir),
         }
     });
 
@@ -418,7 +427,10 @@ name = "books"
             .package
             .unwrap();
         let declared = pkg.declared;
-        assert_eq!(declared.lib_path, Some(PathBuf::from("lib/ledger.rs")));
+        assert_eq!(
+            declared.lib_path,
+            Some(PathBuf::from("ledger/lib/ledger.rs"))
+        );
         assert_eq!(declared.build, Some(None));
         assert_eq!(
             declared.undiscovered,
@@ -430,7 +442,7 @@ name = "books"
                 CargoTarget {
                     kind: TargetKind::Bin,
                     name: Some("ledger-cli".into()),
-                    path: Some(PathBuf::from("src/main.rs")),
+                    path: Some(PathBuf::from("ledger/src/main.rs")),
                 },
                 CargoTarget {
                     kind: TargetKind::Test,
@@ -438,6 +450,29 @@ name = "books"
                     path: None,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn declared_paths_are_normalized_from_the_repository_root() {
+        let root = parse_manifest(
+            "[package]\nname = \"shop\"\n\n[lib]\npath = \"./src/lib.rs\"\n",
+            Path::new("Cargo.toml"),
+        )
+        .unwrap()
+        .package
+        .unwrap();
+        assert_eq!(root.declared.lib_path, Some(PathBuf::from("src/lib.rs")));
+        let beside = parse_manifest(
+            "[package]\nname = \"app\"\n\n[[bin]]\nname = \"tool\"\npath = \"../shop/src/tool.rs\"\n",
+            Path::new("app/Cargo.toml"),
+        )
+        .unwrap()
+        .package
+        .unwrap();
+        assert_eq!(
+            beside.declared.targets[0].path,
+            Some(PathBuf::from("shop/src/tool.rs"))
         );
     }
 
@@ -462,7 +497,12 @@ serde = "1"
             .package
             .unwrap();
         assert_eq!(pkg.dependencies.len(), 1);
-        assert_eq!(pkg.declared, DeclaredTargets::default());
+        let declared = pkg.declared;
+        assert!(declared.targets.is_empty() && declared.build.is_none());
+        assert!(
+            declared.problem.is_some(),
+            "the problem is kept for a warning"
+        );
     }
 
     #[test]

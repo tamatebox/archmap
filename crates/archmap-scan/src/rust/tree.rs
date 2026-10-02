@@ -60,8 +60,10 @@ pub(super) struct ResolvedPackage {
 }
 
 /// A target of a package: its kind, its root file (relative to the
-/// repository root), the name of its crate, and whether its modules are
-/// named by their paths (every target but the library and `src/main.rs`).
+/// repository root), the name its modules start with (the library's crate
+/// name, the package name for `src/main.rs`, the crate name of any other
+/// target), and whether its modules are named by their paths (every target
+/// but the library and a `src/main.rs` beside it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Target {
     pub kind: TargetKind,
@@ -86,7 +88,7 @@ pub(super) fn targets<'a>(
 
     let mut out = Vec::new();
     let lib = match &declared.lib_path {
-        Some(path) => Some(dir.join(path)),
+        Some(path) => Some(path.clone()),
         None => found(TargetKind::Lib).then(|| dir.join("src/lib.rs")),
     };
     if let Some(root) = lib.filter(exists) {
@@ -105,7 +107,7 @@ pub(super) fn targets<'a>(
         .iter()
         .filter_map(|t| {
             let root = match &t.path {
-                Some(path) => dir.join(path),
+                Some(path) => path.clone(),
                 None => {
                     let name = t.name.as_deref()?;
                     let place = match t.kind {
@@ -137,20 +139,27 @@ pub(super) fn targets<'a>(
             })
         })
         .collect();
-    // the binary `src/main.rs`, under the name a `[[bin]]` gives it
+    // the binary `src/main.rs`, which a `[[bin]]` may rename: its modules
+    // start with the package name, which no other package has, and are named
+    // by their paths when the library's root is outside `src/`, where the
+    // same module path is another file
     let renamed = declared_targets
         .iter()
         .position(|t| t.kind == TargetKind::Bin && t.root == main);
-    let main_target = match renamed {
-        Some(i) => Some(declared_targets.remove(i)),
-        None => (found(TargetKind::Bin) && exists(&main)).then(|| Target {
+    if let Some(i) = renamed {
+        declared_targets.remove(i);
+    }
+    let beside_library = out
+        .first()
+        .is_none_or(|lib| lib.root.parent() == Some(&dir.join("src")));
+    if (renamed.is_some() || found(TargetKind::Bin)) && exists(&main) {
+        out.push(Target {
             kind: TargetKind::Bin,
             root: main.clone(),
             crate_name: package.name.replace('-', "_"),
-            by_path: false,
-        }),
-    };
-    out.extend(main_target);
+            by_path: !beside_library,
+        });
+    }
 
     let mut others: Vec<Target> = default_targets(dir, files.iter().copied())
         .into_iter()
@@ -163,7 +172,7 @@ pub(super) fn targets<'a>(
         })
         .collect();
     if let Some(Some(path)) = &declared.build {
-        let root = dir.join(path);
+        let root = path.clone();
         if exists(&root) {
             others.push(Target {
                 kind: TargetKind::Build,
@@ -1309,6 +1318,7 @@ mod tests {
             ],
             build: Some(Some(PathBuf::from("tools/gen.rs"))),
             undiscovered: BTreeSet::from([TargetKind::Example]),
+            problem: None,
         };
         let files = [
             "src/lib.rs",

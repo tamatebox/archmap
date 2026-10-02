@@ -102,7 +102,7 @@ fn a_rust_target_counts_the_files_its_analyzer_did_not_read() {
     // files these are
     assert!(
         text.ends_with(
-            "\nNot traced:\n  not read: 3 of 25 rust files: the Rust analyzer reads src/ and what \
+            "\nNot traced:\n  not read: 3 of 26 rust files: the Rust analyzer reads src/ and what \
              the other Cargo targets load, so files outside src/ that no target loads, such as \
              test data, are among them, as is any file that failed to parse\n"
         ),
@@ -113,7 +113,7 @@ fn a_rust_target_counts_the_files_its_analyzer_did_not_read() {
     assert_eq!(not_read["languages"], serde_json::json!(["rust"]));
     assert_eq!(
         (&not_read["files"], &not_read["read"]),
-        (&25.into(), &22.into())
+        (&26.into(), &23.into())
     );
     assert!(not_read["note"]
         .as_str()
