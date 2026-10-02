@@ -188,8 +188,8 @@ use` lists, apart from those, the statements that take that file whole (a
 namespace import, a glob, `import pkg.sub`). Through a TS/JS barrel that
 passes the name on (a statement noted `export` that takes the name or the
 file whole, and so on up a chain of barrels), both lists also hold what
-takes the barrel: its name (where the walk through the barrel found no
-definition) under `Imported by`, the barrel whole under `May use`, each with
+takes the barrel: its name, where the walk through the barrel found no
+definition, under `Imported by`, the barrel whole under `May use`, each with
 the barrel it went through (`src/app/checkout.ts:2 (whole src/index.ts,
 which passes it on)`); a barrel that renames the name on the way ends the
 chain. Statements that only load the file take no name and are in neither
@@ -319,9 +319,10 @@ dependents are their components, and `Imported by` lists the statements. For
 a symbol, the first step goes only through the statements that `query` lists
 for the symbol: those that take its name (`Imported by`) and those that take
 its file whole (`May use`); every later step is file by file as above, and
-dependencies without a target file on the symbol's component are kept. So a
-file that imports another name from the same file is not affected. Two
-things widen or narrow it:
+imports without a target file on the symbol's component are kept, while a
+declaration in a manifest carries no part of it, since it says a package is
+installed, not that a symbol of it is used. So a file that imports another
+name from the same file is not affected. Two things widen or narrow it:
 
 - A re-export takes the name, so the re-exporting file is in the first step
   (a direct dependent, unless it sits in the symbol's own component, as a

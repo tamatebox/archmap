@@ -299,7 +299,14 @@ impl ArchitectureGraph {
     ) -> (Reach, BTreeSet<&'s str>, BTreeSet<&'s str>) {
         let mut dependents: BTreeMap<Node, BTreeSet<Node>> = BTreeMap::new();
         let mut files: BTreeSet<&str> = BTreeSet::new();
-        for edge in &self.edges {
+        // a declaration says a package is installed, not that a symbol of it
+        // is used
+        let symbol = matches!(seed, ChangeSeed::Symbol(_));
+        for edge in self
+            .edges
+            .iter()
+            .filter(|edge| !(symbol && edge.kind == EdgeKind::Dependency))
+        {
             for e in edge.evidence.iter().filter(|e| tests || !e.test) {
                 let importer = Node::File(e.file.as_str());
                 files.insert(e.file.as_str());
@@ -621,14 +628,19 @@ impl ArchitectureGraph {
             .and_then(|c| c.language.as_deref());
         let imports = || self.edges.iter().filter(|e| e.kind == EdgeKind::Import);
         let mut recorded = false;
-        // the statements that load each file
+        // the statements that load each file, and those that a walk through
+        // re-exports led to the file that defines what they take
         let mut loading: BTreeMap<&str, Vec<(&Edge, &Evidence)>> = BTreeMap::new();
+        let mut walked: BTreeSet<(&str, Option<u32>)> = BTreeSet::new();
         for edge in imports() {
             let to_language = self.component(&edge.to).and_then(|c| c.language.as_deref());
             for e in &edge.evidence {
                 recorded |= e.target.is_some() && to_language == language;
                 if let Some(target) = e.target.as_deref() {
                     loading.entry(target).or_default().push((edge, e));
+                }
+                if e.via().is_some() {
+                    walked.insert((e.file.as_str(), e.line));
                 }
             }
         }
@@ -649,6 +661,11 @@ impl ArchitectureGraph {
                     continue;
                 }
                 let statement = (e.file.as_str(), e.line);
+                // the name from a barrel counts where its walk found no
+                // definition; one it found is that definition's
+                if named && barrel.is_some() && walked.contains(&statement) {
+                    continue;
+                }
                 if seen.insert(statement) {
                     match named {
                         true => by_name.push((edge, e)),
@@ -1703,12 +1720,16 @@ mod tests {
         let mut lib = Component::new("lib", "lib", ComponentKind::Package);
         lib.path = Some("lib".into());
         graph.add_component(lib);
-        let files = ["ns", "deep", "other", "failed", "named", "after"];
+        let files = ["ns", "deep", "other", "failed", "named", "after", "shadow"];
         for name in files {
             let mut c = Component::new(format!("app::{name}"), name, ComponentKind::Module);
             c.path = Some(format!("app/{name}.ts"));
             graph.add_component(c);
         }
+        // a package that only declares `lib`
+        let mut site = Component::new("site", "site", ComponentKind::Package);
+        site.path = Some("site".into());
+        graph.add_component(site);
         // the component that owns a file: `lib` or the file's own
         let owner = |file: &str| match file.strip_prefix("app/") {
             Some(rest) => format!("app::{}", rest.trim_end_matches(".ts")),
@@ -1758,6 +1779,33 @@ mod tests {
             // further on
             statement("app/after.ts", 6, "import", "app/ns.ts", &["ns"]),
             statement("app/after.ts", 7, "import", "app/other.ts", &["other"]),
+            // a barrel whose own export shadows its star: the name it takes
+            // is defined in other.ts, which its walk found
+            statement("lib/shade.ts", 1, "export", "lib/money.ts", &["*"]),
+            statement(
+                "lib/shade.ts",
+                2,
+                "export",
+                "lib/other.ts",
+                &["formatPrice"],
+            ),
+            statement(
+                "app/shadow.ts",
+                8,
+                "import",
+                "lib/shade.ts",
+                &["formatPrice"],
+            ),
+            statement(
+                "app/shadow.ts",
+                8,
+                "import via lib/shade.ts:2",
+                "lib/other.ts",
+                &["formatPrice"],
+            ),
+            // a declaration is no use
+            Edge::new("site", "lib", EdgeKind::Dependency)
+                .with_evidence(Evidence::new("site/package.json").at_line(3)),
         ]);
         graph
     }
@@ -1779,6 +1827,7 @@ mod tests {
             list.sort();
             list
         };
+        // not what a walk through a barrel found defined elsewhere
         assert_eq!(
             sorted(&found.by_name),
             ["app/failed.ts:4", "app/named.ts:5", "lib/index.ts:1"]
@@ -1787,7 +1836,12 @@ mod tests {
         // re-exports it whole included; another name of a barrel is none
         assert_eq!(
             sorted(&found.may_use),
-            ["app/deep.ts:2", "app/ns.ts:1", "lib/all.ts:1"]
+            [
+                "app/deep.ts:2",
+                "app/ns.ts:1",
+                "lib/all.ts:1",
+                "lib/shade.ts:1"
+            ]
         );
         // and the barrel each went through
         let through: Vec<(&str, &str)> = found
@@ -1818,7 +1872,8 @@ mod tests {
             ["app::deep", "app::failed", "app::named", "app::ns"]
         );
         // `other` takes another name of a barrel: not reached, nor what
-        // only it leads to; `after` imports `ns`
+        // only it leads to; `after` imports `ns`; `shadow` takes another
+        // definition, and `site` only declares the package
         assert_eq!(
             ids(&reach.transitive),
             [

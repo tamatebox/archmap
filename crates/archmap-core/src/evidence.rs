@@ -121,6 +121,12 @@ impl Evidence {
         self.note.as_deref() == Some("export")
     }
 
+    /// The re-export this evidence went through to the file that defines a
+    /// name, when its note says so (see [`via_place`]).
+    pub fn via(&self) -> Option<&str> {
+        self.note.as_deref().and_then(via_place)
+    }
+
     pub fn taking<I, S>(mut self, names: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -131,9 +137,41 @@ impl Evidence {
     }
 }
 
+/// The re-export a statement went through, `src/index.ts:2` of
+/// `import via src/index.ts:2`: the analyzers note a walk as one word (the
+/// statement's own note: `import`, `require`, `vi.mock`, `use`), ` via `
+/// and the place. A note that only contains ` via `, as a specifier written
+/// with it does (`import ./a via b: no file matches`), is none.
+pub fn via_place(note: &str) -> Option<&str> {
+    let (word, place) = note.split_once(" via ")?;
+    let line = place.rsplit_once(':')?.1;
+    let one_word = !word.is_empty() && !word.contains(char::is_whitespace);
+    let numbered = !line.is_empty() && line.bytes().all(|b| b.is_ascii_digit());
+    (one_word && numbered).then_some(place)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_walked_note_names_a_re_export() {
+        for (note, place) in [
+            ("import via src/index.ts:2", Some("src/index.ts:2")),
+            (
+                "import() via src/a b/index.ts:12",
+                Some("src/a b/index.ts:12"),
+            ),
+            ("vi.mock via src/index.ts:3", Some("src/index.ts:3")),
+            ("use via src/shapes/mod.rs:2", Some("src/shapes/mod.rs:2")),
+            ("import ./a via b: no file matches", None),
+            ("import pkg/c via d", None),
+            ("import via src/index.ts", None),
+            (" via src/index.ts:2", None),
+        ] {
+            assert_eq!(via_place(note), place, "{note}");
+        }
+    }
 
     #[test]
     fn names_are_sorted_once_and_left_out_of_json_when_empty() {
