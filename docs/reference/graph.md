@@ -75,7 +75,7 @@ configuration file reaches none of the packages that declare it.
 
 `test` marks a statement in test code, which runs only for tests: for
 Python and TS/JS a file named `*.test.*`, `*.spec.*` (Vitest's type tests
-`*.test-d.*` and `*.spec-d.*` too), `test_*.py`, `*_test.py` or
+`*.test-d.*` and `*.spec-d.*` too), `test_*.py`, `*_test.py`, `tests.py` or
 `conftest.py`, or any file below a directory named `test`,
 `tests`, `__tests__` or `__mocks__` (not `test` or `tests` below the routes
 of a Next.js package, where they are URL segments); for Rust, code under `#[cfg(test)]` or

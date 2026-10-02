@@ -5,7 +5,8 @@
 use std::path::Path;
 
 /// A file named like a test (`*.test.*`, `*.spec.*`, Vitest's type tests
-/// `*.test-d.*` and `*.spec-d.*`, `test_*.py`, `*_test.py`, `conftest.py`),
+/// `*.test-d.*` and `*.spec-d.*`, `test_*.py`, `*_test.py`, `conftest.py`,
+/// and Django's and unittest's `tests.py`),
 /// or a file below a directory named `test`, `tests`, `__tests__` or
 /// `__mocks__`.
 pub fn is_test_code(path: &Path) -> bool {
@@ -28,7 +29,10 @@ pub fn is_test_named(path: &Path) -> bool {
         .iter()
         .any(|marker| name.contains(marker))
         || (name.ends_with(".py")
-            && (name.starts_with("test_") || name.ends_with("_test.py") || name == "conftest.py"))
+            && (name.starts_with("test_")
+                || name.ends_with("_test.py")
+                || name == "conftest.py"
+                || name == "tests.py"))
 }
 
 #[cfg(test)]
@@ -43,6 +47,8 @@ mod tests {
             "pkg/test_core.py",
             "pkg/core_test.py",
             "conftest.py",
+            // an app's test module, which unittest and Django collect
+            "shop/orders/tests.py",
             "tests/helpers.ts",
             "pkg/tests/fixtures/data.py",
             "test/run.js",
@@ -62,6 +68,8 @@ mod tests {
             "e2e/helpers.ts",
             "spec/support.js",
             "src/attest.py",
+            "shop/testing.py",
+            "shop/tests_helper.py",
         ] {
             assert!(!is_test_code(Path::new(path)), "{path}");
         }

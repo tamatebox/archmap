@@ -218,7 +218,7 @@ into the model in [graph.md](graph.md); how the commands present it is in
   tree such as `scripts/` or a `tests/` without `__init__.py`, or at the top of the project) gives
   only the definitions that imports in other files take from it, and all of its public ones when one
   takes it whole (`import util`, `from util import *`), so its `Public symbols` in `query` are what is
-  used from it; test files (`test_*.py`, `*_test.py`, `conftest.py`) give none, while a helper below
+  used from it; test files (`test_*.py`, `*_test.py`, `tests.py`, `conftest.py`) give none, while a helper below
   `tests/` does, as for TS/JS; in a signature a parameter's default value reads `…`, since a default
   can hold a secret
 - source files are scanned structurally line by line, not parsed; function bodies are read only for imports
