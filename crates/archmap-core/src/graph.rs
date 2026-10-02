@@ -268,34 +268,49 @@ impl ArchitectureGraph {
     /// `tests` holds the files only test code reaches, the tests to run
     /// again.
     pub fn change_impact(&self, seed: ChangeSeed, depth: usize) -> Reach {
-        let (mut reach, production, _) = self.reach(seed, depth, false);
-        let (_, with_tests, seeds) = self.reach(seed, depth, true);
-        // files whose imports are all test code; a changed one is a test to
-        // run again too
-        let (mut tests, mut code) = (BTreeSet::new(), BTreeSet::new());
-        for e in self.edges.iter().flat_map(|edge| &edge.evidence) {
-            match e.test {
-                true => tests.insert(e.file.as_str()),
-                false => code.insert(e.file.as_str()),
-            };
-        }
-        let test_files: BTreeSet<&str> = tests.difference(&code).copied().collect();
+        let test_code = self.test_code_files();
+        let (mut reach, production, _) = self.reach(seed, depth, false, &test_code);
+        let (_, with_tests, seeds) = self.reach(seed, depth, true, &test_code);
+        // a changed test is a test to run again too
         reach.tests = with_tests
             .difference(&production)
-            .chain(seeds.iter().filter(|f| test_files.contains(*f)))
+            .chain(seeds.iter().filter(|f| test_code.contains(*f)))
             .map(|f| (*f).to_owned())
             .collect();
         reach
     }
 
+    /// The files whose recorded statements (imports, with an edge or
+    /// without, and dynamic imports) all carry `test`.
+    fn test_code_files(&self) -> BTreeSet<&str> {
+        // per file: one of its statements is production code
+        let mut production: BTreeMap<&str, bool> = BTreeMap::new();
+        let statements = self
+            .edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::Import)
+            .flat_map(|e| &e.evidence)
+            .chain(self.unmapped_imports.iter().map(|i| &i.evidence))
+            .chain(self.dynamic_imports.iter().map(|d| &d.evidence));
+        for e in statements {
+            *production.entry(e.file.as_str()).or_default() |= !e.test;
+        }
+        production
+            .into_iter()
+            .filter(|(_, production)| !production)
+            .map(|(file, _)| file)
+            .collect()
+    }
+
     /// The reach of a change through production code, and through test
     /// code too when `tests`, with the files reached and the files the
-    /// change starts from.
+    /// change starts from. `test_code` holds the files of test code.
     fn reach<'s>(
         &'s self,
         seed: ChangeSeed<'s>,
         depth: usize,
         tests: bool,
+        test_code: &BTreeSet<&'s str>,
     ) -> (Reach, BTreeSet<&'s str>, BTreeSet<&'s str>) {
         let mut dependents: BTreeMap<Node, BTreeSet<Node>> = BTreeMap::new();
         let mut files: BTreeSet<&str> = BTreeSet::new();
@@ -410,7 +425,10 @@ impl ArchitectureGraph {
             }
         };
 
-        // 0-1 BFS: a reached file puts its component in reach at no cost.
+        // 0-1 BFS: a reached file puts its component in reach at no cost,
+        // unless it is a test, which is no part of what the component's
+        // dependents load (a test a package owns would reach the manifests
+        // that declare the package).
         let mut distance: BTreeMap<Node, usize> = BTreeMap::new();
         let mut queue: VecDeque<Node> = VecDeque::new();
         start.sort_by_key(|(_, d)| *d);
@@ -425,7 +443,7 @@ impl ArchitectureGraph {
             let mut next: Vec<(Node, usize)> = Vec::new();
             let mut barrel = false;
             if let Node::File(f) = node {
-                if let Some(owner) = owner_of(f) {
+                if let Some(owner) = owner_of(f).filter(|_| !test_code.contains(f)) {
                     next.push((Node::Component(owner), d));
                 }
                 barrel = barrels.contains(f);
@@ -2118,6 +2136,42 @@ mod tests {
         // a component's own tests are what to run after changing it
         let reach = graph.change_impact(ChangeSeed::Component(&ComponentId::new("both")), 2);
         assert_eq!(reach.tests.iter().collect::<Vec<_>>(), ["both/a.test.ts"]);
+    }
+
+    #[test]
+    fn change_impact_lists_no_manifest_among_the_tests() {
+        let mut graph = ArchitectureGraph::default();
+        for (id, path, parent) in [
+            ("kiosk", "kiosk", None),
+            (
+                "kiosk::src/billing.ts",
+                "kiosk/src/billing.ts",
+                Some("kiosk"),
+            ),
+            ("other", "other", None),
+        ] {
+            let mut c = Component::new(id, id, ComponentKind::Package);
+            c.path = Some(path.into());
+            c.parent = parent.map(ComponentId::new);
+            graph.add_component(c);
+        }
+        graph.add_edges([
+            // a test the package owns directly reaches the package itself
+            Edge::new("kiosk", "kiosk::src/billing.ts", EdgeKind::Import).with_evidence(
+                Evidence::new("kiosk/billing.test.ts")
+                    .at_line(1)
+                    .pointing_at("kiosk/src/billing.ts")
+                    .in_test(true),
+            ),
+            // from there a manifest's declaration, which names no file
+            Edge::new("other", "kiosk", EdgeKind::Dependency)
+                .with_evidence(Evidence::new("other/package.json").with_note("dependencies")),
+        ]);
+        let reach = graph.change_impact(ChangeSeed::File("kiosk/src/billing.ts"), 2);
+        assert_eq!(
+            reach.tests.iter().collect::<Vec<_>>(),
+            ["kiosk/billing.test.ts"]
+        );
     }
 
     #[test]
