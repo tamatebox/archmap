@@ -11,7 +11,7 @@ use std::fmt::Write;
 use archmap_core::{
     ArchitectureGraph, Component, ComponentId, ComponentKind, DynamicImport, Edge, EdgeKind,
     Evidence, Scope, Symbol, SymbolKind, SymbolUse, SymbolUses, UnmappedImport, UnmappedReason,
-    UseRole,
+    UseRole, WHOLE_MODULE,
 };
 
 use crate::not_traced::NotTraced;
@@ -557,7 +557,7 @@ fn symbol_list(
     match symbols {
         [one] => {
             truncated |= importers(out, one, full, rolled, caps);
-            if let Some(uses) = &one.uses {
+            if let Some(uses) = &one.used_at {
                 truncated |= used_at(out, uses, one.instance_method, caps);
             }
         }
@@ -643,14 +643,15 @@ fn importers(
 /// holds only the uses through its class and `this`, so that an empty list
 /// never reads as unused.
 fn used_at(out: &mut String, uses: &SymbolUses, instance_method: bool, caps: &Caps) -> bool {
-    // the calls through values are under `Not traced`
-    let lead = match instance_method {
+    // the calls through values and subclasses are under `Not traced`
+    let partial = instance_method || !uses.subclasses.is_empty();
+    let lead = match partial {
         true => "through the class and this only: ",
         false => "",
     };
     let mut truncated = false;
     if uses.uses.is_empty() {
-        let _ = match instance_method {
+        let _ = match partial {
             true => writeln!(out, "\nUsed at: {lead}none"),
             false => writeln!(
                 out,
@@ -693,10 +694,15 @@ fn used_at(out: &mut String, uses: &SymbolUses, instance_method: bool, caps: &Ca
             roles.join(", ")
         );
         for (_, list) in files.iter().take(shown) {
+            // two uses that would read alike say their columns
+            let mut alike: BTreeMap<String, usize> = BTreeMap::new();
+            for found in list {
+                *alike.entry(use_location(found, false)).or_default() += 1;
+            }
             let locations: Vec<String> = list
                 .iter()
                 .take(caps.locations)
-                .map(|u| use_location(u))
+                .map(|u| use_location(u, alike[&use_location(u, false)] > 1))
                 .collect();
             truncated |= locations.len() < list.len();
             let mut line = locations.join(", ");
@@ -710,35 +716,44 @@ fn used_at(out: &mut String, uses: &SymbolUses, instance_method: bool, caps: &Ca
             let _ = writeln!(out, "  {line}");
         }
     }
-    if !uses.unused.is_empty() {
-        let places: Vec<String> = uses
-            .unused
+    // an import of its name that nothing uses, apart from an import of the
+    // module whole that never names it
+    let (mut whole, mut named): (Vec<&Evidence>, Vec<&Evidence>) = uses
+        .unused
+        .iter()
+        .partition(|e| e.names.contains(WHOLE_MODULE));
+    // two statements on one line are one place
+    for list in [&mut whole, &mut named] {
+        list.dedup_by(|a, b| a.file == b.file && a.line == b.line);
+    }
+    for (list, what) in [
+        (named, "never used ({})"),
+        (whole, "never named ({} of the whole module)"),
+    ] {
+        if list.is_empty() {
+            continue;
+        }
+        let places: Vec<String> = list
             .iter()
             .take(caps.locations)
-            .map(location)
+            .map(|e| location(e))
             .collect();
-        truncated |= places.len() < uses.unused.len();
-        let _ = writeln!(
-            out,
-            "  never used: {}: {}",
-            uses.unused.len(),
-            with_more(&places, uses.unused.len())
-        );
+        truncated |= places.len() < list.len();
+        let count = what.replace("{}", &plural(list.len(), "import"));
+        let _ = writeln!(out, "  {count}: {}", with_more(&places, list.len()));
     }
     truncated
 }
 
-/// A use as `file:line`, its role and test marks, and the name it is used
-/// by when that is not the symbol's own (`as fp`, `as m.formatPrice`).
-fn use_location(found: &SymbolUse) -> String {
+/// A use as `file:line` (`file:line:column` with `column`), its role and
+/// test marks, and the name it is used by when that is not the symbol's own
+/// (`as fp`, `as m.formatPrice`).
+fn use_location(found: &SymbolUse, column: bool) -> String {
     let mut out = location(&found.evidence);
-    out.push_str(match found.role {
-        UseRole::Call => " (call)",
-        UseRole::New => " (new)",
-        UseRole::Jsx => " (jsx)",
-        UseRole::Type => " (type)",
-        UseRole::Read => "",
-    });
+    if column {
+        let _ = write!(out, ":{}", found.column);
+    }
+    let _ = write!(out, " ({})", found.role.as_str());
     if found.evidence.test {
         out.push_str(" (test)");
     }
@@ -748,14 +763,15 @@ fn use_location(found: &SymbolUse) -> String {
     out
 }
 
-/// `3 calls`, `1 JSX element`, `2 new`: how many uses have a role.
+/// `3 calls`, `1 JSX element`, `2 new`, `1 read`: how many uses have a
+/// role.
 fn role_count(role: UseRole, n: usize) -> String {
     match role {
         UseRole::Call => plural(n, "call"),
         UseRole::New => format!("{n} new"),
         UseRole::Jsx => plural(n, "JSX element"),
         UseRole::Type => plural(n, "type"),
-        UseRole::Read => format!("{n} other"),
+        UseRole::Read => format!("{n} read"),
     }
 }
 
@@ -1044,10 +1060,54 @@ pub(crate) fn not_traced(
     if let Some(why) = found.no_importers.filter(|_| no_importers) {
         lines.push(format!("  no importers: {why}"));
     }
-    if let Some(why) = found.values {
-        lines.push(format!("  values: {why}"));
-    }
     let mut truncated = false;
+    if let Some(v) = &found.values {
+        let mut line = format!("  values: {}", v.note);
+        if v.total > 0 {
+            let places: Vec<String> = v
+                .shown
+                .iter()
+                .take(cap)
+                .map(|s| {
+                    let at = place(&s.file, s.line);
+                    if s.test {
+                        format!("{at} (test)")
+                    } else {
+                        at
+                    }
+                })
+                .collect();
+            truncated |= places.len() < v.total;
+            let _ = write!(
+                line,
+                "; {} of the class or its module may make them: {}",
+                plural(v.total, "import"),
+                with_more(&places, v.total)
+            );
+        }
+        lines.push(line);
+    }
+    if let Some(sub) = &found.subclasses {
+        let places: Vec<String> = sub
+            .shown
+            .iter()
+            .take(cap)
+            .map(|s| {
+                let at = place(&s.file, s.line);
+                if s.test {
+                    format!("{at} (test)")
+                } else {
+                    at
+                }
+            })
+            .collect();
+        truncated |= places.len() < sub.total;
+        lines.push(format!(
+            "  subclasses: calls through a subclass (Sub.m(), super.m()) are not read; \
+             extended at {}",
+            with_more(&places, sub.total)
+        ));
+    }
     if let Some(w) = &found.whole_module {
         let what = match w.total {
             1 => "1 place uses the module as a value".to_owned(),

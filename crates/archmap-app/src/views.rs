@@ -127,7 +127,7 @@ pub struct SymbolView<'a> {
     /// Where it is used, read from the files that define and import it;
     /// `None` for a language no uses pass reads yet.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub uses: Option<SymbolUses>,
+    pub used_at: Option<SymbolUses>,
     /// Its kind's calls through a value are not read: a method that is not
     /// static.
     #[serde(skip)]

@@ -381,13 +381,14 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   (`jest.unstable_mockModule`) are not read, and a mocked path that only a test runner's own
   aliases resolve (Vite's `resolve.alias`, Jest's `moduleNameMapper`) maps to no file, so neither
   hides a module.
-- `Used at` does not read a method called through a value of its type (`wallet.pay()`), `super.m()`,
-  `this.m()` in a subclass that only inherits `m`, what an `import()` that is not awaited gives
-  (`import('./m').then((m) => m.f())`, named as a `whole module` place), or a member kept under
-  another name (`const fp = ns.formatPrice` is one use, and the uses of `fp` are not followed). A
-  barrel that passes a name on under another name ends the uses as it ends the importers, and
-  `Not traced` names it (`renamed`). `this.m()` names the class's `m`, which a subclass may
-  override.
+- `Used at` does not read a method called through a value of its type (`wallet.pay()`), a member
+  reached through a subclass (`Rich.open()`, `super.m()`; `Not traced` names the classes that extend it),
+  `this.m()` in a subclass that only inherits `m`, what an `import()` or a `vi.importActual()` that is
+  not awaited gives (`import('./m').then((m) => m.f())`, named as a `whole module` place), or a member
+  kept under another name (`const fp = ns.formatPrice` is one use, and the uses of `fp` are not
+  followed). A statement that takes the symbol under a name a barrel `export { a as b } from` gives it
+  is not among the statements `query` lists, so its uses are not read either, and `Not traced` names
+  the barrel (`renamed`). `this.m()` names the class's `m`, which a subclass may override.
 - A `require` that a function takes as a parameter (a bundle's module wrapper, AMD's `define`) is
   not Node's and gives nothing, but a committed UMD bundle (`module.exports =
   factory(require('jquery'))`) reads as code that imports `jquery`; list such files in an `.ignore`

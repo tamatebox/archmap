@@ -109,6 +109,9 @@ pub enum UnreadReason {
     /// The statement's line no longer holds it: the file changed since the
     /// scan.
     StatementNotFound,
+    /// What the statement loads offers no path to the symbol that the pass
+    /// can follow.
+    NoPath,
     /// The file is gone or cannot be read.
     FileGone,
 }
@@ -121,6 +124,7 @@ impl UnreadReason {
             UnreadReason::ParseError => "parse error",
             UnreadReason::AmbiguousStatement => "ambiguous statement",
             UnreadReason::StatementNotFound => "statement not found",
+            UnreadReason::NoPath => "no path to the symbol",
             UnreadReason::FileGone => "file gone",
         }
     }
@@ -136,7 +140,9 @@ pub struct Unread {
     pub reason: UnreadReason,
 }
 
-/// What the uses pass found for one symbol.
+/// What the uses pass found for one symbol. Every statement it reads ends
+/// in one of its lists: a use through it, `unused`, an escape in its file,
+/// `renamed`, `passed_on`, `values` or `unread`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SymbolUses {
     pub uses: Vec<SymbolUse>,
@@ -150,6 +156,21 @@ pub struct SymbolUses {
     pub escapes: Vec<Evidence>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub renamed: Vec<Renamed>,
+    /// Statements that only pass the symbol on, by a re-export, without
+    /// using it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub passed_on: Vec<Evidence>,
+    /// For a member that is not static, or whose class a statement's file
+    /// extends: statements that bind its class (or the class's module) and
+    /// use the member no way the pass reads. Values or subclasses of the
+    /// class may reach it there unseen, so they are no negative fact.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<Evidence>,
+    /// For a class member: the places that extend its class
+    /// (`class Rich extends Wallet`), through whose subclasses the member
+    /// may be reached unseen (`Rich.open()`, `super.open()`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subclasses: Vec<Evidence>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unread: Vec<Unread>,
 }
@@ -166,6 +187,9 @@ impl SymbolUses {
         tidy(&mut self.unused);
         tidy(&mut self.escapes);
         tidy(&mut self.renamed);
+        tidy(&mut self.passed_on);
+        tidy(&mut self.values);
+        tidy(&mut self.subclasses);
         tidy(&mut self.unread);
     }
 }

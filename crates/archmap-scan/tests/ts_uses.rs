@@ -65,17 +65,26 @@ fn a_function_is_used_through_every_binding_that_reaches_it() {
             "scripts/cjs.cjs:4:23 call via 1",
             "scripts/cjs.cjs:4:48 call as money.formatPrice via 2",
             "scripts/lazy.mjs:3:10 call via 2",
+            // `export { formatPrice as fp3 }` in the defining file
+            "src/aliased.ts:3:29 call as all.fp3 via 1",
             // the destructuring binds `g`, as an import binds a name
             "src/app.ts:11:11 call as fp via 1",
             "src/app.ts:11:20 call as m.formatPrice via 2",
             "src/app.ts:11:38 call as m.formatPrice via 2",
             "src/app.ts:11:57 call as g via 2",
+            // `as any` and `!` change no value
+            "src/cast.ts:3:32 call as m.formatPrice via 1",
+            "src/cast.ts:4:24 call as m.formatPrice via 1",
             "src/hoisted.ts:1:28 call via 3",
             "src/money.ts:10:12 call",
+            // `import { formatPrice }; export { formatPrice as fmt2 }`
+            "src/relayed.ts:3:24 call as fmt2 via 1",
             "src/types.ts:4:50 type via 4",
             "src/view.tsx:9:27 call as money.formatPrice via 1",
             "src/view.tsx:10:21 call via 1",
             "src/view.tsx:11:34 call as all.money.formatPrice via 2",
+            // `await vi.importActual(..)`, beside `typeof import(..)`
+            "tests/actual.test.ts:3:10 call via 2 (test)",
             "tests/money.test.ts:3:24 call via 1 (test)",
         ],
         "{:#?}",
@@ -88,7 +97,15 @@ fn a_function_is_used_through_every_binding_that_reaches_it() {
         "{:?}",
         places(&found.escapes)
     );
-    assert_eq!(places(&found.unused), ["src/unused.ts:1"]);
+    // a type of the module whole names no member of it
+    assert_eq!(
+        places(&found.unused),
+        ["src/unused.ts:1", "tests/actual.test.ts:2"]
+    );
+    assert_eq!(
+        places(&found.passed_on),
+        ["src/index.ts:1", "src/index.ts:2", "src/relay.ts:1"]
+    );
     let renamed: Vec<(String, &str)> = found
         .renamed
         .iter()
@@ -110,6 +127,51 @@ fn a_function_is_used_through_every_binding_that_reaches_it() {
 }
 
 #[test]
+fn every_statement_read_ends_in_one_of_the_lists() {
+    for name in ["ts-uses", "ts-reexports", "simple-ts-project"] {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures")
+            .join(name);
+        let graph = scan(&root, &ScanOptions::default()).unwrap().graph;
+        for symbol in graph.symbols.values() {
+            let Some(importers) = graph.symbol_importers(symbol) else {
+                continue;
+            };
+            let found = symbol_uses(&root, &graph, symbol);
+            let defining = symbol.location().map(|e| e.file.as_str());
+            for (_, statement) in importers.by_name.iter().chain(&importers.may_use) {
+                let (file, line) = (statement.file.as_str(), statement.line);
+                let note = statement.note.as_deref().unwrap_or("");
+                // a mock call takes no name the code uses
+                let mock = note.contains('.') && !note.contains("Actual") && !note.contains("Mock");
+                if Some(file) == defining || mock {
+                    continue;
+                }
+                let at = |e: &archmap_core::Evidence| e.file == file && e.line == line;
+                let ended = found.uses.iter().any(|u| {
+                    u.statement
+                        .as_ref()
+                        .is_some_and(|s| s.file == file && Some(s.line) == line)
+                }) || found.unused.iter().any(at)
+                    || found.passed_on.iter().any(at)
+                    || found.values.iter().any(at)
+                    || found.renamed.iter().any(|r| at(&r.evidence))
+                    || found.escapes.iter().any(|e| e.file == file)
+                    || found
+                        .unread
+                        .iter()
+                        .any(|u| u.file == file && (u.line.is_none() || u.line == line));
+                assert!(
+                    ended,
+                    "{name}: {} at {file}:{line:?} ({note}) ends in no list: {found:#?}",
+                    symbol.id
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn a_class_is_used_by_new_by_its_static_members_and_in_types() {
     let graph = graph();
     assert_eq!(
@@ -122,6 +184,9 @@ fn a_class_is_used_by_new_by_its_static_members_and_in_types() {
             "src/money.ts:7:16 new",
             "src/money.ts:14:35 type",
             "src/money.ts:20:20 type",
+            "src/rich.ts:3:27 read via 1",
+            "src/rich.ts:8:19 type via 1",
+            "src/rich.ts:13:25 type via 1",
             "src/types.ts:3:32 type via 1",
         ]
     );
@@ -131,21 +196,38 @@ fn a_class_is_used_by_new_by_its_static_members_and_in_types() {
 fn a_member_is_used_through_its_class_and_through_this_in_its_own_kind() {
     let graph = graph();
     // static: through the class, and `this` in a static method
+    let open = uses_of(&graph, "Wallet.open");
     assert_eq!(
-        shown(&uses_of(&graph, "Wallet.open")),
+        shown(&open),
         [
             "src/app.ts:9:33 call via 1",
             "src/money.ts:21:17 call as this.open"
         ]
     );
+    // a subclass inherits statics too (`Rich.open()`, `super.open()`): the
+    // file that extends the class is no negative fact, while an import of
+    // its type only, which never runs, is
+    assert_eq!(places(&open.subclasses), ["src/rich.ts:3"]);
+    assert_eq!(places(&open.values), ["src/rich.ts:1"]);
+    assert!(places(&open.unused).contains(&"src/types.ts:1".to_owned()));
+    assert!(!places(&open.unused).contains(&"src/rich.ts:1".to_owned()));
     // instance: `this` in its own methods and their arrows, never in a
     // nested function, and never through a value (`new Wallet().pay(1)`)
+    let pay = uses_of(&graph, "Wallet.pay");
     assert_eq!(
-        shown(&uses_of(&graph, "Wallet.pay")),
+        shown(&pay),
         [
             "src/money.ts:13:10 call as this.pay",
             "src/money.ts:17:29 call as this.pay",
         ]
+    );
+    // the class's importers may call it through values (`w?.pay(7)`,
+    // `this.pay(6)` in a subclass, `super.pay(5)`): never a negative fact
+    assert!(pay.unused.is_empty(), "{:?}", places(&pay.unused));
+    let values = places(&pay.values);
+    assert!(
+        values.contains(&"src/rich.ts:1".to_owned()) && values.contains(&"src/app.ts:1".to_owned()),
+        "{values:?}"
     );
 }
 

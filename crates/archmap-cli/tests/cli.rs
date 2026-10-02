@@ -2701,18 +2701,22 @@ fn impact_reaches_an_importer_through_the_barrel_alone() {
 fn query_on_a_ts_symbol_lists_where_it_is_used() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/ts-uses");
     let text = query_text(&root, &["formatPrice"]);
-    let used_at = "\nUsed at: 14 in 8 files (13 calls, 1 type)\n\
-         \x20 src/app.ts:11 (call) as fp, src/app.ts:11 (call) as m.formatPrice, \
-         src/app.ts:11 (call) as m.formatPrice, +1 more in this file\n\
+    // two uses that would read alike say their columns
+    let used_at = "\nUsed at: 19 in 12 files, showing 10 (18 calls, 1 type)\n\
+         \x20 src/app.ts:11 (call) as fp, src/app.ts:11:20 (call) as m.formatPrice, \
+         src/app.ts:11:38 (call) as m.formatPrice, +1 more in this file\n\
          \x20 src/view.tsx:9 (call) as money.formatPrice, src/view.tsx:10 (call), \
          src/view.tsx:11 (call) as all.money.formatPrice\n\
          \x20 scripts/cjs.cjs:4 (call), scripts/cjs.cjs:4 (call) as money.formatPrice\n\
+         \x20 src/cast.ts:3 (call) as m.formatPrice, src/cast.ts:4 (call) as m.formatPrice\n\
          \x20 scripts/lazy.mjs:3 (call)\n\
+         \x20 src/aliased.ts:3 (call) as all.fp3\n\
          \x20 src/hoisted.ts:1 (call)\n\
          \x20 src/money.ts:10 (call)\n\
+         \x20 src/relayed.ts:3 (call) as fmt2\n\
          \x20 src/types.ts:4 (type)\n\
-         \x20 tests/money.test.ts:3 (call) (test)\n\
-         \x20 never used: 1: src/unused.ts:1\n";
+         \x20 never used (1 import): src/unused.ts:1\n\
+         \x20 never named (1 import of the whole module): tests/actual.test.ts:2\n";
     assert!(text.contains(used_at), "{text}");
     for line in [
         "  whole module: 2 places use the module as a value, which may use this: \
@@ -2722,6 +2726,16 @@ fn query_on_a_ts_symbol_lists_where_it_is_used() {
     ] {
         assert!(text.contains(line), "{line}\n{text}");
     }
+    // a value read, and the imports of the module whole that never name it
+    let rates = query_text(&root, &["RATES"]);
+    assert!(
+        rates.contains(
+            "\nUsed at: 1 in 1 file (1 read)\n  src/money.ts:29 (read) as rates\n  \
+             never named (6 imports of the whole module): scripts/cjs.cjs:2, src/aliased.ts:1, \
+             src/cast.ts:1, +3 more\n"
+        ),
+        "{rates}"
+    );
     // a method that is not static: only what its class and `this` show
     let method = query_text(&root, &["Wallet.pay"]);
     assert!(
@@ -2732,7 +2746,19 @@ fn query_on_a_ts_symbol_lists_where_it_is_used() {
         "{method}"
     );
     assert!(
-        method.contains("  values: calls through a value of the type (x.m()) need its type"),
+        method.contains(
+            "  values: calls through a value of the type (x.m()) need its type, which is not \
+             read; 9 imports of the class or its module may make them: scripts/cjs.cjs:2, \
+             src/aliased.ts:1, src/app.ts:1, +6 more\n"
+        ),
+        "{method}"
+    );
+    assert!(!method.contains("never used"), "{method}");
+    assert!(
+        method.contains(
+            "  subclasses: calls through a subclass (Sub.m(), super.m()) are not read; \
+             extended at src/rich.ts:3\n"
+        ),
         "{method}"
     );
     // JSON lists every use with its column, role and statement
@@ -2742,8 +2768,8 @@ fn query_on_a_ts_symbol_lists_where_it_is_used() {
         .output()
         .unwrap();
     let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    let uses = value[0]["uses"]["uses"].as_array().unwrap();
-    assert_eq!(uses.len(), 14);
+    let uses = value[0]["used_at"]["uses"].as_array().unwrap();
+    assert_eq!(uses.len(), 19);
     assert_eq!(
         uses[0],
         serde_json::json!({

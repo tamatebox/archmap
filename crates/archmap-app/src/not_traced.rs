@@ -51,14 +51,29 @@ pub struct NotTraced {
     /// Statements and files whose uses of a symbol were not read, with why.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) uses: Option<UsesNotRead>,
-    /// A method called through a value of its type, which needs the value's
-    /// type; the value says so in words.
+    /// A method that is not static, which code calls through a value of its
+    /// type unseen: what reading those calls needs, and the statements that
+    /// bind its class without another use the pass reads.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) values: Option<&'static str>,
+    pub(crate) values: Option<Values>,
+    /// The places that extend a member's class: calls through a subclass
+    /// (`Rich.open()`, `super.open()`) are not read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) subclasses: Option<Spots>,
 }
 
 pub(crate) const VALUES: &str =
     "calls through a value of the type (x.m()) need its type, which is not read";
+
+#[derive(Debug, Serialize)]
+pub(crate) struct Values {
+    pub(crate) note: &'static str,
+    /// Statements that bind the class (or its module) and may call it
+    /// through values.
+    pub(crate) total: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) shown: Vec<Spot>,
+}
 
 #[derive(Debug, Serialize)]
 pub(crate) struct Spots {
@@ -149,7 +164,40 @@ pub(crate) fn with_uses(
         });
     }
     if instance_method {
-        found.values = Some(VALUES);
+        let mut spots: Vec<Spot> = uses
+            .values
+            .iter()
+            .map(|e| Spot {
+                file: e.file.clone(),
+                line: e.line,
+                test: e.test,
+            })
+            .collect();
+        spots.sort_by(|a, b| (a.test, &a.file, a.line).cmp(&(b.test, &b.file, b.line)));
+        // two statements on one line are one place
+        spots.dedup_by(|a, b| a.file == b.file && a.line == b.line);
+        found.values = Some(Values {
+            note: VALUES,
+            total: spots.len(),
+            shown: spots,
+        });
+    }
+    if !uses.subclasses.is_empty() {
+        let mut spots: Vec<Spot> = uses
+            .subclasses
+            .iter()
+            .map(|e| Spot {
+                file: e.file.clone(),
+                line: e.line,
+                test: e.test,
+            })
+            .collect();
+        spots.sort_by(|a, b| (a.test, &a.file, a.line).cmp(&(b.test, &b.file, b.line)));
+        spots.dedup_by(|a, b| a.file == b.file && a.line == b.line);
+        found.subclasses = Some(Spots {
+            total: spots.len(),
+            shown: spots,
+        });
     }
     let empty = found.dynamic.is_none()
         && found.named_like.is_none()
@@ -160,7 +208,8 @@ pub(crate) fn with_uses(
         && found.whole_module.is_none()
         && found.renamed.is_empty()
         && found.uses.is_none()
-        && found.values.is_none();
+        && found.values.is_none()
+        && found.subclasses.is_none();
     (!empty).then_some(found)
 }
 

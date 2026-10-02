@@ -88,7 +88,7 @@ Never add a dependency that points against the arrow. Never make `archmap-core` 
 - Bulk-insert edges with `add_edges` / `merge`; `add_edge` is linear per call.
 - Paths in evidence are relative to the scanned root with `/` separators.
 - Output must be deterministic: sort collections, no timestamps. Evidence and the summary never contain absolute paths.
-- Text output is written alike, with `query_text`'s helpers rather than new forms: locations as `file:line` with the shared marks (`(local)`, `(type)`, `(test)`, `(export)`, `(mock)`, `(via <file>:<line>)`, and for a use `(call)`, `(new)`, `(jsx)`); a capped list counted in its heading (`N, showing M`) or, in `summary`, by an `omitted:` line naming the query for the rest; a closing line that says how to see every entry, naming no flag of one interface; `Not traced` last, when anything applies.
+- Text output is written alike, with `query_text`'s helpers rather than new forms: locations as `file:line` with the shared marks (`(local)`, `(type)`, `(test)`, `(export)`, `(mock)`, `(via <file>:<line>)`, and for a use `(call)`, `(new)`, `(jsx)`, `(read)`); a capped list counted in its heading (`N, showing M`) or, in `summary`, by an `omitted:` line naming the query for the rest; a closing line that says how to see every entry, naming no flag of one interface; `Not traced` last, when anything applies.
 - `SCHEMA_VERSION` in `archmap-core` is bumped on breaking JSON changes.
 - Avoid abstractions without a second concrete use. Three similar lines beat one premature trait.
 - Structural scanning (line-based, as in `python/source.rs`) is acceptable when it stays behind the analyzer boundary and is covered by tests; swap in a real parser only when a fixture shows the need.

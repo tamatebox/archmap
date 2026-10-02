@@ -29,3 +29,4 @@ function total(values: number[]): number {
   return values.reduce((a, b) => a + b, 0) * rates.JPY;
 }
 export default total;
+export { formatPrice as fp3 };

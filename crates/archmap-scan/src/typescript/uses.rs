@@ -37,12 +37,10 @@ use crate::lines::Lines;
 const MAX_DESTRUCTURINGS: usize = 2;
 
 /// Test helpers that return the module they load, as `require` does.
-const RETURNING_HELPERS: [&str; 4] = [
-    "vi.importActual",
-    "vi.importMock",
-    "jest.requireActual",
-    "jest.requireMock",
-];
+const RETURNING_HELPERS: [&str; 2] = ["jest.requireActual", "jest.requireMock"];
+
+/// Test helpers that return a promise of the module, as `import()` does.
+const PROMISING_HELPERS: [&str; 2] = ["vi.importActual", "vi.importMock"];
 
 /// What the pass reads for one symbol.
 pub(crate) struct Request<'g> {
@@ -71,10 +69,16 @@ pub(crate) fn read(request: &Request, out: &mut SymbolUses) {
         loads: loads(request.graph),
         parsed: BTreeMap::new(),
         paths: BTreeMap::new(),
+        aliases: Vec::new(),
+        instance_member: false,
         out: &mut *out,
     };
+    // a member whose declaration says nothing stays a possible instance one
+    pass.instance_member = pass.tail.len() == 2;
     pass.defining_file(request.test);
-    let mut by_file: BTreeMap<&str, BTreeMap<u32, &Evidence>> = BTreeMap::new();
+    // one statement per line and kind: a line can hold an import and a
+    // call that loads a module
+    let mut by_file: BTreeMap<&str, BTreeMap<(u32, &str), &Evidence>> = BTreeMap::new();
     for evidence in &request.statements {
         if evidence.file == request.defining {
             continue;
@@ -83,7 +87,7 @@ pub(crate) fn read(request: &Request, out: &mut SymbolUses) {
             by_file
                 .entry(evidence.file.as_str())
                 .or_default()
-                .entry(line)
+                .entry((line, note_word(evidence)))
                 .or_insert(evidence);
         }
     }
@@ -96,6 +100,16 @@ pub(crate) fn read(request: &Request, out: &mut SymbolUses) {
             found.binding = None;
         }
     }
+}
+
+/// The kind of statement an evidence names: the first word of its note
+/// (`import`, `export`, `require`, `import()`, `vi.importActual`).
+fn note_word(evidence: &Evidence) -> &str {
+    evidence
+        .note
+        .as_deref()
+        .and_then(|n| n.split_whitespace().next())
+        .unwrap_or("")
 }
 
 /// The files each statement loads, by its file and line, from evidence the
@@ -130,6 +144,12 @@ struct Pass<'g, 'o> {
     parsed: BTreeMap<String, Option<ParsedFile>>,
     /// The paths from each module's namespace to the symbol.
     paths: BTreeMap<String, BTreeSet<Vec<String>>>,
+    /// Other names the defining file exports the symbol by
+    /// (`export { formatPrice as fp }`).
+    aliases: Vec<String>,
+    /// The symbol is a class member not known to be static: a value of the
+    /// class may call it where the pass sees nothing.
+    instance_member: bool,
     out: &'o mut SymbolUses,
 }
 
@@ -189,10 +209,10 @@ impl<'g> Pass<'g, '_> {
     }
 
     /// The paths from `module`'s namespace to the symbol, through the names
-    /// its export table passes on unchanged (`export { a } from`,
-    /// `export *`) and the namespaces it passes on (`export * as ns from`).
-    /// A name passed on under another name is no path: renames are not
-    /// followed.
+    /// its export table passes on (`export { a } from`, `export { a as b }
+    /// from`, `import { a }` then `export { a as b }`, `export *`) and the
+    /// namespaces it passes on (`export * as ns from`), as the scan's walk
+    /// through re-exports follows them.
     fn paths_of(&mut self, module: &str, hops: usize) -> BTreeSet<Vec<String>> {
         if let Some(known) = self.paths.get(module) {
             return known.clone();
@@ -203,9 +223,14 @@ impl<'g> Pass<'g, '_> {
             let default = self
                 .parsed(module)
                 .and_then(|p| p.exports.default_name.clone());
-            if default.as_deref() == Some(self.tail[0].as_str()) {
+            let names = default
+                .filter(|d| d == &self.tail[0])
+                .map(|_| "default".to_owned())
+                .into_iter()
+                .chain(self.aliases.clone());
+            for name in names {
                 let mut path = self.tail.clone();
-                path[0] = "default".to_owned();
+                path[0] = name;
                 found.insert(path);
             }
         } else if hops < MAX_HOPS {
@@ -232,10 +257,15 @@ impl<'g> Pass<'g, '_> {
         let mut found = BTreeSet::new();
         for (exported, export) in &names {
             match export {
-                Export::Reexport { import, name, .. } if name == exported => {
+                // under its own name or another (`export { a as b }`)
+                Export::Reexport { import, name, .. } => {
                     if let Some(target) = self.loaded(module, lines[*import]) {
-                        let paths = self.paths_of(target, hops + 1);
-                        found.extend(paths.into_iter().filter(|p| &p[0] == name));
+                        for mut path in self.paths_of(target, hops + 1) {
+                            if &path[0] == name {
+                                path[0] = exported.clone();
+                                found.insert(path);
+                            }
+                        }
                     }
                 }
                 Export::Namespace { import, .. } => {
@@ -277,6 +307,7 @@ impl<'g> Pass<'g, '_> {
         // the local name the symbol, or its class, is declared by
         let exported = self.tail[0].clone();
         let local = local_name(&read.program.body, &exported).unwrap_or(exported);
+        self.aliases = aliases(&read.program.body, &local, &self.tail[0]);
         let scoping = read.semantic.scoping();
         let Some(symbol) = scoping.get_root_binding(local.as_str().into()) else {
             return;
@@ -285,12 +316,13 @@ impl<'g> Pass<'g, '_> {
         let mut uses = Vec::new();
         follow_binding(&read, symbol, &local, &rests, 0, &mut uses, self.out);
         if let [_, member] = self.tail.as_slice() {
-            this_member(&read, symbol, member, &mut uses);
+            let is_static = this_member(&read, symbol, member, &mut uses);
+            self.instance_member = is_static != Some(true);
         }
         self.out.uses.extend(uses);
     }
 
-    fn importing_file(&mut self, file: &'g str, statements: &BTreeMap<u32, &Evidence>) {
+    fn importing_file(&mut self, file: &'g str, statements: &BTreeMap<(u32, &str), &Evidence>) {
         let path = self.root.join(file);
         let Ok(text) = std::fs::read_to_string(&path) else {
             self.unread(file, None, UnreadReason::FileGone);
@@ -303,7 +335,7 @@ impl<'g> Pass<'g, '_> {
             return;
         };
         let by_line = loading_nodes(&read);
-        for (&line, evidence) in statements {
+        for (&(line, _), evidence) in statements {
             read.test = evidence.test;
             read.statement = Some(ImportPlace {
                 file: file.to_owned(),
@@ -314,6 +346,9 @@ impl<'g> Pass<'g, '_> {
     }
 
     /// The bindings one statement makes for the symbol, followed.
+    /// The bindings one statement makes for the symbol, followed. Every
+    /// statement ends somewhere: in a use, an escape, `renamed`,
+    /// `passed_on`, `unused` or `unread`.
     fn statement(
         &mut self,
         read: &Read,
@@ -321,13 +356,10 @@ impl<'g> Pass<'g, '_> {
         evidence: &Evidence,
         line: u32,
     ) {
-        let word = evidence
-            .note
-            .as_deref()
-            .and_then(|n| n.split_whitespace().next())
-            .unwrap_or("");
-        if word.contains('.') && !RETURNING_HELPERS.contains(&word) {
-            // a mock call returns nothing that names the symbol
+        let word = note_word(evidence);
+        let helper = RETURNING_HELPERS.contains(&word) || PROMISING_HELPERS.contains(&word);
+        if word.contains('.') && !helper {
+            // a mock call takes the module without a name the code uses
             return;
         }
         let nodes = read.semantic.nodes();
@@ -350,10 +382,14 @@ impl<'g> Pass<'g, '_> {
         };
         let paths = self.paths_of(module, 0);
         if paths.is_empty() {
+            self.unread(read.file, Some(line), UnreadReason::NoPath);
             return;
         }
         let all: Vec<Vec<String>> = paths.iter().cloned().collect();
         let mut uses = Vec::new();
+        let (escapes, renamed) = (self.out.escapes.len(), self.out.renamed.len());
+        let subclasses = self.out.subclasses.len();
+        let mut passed_on = false;
         for node in candidates {
             match node.kind() {
                 AstKind::ImportDeclaration(d) => {
@@ -372,26 +408,23 @@ impl<'g> Pass<'g, '_> {
                         if rests.is_empty() {
                             continue;
                         }
-                        let Some(symbol) = local.symbol_id.get() else {
-                            continue;
-                        };
-                        let referenced = follow_binding(
-                            read,
-                            symbol,
-                            &local.name,
-                            &rests,
-                            0,
-                            &mut uses,
-                            self.out,
-                        );
-                        if !referenced && rests.iter().any(Vec::is_empty) {
-                            self.out.unused.push(evidence.clone());
+                        if let Some(symbol) = local.symbol_id.get() {
+                            passed_on |= follow_binding(
+                                read,
+                                symbol,
+                                &local.name,
+                                &rests,
+                                0,
+                                &mut uses,
+                                self.out,
+                            );
                         }
                     }
                 }
                 AstKind::TSImportEqualsDeclaration(d) => {
                     if let Some(symbol) = d.id.symbol_id.get() {
-                        follow_binding(read, symbol, &d.id.name, &all, 0, &mut uses, self.out);
+                        passed_on |=
+                            follow_binding(read, symbol, &d.id.name, &all, 0, &mut uses, self.out);
                     }
                 }
                 AstKind::TSImportType(t) => {
@@ -409,6 +442,7 @@ impl<'g> Pass<'g, '_> {
                     }
                 }
                 AstKind::ExportFromDeclaration(d) => {
+                    passed_on = true;
                     for specifier in &d.specifiers {
                         let local = specifier.local.name();
                         let exported = specifier.exported.name();
@@ -420,6 +454,7 @@ impl<'g> Pass<'g, '_> {
                         }
                     }
                 }
+                AstKind::ExportAllDeclaration(_) => passed_on = true,
                 AstKind::CallExpression(_) | AstKind::ImportExpression(_) => {
                     match loaded_value(nodes, node) {
                         Some((id, span)) => {
@@ -432,7 +467,21 @@ impl<'g> Pass<'g, '_> {
                 _ => {}
             }
         }
+        let ended = !uses.is_empty()
+            || self.out.escapes.len() > escapes
+            || self.out.renamed.len() > renamed;
         self.out.uses.extend(uses);
+        if !ended {
+            if passed_on {
+                self.out.passed_on.push(evidence.clone());
+            } else if self.instance_member || self.out.subclasses.len() > subclasses {
+                // values or subclasses of the class may reach it here: no
+                // negative fact
+                self.out.values.push(evidence.clone());
+            } else {
+                self.out.unused.push(evidence.clone());
+            }
+        }
     }
 }
 
@@ -567,11 +616,17 @@ fn qualifier_names(qualifier: &TSImportTypeQualifier, names: &mut Vec<String>) {
     }
 }
 
-/// The node that holds a loaded module: a `require` call or a test
-/// helper's call holds it itself, an `import()` once awaited. `None` for an
-/// `import()` not awaited, which holds a promise of it.
+/// The node that holds a loaded module: a `require` call or `jest`'s
+/// helpers hold it themselves, an `import()` and `vi`'s helpers once
+/// awaited. `None` for a promise not awaited.
 fn loaded_value(nodes: &AstNodes, node: &AstNode) -> Option<(NodeId, Span)> {
-    if !matches!(node.kind(), AstKind::ImportExpression(_)) {
+    let promise = match node.kind() {
+        AstKind::ImportExpression(_) => true,
+        AstKind::CallExpression(c) => loading_callee(&c.callee)
+            .is_some_and(|callee| PROMISING_HELPERS.contains(&callee.as_str())),
+        _ => false,
+    };
+    if !promise {
         return Some((node.id(), node.kind().span()));
     }
     let parent = nodes.parent_node(node.id());
@@ -600,9 +655,29 @@ fn local_name(body: &[Statement], exported: &str) -> Option<String> {
     None
 }
 
+/// The other names the defining file exports its local `local` by:
+/// `fp` for `export { formatPrice as fp }`.
+fn aliases(body: &[Statement], local: &str, exported: &str) -> Vec<String> {
+    let mut aliases = Vec::new();
+    for statement in body {
+        let Statement::ExportNamedDeclaration(d) = statement else {
+            continue;
+        };
+        for specifier in &d.specifiers {
+            let name = specifier.exported.name();
+            if let ModuleExportName::IdentifierReference(r) = &specifier.local {
+                if r.name == local && name != exported {
+                    aliases.push(name.to_string());
+                }
+            }
+        }
+    }
+    aliases
+}
+
 /// Follow every reference to a binding along `rests`, the paths from it to
-/// the symbol (`[]`: the binding is the symbol). Returns whether the binding
-/// is referenced at all, uses or not.
+/// the symbol (`[]`: the binding is the symbol). Returns whether a reference
+/// passes the binding on, by an export, rather than using it.
 fn follow_binding(
     read: &Read,
     symbol: SymbolId,
@@ -612,14 +687,18 @@ fn follow_binding(
     uses: &mut Vec<SymbolUse>,
     out: &mut SymbolUses,
 ) -> bool {
-    let mut referenced = false;
+    let nodes = read.semantic.nodes();
+    let mut passed_on = false;
     for reference in read.semantic.scoping().get_resolved_references(symbol) {
-        referenced = true;
         let id = reference.node_id();
-        let span = read.semantic.nodes().get_node(id).kind().span();
+        passed_on |= matches!(
+            nodes.parent_kind(id),
+            AstKind::ExportSpecifier(_) | AstKind::ExportDefaultDeclaration(_)
+        );
+        let span = nodes.get_node(id).kind().span();
         follow_node(read, id, span, name, rests, destructured, uses, out);
     }
-    referenced
+    passed_on
 }
 
 /// From a node that leads to the symbol along `rests`: a static member name
@@ -700,6 +779,23 @@ fn follow_node(
                 out,
             );
         }
+        // a type the code asserts changes no value
+        AstKind::TSAsExpression(_)
+        | AstKind::TSSatisfiesExpression(_)
+        | AstKind::TSTypeAssertion(_)
+        | AstKind::TSInstantiationExpression(_) => {
+            let span = parent.kind().span();
+            follow_node(
+                read,
+                parent.id(),
+                span,
+                written,
+                rests,
+                destructured,
+                uses,
+                out,
+            );
+        }
         AstKind::StaticMemberExpression(m) if m.object.span() == span => {
             member(&m.property.name, m.span, uses, out);
         }
@@ -764,6 +860,16 @@ fn follow_node(
                 }
             }
         }
+        // a subclass reaches the members of the class it extends, statics
+        // included (`Rich.open()`, `super.open()`)
+        AstKind::Class(c)
+            if c.heritage
+                .as_ref()
+                .is_some_and(|h| h.expression.span() == span)
+                && read.tail == 2 =>
+        {
+            out.subclasses.push(evidence_at(read, span));
+        }
         // passed on or named in a type, not used here
         AstKind::ExportSpecifier(_)
         | AstKind::ExportDefaultDeclaration(_)
@@ -797,6 +903,10 @@ fn role_at(read: &Read, id: NodeId, span: Span) -> Option<UseRole> {
         let role = match parent.kind() {
             AstKind::ParenthesizedExpression(_)
             | AstKind::TSNonNullExpression(_)
+            | AstKind::TSAsExpression(_)
+            | AstKind::TSSatisfiesExpression(_)
+            | AstKind::TSTypeAssertion(_)
+            | AstKind::TSInstantiationExpression(_)
             | AstKind::ChainExpression(_) => {
                 id = parent.id();
                 span = parent.kind().span();
@@ -853,12 +963,18 @@ fn evidence_at(read: &Read, span: Span) -> Evidence {
 /// `this.member` inside the class `class` declares, where `this` is an
 /// instance of it (or the class itself, for a static member): in its own
 /// members of the same kind and the arrow functions in them, never in a
-/// nested function or class.
-fn this_member(read: &Read, class: SymbolId, member: &str, uses: &mut Vec<SymbolUse>) {
+/// nested function or class. Returns whether the class declares the member
+/// static, `None` when it declares no such member.
+fn this_member(
+    read: &Read,
+    class: SymbolId,
+    member: &str,
+    uses: &mut Vec<SymbolUse>,
+) -> Option<bool> {
     let nodes = read.semantic.nodes();
     let declaration = nodes.get_node(read.semantic.scoping().symbol_declaration(class));
     let AstKind::Class(declared) = declaration.kind() else {
-        return;
+        return None;
     };
     let is_static = declared.body.body.iter().find_map(|element| match element {
         ClassElement::MethodDefinition(m) if m.key.static_name().as_deref() == Some(member) => {
@@ -869,9 +985,7 @@ fn this_member(read: &Read, class: SymbolId, member: &str, uses: &mut Vec<Symbol
         }
         _ => None,
     });
-    let Some(is_static) = is_static else {
-        return;
-    };
+    let is_static = is_static?;
     for node in nodes.iter() {
         let AstKind::StaticMemberExpression(m) = node.kind() else {
             continue;
@@ -887,6 +1001,7 @@ fn this_member(read: &Read, class: SymbolId, member: &str, uses: &mut Vec<Symbol
             uses.push(make_use(read, m.property.span, role, binding));
         }
     }
+    Some(is_static)
 }
 
 /// The class whose own member a `this` at `id` sits in, with whether that

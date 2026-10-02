@@ -10,6 +10,30 @@ use archmap_core::{ArchitectureGraph, Evidence, Symbol, SymbolUses, Unread, Unre
 
 use crate::typescript::uses as ts;
 
+/// The statements `listed` names, and the others on their lines that load
+/// the same file: the lists keep one statement per line, while a line can
+/// hold an import of types and a call that loads the module.
+fn with_siblings<'g>(graph: &'g ArchitectureGraph, listed: Vec<&'g Evidence>) -> Vec<&'g Evidence> {
+    let places: BTreeSet<(&str, Option<u32>, Option<&str>)> = listed
+        .iter()
+        .map(|e| (e.file.as_str(), e.line, e.target.as_deref()))
+        .collect();
+    let mut statements = listed;
+    for edge in &graph.edges {
+        for evidence in &edge.evidence {
+            let place = (
+                evidence.file.as_str(),
+                evidence.line,
+                evidence.target.as_deref(),
+            );
+            if places.contains(&place) && !statements.contains(&evidence) {
+                statements.push(evidence);
+            }
+        }
+    }
+    statements
+}
+
 /// Where `symbol` is used, read from the files under `root` that the graph
 /// says define and import it. The files of a language that no pass reads
 /// yet are listed as unread.
@@ -18,7 +42,7 @@ pub fn symbol_uses(root: &Path, graph: &ArchitectureGraph, symbol: &Symbol) -> S
     let Some(location) = symbol.location() else {
         return found;
     };
-    let statements: Vec<&Evidence> = graph
+    let listed: Vec<&Evidence> = graph
         .symbol_importers(symbol)
         .map(|importers| {
             importers
@@ -29,6 +53,7 @@ pub fn symbol_uses(root: &Path, graph: &ArchitectureGraph, symbol: &Symbol) -> S
                 .collect()
         })
         .unwrap_or_default();
+    let statements = with_siblings(graph, listed);
     let language = graph
         .component(&symbol.component)
         .and_then(|c| c.language.as_deref());

@@ -227,16 +227,16 @@ fn symbol_view<'a>(full: &'a ArchitectureGraph, root: &Path, symbol: &'a Symbol)
         },
         usize::MAX,
     );
-    let uses = uses_of(full, root, symbol);
-    let instance_method = uses.is_some() && instance_method(symbol);
-    if let Some(found) = &uses {
+    let used_at = uses_of(full, root, symbol);
+    let instance_method = used_at.is_some() && instance_method(symbol);
+    if let Some(found) = &used_at {
         not_traced = with_uses(not_traced, found, instance_method);
     }
     SymbolView {
         symbol,
         imported_by,
         may_use,
-        uses,
+        used_at,
         instance_method,
         not_traced,
     }

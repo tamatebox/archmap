@@ -230,44 +230,61 @@ that defines the symbol and the files of the statements the two lists
 name, and never enter the graph, `scan` or `graph.json`. A use is an
 identifier that the language's scoping, within its file, resolves to the
 symbol: through the binding an import statement makes for it (an alias, a
-default import, `import x = require()`, a CommonJS `require` and a
-destructuring of a module bound whole), through a static member of a module
-bound whole (`m.formatPrice`, `m['formatPrice']`, and through a namespace a
-barrel passes on, `money.formatPrice`), or to the symbol's own declaration
-in the file that defines it. For a class member, it is an access through the
-class (`Wallet.open()`) or `this.m` inside the class's own members of the
-same kind, static or not, and the arrow functions in them. Names in comments
-and strings are no uses, nor is an export specifier, which passes a name on.
-Each use is marked by what it does, `(call)`, `(new)`, `(jsx)` for a JSX
-element's name or `(type)`, and unmarked otherwise, then `(test)`, and it
+default import, `import x = require()`, a CommonJS `require`, an `import()`
+or `vi.importActual()` awaited, and a destructuring of a module bound
+whole), through a static member of a module bound whole (`m.formatPrice`,
+`m['formatPrice']`, `(m as any).formatPrice`), through the names a barrel
+or the defining file passes the symbol on as, renamed or not, and the
+namespaces a barrel passes on (`money.formatPrice`), or to the symbol's own
+declaration in the file that defines it. For a class member, it is an
+access through the class (`Wallet.open()`) or `this.m` inside the class's
+own members of the same kind, static or not, and the arrow functions in
+them. Names in comments and strings are no uses, nor is an export
+specifier, which passes a name on. Each use is marked by what it does:
+`(call)`, `(new)`, `(jsx)` for a JSX element's name, `(type)`, or `(read)`
+for any other (passed as a value, assigned, compared), then `(test)`; it
 ends in `as <name>` when the code names it otherwise:
 
 ```text
-Used at: 14 in 8 files (13 calls, 1 type)
-  src/app.ts:11 (call) as fp, src/app.ts:11 (call) as m.formatPrice, src/app.ts:11 (call) as m.formatPrice, +1 more in this file
+Used at: 19 in 12 files, showing 10 (18 calls, 1 type)
+  src/app.ts:11 (call) as fp, src/app.ts:11:20 (call) as m.formatPrice, src/app.ts:11:38 (call) as m.formatPrice, +1 more in this file
   src/view.tsx:9 (call) as money.formatPrice, src/view.tsx:10 (call), src/view.tsx:11 (call) as all.money.formatPrice
   ...
-  tests/money.test.ts:3 (call) (test)
-  never used: 1: src/unused.ts:1
+  never used (1 import): src/unused.ts:1
+  never named (1 import of the whole module): tests/actual.test.ts:2
 ```
 
 There is a line per file, production code first, then the files with the
 most uses, then by path; 10 files and 3 locations per file are shown, and
-the heading counts every use, file and role. `never used` lists the import
-statements whose binding nothing uses. A method that is not static gets
+the heading counts every use, file and role. Two uses that would read
+alike give their column (`src/app.ts:11:20`), counted in characters from 1;
+editors that count UTF-16 code units differ on characters outside the
+Basic Multilingual Plane. `never used` lists the import statements whose
+binding of the symbol nothing uses, and `never named` those that take the
+module whole and never name the symbol. A method that is not static gets
 only the uses through its class and `this` (`Used at: through the class and
 this only: ...`), and `Not traced` says that calls through a value of its
-type (`wallet.pay()`) are not read (`values`). `Not traced` also names the
+type (`wallet.pay()`) are not read (`values`), with the imports of the class
+or its module that may make them; those are never `never used`. For any
+member, `Not traced` names the places that extend its class
+(`subclasses`): a subclass reaches its members, statics included
+(`Rich.open()`, `super.open()`), and the pass does not read those calls, so
+a file that extends the class is never `never used` either. `Not traced` also names the
 places that use the symbol's module as a value (`whole module`: passed as an
 argument, `ns[key]`, the promise of an `import()` not awaited), which may use
 it unseen; the barrels that pass it on under another name (`renamed`),
-whose importers are not followed; and the statements whose uses were not
-read, with why (`uses`): two statements on one line that load different
-files (`ambiguous statement`), a line that no longer holds the statement
-because the file changed since the scan (`statement not found`), a parse
-error, or a file gone. `--format json` gives every use with its column, its
-role, the name it goes by and the import statement it goes through, under
-`uses`. A symbol of Rust or Python gets no `Used at`.
+whose importers by that name the lists leave out; and the statements whose
+uses were not read, with why (`uses`): two statements on one line that load
+different files (`ambiguous statement`), a line that no longer holds the
+statement because the file changed since the scan (`statement not found`),
+a module that offers no path to the symbol the pass can follow, a parse
+error, or a file gone. `--format json` gives everything under `used_at`:
+every use with its column, its role, the name it goes by and the import
+statement it goes through (`uses`), and the statements that end otherwise:
+`unused`, `escapes`, `renamed`, `passed_on` (only re-exported), `values` (a
+member's class bound, which values or subclasses may reach it through),
+`subclasses` and `unread`.
+A symbol of Rust or Python gets no `Used at`.
 
 ## impact
 
