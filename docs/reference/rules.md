@@ -53,9 +53,12 @@ closed set: any other dependency on a declared component is unexpected, and
 an allowed dependency the code no longer has is stale. Coverage requires
 every component under its selectors to belong to a declaration, judged at
 the roll-up depth and for leaves only, so a container such as `src` counts
-as covered by what it contains. Test code counts too: a module that a Rust
-test loads (`tests/common/mod.rs`) is a component of its package, so a
-declaration that selects only the package's `src` leaves it uncovered.
+as covered by what it contains. Every component counts, test code
+included: a module that a Rust test, example, bench or build script loads
+(`tests/common/mod.rs`) is a component of its package, so a declaration
+whose selectors cover only the package's `src` leaves it uncovered. A
+target's own file (`tests/total.rs`) belongs to the package and needs no
+declaration of its own.
 
 Rules count what an import loads and, through re-exports, the component
 that defines what it takes (its `via` evidence, see [graph.md](graph.md)). A
