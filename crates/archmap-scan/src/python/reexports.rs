@@ -97,9 +97,12 @@ enum Walk {
 pub(crate) struct Definitions<'a> {
     tables: &'a BTreeMap<String, Table>,
     /// What each (file, name) shows, with the bindings its walk followed
-    /// below it, unless the hop limit cut that walk.
+    /// below it, where neither a cycle nor the hop limit cut that walk.
     walked: BTreeMap<(String, String), (Walk, usize)>,
-    /// The walk under way met the hop limit.
+    /// What the walk under way found where a cut came into it: it holds for
+    /// that walk, which met it first by one path.
+    this_walk: BTreeMap<(String, String), (Walk, usize)>,
+    /// The walk under way met a cycle or the hop limit.
     cut: bool,
 }
 
@@ -108,6 +111,7 @@ impl<'a> Definitions<'a> {
         Definitions {
             tables,
             walked: BTreeMap::new(),
+            this_walk: BTreeMap::new(),
             cut: false,
         }
     }
@@ -117,6 +121,7 @@ impl<'a> Definitions<'a> {
     /// it, and when nothing can be said.
     pub fn of(&mut self, file: &str, name: &str) -> Option<Definition> {
         self.cut = false;
+        self.this_walk.clear();
         match self.walk(file, name, 0, &mut BTreeSet::new()).0 {
             Walk::Through(definition) => Some(definition),
             Walk::Absent | Walk::Here | Walk::Unknown => None,
@@ -135,8 +140,13 @@ impl<'a> Definitions<'a> {
         path: &mut BTreeSet<(String, String)>,
     ) -> (Walk, usize) {
         let key = (file.to_owned(), name.to_owned());
-        if let Some((walk, below)) = self.walked.get(&key) {
+        let kept = match self.walked.get(&key) {
+            Some(kept) => Some((kept, false)),
+            None => self.this_walk.get(&key).map(|kept| (kept, true)),
+        };
+        if let Some(((walk, below), cut)) = kept {
             if hops + below <= MAX_HOPS {
+                self.cut |= cut;
                 return (walk.clone(), *below);
             }
             self.cut = true;
@@ -155,9 +165,11 @@ impl<'a> Definitions<'a> {
         let outer = std::mem::replace(&mut self.cut, false);
         let (walk, below) = self.step(file, name, hops, path);
         path.remove(&key);
-        if !self.cut {
-            self.walked.insert(key, (walk.clone(), below));
-        }
+        let kept = match self.cut {
+            false => &mut self.walked,
+            true => &mut self.this_walk,
+        };
+        kept.insert(key, (walk.clone(), below));
         self.cut |= outer;
         (walk, below)
     }
@@ -882,5 +894,37 @@ mod tests {
         let mut definitions = Definitions::new(&tables);
         assert!(definitions.of("pkg/p.py", "X").is_some());
         assert_eq!(definitions.of("pkg/n.py", "X"), fresh);
+    }
+
+    #[test]
+    fn a_cycle_below_a_diamond_is_walked_once_per_walk() {
+        // the diamond of `deep_diamonds_of_star_imports_are_walked_once`,
+        // with a cycle below its last level
+        let levels = 22;
+        let file = |level: usize, i: usize| format!("m{level}_{i}.py");
+        let mut files: Vec<(String, Table)> = Vec::new();
+        for level in 0..levels {
+            for i in 0..2 {
+                let mut table = Table::default();
+                for j in 0..2 {
+                    table
+                        .stars
+                        .push(binding(&file(level + 1, j), WHOLE_MODULE, 1 + j as u32));
+                }
+                files.push((file(level, i), table));
+            }
+        }
+        for i in 0..2 {
+            let mut last = Table::default();
+            last.stars.push(binding("loop.py", WHOLE_MODULE, 1));
+            files.push((file(levels, i), last));
+        }
+        let mut cycle = Table::default();
+        cycle.stars.push(binding(&file(levels, 0), WHOLE_MODULE, 1));
+        files.push(("loop.py".to_owned(), cycle));
+        let tables: BTreeMap<String, Table> = files.into_iter().collect();
+        let started = std::time::Instant::now();
+        assert_eq!(Definitions::new(&tables).of(&file(0, 0), "x"), None);
+        assert!(started.elapsed().as_secs() < 2, "{:?}", started.elapsed());
     }
 }

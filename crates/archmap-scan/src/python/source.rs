@@ -693,16 +693,41 @@ fn is_keyword(word: &str) -> bool {
 }
 
 /// Brackets opened minus brackets closed in `code`, outside string
-/// literals.
+/// literals and before a comment, in one pass as [`is_code`] reads a line.
 fn code_brackets(code: &str) -> i32 {
-    code.char_indices()
-        .filter(|(at, _)| is_code(code, *at))
-        .map(|(_, c)| match c {
-            '(' | '[' | '{' => 1,
-            ')' | ']' | '}' => -1,
-            _ => 0,
-        })
-        .sum()
+    let bytes = code.as_bytes();
+    let mut quote: Option<&[u8]> = None;
+    let (mut depth, mut i) = (0, 0);
+    while i < bytes.len() {
+        match quote {
+            Some(_) if bytes[i] == b'\\' => i += 2,
+            Some(q) if bytes[i..].starts_with(q) => {
+                i += q.len();
+                quote = None;
+            }
+            Some(_) => i += 1,
+            None => {
+                match bytes[i] {
+                    b'#' => break,
+                    c @ (b'"' | b'\'') => {
+                        let len = if bytes[i..].starts_with(&[c; 3]) {
+                            3
+                        } else {
+                            1
+                        };
+                        quote = Some(&bytes[i..i + len]);
+                        i += len;
+                        continue;
+                    }
+                    b'(' | b'[' | b'{' => depth += 1,
+                    b')' | b']' | b'}' => depth -= 1,
+                    _ => {}
+                }
+                i += 1;
+            }
+        }
+    }
+    depth
 }
 
 fn def_name(header: &str) -> Option<String> {
@@ -1092,6 +1117,17 @@ match = None
             "{:?}",
             file.module_names
         );
+    }
+
+    #[test]
+    fn a_long_line_is_read_in_one_pass() {
+        // generated modules hold one line of tens of kilobytes
+        let items: String = (0..10_000).map(|i| format!("\"k{i}\": \"(\", ")).collect();
+        let text = format!("DATA = {{{items}}}\nlimit = 1\n");
+        let started = std::time::Instant::now();
+        let file = scan_source(&text);
+        assert!(started.elapsed().as_secs() < 2, "{:?}", started.elapsed());
+        assert!(file.module_names.contains("limit"));
     }
 
     #[test]
