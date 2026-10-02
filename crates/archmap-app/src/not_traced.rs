@@ -216,13 +216,12 @@ pub(crate) fn not_traced(
     });
 
     let macros = subject.place.as_ref().and_then(|place| {
-        let names = macro_names(full, place);
-        let name = names.first()?.clone();
+        let name = macro_name(full, place)?;
         let mut calls: Vec<MacroCall> = full
             .unread_macros
             .iter()
             .filter(|m| in_family(&m.from) && !own(&m.from, &m.evidence.file))
-            .filter(|m| m.names.iter().any(|n| names.contains(n)))
+            .filter(|m| m.names.contains(&name))
             .map(|m: &UnreadMacro| MacroCall {
                 file: m.evidence.file.clone(),
                 line: m.evidence.line,
@@ -363,20 +362,32 @@ fn may_be(
     target.last().map(String::as_str) == Some(module)
 }
 
-/// The names a path inside a macro call writes for the target at `place`:
-/// its module's name (a file's stem, a `mod.rs` directory's name), and for a
-/// file that a package owns directly, its crate's name (`archmap_scan`).
-fn macro_names(full: &ArchitectureGraph, place: &Place) -> Vec<String> {
-    let mut names: Vec<String> = segments_of(place).last().cloned().into_iter().collect();
+/// The name a path inside a macro call writes for the target at `place`:
+/// its module's name (a file's stem, a `mod.rs` directory's name), or, for
+/// a package's library root or its directory, its crate's name, which the
+/// entry names (`archmap_scan`). The other files a package owns directly are
+/// crate roots that no path names.
+fn macro_name(full: &ArchitectureGraph, place: &Place) -> Option<String> {
     let path = match place {
-        Place::File(file) | Place::Directory(file) => file,
+        Place::File(file) | Place::Directory(file) => *file,
     };
-    if let Some(owner) = full.component_for_path(path) {
-        if owner.kind == ComponentKind::Package {
-            names.push(owner.name.replace('-', "_"));
+    match full.component_for_path(path) {
+        Some(owner) if owner.kind == ComponentKind::Package => {
+            let whole = owner.path.as_deref() == Some(path);
+            let entry = owner
+                .evidence
+                .iter()
+                .find(|e| e.is_entry() && (whole || e.file == path))?;
+            Some(
+                entry
+                    .names
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| owner.name.replace('-', "_")),
+            )
         }
+        _ => segments_of(place).last().cloned(),
     }
-    names
 }
 
 /// The nearest package that holds `component`.

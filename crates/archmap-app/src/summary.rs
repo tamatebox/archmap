@@ -369,6 +369,27 @@ fn coverage(out: &mut String, graph: &ArchitectureGraph, rolled: &ArchitectureGr
         );
     }
     let _ = writeln!(out, "{line}");
+    // macro calls whose arguments were not read, by the component, as rolled
+    // up, that makes them
+    if !graph.unread_macros.is_empty() {
+        let mut callers: BTreeMap<&ComponentId, usize> = BTreeMap::new();
+        for call in &graph.unread_macros {
+            let shown = graph
+                .containment_path(&call.from)
+                .iter()
+                .rev()
+                .find_map(|id| rolled.components.get_key_value(id).map(|(id, _)| id));
+            if let Some(id) = shown {
+                *callers.entry(id).or_default() += 1;
+            }
+        }
+        let _ = writeln!(
+            out,
+            "macro calls not read: {}  in: {}",
+            graph.unread_macros.len(),
+            top_counts(rolled, callers, MAX_DYNAMIC_IMPORTERS)
+        );
+    }
     let _ = writeln!(out, "{RUNTIME_COUPLING}");
 }
 

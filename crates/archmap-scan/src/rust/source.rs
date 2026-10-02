@@ -19,6 +19,18 @@ use syn::{
     Visibility,
 };
 
+/// Macros whose arguments are no code of the calling crate, however much
+/// they look like expressions: tokens to print (`stringify!`) or to emit
+/// into another crate (`quote!`). They are never read, only recorded.
+const NOT_CODE: &[&str] = &[
+    "stringify",
+    "concat_idents",
+    "quote",
+    "quote_spanned",
+    "parse_quote",
+    "parse_quote_spanned",
+];
+
 /// Primitive types, whose associated items (`u32::MAX`) are no module paths.
 const PRIMITIVES: &[&str] = &[
     "bool", "char", "str", "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64",
@@ -463,8 +475,9 @@ impl<'ast> Visit<'ast> for Paths<'_> {
             scope: self.scope,
             test: self.test,
         };
-        if !visit_arguments(&mac.tokens, &mut inner) {
-            let last = mac.path.segments.last();
+        let last = mac.path.segments.last();
+        let code = last.is_none_or(|s| !NOT_CODE.contains(&s.ident.to_string().as_str()));
+        if !(code && visit_arguments(&mac.tokens, &mut inner)) {
             let mut names = BTreeSet::new();
             path_names(mac.tokens.clone(), &mut names);
             self.unread.push(MacroCall {
@@ -852,6 +865,7 @@ fn calls(out: &mut String) {
     let ok = matches!(kind, model::Kind::A | model::Kind::B);
     let many = vec![shape::unit(); 3];
     json!({ \"a\": config::value() });
+    let name = stringify!(crate::printed::only);
 }
 thread_local! {
     static CELL: std::cell::Cell<u32> = std::cell::Cell::new(cache::start());
@@ -873,7 +887,7 @@ thread_local! {
         // a definition's body is patterns; a DSL's arguments are not read
         assert!(!paths
             .iter()
-            .any(|p| p.contains("not::read") || p.contains("config")));
+            .any(|p| p.contains("not::read") || p.contains("config") || p.contains("printed")));
         let unread: Vec<(&str, Vec<&str>)> = root
             .unread_macros
             .iter()
@@ -884,7 +898,14 @@ thread_local! {
                 )
             })
             .collect();
-        assert_eq!(unread, [("json", vec!["config", "value"])]);
+        // tokens to print are no code, though they read as an expression
+        assert_eq!(
+            unread,
+            [
+                ("json", vec!["config", "value"]),
+                ("stringify", vec!["crate", "only", "printed"])
+            ]
+        );
     }
 
     #[test]

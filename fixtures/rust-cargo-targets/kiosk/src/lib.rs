@@ -26,3 +26,8 @@ pub fn counted() -> u32 {
     // arguments that are no expressions: not read, but recorded
     tally!(stamp::mark => 1)
 }
+
+pub fn named() -> &'static str {
+    // tokens to print: no use of clock, though they read as an expression
+    stringify!(crate::clock::now)
+}

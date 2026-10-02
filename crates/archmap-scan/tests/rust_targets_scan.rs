@@ -136,6 +136,7 @@ fn the_symbols_of_other_targets_take_their_files() {
             ("kiosk::clock::now".to_owned(), false),
             ("kiosk::counted".to_owned(), false),
             ("kiosk::helper".to_owned(), false),
+            ("kiosk::named".to_owned(), false),
             ("kiosk::report".to_owned(), false),
             // a binary's symbols are production code under their files too
             ("kiosk::src/bin/report.rs::helper".to_owned(), false),
@@ -217,7 +218,7 @@ fn a_binary_under_src_bin_is_a_production_crate_of_its_own() {
         imports_in(&graph, "kiosk/src/bin/report.rs"),
         BTreeSet::from([
             row(1, "kiosk/src/clock.rs", false),
-            row(11, "kiosk/src/stamp.rs", true),
+            row(23, "kiosk/src/stamp.rs", true),
         ])
     );
     // reached through its unit tests alone, the binary is a test to run
@@ -442,5 +443,18 @@ fn macro_arguments_are_read_and_the_rest_recorded() {
             )
         })
         .collect();
-    assert_eq!(calls, [("kiosk", "tally", Some(27), vec!["mark", "stamp"])]);
+    assert_eq!(
+        calls,
+        [
+            // tokens to print, never read
+            (
+                "kiosk",
+                "stringify",
+                Some(32),
+                vec!["clock", "crate", "now"]
+            ),
+            ("kiosk", "tally", Some(27), vec!["mark", "stamp"]),
+            ("kiosk", "tally2", Some(18), vec!["kiosk", "sum", "till"]),
+        ]
+    );
 }

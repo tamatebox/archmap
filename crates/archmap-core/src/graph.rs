@@ -294,7 +294,8 @@ impl ArchitectureGraph {
     }
 
     /// For every file the graph records something in (an import, with an
-    /// edge or without, a dynamic import, a symbol it defines), whether it
+    /// edge or without, a dynamic import, a macro call not read, a symbol it
+    /// defines), whether it
     /// is test code: everything recorded in it carries `test`. A file that
     /// defines a symbol of production code is production code, whatever
     /// its imports, since a Rust `#[cfg(test)]` module marks only the
@@ -309,6 +310,7 @@ impl ArchitectureGraph {
             .flat_map(|e| &e.evidence)
             .chain(self.unmapped_imports.iter().map(|i| &i.evidence))
             .chain(self.dynamic_imports.iter().map(|d| &d.evidence))
+            .chain(self.unread_macros.iter().map(|m| &m.evidence))
             .chain(self.symbols.values().flat_map(|s| &s.evidence));
         for e in recorded {
             *production.entry(e.file.as_str()).or_default() |= !e.test;

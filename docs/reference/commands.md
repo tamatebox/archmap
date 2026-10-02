@@ -44,7 +44,9 @@ contains:
   `not analyzed  sql: 145  notebook: 68`; the number of TS/JS `scripts`, files
   without imports or exports whose declarations are used without an import;
   the number of `dynamic imports` and
-  the components that make them; and a fixed line naming the runtime coupling
+  the components that make them; the number of Rust `macro calls not read`,
+  when there are any, and the components that make them; and a fixed line
+  naming the runtime coupling
   no analyzer reads (HTTP, databases, queues, subprocesses,
   configuration-driven loading)
 - the component tree, indented by containment, with kind, language, path,
@@ -247,8 +249,8 @@ that declares the package. A package that names the files its dependents
 load (a Rust package by its library's root, a TS/JS package by what its
 `package.json` names and its source root's `index.*`) is stood for by those
 and its manifest only, so a binary, a build script or a configuration file
-reaches none of the packages that declare it; one that names none still is
-by every file it owns. It does not follow the arguments of a Rust macro call
+reaches none of the packages that declare it; one that names none (a Python
+package, a Rust package without a library) still is by every file it owns. It does not follow the arguments of a Rust macro call
 that are no expressions (`json!`), and a path that
 names no component or file is an error. Direct and
 transitive dependents follow production code; the tests to run again are the

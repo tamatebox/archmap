@@ -155,9 +155,11 @@ fn source_pass(ctx: &RepoContext, packages: &[ResolvedPackage], output: &mut Ana
         if let Some(lib) = own.iter().find(|t| t.kind == TargetKind::Lib) {
             let mut component =
                 Component::new(package.id.clone(), &package.name, ComponentKind::Package);
-            component
-                .evidence
-                .push(Evidence::new(display_path(&lib.root)).with_note("entry"));
+            component.evidence.push(
+                Evidence::new(display_path(&lib.root))
+                    .with_note("entry")
+                    .taking([lib.crate_name.clone()]),
+            );
             output.fragment.push_component(component);
         }
     }

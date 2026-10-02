@@ -106,14 +106,28 @@ fn a_macro_call_not_read_that_names_the_target_is_listed() {
         "{text}"
     );
     // a module no such call names has no such line
+    let util = query(&ws, "kiosk/src/util.rs", Format::Text);
+    assert!(!util.contains("macros:"), "{util}");
+    // the library's root goes by its crate's name, a module by its own; a
+    // test's root is a crate no path names
+    let lib = query(&ws, "kiosk/src/lib.rs", Format::Text);
+    assert!(
+        lib.contains("  macros: 1 macro call whose arguments are not read names `kiosk`: kiosk/src/bin/report.rs:18 (tally2!)\n"),
+        "{lib}"
+    );
     let till = query(&ws, "kiosk/src/till.rs", Format::Text);
-    assert!(!till.contains("macros:"), "{till}");
+    assert!(
+        till.contains("names `till`: kiosk/src/bin/report.rs:18 (tally2!)"),
+        "{till}"
+    );
+    let test = query(&ws, "kiosk/tests/total.rs", Format::Text);
+    assert!(!test.contains("macros:"), "{test}");
 }
 
 #[test]
 fn a_rust_target_counts_the_files_its_analyzer_did_not_read() {
     let ws = scan(&fixture("rust-cargo-targets"));
-    let text = query(&ws, "kiosk/src/till.rs", Format::Text);
+    let text = query(&ws, "kiosk/src/util.rs", Format::Text);
     // test data no Cargo target loads is not read, by design: say which
     // files these are
     assert!(
@@ -124,7 +138,7 @@ fn a_rust_target_counts_the_files_its_analyzer_did_not_read() {
         ),
         "{text}"
     );
-    let json = impact(&ws, "kiosk/src/till.rs");
+    let json = impact(&ws, "kiosk/src/util.rs");
     let not_read = &json["not_traced"]["not_read"];
     assert_eq!(not_read["languages"], serde_json::json!(["rust"]));
     assert_eq!(
