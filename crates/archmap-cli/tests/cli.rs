@@ -1127,6 +1127,14 @@ fn a_rust_module_directory_stands_for_its_module() {
         let impact: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
         assert_eq!(impact["target"], id, "{dir}");
     }
+    // a test's helper in `tests/common/mod.rs`, with no submodule, is still
+    // its directory's module
+    let targets = fixture_root().join("../rust-cargo-targets");
+    let text = query_text(&targets, &["kiosk/tests/common"]);
+    assert!(
+        text.contains("\nid: kiosk::tests/common/mod.rs\n"),
+        "{text}"
+    );
 }
 
 #[test]

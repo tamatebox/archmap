@@ -171,15 +171,16 @@ fn module_of_directory<'a>(
         .values()
         .filter(|c| path(c).is_some_and(|p| p.starts_with(&prefix)))
         .collect();
-    // the head must hold another component there: a lone file in a
-    // directory (a TS source root's only file, the submodule of an inline
-    // Rust module) is no directory's module, and nothing else tells them
-    // apart without knowing the language
+    // the head must hold another component there, or be a file that holds
+    // its directory's module (a Rust `mod.rs`): a lone file in a directory
+    // (a TS source root's only file, the submodule of an inline Rust module)
+    // is no directory's module
     inside.iter().copied().find(|head| {
         let file = path(head).unwrap_or_default();
         !file[prefix.len()..].contains('/')
             && root.join(file).is_file()
-            && inside.iter().any(|c| c.parent.as_ref() == Some(&head.id))
+            && (inside.iter().any(|c| c.parent.as_ref() == Some(&head.id))
+                || archmap_scan::rust::holds_its_directory(Path::new(file)))
             && holds_all(head)
     })
 }

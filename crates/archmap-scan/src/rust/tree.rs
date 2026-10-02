@@ -340,8 +340,9 @@ pub(super) fn build(
             if kind == TargetKind::Lib {
                 forest.libs.insert(p, root);
             }
-            // the library's and the binary's modules first, then, once every
-            // root has its owner, the other targets'
+            // the library's and `src/main.rs`'s trees grow at once, before the
+            // package's other roots are known, so their modules keep their
+            // ids; the other targets' trees grow once every root has its owner
             if by_path {
                 later.push((root, crate_name));
             } else {

@@ -58,6 +58,12 @@ pub const LANGUAGE: &str = "rust";
 /// same name.
 pub const EXTERNAL_PREFIX: &str = "ext:cargo:";
 
+/// Whether `file` holds the module of the directory it is in: a `mod.rs`,
+/// which `mod name;` loads for `name/`.
+pub fn holds_its_directory(file: &Path) -> bool {
+    file.file_name().is_some_and(|name| name == "mod.rs")
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct RustAnalyzer;
 
