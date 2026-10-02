@@ -117,7 +117,7 @@ pub(crate) enum Narrowed<'a> {
 
 /// The re-exports that pass the names of `target` on: for a file, the
 /// statements that re-export from it; for a symbol, those that re-export
-/// its name; and for the package entry files in `relayed`, which the reach
+/// its name or its whole module; and for the package entry files in `relayed`, which the reach
 /// went on from only through their re-exports, those that re-export the
 /// files it came from, nearest first, or with none of those, its first
 /// unless a statement of it is listed already. Each counts the test files
@@ -140,13 +140,16 @@ pub(crate) fn barrels(
         Narrowed::File(file) => imports()
             .filter(|e| e.passes_on() && e.target.as_deref() == Some(file) && e.file != file)
             .collect(),
-        Narrowed::Symbol(symbol) => full
-            .symbol_importers(symbol)?
-            .by_name
-            .into_iter()
-            .map(|(_, e)| e)
-            .filter(|e| e.passes_on())
-            .collect(),
+        Narrowed::Symbol(symbol) => {
+            let found = full.symbol_importers(symbol)?;
+            found
+                .by_name
+                .into_iter()
+                .chain(found.may_use)
+                .map(|(_, e)| e)
+                .filter(|e| e.passes_on())
+                .collect()
+        }
     };
     // how near the way a statement is on: what re-exports the target is
     // nearest, then a relayed entry's statement by the file it re-exports

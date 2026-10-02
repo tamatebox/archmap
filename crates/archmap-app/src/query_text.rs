@@ -1298,15 +1298,34 @@ pub(crate) fn not_traced(
             .take(cap)
             .map(|barrel| {
                 let at = place(&barrel.file, barrel.line);
-                let (n, loaded) = (barrel.tests_not_listed, plural(barrel.tests_not_listed, "test file"));
-                let (load, are) = if n == 1 { ("loads", "is") } else { ("load", "are") };
-                match (barrel.runs_first, n) {
-                    (true, 0) => format!("{at} (runs first)"),
-                    (true, _) => format!(
-                        "{at} (runs first; {loaded} that {load} it or a module below it {are} not listed)"
-                    ),
-                    (false, 0) => at,
-                    (false, _) => format!("{at} ({loaded} that {load} it {are} not listed)"),
+                let mut notes = Vec::new();
+                // its other re-exports on a way, which the JSON lists
+                if let more @ 1.. = barrel.lines.len().saturating_sub(1) {
+                    notes.push(format!("+{} on the way", plural(more, "more re-export")));
+                }
+                if barrel.runs_first {
+                    notes.push("runs first".to_owned());
+                }
+                let n = barrel.tests_not_listed;
+                if n > 0 {
+                    let (load, are) = if n == 1 {
+                        ("loads", "is")
+                    } else {
+                        ("load", "are")
+                    };
+                    let below = if barrel.runs_first {
+                        " or a module below it"
+                    } else {
+                        ""
+                    };
+                    notes.push(format!(
+                        "{} that {load} it{below} {are} not listed",
+                        plural(n, "test file")
+                    ));
+                }
+                match notes.is_empty() {
+                    true => at,
+                    false => format!("{at} ({})", notes.join("; ")),
                 }
             })
             .collect();

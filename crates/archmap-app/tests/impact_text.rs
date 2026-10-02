@@ -494,8 +494,8 @@ fn a_package_entry_reached_through_its_re_exports_runs_nothing_below_it() {
     );
     assert!(
         out.contains(
-            "store/billing/__init__.py:2 (runs first; 1 test file that loads it or a module \
-             below it is not listed)"
+            "store/billing/__init__.py:2 (+2 more re-exports on the way; runs first; 1 test \
+             file that loads it or a module below it is not listed)"
         ),
         "{out}"
     );
@@ -517,7 +517,9 @@ fn a_package_entry_is_named_at_the_re_export_the_reach_came_through() {
     // re-export, and every one on a way in JSON
     let out = text(&ws, "store/billing/money.py");
     assert!(
-        out.contains("that file: store/billing/__init__.py:2 (runs first;"),
+        out.contains(
+            "that file: store/billing/__init__.py:2 (+2 more re-exports on the way; runs first;"
+        ),
         "{out}"
     );
     let json = ws

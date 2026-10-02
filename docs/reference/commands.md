@@ -370,9 +370,11 @@ on what may change, and only what takes it from there is followed; a
 rename, a removal or an error on load also breaks whatever else loads that
 file:
 src/shop/__init__.py:2 (runs first; 2 test files that load it or a module
-below it are not listed)`), with the test files that load each, and for a
-package's entry file a module below it, that the tests to run again leave
-out. A test file whose mock replaces a module for its
+below it are not listed)`), with how many more re-exports of each are on a
+way (`+2 more re-exports on the way`), which the JSON lists as `lines`, and
+the test files that load each, and for a package's entry file a module
+below it, that the tests to run again leave out. For a symbol, the
+re-exports that pass on its whole module (`export *`) count too. A test file whose mock replaces a module for its
 whole run (marked `(mock)`) reaches the change only along a way that passes
 none of the modules it replaces, since every module its run loads gets the
 mock in their place: it is left out of the tests to run again when every way
