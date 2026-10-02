@@ -115,6 +115,12 @@ impl Evidence {
         !self.type_only && !self.test
     }
 
+    /// The statement passes the names it takes on, as a re-export does: a
+    /// graph convention, the note `export` (TS/JS `export ... from`).
+    pub fn passes_on(&self) -> bool {
+        self.note.as_deref() == Some("export")
+    }
+
     pub fn taking<I, S>(mut self, names: I) -> Self
     where
         I: IntoIterator<Item = S>,

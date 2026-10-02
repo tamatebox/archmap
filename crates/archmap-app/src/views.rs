@@ -129,6 +129,11 @@ pub struct Importer<'a> {
     pub from: &'a ComponentId,
     #[serde(flatten)]
     pub evidence: &'a Evidence,
+    /// The barrel the statement reaches the symbol through, a file that
+    /// passes it on, when the statement takes that file rather than the
+    /// symbol's own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub through: Option<&'a str>,
 }
 
 /// What `archmap impact` returns: rendered as JSON by [`crate::impact`],

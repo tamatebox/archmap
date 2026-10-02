@@ -33,7 +33,9 @@ the whole module (a namespace import, `export *`), and no names with a
 Through re-exports, evidence noted `<note> via <file>:<line>` (one word,
 `import via src/index.ts:2`, `use via src/shapes/mod.rs:2`) names what the
 defining file declares; a note that only contains ` via `, as a specifier
-written with it does, is no such evidence. A statement gives one piece of evidence per file
+written with it does, is no such evidence. A statement noted `export`
+passes the names it takes on, as a TS/JS re-export does: a symbol is
+followed through such barrels to the statements that take them. A statement gives one piece of evidence per file
 it points at and re-export it goes through, with all of its names. Every
 analyzer records `names`.
 

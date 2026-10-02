@@ -185,8 +185,15 @@ lists the statements that import it, from the names their evidence records
 symbol's name from the file that defines it; a method goes by its type's
 name, and a Rust method whose type another file defines, by that file. `May
 use` lists, apart from those, the statements that take that file whole (a
-namespace import, a glob, `import pkg.sub`). Statements that only load the
-file take no name and are in neither list. Both lists show 5 statements,
+namespace import, a glob, `import pkg.sub`). Through a TS/JS barrel that
+passes the name on (a statement noted `export` that takes the name or the
+file whole, and so on up a chain of barrels), both lists also hold what
+takes the barrel: its name (where the walk through the barrel found no
+definition) under `Imported by`, the barrel whole under `May use`, each with
+the barrel it went through (`src/app/checkout.ts:2 (whole src/index.ts,
+which passes it on)`); a barrel that renames the name on the way ends the
+chain. Statements that only load the file take no name and are in neither
+list. Both lists show 5 statements,
 production code first, then by place, and count the rest, and their heading
 counts the re-export statements among them
 (`Imported by: 4 (2 re-exports)`); nothing found reads `none resolved`, with
@@ -204,8 +211,6 @@ instead, and `impact` answers for that component. What the lists miss:
   the file that defines `pay`.
 - Rust path evidence shows the first path from its file to the target, not
   always one that names the symbol.
-- A TS/JS barrel imported as a namespace (`import * as ui from './ui'`) is
-  not listed for the files behind the barrel.
 - Code that runs when a file loads (a side-effect import) is listed for
   neither.
 
@@ -320,11 +325,13 @@ things widen or narrow it:
 
 - A re-export takes the name, so the re-exporting file is in the first step
   (a direct dependent, unless it sits in the symbol's own component, as a
-  Python `__init__.py` usually does), and from there every importer of that
-  file is a transitive dependent, those that take other names included: a
-  TS/JS barrel's `export { X } from`, and a Python `__init__.py`'s
-  `from .m import X`, whose importers (`from pkg import X`) are only
-  transitive dependents (Python does not follow re-exports).
+  Python `__init__.py` usually does). A TS/JS barrel that only passes the
+  name on goes no further than the statements `query` lists through it,
+  which are in the first step too; a Python `__init__.py`'s
+  `from .m import X` leads to every importer of the `__init__.py` as a
+  transitive dependent, those that take other names included, and its
+  importers (`from pkg import X`) are only transitive dependents (Python
+  does not follow re-exports).
 - A statement that only loads the file (a side-effect import) is not in the
   first step, although code that runs on load may call the symbol.
 

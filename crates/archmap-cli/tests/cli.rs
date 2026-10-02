@@ -1561,15 +1561,21 @@ fn a_symbol_query_lists_the_statements_that_import_it() {
         "\n  src/index.ts:1 (export)\n",
         "\n  src/app/checkout.ts:1 (via src/index.ts:1)\n",
         "\n  tests/money.test.ts:2 (test)\n",
-        // a namespace re-export and an `import()` take the file whole;
-        // checkout.ts:1, which also does through the re-export, is listed by
-        // name already
-        "May use: 2 (imports the whole module; 1 re-export)\n  scripts/report.cjs:8 (local)\n  src/index.ts:4 (export)\n",
+        // a namespace re-export and an `import()` take the file whole, and
+        // checkout.ts:2 the barrel that passes the name on; checkout.ts:1,
+        // which also does through the re-export, is listed by name already
+        "May use: 3 (imports the whole module; 1 re-export)\n  scripts/report.cjs:8 (local)\n  \
+         src/app/checkout.ts:2 (whole src/index.ts, which passes it on)\n  src/index.ts:4 (export)\n",
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
     }
     let json = ts_stdout(&["query", "formatPrice", "--format", "json"]);
-    for expected in ["\"imported_by\"", "\"may_use\"", "\"from\""] {
+    for expected in [
+        "\"imported_by\"",
+        "\"may_use\"",
+        "\"from\"",
+        "\"through\": \"src/index.ts\"",
+    ] {
         assert!(json.contains(expected), "missing {expected} in:\n{json}");
     }
 }

@@ -589,13 +589,14 @@ fn importers(
              framework or runtime loads by name or path is not seen)"
         );
     } else {
-        truncated |= sites(out, "Imported by", None, by_name, caps);
+        truncated |= sites(out, "Imported by", None, "from", by_name, caps);
     }
     if !may_use.is_empty() {
         truncated |= sites(
             out,
             "May use",
             Some("imports the whole module"),
+            "whole",
             may_use,
             caps,
         );
@@ -603,10 +604,14 @@ fn importers(
     truncated
 }
 
+/// The statements of one list; one that reaches the symbol through a
+/// barrel names it, `taken` saying how it takes the barrel (`from` for the
+/// name, `whole`).
 fn sites(
     out: &mut String,
     title: &str,
     note: Option<&str>,
+    taken: &str,
     list: &[Importer],
     caps: &Caps,
 ) -> bool {
@@ -621,7 +626,11 @@ fn sites(
         statements_title(title, note, list.len(), shown, exports)
     );
     for importer in list.iter().take(shown) {
-        let _ = writeln!(out, "  {}", import_location(importer.evidence, 0, false));
+        let mut line = import_location(importer.evidence, 0, false);
+        if let Some(barrel) = importer.through {
+            let _ = write!(line, " ({taken} {barrel}, which passes it on)");
+        }
+        let _ = writeln!(out, "  {line}");
     }
     shown < list.len()
 }

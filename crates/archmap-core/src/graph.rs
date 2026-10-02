@@ -335,6 +335,9 @@ impl ArchitectureGraph {
 
         // where the walk starts, and at what distance
         let mut start: Vec<(Node, usize)> = Vec::new();
+        // barrels the walk reaches a symbol through: they only pass it on,
+        // and the statements that reach it through them are in the start
+        let mut barrels: BTreeSet<&str> = BTreeSet::new();
         let target = match seed {
             ChangeSeed::File(file) => {
                 start.push((Node::File(file), 0));
@@ -346,13 +349,24 @@ impl ArchitectureGraph {
                 // without file detail on its component stay, like the latter
                 start.push((Node::Component(&symbol.component), 0));
                 if let Some(found) = self.symbol_importers(symbol) {
-                    start.extend(
-                        found
-                            .by_name
-                            .iter()
-                            .chain(&found.may_use)
-                            .filter(|(_, e)| tests || !e.test)
-                            .map(|(_, e)| (Node::File(e.file.as_str()), 1)),
+                    let statements: Vec<&Evidence> = found
+                        .by_name
+                        .iter()
+                        .chain(&found.may_use)
+                        .map(|(_, e)| *e)
+                        .filter(|e| tests || !e.test)
+                        .collect();
+                    start.extend(statements.iter().map(|e| (Node::File(e.file.as_str()), 1)));
+                    // a file whose every such statement passes the name on
+                    let mut only_passes: BTreeMap<&str, bool> = BTreeMap::new();
+                    for e in &statements {
+                        *only_passes.entry(e.file.as_str()).or_insert(true) &= e.passes_on();
+                    }
+                    barrels.extend(
+                        only_passes
+                            .into_iter()
+                            .filter(|(_, only)| *only)
+                            .map(|(file, _)| file),
                     );
                 }
                 Some(self.ancestor_at(&symbol.component, depth))
@@ -387,18 +401,22 @@ impl ArchitectureGraph {
         while let Some(node) = queue.pop_front() {
             let d = distance[&node];
             let mut next: Vec<(Node, usize)> = Vec::new();
+            let mut barrel = false;
             if let Node::File(f) = node {
                 if let Some(owner) = owner_of(f) {
                     next.push((Node::Component(owner), d));
                 }
+                barrel = barrels.contains(f);
             }
-            next.extend(
-                dependents
-                    .get(&node)
-                    .into_iter()
-                    .flatten()
-                    .map(|n| (*n, d + 1)),
-            );
+            if !barrel {
+                next.extend(
+                    dependents
+                        .get(&node)
+                        .into_iter()
+                        .flatten()
+                        .map(|n| (*n, d + 1)),
+                );
+            }
             for (n, nd) in next {
                 if distance.get(&n).is_none_or(|&old| nd < old) {
                     distance.insert(n, nd);
@@ -603,28 +621,45 @@ impl ArchitectureGraph {
             .and_then(|c| c.language.as_deref());
         let imports = || self.edges.iter().filter(|e| e.kind == EdgeKind::Import);
         let mut recorded = false;
-        let mut seen: BTreeSet<(&str, Option<u32>)> = BTreeSet::new();
-        let mut by_name = Vec::new();
+        // the statements that load each file
+        let mut loading: BTreeMap<&str, Vec<(&Edge, &Evidence)>> = BTreeMap::new();
         for edge in imports() {
             let to_language = self.component(&edge.to).and_then(|c| c.language.as_deref());
             for e in &edge.evidence {
                 recorded |= e.target.is_some() && to_language == language;
-                if e.target.as_deref() == Some(file.as_str())
-                    && e.names.contains(name.as_str())
-                    && seen.insert((e.file.as_str(), e.line))
-                {
-                    by_name.push((edge, e));
+                if let Some(target) = e.target.as_deref() {
+                    loading.entry(target).or_default().push((edge, e));
                 }
             }
         }
-        let mut may_use = Vec::new();
-        for edge in imports() {
-            for e in &edge.evidence {
-                if e.target.as_deref() == Some(file.as_str())
-                    && e.names.contains(WHOLE_MODULE)
-                    && seen.insert((e.file.as_str(), e.line))
-                {
-                    may_use.push((edge, e));
+        // From the file, then from each barrel that passes the name on: a
+        // statement noted `export` that takes it or its file whole. A
+        // statement that the file itself answers for is recorded there.
+        let mut seen: BTreeSet<(&str, Option<u32>)> = BTreeSet::new();
+        let (mut by_name, mut may_use) = (Vec::new(), Vec::new());
+        let mut through = BTreeMap::new();
+        // `None` for the file itself
+        let mut barrels: VecDeque<Option<&str>> = VecDeque::from([None]);
+        let mut visited: BTreeSet<&str> = BTreeSet::new();
+        while let Some(barrel) = barrels.pop_front() {
+            let at = barrel.unwrap_or(file.as_str());
+            for &(edge, e) in loading.get(at).into_iter().flatten() {
+                let named = e.names.contains(name.as_str());
+                if !named && !e.names.contains(WHOLE_MODULE) {
+                    continue;
+                }
+                let statement = (e.file.as_str(), e.line);
+                if seen.insert(statement) {
+                    match named {
+                        true => by_name.push((edge, e)),
+                        false => may_use.push((edge, e)),
+                    }
+                    if let Some(barrel) = barrel {
+                        through.insert(statement, barrel);
+                    }
+                }
+                if e.passes_on() && e.file != file && visited.insert(e.file.as_str()) {
+                    barrels.push_back(Some(e.file.as_str()));
                 }
             }
         }
@@ -634,6 +669,7 @@ impl ArchitectureGraph {
             name,
             by_name,
             may_use,
+            through,
             recorded,
         })
     }
@@ -716,6 +752,9 @@ pub struct SymbolImporters<'a> {
     pub by_name: Vec<(&'a Edge, &'a Evidence)>,
     /// Statements that take that file whole (`*`), the others aside.
     pub may_use: Vec<(&'a Edge, &'a Evidence)>,
+    /// The statements of both lists that reach the name through a barrel
+    /// that passes it on, by file and line, with that barrel's file.
+    pub through: BTreeMap<(&'a str, Option<u32>), &'a str>,
     /// Whether evidence names imported files for the file's language at all.
     /// Without it, both lists are unknown rather than empty.
     pub recorded: bool,
@@ -1653,6 +1692,143 @@ mod tests {
             let s = symbol("lib::x", name, vec![Evidence::new("lib/x.rs").at_line(1)]);
             assert_eq!(graph.symbol_importers(&s).unwrap().name, reached, "{name}");
         }
+    }
+
+    /// A package `lib` whose `money.ts` defines `formatPrice`, behind two
+    /// barrels (`index.ts` re-exports it, `all.ts` re-exports `index.ts`
+    /// whole), and an importer per way of reaching it, each a component of
+    /// its own.
+    fn behind_barrels() -> ArchitectureGraph {
+        let mut graph = ArchitectureGraph::default();
+        let mut lib = Component::new("lib", "lib", ComponentKind::Package);
+        lib.path = Some("lib".into());
+        graph.add_component(lib);
+        let files = ["ns", "deep", "other", "failed", "named", "after"];
+        for name in files {
+            let mut c = Component::new(format!("app::{name}"), name, ComponentKind::Module);
+            c.path = Some(format!("app/{name}.ts"));
+            graph.add_component(c);
+        }
+        // the component that owns a file: `lib` or the file's own
+        let owner = |file: &str| match file.strip_prefix("app/") {
+            Some(rest) => format!("app::{}", rest.trim_end_matches(".ts")),
+            None => "lib".to_owned(),
+        };
+        let statement = |file: &str, line: u32, note: &str, target: &str, names: &[&str]| {
+            Edge::new(owner(file), owner(target), EdgeKind::Import).with_evidence(
+                Evidence::new(file)
+                    .at_line(line)
+                    .with_note(note)
+                    .pointing_at(target)
+                    .taking(names.iter().copied()),
+            )
+        };
+        graph.add_edges([
+            // the barrels pass the name on
+            statement(
+                "lib/index.ts",
+                1,
+                "export",
+                "lib/money.ts",
+                &["formatPrice"],
+            ),
+            statement("lib/all.ts", 1, "export", "lib/index.ts", &["*"]),
+            // whole, through each barrel
+            statement("app/ns.ts", 1, "import", "lib/index.ts", &["*"]),
+            statement("app/deep.ts", 2, "import", "lib/all.ts", &["*"]),
+            // another name of a barrel
+            statement("app/other.ts", 3, "import", "lib/index.ts", &["Wallet"]),
+            // the name, where the walk through the barrel found nothing
+            statement(
+                "app/failed.ts",
+                4,
+                "import",
+                "lib/index.ts",
+                &["formatPrice"],
+            ),
+            // the name, walked to the file that defines it
+            statement("app/named.ts", 5, "import", "lib/all.ts", &["formatPrice"]),
+            statement(
+                "app/named.ts",
+                5,
+                "import via lib/all.ts:1",
+                "lib/money.ts",
+                &["formatPrice"],
+            ),
+            // further on
+            statement("app/after.ts", 6, "import", "app/ns.ts", &["ns"]),
+            statement("app/after.ts", 7, "import", "app/other.ts", &["other"]),
+        ]);
+        graph
+    }
+
+    fn price() -> Symbol {
+        symbol(
+            "lib::formatPrice",
+            "formatPrice",
+            vec![Evidence::new("lib/money.ts").at_line(8)],
+        )
+    }
+
+    #[test]
+    fn symbol_importers_follow_the_barrels_that_pass_a_name_on() {
+        let graph = behind_barrels();
+        let found = graph.symbol_importers(&price()).unwrap();
+        let sorted = |list: &[(&Edge, &Evidence)]| {
+            let mut list = at(list);
+            list.sort();
+            list
+        };
+        assert_eq!(
+            sorted(&found.by_name),
+            ["app/failed.ts:4", "app/named.ts:5", "lib/index.ts:1"]
+        );
+        // whole: what takes a barrel that passes the name on, a barrel that
+        // re-exports it whole included; another name of a barrel is none
+        assert_eq!(
+            sorted(&found.may_use),
+            ["app/deep.ts:2", "app/ns.ts:1", "lib/all.ts:1"]
+        );
+        // and the barrel each went through
+        let through: Vec<(&str, &str)> = found
+            .through
+            .iter()
+            .map(|((file, _), barrel)| (*file, *barrel))
+            .collect();
+        assert_eq!(
+            through,
+            [
+                ("app/deep.ts", "lib/all.ts"),
+                ("app/failed.ts", "lib/index.ts"),
+                ("app/ns.ts", "lib/index.ts"),
+                ("lib/all.ts", "lib/index.ts"),
+            ]
+        );
+    }
+
+    #[test]
+    fn change_impact_from_a_symbol_goes_no_further_than_its_barrels_pass_it() {
+        let graph = behind_barrels();
+        let reach = graph.change_impact(ChangeSeed::Symbol(&price()), 2);
+        let ids = |set: &BTreeSet<ComponentId>| -> Vec<String> {
+            set.iter().map(|c| c.to_string()).collect()
+        };
+        assert_eq!(
+            ids(&reach.direct),
+            ["app::deep", "app::failed", "app::named", "app::ns"]
+        );
+        // `other` takes another name of a barrel: not reached, nor what
+        // only it leads to; `after` imports `ns`
+        assert_eq!(
+            ids(&reach.transitive),
+            [
+                "app::after",
+                "app::deep",
+                "app::failed",
+                "app::named",
+                "app::ns"
+            ]
+        );
     }
 
     #[test]

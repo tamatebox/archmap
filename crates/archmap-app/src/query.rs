@@ -168,19 +168,27 @@ fn query(ws: &Workspace, request: &QueryRequest) -> Result<Answer> {
 /// production code first, as `impact` lists them.
 fn symbol_view<'a>(full: &'a ArchitectureGraph, symbol: &'a Symbol) -> SymbolView<'a> {
     let importers = full.symbol_importers(symbol).filter(|i| i.recorded);
-    let list = |pairs: Vec<(&'a Edge, &'a Evidence)>| {
-        let mut list: Vec<Importer> = pairs
-            .into_iter()
-            .map(|(edge, evidence)| Importer {
-                from: &edge.from,
-                evidence,
-            })
-            .collect();
-        list.sort_by_key(|i| (i.evidence.test, &i.evidence.file, i.evidence.line));
-        list
-    };
+    let list =
+        |pairs: Vec<(&'a Edge, &'a Evidence)>,
+         through: &std::collections::BTreeMap<(&'a str, Option<u32>), &'a str>| {
+            let mut list: Vec<Importer> = pairs
+                .into_iter()
+                .map(|(edge, evidence)| Importer {
+                    from: &edge.from,
+                    evidence,
+                    through: through
+                        .get(&(evidence.file.as_str(), evidence.line))
+                        .copied(),
+                })
+                .collect();
+            list.sort_by_key(|i| (i.evidence.test, &i.evidence.file, i.evidence.line));
+            list
+        };
     let (imported_by, may_use) = match importers {
-        Some(found) => (Some(list(found.by_name)), Some(list(found.may_use))),
+        Some(found) => (
+            Some(list(found.by_name, &found.through)),
+            Some(list(found.may_use, &found.through)),
+        ),
         None => (None, None),
     };
     // the component that declares it, before roll-up
