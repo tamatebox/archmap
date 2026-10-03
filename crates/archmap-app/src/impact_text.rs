@@ -103,7 +103,10 @@ pub(crate) fn render(
         truncated |= not_traced(&mut out, found, caps.locations, true, true);
     }
     if truncated {
-        let _ = writeln!(out, "\nLists are capped; verbose lists every entry.");
+        let _ = writeln!(
+            out,
+            "\nLists are capped; verbose lists every entry, and JSON every entry with all evidence."
+        );
     }
     out
 }
@@ -427,8 +430,9 @@ fn tests(out: &mut String, result: &ImpactResult, caps: &Caps) -> bool {
                 if let Some(TestWayView::Target) = other.ways.first().map(|r| &r.way) {
                     notes.push("the target itself".to_owned());
                 }
-                if other.for_tests > 0 {
-                    notes.push(format!("for {} listed", plural(other.for_tests, "test")));
+                if !other.for_tests.is_empty() {
+                    let n = other.for_tests.len();
+                    notes.push(format!("for {} listed", plural(n, "test")));
                 }
                 format!("{} ({})", other.file, notes.join(", "))
             })

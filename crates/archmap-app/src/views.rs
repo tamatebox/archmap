@@ -320,13 +320,9 @@ pub struct NotTest {
     pub ways: Vec<TestRouteView>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub types_only: bool,
-    /// For a helper, the tests listed that reach the target through it.
-    #[serde(skip_serializing_if = "is_zero")]
-    pub for_tests: usize,
-}
-
-fn is_zero(n: &usize) -> bool {
-    *n == 0
+    /// For a helper, the tests listed that load it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub for_tests: Vec<String>,
 }
 
 /// A test file to run again, with how it reaches the target.

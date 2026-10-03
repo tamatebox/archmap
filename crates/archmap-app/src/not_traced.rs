@@ -83,6 +83,7 @@ pub(crate) struct HistoryGaps {
 #[derive(Debug, Serialize)]
 pub(crate) struct Barrels {
     pub(crate) total: usize,
+    #[serde(rename = "locations")]
     pub(crate) shown: Vec<Barrel>,
 }
 
@@ -248,12 +249,14 @@ pub(crate) struct Values {
     /// through values.
     pub(crate) total: usize,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(rename = "locations")]
     pub(crate) shown: Vec<Spot>,
 }
 
 #[derive(Debug, Serialize)]
 pub(crate) struct Spots {
     pub(crate) total: usize,
+    #[serde(rename = "locations")]
     pub(crate) shown: Vec<Spot>,
 }
 
@@ -270,6 +273,7 @@ pub(crate) struct Spot {
 #[derive(Debug, Serialize)]
 pub(crate) struct UsesNotRead {
     pub(crate) total: usize,
+    #[serde(rename = "locations")]
     pub(crate) shown: Vec<UnreadSpot>,
 }
 
@@ -390,6 +394,7 @@ pub(crate) const NO_IMPORTERS: &str = "no import of it was found: only import st
 #[derive(Debug, Serialize)]
 pub(crate) struct Dynamic {
     pub(crate) total: usize,
+    #[serde(rename = "locations")]
     pub(crate) shown: Vec<DynamicCall>,
 }
 
@@ -408,6 +413,7 @@ pub(crate) struct DynamicCall {
 pub(crate) struct NamedLike {
     pub(crate) name: String,
     pub(crate) total: usize,
+    #[serde(rename = "locations")]
     pub(crate) shown: Vec<NamedImport>,
 }
 
@@ -425,6 +431,7 @@ pub(crate) struct Macros {
     /// The name their paths write.
     pub(crate) name: String,
     pub(crate) total: usize,
+    #[serde(rename = "locations")]
     pub(crate) shown: Vec<MacroCall>,
 }
 

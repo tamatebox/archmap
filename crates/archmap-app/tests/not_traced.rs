@@ -66,7 +66,7 @@ fn a_python_file_lists_dynamic_imports_elsewhere_and_imports_named_like_it() {
     assert_eq!(json["not_traced"]["dynamic"]["total"], 1);
     assert_eq!(json["not_traced"]["named_like"]["name"], "helpers");
     assert_eq!(
-        json["not_traced"]["named_like"]["shown"][0]["module"],
+        json["not_traced"]["named_like"]["locations"][0]["module"],
         "helpers"
     );
 }
@@ -86,7 +86,7 @@ fn a_symbol_lists_the_imports_named_like_its_file() {
     );
     let json = impact(&ws, "refund");
     assert_eq!(
-        json["not_traced"]["named_like"]["shown"][0]["file"],
+        json["not_traced"]["named_like"]["locations"][0]["file"],
         "bazaar/tests/test_flat.py"
     );
 }

@@ -457,7 +457,8 @@ other, so following components a change anywhere in `app.utils` reaches
 both and `app/utils/registry.py` reaches neither.
 
 `impact` prints compact text by default, written the way `query` writes its
-answers:
+answers (here without `Changed in the same commits`, whose files depend on
+the history of the repository the fixture sits in):
 
 ```text
 src/lib/types.ts (file) in lib/types.ts (module, typescript), depth 2
@@ -489,7 +490,7 @@ Not traced:
   dynamic: 2 calls load modules by computed names, which may be this: scripts/report.cjs:4, src/app/lazy.tsx:7
   barrels: 1 file passes on what may change, and only what takes it from there is followed; a rename, a removal or an error on load also breaks whatever else loads that file: src/index.ts:8
 
-Lists are capped; verbose lists every entry.
+Lists are capped; verbose lists every entry, and JSON every entry with all evidence.
 ```
 
 The first lines name the target as `query` names it: a component, a file
@@ -611,8 +612,8 @@ what changed, the nearest that do: `{"kind": "takes", "via"?}`, `whole`,
 `steps`, `types_only` when it runs none of the change and `mock` when only
 mock calls load its file), `types_only`, and for a `conftest.py` the
 directory it `stands_for`; `not_tests` with each such file, its `kind`
-(`helper`, `example`, `bench`), its `ways` and, for a helper, the listed
-tests that load it as `for_tests`; and `left_out` as `{"total",
+(`helper`, `example`, `bench`), its `ways` and, for a helper, the paths of
+the listed tests that load it as `for_tests`; and `left_out` as `{"total",
 "files"}` with every test file and the `mocks` of
 each, by `file`, `line` and the `target` it replaces, when a mock left one
 out; `co_change` with the history read and every file with every shared
@@ -621,7 +622,8 @@ commit (see [history.md](history.md#files-changed-in-the-same-commits));
 re-export of it on a way as `lines`; and for an import name
 `module`, with `target` `null`. Earlier versions capped this JSON unless
 `--verbose`, listed `direct` and `transitive` as ids, the statements as
-`shown`, and the tests to run again as `shown` paths.
+`shown`, the tests to run again as `shown` paths, and each kind of
+`not_traced` (in `query` too) as `shown`.
 
 `impact` also takes a symbol, by name or by id, and an import name that no
 component carries, which starts from the files that import it, all at once:
@@ -770,7 +772,26 @@ target's own imports without an edge stay under `Not mapped`.
 - `macros`: Rust macro calls whose arguments were not read (`json!`, a DSL)
   and whose `a::b` paths write the target's name (its module's, or its
   crate's for a crate root). A name match, not a use of it.
+- `whole_module`: for a symbol, places where a binding of its module whole
+  is used other than by a static name (passed as a value, `ns[key]`), where
+  code may use it unseen (see `Used at` under [query](#query)).
+- `strings`: for a symbol, strings that name it by its dotted path
+  (`mock.patch("shop.charge.pay")`), where code that looks the name up may
+  use it.
+- `uses`: for a symbol, statements and files whose uses of it were not
+  read, with why.
+- `values`: for a method that is not static, what reading calls through a
+  value of its type needs, and the statements that bind its class without
+  another use read.
+- `subclasses`: for a class member, the places that extend its class, whose
+  calls through a subclass are not read.
+- `barrels`: for `impact`, the re-exports past which it follows only what
+  takes the changed names (see [impact](#impact)).
+- `history`: for `impact`, what in the history read may hide files changed
+  in the same commits as the target (see
+  [history.md](history.md#files-changed-in-the-same-commits)).
 
+In JSON each kind gives every place as `locations`, with their `total`.
 Gaps that no analyzer records yet are not counted: imports in a Rust crate's
 own unit tests.
 

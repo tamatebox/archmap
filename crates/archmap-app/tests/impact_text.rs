@@ -152,7 +152,7 @@ fn a_file_answers_with_its_dependents_statements_tests_and_blind_spots() {
            rename, a removal or an error on load also breaks whatever else loads that file: \
            src/index.ts:8\n\
          \n\
-         Lists are capped; verbose lists every entry.\n"
+         Lists are capped; verbose lists every entry, and JSON every entry with all evidence.\n"
     );
 }
 
@@ -188,7 +188,7 @@ fn every_list_is_capped_and_says_how_many_it_shows() {
         ]
     );
     assert!(
-        out.ends_with("\n\nLists are capped; verbose lists every entry.\n"),
+        out.ends_with("\n\nLists are capped; verbose lists every entry, and JSON every entry with all evidence.\n"),
         "{out}"
     );
 }
@@ -607,7 +607,7 @@ fn a_package_entry_is_named_at_the_re_export_the_reach_came_through() {
         .output;
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(
-        value["not_traced"]["barrels"]["shown"][0]["lines"],
+        value["not_traced"]["barrels"]["locations"][0]["lines"],
         serde_json::json!([2, 3, 6])
     );
 }

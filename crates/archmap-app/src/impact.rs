@@ -736,7 +736,7 @@ fn test_files(
                 kind,
                 ways: routes,
                 types_only: reach.types_only,
-                for_tests: 0,
+                for_tests: Vec::new(),
             }),
             None => files.push(TestFile {
                 file: file.clone(),
@@ -756,7 +756,13 @@ fn test_files(
     for helper in &mut not_tests {
         helper.for_tests = loaded_by
             .get(helper.file.as_str())
-            .map_or(0, |tests| tests.intersection(&listed).count());
+            .map(|tests| {
+                tests
+                    .intersection(&listed)
+                    .map(|t| (*t).to_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
     }
     TestFiles {
         total: files.len(),
