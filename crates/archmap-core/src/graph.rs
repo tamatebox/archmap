@@ -1208,7 +1208,11 @@ impl ArchitectureGraph {
                 true => taken.any = true,
                 false => taken.exact.extend(e.names.iter().map(String::as_str)),
             }
-            if passes.entry(e.file.as_str()).or_default().extend(taken) {
+            if passes
+                .entry(e.file.as_str())
+                .or_default()
+                .extend(exported_as(e, taken))
+            {
                 queue.push_back(e.file.as_str());
             }
         }
@@ -1285,7 +1289,12 @@ impl ArchitectureGraph {
                     .entry(node)
                     .or_default()
                     .add(Link::of(e));
-                if e.passes_on() && passes.entry(file).or_default().extend(taken) {
+                if e.passes_on()
+                    && passes
+                        .entry(file)
+                        .or_default()
+                        .extend(exported_as(e, taken))
+                {
                     queue.push_back(file);
                 }
             }
@@ -2063,6 +2072,32 @@ impl Way<'_> {
                 from: from.to_owned(),
             },
         }
+    }
+}
+
+/// What a re-export `e` passes on of what it takes, `taken` by the names it
+/// takes them by, under the names its file exports them as: renamed
+/// (`export { price as cost }`), or a namespace that holds them all
+/// (`export * as money`).
+fn exported_as<'a>(e: &'a Evidence, taken: Passed<'a>) -> Passed<'a> {
+    if let Some(names) = e.exported_as.get(WHOLE_MODULE) {
+        if e.names.iter().any(|n| n == WHOLE_MODULE) && !taken.is_empty() {
+            return Passed {
+                exact: names.iter().map(String::as_str).collect(),
+                ..Passed::default()
+            };
+        }
+    }
+    let renamed = |names: BTreeSet<&'a str>| -> BTreeSet<&'a str> {
+        names
+            .into_iter()
+            .flat_map(|n| e.exported_names(n))
+            .collect()
+    };
+    Passed {
+        exact: renamed(taken.exact),
+        possible: renamed(taken.possible),
+        any: taken.any,
     }
 }
 

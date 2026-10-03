@@ -825,3 +825,24 @@ fn rust_examples_benches_and_modules_of_tests_are_no_tests_to_run() {
         ]
     );
 }
+
+#[test]
+fn a_barrel_passes_a_change_on_under_the_name_it_exports_it_as() {
+    let ws = scan(&fixture("ts-renames"));
+    // renamed (`export { price as cost }`), passed on whole and taken by a
+    // namespace import, each barrel by the name it gives
+    assert_eq!(
+        section(
+            &text(&ws, "src/money.ts"),
+            "Transitive dependents: 6 more (11 in all)"
+        ),
+        [
+            "  chain.ts  2 steps, through src/index.ts",
+            "  back.ts  3 steps, through src/chain.ts",
+            "  both.ts  3 steps, through src/chain.ts",
+            "  namespace.ts  3 steps, through src/chain.ts",
+            "  onename.ts  4 steps, through src/both.ts",
+            "  twonames.ts  4 steps, through src/both.ts",
+        ]
+    );
+}
