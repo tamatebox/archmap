@@ -1590,6 +1590,16 @@ impl ArchitectureGraph {
                     if let Some(barrel) = barrel {
                         through.insert(statement, barrel);
                     }
+                } else if !e.type_only {
+                    // a line that also takes values stands for the line, not
+                    // its statement of types only
+                    let types_only = |(_, kept): &&mut (&Edge, &Evidence)| {
+                        (kept.file.as_str(), kept.line) == statement && kept.type_only
+                    };
+                    let list = if named { &mut by_name } else { &mut may_use };
+                    if let Some(kept) = list.iter_mut().find(types_only) {
+                        *kept = (edge, e);
+                    }
                 }
                 if !e.passes_on() || e.file == file {
                     continue;

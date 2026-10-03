@@ -846,3 +846,14 @@ fn a_barrel_passes_a_change_on_under_the_name_it_exports_it_as() {
         ]
     );
 }
+
+#[test]
+fn a_line_that_takes_a_module_both_as_a_type_and_by_value_runs_it() {
+    let ws = scan(&fixture("ts-uses"));
+    // `vi.importActual<typeof import('../src/money')>('../src/money')`
+    let out = text(&ws, "formatPrice");
+    assert!(
+        out.contains("\n  tests/actual.test.ts (takes its module whole)\n"),
+        "{out}"
+    );
+}
