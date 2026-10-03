@@ -128,6 +128,8 @@ into the model in [graph.md](graph.md); how the commands present it is in
 - Unit tests are left out of dependencies within their crate, so `impact` does not list them.
 - A module that defines no `pub` item and whose only recorded import is a dev-dependency in its unit
   tests reads as test code, so `impact` on it lists the module itself among the tests to run again.
+- `impact` tells a test's root from the rest of a test target's modules, an example and a bench by
+  the kind of Cargo target whose module tree holds the file.
 - Rust components are finer than Python's: a module file rather than a package directory.
 - Path evidence keeps one line per file and target, the first path's, whatever names the other
   paths take.

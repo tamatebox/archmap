@@ -476,9 +476,9 @@ Transitive dependents: 2 more (6 in all)
   app/lazy.tsx  2 steps, through src/lib/money.ts
   scripts/report.cjs  2 steps, through src/lib/money.ts
 
-Tests to run again: 2
-  tests/helpers.ts (through src/lib/money.ts, types only)
+Tests to run again: 1
   tests/money.test.ts (mocks it)
+  not tests: tests/helpers.ts (helper, for 1 test listed)
 
 Not traced:
   dynamic: 2 calls load modules by computed names, which may be this: scripts/report.cjs:4, src/app/lazy.tsx:7
@@ -528,7 +528,18 @@ calls load ends `, by its mock` (`(through src/orders.ts, by its mock)`).
 `types only` follows when no way runs what changed: running the test runs
 none of the change, though its type checks may break. A test file that is
 the target is marked `(the target itself)`, and one of a changed component
-`(in the target)`. `Changed in the
+`(in the target)`. The list holds what a test runner runs by its defaults:
+Python's `test_*.py`, `*_test.py` and `tests.py`, TS/JS `*.test.*` and
+`*.spec.*` files and those below `__tests__`, and Rust tests' root files.
+A reached `conftest.py` reads as its directory, whose tests and those
+below pytest loads it for (`tests/unit/ (conftest.py: pytest loads it for
+every test below)`). The rest of the test code it reaches ends the
+section, not counted (`not tests: tests/unit/factories.py (helper, for 2
+tests listed), examples/demo.rs (example)`): a helper, other test code
+below `tests/`, `test/` or `__mocks__` and a module of a Rust test, with
+the listed tests that import it; and a Rust example or bench. A runner's
+own configuration (pytest's `python_files`, Jest's `testMatch`, Vitest's
+`include`) is not read. `Changed in the
 same commits` follows, from the root's committed git history: the files
 committed together with the target (a file, a symbol's file, or a
 component's files), each with the commits it shares with the target out
@@ -580,7 +591,10 @@ with its `ways` (those at its fewest steps and, where none of them runs
 what changed, the nearest that do: `{"kind": "takes", "via"?}`, `whole`,
 `runs_first` and `through` with their `file`, `target`, each with its
 `steps`, `types_only` when it runs none of the change and `mock` when only
-mock calls load its file) and `types_only`, and `left_out` as `{"total",
+mock calls load its file), `types_only`, and for a `conftest.py` the
+directory it `stands_for`; `not_tests` with each such file, its `kind`
+(`helper`, `example`, `bench`), its `ways` and, for a helper, the listed
+tests that load it as `for_tests`; and `left_out` as `{"total",
 "files"}` with every test file and the `mocks` of
 each, by `file`, `line` and the `target` it replaces, when a mock left one
 out; `co_change` with the history read and every file with every shared

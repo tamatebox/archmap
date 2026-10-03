@@ -88,6 +88,27 @@ pub(crate) struct Index {
     packages: Vec<ResolvedPackage>,
 }
 
+impl Index {
+    /// For each file of a target crate, the kind of each target whose tree
+    /// holds it, and whether it is that target's root.
+    pub(crate) fn targets_of_files(&self) -> BTreeMap<String, Vec<(TargetKind, bool)>> {
+        let mut found: BTreeMap<String, Vec<(TargetKind, bool)>> = BTreeMap::new();
+        for (index, node) in self.forest.nodes.iter().enumerate() {
+            let Some(root) = node.root.filter(|_| node.module == 0) else {
+                continue;
+            };
+            if let Some(tree) = self.forest.trees.get(&root) {
+                let path = display_path(&self.files[node.file].rel);
+                found
+                    .entry(path)
+                    .or_default()
+                    .push((tree.kind, index == root));
+            }
+        }
+        found
+    }
+}
+
 impl std::fmt::Debug for Index {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(

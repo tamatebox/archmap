@@ -284,18 +284,45 @@ pub struct Statements {
 #[derive(Debug, Serialize)]
 pub struct TestFiles {
     pub total: usize,
-    /// Every one, by path.
+    /// Every one, by path: the tests a runner collects, and a `conftest.py`
+    /// for the tests below it.
     pub files: Vec<TestFile>,
+    /// Test code the change reaches that no runner runs as a test: helpers,
+    /// examples and benches.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub not_tests: Vec<NotTest>,
     /// The test files left out, which reach the target only through
     /// modules their mocks replace for their whole run.
     #[serde(skip_serializing_if = "LeftOut::is_empty")]
     pub left_out: LeftOut,
 }
 
+/// Test code that no runner runs as a test.
+#[derive(Debug, Serialize)]
+pub struct NotTest {
+    pub file: String,
+    /// `helper`, `example` or `bench`.
+    pub kind: &'static str,
+    pub ways: Vec<TestRouteView>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub types_only: bool,
+    /// For a helper, the tests listed that reach the target through it.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub for_tests: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
 /// A test file to run again, with how it reaches the target.
 #[derive(Debug, Serialize)]
 pub struct TestFile {
     pub file: String,
+    /// For a `conftest.py`, the directory whose tests, and those below,
+    /// pytest loads it for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stands_for: Option<String>,
     /// Every way at its fewest steps from the target, by precedence, then
     /// where none of those takes values, the nearest that do: the text
     /// shows the first that takes values.

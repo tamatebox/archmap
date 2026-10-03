@@ -12,10 +12,11 @@ use archmap_core::{ArchitectureGraph, ComponentId};
 
 use crate::query_text::{
     component_head, count, display, file_head, import_counts, import_location, namesakes,
-    not_traced, place, shell_word, statements_title, symbol_line, with_more,
+    not_traced, place, plural, shell_word, statements_title, symbol_line, with_more,
 };
 use crate::views::{
-    About, Dependent, ImpactResult, ImportSites, TestWayView, MAX_IMPORT_SITES, MAX_TEST_FILES,
+    About, Dependent, ImpactResult, ImportSites, TestRouteView, TestWayView, MAX_IMPORT_SITES,
+    MAX_TEST_FILES,
 };
 
 /// Default caps, lifted by `verbose`; statements and test files are capped
@@ -379,46 +380,49 @@ fn tests(out: &mut String, result: &ImpactResult, caps: &Caps) -> bool {
         let _ = writeln!(out, "\nTests to run again: {}", count(total, shown));
     }
     // each with its nearest way that takes values, or where none does, its
-    // nearest
+    // nearest; a conftest.py as the tests it is loaded for
     for test in &result.tests.files[..shown] {
-        let route = test
-            .ways
-            .iter()
-            .find(|r| !r.types_only)
-            .or(test.ways.first());
-        let mock = route.is_some_and(|r| r.mock);
-        let mut how = match route.map(|r| &r.way) {
-            Some(TestWayView::Target) => match &result.about {
-                About::Component => "in the target".to_owned(),
-                _ => "the target itself".to_owned(),
+        match &test.stands_for {
+            Some(dir) => {
+                let _ = writeln!(
+                    out,
+                    "  {dir} (conftest.py: pytest loads it for every test below)"
+                );
+            }
+            None => match way_text(&test.ways, test.types_only, &result.about) {
+                Some(how) => {
+                    let _ = writeln!(out, "  {} ({how})", test.file);
+                }
+                None => {
+                    let _ = writeln!(out, "  {}", test.file);
+                }
             },
-            // a call that puts a mock in its place, and nothing else
-            Some(TestWayView::Takes { via: None }) if mock => "mocks it".to_owned(),
-            Some(TestWayView::Takes { via: None }) => "takes it".to_owned(),
-            Some(TestWayView::Takes { via: Some(via) }) => format!("takes it, via {via}"),
-            Some(TestWayView::Whole) => "takes its module whole".to_owned(),
-            Some(TestWayView::RunsFirst { file }) => format!("runs first: {file}"),
-            Some(TestWayView::Through { file }) if mock => {
-                format!("through {file}, by its mock")
-            }
-            Some(TestWayView::Through { file }) => format!("through {file}"),
-            None => String::new(),
-        };
-        if test.types_only {
-            how.push_str(", types only");
         }
-        match how.is_empty() {
-            true => {
-                let _ = writeln!(out, "  {}", test.file);
-            }
-            false => {
-                let _ = writeln!(out, "  {} ({how})", test.file);
-            }
-        }
+    }
+    // test code that no runner runs as a test, not counted
+    let others = &result.tests.not_tests;
+    let mut truncated = shown < total;
+    if !others.is_empty() {
+        let places: Vec<String> = others
+            .iter()
+            .take(caps.locations)
+            .map(|other| {
+                let mut notes = vec![other.kind.to_owned()];
+                if let Some(TestWayView::Target) = other.ways.first().map(|r| &r.way) {
+                    notes.push("the target itself".to_owned());
+                }
+                if other.for_tests > 0 {
+                    notes.push(format!("for {} listed", plural(other.for_tests, "test")));
+                }
+                format!("{} ({})", other.file, notes.join(", "))
+            })
+            .collect();
+        truncated |= places.len() < others.len();
+        let _ = writeln!(out, "  not tests: {}", with_more(&places, others.len()));
     }
     let left = &result.tests.left_out;
     if left.total == 0 {
-        return shown < total;
+        return truncated;
     }
     let what = match left.total {
         1 => "1 test file reaches it only through a module its mock replaces".to_owned(),
@@ -436,5 +440,30 @@ fn tests(out: &mut String, result: &ImpactResult, caps: &Caps) -> bool {
         "  left out: {what}: {}",
         with_more(&places, left.total)
     );
-    shown < total || places.len() < left.total
+    truncated || places.len() < left.total
+}
+
+/// How a test reaches the target, as its line says it: its nearest way
+/// that takes values, or where none does, its nearest.
+fn way_text(ways: &[TestRouteView], types_only: bool, about: &About) -> Option<String> {
+    let route = ways.iter().find(|r| !r.types_only).or(ways.first());
+    let mock = route.is_some_and(|r| r.mock);
+    let mut how = match route.map(|r| &r.way)? {
+        TestWayView::Target => match about {
+            About::Component => "in the target".to_owned(),
+            _ => "the target itself".to_owned(),
+        },
+        // a call that puts a mock in its place, and nothing else
+        TestWayView::Takes { via: None } if mock => "mocks it".to_owned(),
+        TestWayView::Takes { via: None } => "takes it".to_owned(),
+        TestWayView::Takes { via: Some(via) } => format!("takes it, via {via}"),
+        TestWayView::Whole => "takes its module whole".to_owned(),
+        TestWayView::RunsFirst { file } => format!("runs first: {file}"),
+        TestWayView::Through { file } if mock => format!("through {file}, by its mock"),
+        TestWayView::Through { file } => format!("through {file}"),
+    };
+    if types_only {
+        how.push_str(", types only");
+    }
+    Some(how)
 }

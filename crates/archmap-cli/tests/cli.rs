@@ -436,12 +436,18 @@ fn impact_of_a_file_uses_the_summary_depth() {
         ids(&result["transitive"]),
         serde_json::json!(["shop::shop", "shop::scripts", "shop::shop.billing"])
     );
-    // the tests to run again, each with how it reaches the target
-    assert_eq!(result["tests"]["total"], 2);
+    // the tests to run again, each with how it reaches the target, and a
+    // helper apart
+    assert_eq!(result["tests"]["total"], 1);
     assert_eq!(
         test_files(&result["tests"]),
-        serde_json::json!(["tests/test_billing.py", "tests/unit/factories.py"])
+        serde_json::json!(["tests/test_billing.py"])
     );
+    assert_eq!(
+        result["tests"]["not_tests"][0]["file"],
+        "tests/unit/factories.py"
+    );
+    assert_eq!(result["tests"]["not_tests"][0]["kind"], "helper");
     assert_eq!(
         result["tests"]["files"][0]["ways"],
         serde_json::json!([{"kind": "runs_first", "file": "src/shop/__init__.py", "steps": 2}])
@@ -1844,16 +1850,19 @@ fn several_symbols_of_one_name_count_their_importers() {
 fn impact_of_a_symbol_starts_at_the_statements_that_take_it() {
     let symbol = ts_stdout(&["impact", "formatPrice", "--format", "json"]);
     let file = ts_stdout(&["impact", "src/lib/money.ts", "--format", "json"]);
-    // tests/helpers.ts takes another name from money.ts: the file reaches
-    // it, the symbol does not
+    // tests/helpers.ts, a helper, takes another name from money.ts: the
+    // file reaches it, the symbol does not
     let tests = |json: &str| -> serde_json::Value {
         test_files(&serde_json::from_str::<serde_json::Value>(json).unwrap()["tests"])
     };
-    assert_eq!(
-        tests(&file),
-        serde_json::json!(["tests/helpers.ts", "tests/money.test.ts"])
-    );
+    let helper = |json: &str| -> serde_json::Value {
+        serde_json::from_str::<serde_json::Value>(json).unwrap()["tests"]["not_tests"][0]["file"]
+            .clone()
+    };
+    assert_eq!(tests(&file), serde_json::json!(["tests/money.test.ts"]));
+    assert_eq!(helper(&file), "tests/helpers.ts");
     assert_eq!(tests(&symbol), serde_json::json!(["tests/money.test.ts"]));
+    assert!(helper(&symbol).is_null());
     for expected in [
         "\"symbol\": \"ts-shop::src/lib/money.ts::formatPrice\"",
         "\"ts-shop::src/app/page.tsx\"",
@@ -2080,11 +2089,13 @@ fn test_code_is_marked_and_listed_apart() {
     }
     let json = ts_stdout(&["impact", "src/lib/money.ts", "--format", "json"]);
     let impact: serde_json::Value = serde_json::from_str(&json).unwrap();
-    // the tests to run again, apart from the code that depends on the file
+    // the tests to run again, apart from the code that depends on the file,
+    // and the helper apart from them
     assert_eq!(
         test_files(&impact["tests"]),
-        serde_json::json!(["tests/helpers.ts", "tests/money.test.ts"])
+        serde_json::json!(["tests/money.test.ts"])
     );
+    assert_eq!(impact["tests"]["not_tests"][0]["file"], "tests/helpers.ts");
     // importers: production code first, test code marked
     let impact = fixture_json(&["impact", "src/shop/users.py", "--format", "json"]);
     let sites: Vec<(String, bool)> = impact["importers"]["statements"]

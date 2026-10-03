@@ -139,9 +139,9 @@ fn a_file_answers_with_its_dependents_statements_tests_and_blind_spots() {
            app/lazy.tsx  2 steps, through src/lib/money.ts\n  \
            scripts/report.cjs  2 steps, through src/lib/money.ts\n\
          \n\
-         Tests to run again: 2\n  \
-           tests/helpers.ts (through src/lib/money.ts, types only)\n  \
-           tests/money.test.ts (mocks it)\n\
+         Tests to run again: 1\n  \
+           tests/money.test.ts (mocks it)\n  \
+           not tests: tests/helpers.ts (helper, for 1 test listed)\n\
          \n\
          Changed in the same commits: not read (not a git repository)\n\
          \n\
@@ -296,14 +296,15 @@ fn a_script_says_what_uses_its_globals_is_not_traced() {
 }
 
 #[test]
-fn a_test_file_marks_itself_among_the_tests_to_run_again() {
+fn a_changed_helper_is_listed_apart_as_the_target_itself() {
     let ws = scan(&fixture("simple-ts-project"));
     let out = text(&ws, "tests/helpers.ts");
+    // no runner runs a helper as a test: the tests that import it are
     assert_eq!(
-        section(&out, "Tests to run again: 2"),
+        section(&out, "Tests to run again: 1"),
         [
-            "  tests/helpers.ts (the target itself)",
-            "  tests/money.test.ts (takes it)"
+            "  tests/money.test.ts (takes it)",
+            "  not tests: tests/helpers.ts (helper, the target itself, for 1 test listed)"
         ]
     );
 }
@@ -691,6 +692,59 @@ fn each_test_to_run_again_says_how_it_reaches_the_symbol() {
         [
             "  tests/typed.test.ts (takes it, types only)",
             "  tests/whole.test.ts (takes its module whole)"
+        ]
+    );
+}
+
+#[test]
+fn a_conftest_stands_for_its_tests_and_a_helper_is_no_test() {
+    let files: Vec<(String, String)> = [
+        ("pyproject.toml", "[project]\nname = \"shop\"\n"),
+        ("shop/__init__.py", ""),
+        ("shop/core.py", "def rate():\n    return 1\n"),
+        (
+            "tests/conftest.py",
+            "from shop.core import rate\n\n\ndef pytest_configure():\n    rate()\n",
+        ),
+        (
+            "tests/test_core.py",
+            "from shop.core import rate\n\n\ndef test_rate():\n    assert rate() == 1\n",
+        ),
+        (
+            "tests/helpers.py",
+            "from shop.core import rate\n\n\ndef make():\n    return rate()\n",
+        ),
+        (
+            "tests/test_make.py",
+            "from tests.helpers import make\n\n\ndef test_make():\n    assert make() == 1\n",
+        ),
+    ]
+    .into_iter()
+    .map(|(path, text)| (path.to_owned(), text.to_owned()))
+    .collect();
+    let repo = Repo::new("conftest", &files);
+    let ws = scan(&repo.0);
+    assert_eq!(
+        section(&text(&ws, "shop/core.py"), "Tests to run again: 3"),
+        [
+            "  tests/ (conftest.py: pytest loads it for every test below)",
+            "  tests/test_core.py (takes it)",
+            "  tests/test_make.py (through tests/helpers.py)",
+            "  not tests: tests/helpers.py (helper, for 1 test listed)",
+        ]
+    );
+}
+
+#[test]
+fn rust_examples_benches_and_modules_of_tests_are_no_tests_to_run() {
+    let ws = scan(&fixture("rust-cargo-targets"));
+    assert_eq!(
+        section(&text(&ws, "kiosk/src/till.rs"), "Tests to run again: 2"),
+        [
+            "  kiosk/tests/stock.rs (takes it)",
+            "  kiosk/tests/total.rs (through kiosk/src/lib.rs)",
+            "  not tests: kiosk/benches/speed.rs (bench), kiosk/examples/demo.rs (example), \
+             kiosk/tests/common/mod.rs (helper, for 2 tests listed)",
         ]
     );
 }

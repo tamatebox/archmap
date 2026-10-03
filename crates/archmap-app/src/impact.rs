@@ -8,13 +8,15 @@ use archmap_core::{
     Symbol, TestReach, TestRoute, TestWay, UnmappedImport,
 };
 
+use archmap_scan::ScanReport;
+
 use crate::co_change::{self, Changed};
 use crate::not_traced::{barrels, not_traced, Narrowed, NotTraced, Own, Place, Subject};
 use crate::resolve::{resolve, Resolved};
 use crate::target::{component_file, fold, namesakes, reject_outside, unquote};
 use crate::views::{
     About, Dependent, ImpactResult, ImportSite, ImportSites, LeftOut, Location, MockCall,
-    MockingTest, Statements, TestFile, TestFiles, TestRouteView, TestWayView,
+    MockingTest, NotTest, Statements, TestFile, TestFiles, TestRouteView, TestWayView,
 };
 use crate::{Answer, Format, Found, ImpactRequest, Workspace};
 
@@ -161,7 +163,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
             })
         }
         Resolved::ImportName(module) => {
-            let result = import_name_impact(full, depth, target, &module, caps);
+            let result = import_name_impact(full, &ws.report, depth, target, &module, caps);
             return Ok(Answer {
                 output: render(&result, format, full, &rolled, verbose)?,
                 found: Found::One,
@@ -343,6 +345,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
         transitive,
         tests: test_files(
             full,
+            &ws.report,
             taken.as_deref(),
             reach.tests,
             reach.test_ways,
@@ -525,6 +528,7 @@ fn dependents(
 /// those files, and the test files that import it or reach them.
 fn import_name_impact<'a>(
     full: &'a ArchitectureGraph,
+    report: &ScanReport,
     depth: usize,
     target: &'a str,
     module: &'a str,
@@ -582,7 +586,7 @@ fn import_name_impact<'a>(
         also_at_path: Vec::new(),
         direct,
         transitive,
-        tests: test_files(full, None, tests, ways, left_out, caps.tests),
+        tests: test_files(full, report, None, tests, ways, left_out, caps.tests),
         importers: Some(importers),
         imports_below: None,
         may_use: None,
@@ -596,6 +600,7 @@ fn import_name_impact<'a>(
 /// replace a module on their way, the first `cap` of each by path.
 fn test_files(
     full: &ArchitectureGraph,
+    report: &ScanReport,
     taken: Option<&str>,
     tests: BTreeSet<String>,
     mut ways: BTreeMap<String, TestReach>,
@@ -616,6 +621,11 @@ fn test_files(
             let mock = archmap_scan::is_mock_call(e.note.as_deref().unwrap_or(""));
             *mocks.entry((e.file.as_str(), target)).or_insert(true) &= mock;
         }
+    }
+    // the test files that load each file
+    let mut loaded_by: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for (test, target) in mocks.keys() {
+        loaded_by.entry(target).or_default().insert(test);
     }
     let by_mock = |test: &str, file: Option<&str>| {
         file.is_some_and(|file| mocks.get(&(test, file)).copied().unwrap_or(false))
@@ -641,21 +651,55 @@ fn test_files(
             mock,
         }
     };
-    let files = tests
-        .iter()
-        .take(cap)
-        .map(|file| {
-            let reach = ways.remove(file).unwrap_or_default();
-            TestFile {
+    // what a runner runs, and the test code it runs no test of
+    let kinds = archmap_scan::test_kinds(report, tests.iter().map(String::as_str));
+    let mut files: Vec<TestFile> = Vec::new();
+    let mut not_tests: Vec<NotTest> = Vec::new();
+    for file in &tests {
+        let reach = ways.remove(file).unwrap_or_default();
+        let routes: Vec<TestRouteView> = reach.ways.into_iter().map(|r| view(file, r)).collect();
+        let kind = kinds
+            .get(file.as_str())
+            .copied()
+            .unwrap_or(archmap_scan::TestKind::Test);
+        let other = match kind {
+            archmap_scan::TestKind::Test | archmap_scan::TestKind::Conftest => None,
+            archmap_scan::TestKind::Helper => Some("helper"),
+            archmap_scan::TestKind::Example => Some("example"),
+            archmap_scan::TestKind::Bench => Some("bench"),
+        };
+        match other {
+            Some(kind) => not_tests.push(NotTest {
                 file: file.clone(),
-                ways: reach.ways.into_iter().map(|r| view(file, r)).collect(),
+                kind,
+                ways: routes,
                 types_only: reach.types_only,
-            }
-        })
-        .collect();
+                for_tests: 0,
+            }),
+            None => files.push(TestFile {
+                file: file.clone(),
+                stands_for: (kind == archmap_scan::TestKind::Conftest).then(|| {
+                    match file.rsplit_once('/') {
+                        Some((dir, _)) => format!("{dir}/"),
+                        None => "./".to_owned(),
+                    }
+                }),
+                ways: routes,
+                types_only: reach.types_only,
+            }),
+        }
+    }
+    // a helper counts the tests listed that load it
+    let listed: BTreeSet<&str> = files.iter().map(|t| t.file.as_str()).collect();
+    for helper in &mut not_tests {
+        helper.for_tests = loaded_by
+            .get(helper.file.as_str())
+            .map_or(0, |tests| tests.intersection(&listed).count());
+    }
     TestFiles {
-        total: tests.len(),
-        files,
+        total: files.len(),
+        files: files.into_iter().take(cap).collect(),
+        not_tests,
         left_out: LeftOut {
             total: left_out.len(),
             files: left_out

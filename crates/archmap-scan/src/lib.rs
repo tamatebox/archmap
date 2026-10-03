@@ -33,7 +33,7 @@ pub use languages::language_of;
 pub use options::ScanOptions;
 pub use rust::uses::takes_self;
 pub use stamp::{stamp, Stamp};
-pub use test_code::is_test_code;
+pub use test_code::{is_test_code, TestKind};
 pub use typescript::is_mock_call;
 pub use uses::symbol_uses;
 
@@ -148,4 +148,30 @@ fn coverage(
         coverage.entry(language).or_default().scripts = n;
     }
     coverage
+}
+
+/// What each of `paths`, files of test code, is to a test runner: for
+/// Python and TS/JS by the runners' default names (a test file's name, a
+/// file below `__tests__`), for Rust by the kind of Cargo target whose tree
+/// holds it (the root of a test is a test, a module of one a helper). A
+/// file it cannot tell stays a test.
+pub fn test_kinds<'a>(
+    report: &ScanReport,
+    paths: impl IntoIterator<Item = &'a str>,
+) -> BTreeMap<&'a str, TestKind> {
+    let rust = report
+        .rust
+        .as_ref()
+        .map(|index| index.targets_of_files())
+        .unwrap_or_default();
+    paths
+        .into_iter()
+        .map(|path| {
+            let kind = match rust.get(path) {
+                Some(targets) => test_code::rust_kind(targets),
+                None => test_code::kind_by_name(Path::new(path)),
+            };
+            (path, kind)
+        })
+        .collect()
 }
