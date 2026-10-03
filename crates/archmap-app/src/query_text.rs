@@ -102,12 +102,22 @@ pub fn render(
         QueryResult::PackageName(view) => (view.not_traced.as_ref(), false, false, false),
         QueryResult::Env(view) => (view.not_traced.as_ref(), false, false, false),
     };
+    let work = match result {
+        QueryResult::Component(view) => view.work.as_ref(),
+        QueryResult::File(view) => view.work.as_ref(),
+        _ => None,
+    };
+    // titles, read for no mark
+    let mut free = String::new();
+    if let Some(work) = work {
+        truncated |= crate::work_text::render(&mut free, work, verbose);
+    }
     let mut tail = String::new();
     if let Some(found) = not_traced {
         let cap = caps.locations;
         truncated |= self::not_traced(&mut tail, found, cap, no_importers, script, global);
     }
-    marks(&mut out, &tail);
+    marks_after(&mut out, &free, &tail);
     out.push_str(&tail);
     if truncated {
         let _ = writeln!(
@@ -1392,15 +1402,22 @@ const MARKS: [(&str, &str, &str); 16] = [
 /// marks that `out` and `tail` show mean, written to `out` before `tail`
 /// follows it; nothing when they show none. A mark follows a space, so a
 /// path such as `app/(test)/page.tsx` shows none. The text is searched
-/// whole, which holds while answers show no free text (titles, messages)
-/// that could hold a mark's words; one that does needs the marks recorded
-/// where they are written instead.
+/// whole, which holds while it shows no free text (titles, messages) that
+/// could hold a mark's words: such text goes through [`marks_after`].
 pub(crate) fn marks(out: &mut String, tail: &str) {
+    marks_after(out, "", tail);
+}
+
+/// [`marks`], with `free` written to `out` before the Marks line: text that
+/// shows no mark of its own but may hold a mark's words (a pull request's
+/// title), so the marks are read from `out` and `tail` alone.
+pub(crate) fn marks_after(out: &mut String, free: &str, tail: &str) {
     let shown: Vec<String> = MARKS
         .iter()
         .filter(|(written, _, _)| out.contains(written) || tail.contains(written))
         .map(|(_, mark, meaning)| format!("{mark} {meaning}"))
         .collect();
+    out.push_str(free);
     if !shown.is_empty() {
         let _ = writeln!(out, "\nMarks: {}", shown.join("; "));
     }

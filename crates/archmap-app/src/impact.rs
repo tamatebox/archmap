@@ -482,6 +482,10 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
         }
         co_change::section(history, full, changed)
     });
+    // the pull requests and items linked to the commits it counts
+    let work = co_change
+        .as_ref()
+        .map(|co| crate::work_section::section(ws, co));
 
     // the file a test that takes the target loads
     let taken: Option<String> = match &traced {
@@ -543,6 +547,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
         unnamed,
         instance_method: instance,
         co_change,
+        work,
         not_traced,
         about,
     };
@@ -882,6 +887,7 @@ fn importers_impact<'a>(
         unnamed: BTreeSet::new(),
         instance_method: false,
         co_change: None,
+        work: None,
         not_traced,
         about: About::ImportName,
     }

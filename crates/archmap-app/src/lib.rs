@@ -25,6 +25,8 @@ mod target;
 mod views;
 mod work;
 mod work_line;
+mod work_section;
+mod work_text;
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;

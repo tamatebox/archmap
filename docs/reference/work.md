@@ -151,3 +151,60 @@ snapshot's coverage.
 `summary`'s Coverage names the snapshot when there is one (`work: github
 acme/shop, 2 issues and 1 pull request updated since 2025-10-03, fetched
 2026-10-03 09:00 UTC, as visible to the account that fetched`).
+
+## `Work` in `impact` and `query`
+
+`impact`, and `query` on a file or a component, end with the pull requests
+and items the snapshot links to the commits that changed the target, just
+before `Not traced`:
+
+```text
+Work: 3 of the 4 commits that changed src/pricing/price.ts are linked to 2 pull requests and 1 issue
+  pull requests: 2
+  #18 pull request, merged 2026-01-04: Rates in yaml
+    by merge commit: c6677fc 2026-01-04
+  #15 pull request, merged 2026-01-03: Round refunds half up
+    by commit list: f0e9bdf 2026-01-02, f9396a2 2026-01-01; merged as 9f541d5, a merge commit, not among the commits counted
+    closes #12 issue, closed 2026-01-03: Refunds round down; cross-referenced by #20 issue, open: Rate tables
+  linked from commits: 1
+  #12 issue, closed 2026-01-03: Refunds round down
+    closed by commit 010f709 2026-01-02
+  1 commit is linked to no pull request or item in the snapshot by SHA (after a squash or rebase merge, a pull request's own commits have other SHAs): 6bf7b15 2026-01-06
+  work: github acme/shop, 3 issues and 2 pull requests updated since 2025-10-03, fetched 2026-10-03 09:00 UTC, as visible to the account that fetched; states as of the fetch
+```
+
+The commits are those `Changed in the same commits` counts (see
+[history.md](history.md)): those that changed the target's files, merges,
+a shallow clone's boundary and commits over 30 files under the root left
+out, the last counted apart (`2 commits over 30 files not followed`). Every
+step is a link the snapshot holds, never a match by content or time:
+
+- a pull request whose commit list holds one of the commits (`by commit
+  list`), or whose merge commit is one (`by merge commit`: a squash, or the
+  last commit of a rebase); a true merge's merge commit is no commit
+  counted, so it shows as the pull request's own fact (`merged as ...`);
+- the items it links, each once with every link between them, by type
+  and in the snapshot's direction: `closes`, `closed` (the item was closed
+  by it), `linked to`, `cross-references` and `cross-referenced by`
+  (`closes, closed: #12 issue, ...` when both);
+- items a commit links straight (`linked from commits`): an issue the
+  commit closed, one its message references;
+- the commits linked to nothing. After a squash or rebase merge a pull
+  request's own commits have other SHAs than HEAD's, so such a commit may
+  belong to one; one older than the snapshot's range is counted apart,
+  since the snapshot may not hold its pull request.
+
+Pull requests come by their newest connecting commit, then the lower
+number; items from commits by the newest commit that links them, then the
+lower number, so the same HEAD and snapshot give the same order. The text shows 5 pull requests, 3 items from commits, 2 commits
+of each kind and 3 items per pull request, 3 commits linked to nothing,
+each list counted (`pull requests: 6, showing 5`); `--verbose` lifts the
+caps. Item states are as of the fetch. Without a snapshot the section is
+one line, `Work: none (no snapshot at .archmap/github.json)`, and `query`
+reads no history for it. JSON gives `work` with `state` (`read`,
+`no_snapshot`, `unreadable`, `no_history`), the counts, every pull request
+with its connecting commits by kind, `merged_as` and its `items` (each
+with its `other` end, when the snapshot holds it its `kind`, `state` and
+`title`, and its `links` by `type` and the `end` the pull request is),
+`from_commits` with each linking commit by `type`,
+`unlinked`, `older`, `large` and the snapshot's coverage.

@@ -166,7 +166,8 @@ pub enum RelationType {
     Linked,
     /// An issue to the commit or pull request that closed it, at a time.
     ClosedBy,
-    /// An item to an item that references it.
+    /// An item to an item it references, as the referenced item's
+    /// timeline records it.
     CrossReferenced,
     /// A commit to an item its message references.
     Referenced,

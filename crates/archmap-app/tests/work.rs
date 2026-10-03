@@ -355,3 +355,203 @@ fn a_fetch_takes_its_host_from_origin_only_on_github_com() {
     .to_string();
     assert!(error.contains("--since takes a date"), "{error}");
 }
+
+fn impact(ws: &Workspace, target: &str, format: Format) -> String {
+    ws.impact(&archmap_app::ImpactRequest {
+        target,
+        depth: DEFAULT_DEPTH,
+        format,
+        verbose: false,
+    })
+    .unwrap()
+    .output
+}
+
+#[test]
+fn a_file_lists_the_pull_requests_and_issues_linked_to_its_commits() {
+    let (repo, c) = shop("work-file");
+    let ws = scan(&repo.dir);
+    let expected = format!(
+        "\nWork: 3 of the 3 commits that changed src/price.ts are linked to 1 pull request and \
+         1 issue\n  \
+         pull requests: 1\n  \
+         #15 pull request, merged 2026-01-04: Item 15\n    \
+         by commit list: {} 2026-01-02, {} 2026-01-01; by merge commit: {} 2026-01-04\n    \
+         closes, closed: #12 issue, open: Refunds round down\n  \
+         linked from commits: 1\n  \
+         #12 issue, open: Refunds round down\n    \
+         referenced in commit {} 2026-01-02\n  \
+         work: github acme/shop, 2 issues and 1 pull request updated since 2025-10-03, fetched \
+         2026-10-03 09:00 UTC, as visible to the account that fetched; states as of the fetch\n",
+        short(&c[1]),
+        short(&c[0]),
+        short(&c[3]),
+        short(&c[1]),
+    );
+    // in query on the file, and in impact after the files changed with it
+    let text = query(&ws, "src/price.ts", Format::Text);
+    assert!(text.contains(&expected), "{text}");
+    let text = impact(&ws, "src/price.ts", Format::Text);
+    assert!(text.contains(&expected), "{text}");
+    let co_change = text.find("\nChanged in the same commits").unwrap();
+    assert!(co_change < text.find("\nWork:").unwrap(), "{text}");
+}
+
+#[test]
+fn a_title_that_holds_a_marks_words_adds_no_mark() {
+    let (repo, _) = shop("work-title");
+    let path = repo.dir.join(".archmap/github.json");
+    let snapshot = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("Item 15", "Fix flaky checkout (test) on CI")
+        .replace("Refunds round down", "Retry (local) cache");
+    std::fs::write(&path, snapshot).unwrap();
+    let ws = scan(&repo.dir);
+    for text in [
+        query(&ws, "src/price.ts", Format::Text),
+        impact(&ws, "src/price.ts", Format::Text),
+    ] {
+        assert!(
+            text.contains(": Fix flaky checkout (test) on CI\n"),
+            "{text}"
+        );
+        assert!(text.contains(": Retry (local) cache\n"), "{text}");
+        assert!(!text.contains("(test) in test code"), "{text}");
+        assert!(!text.contains("(local) inside"), "{text}");
+    }
+}
+
+#[test]
+fn json_gives_each_step_of_the_work_with_its_link() {
+    let (repo, c) = shop("work-json");
+    let json = query(&scan(&repo.dir), "src/price.ts", Format::Json);
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let work = &value["work"];
+    assert_eq!(work["state"], "read");
+    assert_eq!(work["snapshot"], ".archmap/github.json");
+    assert_eq!(
+        (work["commits"].clone(), work["linked"].clone()),
+        (3.into(), 3.into())
+    );
+    let pull = &work["pull_requests"][0];
+    assert_eq!(pull["number"], 15);
+    let ids = |list: &serde_json::Value| -> Vec<String> {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(ids(&pull["by_commit_list"]), [c[1].clone(), c[0].clone()]);
+    assert_eq!(ids(&pull["by_merge_commit"]), [c[3].clone()]);
+    assert!(pull.get("merged_as").is_none(), "{pull}");
+    // the issue once, with both links
+    assert_eq!(pull["items"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        pull["items"][0]["links"],
+        serde_json::json!([
+            {"type": "closes", "end": "from"},
+            {"type": "closed_by", "end": "to"}
+        ])
+    );
+    assert_eq!(pull["items"][0]["other"], serde_json::json!({"item": 12}));
+    assert_eq!(pull["items"][0]["state"], "open");
+    let from = &work["from_commits"][0];
+    assert_eq!(from["other"], serde_json::json!({"item": 12}));
+    assert_eq!(from["by"][0]["type"], "referenced");
+    assert_eq!(from["by"][0]["commit"]["id"], c[1].as_str());
+}
+
+#[test]
+fn a_true_merge_is_the_pull_requests_own_fact_apart_from_the_commits_counted() {
+    let mut repo = Repo::new("work-merge");
+    repo.write_package();
+    let base = repo.commit("src/price.ts", "export const price = 1;\n");
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    let change = repo.commit("src/price.ts", "export const price = 2;\n");
+    repo.git(&["checkout", "-q", "main"]);
+    repo.git(&["merge", "-q", "--no-ff", "-m", "merge", "feature"]);
+    repo.commits += 1;
+    let merge = repo.git(&["rev-parse", "HEAD"]);
+    let alone = repo.commit("src/price.ts", "export const price = 3;\n");
+    repo.snapshot(&serde_json::json!({
+        "schema": 1, "source": "github", "host": "github.com", "repository": "acme/shop",
+        "fetched_at": "2026-10-03T09:00:00Z",
+        // the range starts after the first commit
+        "range": {"updated_since": "2026-01-01T12:00:00Z", "since_rule": "given",
+                  "bound": 5000, "issues": 0, "pull_requests": 1},
+        "relation_types": ["closes", "linked", "closed_by", "cross_referenced", "referenced"],
+        "items": [{
+            "kind": "pull_request", "number": 7, "id": "P7", "title": "Raise price",
+            "state": "merged", "created_at": "2026-01-02T00:00:00Z",
+            "updated_at": "2026-01-03T00:00:00Z", "merged_at": "2026-01-03T00:00:00Z",
+            "closed_at": "2026-01-03T00:00:00Z", "merge_commit": merge, "commits": [change],
+        }, {
+            "kind": "issue", "number": 30, "id": "I30", "title": "Prices", "state": "open",
+            "created_at": "2026-01-02T00:00:00Z", "updated_at": "2026-01-03T00:00:00Z",
+        }, {
+            "kind": "issue", "number": 31, "id": "I31", "title": "Rates", "state": "closed",
+            "created_at": "2026-01-02T00:00:00Z", "updated_at": "2026-01-03T00:00:00Z",
+        }],
+        // from the item that references to the one it references: #7
+        // references #30, and #31 references #7
+        "relations": [
+            {"type": "cross_referenced", "from": {"item": 7}, "to": {"item": 30},
+             "observed": ["CrossReferencedEvent"]},
+            {"type": "cross_referenced", "from": {"item": 31}, "to": {"item": 7},
+             "observed": ["CrossReferencedEvent"]},
+        ],
+    }));
+    let ws = scan(&repo.dir);
+    let text = query(&ws, "src/price.ts", Format::Text);
+    for line in [
+        "\nWork: 1 of the 3 commits that changed src/price.ts is linked to 1 pull request and \
+         2 issues\n"
+            .to_owned(),
+        // a closed item without a date in the snapshot says no date
+        "    cross-references #30 issue, open: Prices; cross-referenced by #31 issue, closed: \
+         Rates\n"
+            .to_owned(),
+        format!(
+            "    by commit list: {} 2026-01-02; merged as {}, a merge commit, not among the \
+             commits counted\n",
+            short(&change),
+            short(&merge)
+        ),
+        // newest first; the first commit is older than the range
+        format!(
+            "  2 commits are linked to no pull request or item in the snapshot by SHA (after a \
+             squash or rebase merge, a pull request's own commits have other SHAs): {} \
+             2026-01-04, {} 2026-01-01; 1 is older than the snapshot's range, whose pull \
+             requests it may not hold\n",
+            short(&alone),
+            short(&base)
+        ),
+    ] {
+        assert!(text.contains(&line), "{line}\n{text}");
+    }
+    let json = query(&ws, "src/price.ts", Format::Json);
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let items = &value["work"]["pull_requests"][0]["items"];
+    assert_eq!(
+        items,
+        &serde_json::json!([
+            {"other": {"item": 30}, "kind": "issue", "state": "open", "title": "Prices",
+             "links": [{"type": "cross_referenced", "end": "from"}]},
+            {"other": {"item": 31}, "kind": "issue", "state": "closed", "title": "Rates",
+             "links": [{"type": "cross_referenced", "end": "to"}]},
+        ])
+    );
+}
+
+#[test]
+fn without_a_snapshot_a_file_says_where_the_work_would_come_from() {
+    let mut repo = Repo::new("work-none");
+    repo.write_package();
+    repo.commit("src/price.ts", "export const price = 1;\n");
+    let text = query(&scan(&repo.dir), "src/price.ts", Format::Text);
+    assert!(
+        text.contains("\nWork: none (no snapshot at .archmap/github.json)\n"),
+        "{text}"
+    );
+}

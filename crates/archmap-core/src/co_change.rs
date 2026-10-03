@@ -99,6 +99,10 @@ pub struct CoChange {
     pub target_commits: Vec<CommitRef>,
     /// The target's files those commits changed.
     pub target_files: usize,
+    /// The commits that changed a target file and were left out for their
+    /// size.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub target_large: usize,
     /// Other files changed in those commits, by their shared commits over
     /// the mean of the target's count and their own (code-maat's degree),
     /// highest first, so a file that changes in most commits sinks; then
@@ -246,6 +250,7 @@ pub fn co_change(history: &History, targets: &BTreeSet<String>, settings: &Setti
         settings: *settings,
         counts,
         target_files: target_files.len(),
+        target_large: large_touching,
         target_commits,
         files,
         none,
@@ -328,6 +333,10 @@ fn topological(commits: &[Commit]) -> Vec<usize> {
         }
     }
     order
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 #[cfg(test)]

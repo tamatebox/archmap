@@ -15,8 +15,9 @@ use archmap_core::work::{
 use archmap_scan::history::LocalCommit;
 use serde::Serialize;
 
-use crate::co_change::{date, short};
-use crate::work_line::{day, plural_word, range_line};
+use crate::work_line::{
+    date, day, kind_word, plural_word, range_line, short, state_line, state_word,
+};
 use crate::{Format, Workspace};
 
 /// Items per list the text shows; `verbose` lifts it.
@@ -520,38 +521,6 @@ fn text(view: &WorkView, snapshot: &Snapshot, history: &History, verbose: bool) 
         );
     }
     out
-}
-
-fn kind_word(kind: ItemKind) -> &'static str {
-    match kind {
-        ItemKind::Issue => "issue",
-        ItemKind::PullRequest => "pull request",
-    }
-}
-
-fn state_word(state: ItemState) -> &'static str {
-    match state {
-        ItemState::Open => "open",
-        ItemState::Closed => "closed",
-        ItemState::Merged => "merged",
-    }
-}
-
-/// `merged 2026-09-20`, `closed as completed 2026-09-20`, `open`.
-fn state_line(item: &Item) -> String {
-    let day = |t: &Option<String>| t.as_deref().map(day).unwrap_or_default().to_owned();
-    match item.state {
-        ItemState::Open => "open".to_owned(),
-        ItemState::Merged => format!("merged {}", day(&item.merged_at)),
-        ItemState::Closed => match item.state_reason.as_deref() {
-            Some(reason) => format!(
-                "closed as {} {}",
-                reason.replace('_', " "),
-                day(&item.closed_at)
-            ),
-            None => format!("closed {}", day(&item.closed_at)),
-        },
-    }
 }
 
 /// What a link's other end is: `#12 issue, closed`, `acme/web#4 (another

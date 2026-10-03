@@ -119,7 +119,8 @@ JSON (`impact --format json`) gives the section as `co_change`: `history`
 whether it was reached, how `renames` were detected, skipped paths),
 `target_paths`, `settings` (`max_files`, `follow_renames`,
 `pure_moves_count`), `counts` (commits read, counted, large, merges,
-boundaries), `target_commits`, every file with every shared commit's full
+boundaries), `target_commits`, `target_large` (the commits that changed
+the target and were left out for their size, when any), every file with every shared commit's full
 SHA and time (`files`, with `own`, `in_head`, `submodule` and `earlier`),
 and `none` with why when no counted commit changed the target.
 

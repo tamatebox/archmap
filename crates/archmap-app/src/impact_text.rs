@@ -11,8 +11,8 @@ use std::fmt::Write;
 use archmap_core::{ArchitectureGraph, ComponentId};
 
 use crate::query_text::{
-    component_head, count, display, env_head, file_head, import_counts, import_location, marks,
-    names_capped, namesakes, not_traced, package_name_head, place, plural, shell_word,
+    component_head, count, display, env_head, file_head, import_counts, import_location,
+    marks_after, names_capped, namesakes, not_traced, package_name_head, place, plural, shell_word,
     statements_title, symbol_line, used_at, with_more, UsedAt, MAX_USE_FILES, SHOWN_NAMES,
 };
 use crate::views::{
@@ -112,11 +112,16 @@ pub(crate) fn render(
     if let Some(section) = &result.co_change {
         truncated |= crate::co_change::render(&mut out, section, verbose);
     }
+    // titles, read for no mark
+    let mut free = String::new();
+    if let Some(section) = &result.work {
+        truncated |= crate::work_text::render(&mut free, section, verbose);
+    }
     let mut tail = String::new();
     if let Some(found) = &result.not_traced {
         truncated |= not_traced(&mut tail, found, caps.locations, true, true, true);
     }
-    marks(&mut out, &tail);
+    marks_after(&mut out, &free, &tail);
     out.push_str(&tail);
     if truncated {
         let _ = writeln!(

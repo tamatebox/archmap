@@ -146,6 +146,8 @@ fn a_file_answers_with_its_dependents_statements_tests_and_blind_spots() {
          \n\
          Changed in the same commits: not read (not a git repository)\n\
          \n\
+         Work: none (no snapshot at .archmap/github.json)\n\
+         \n\
          Marks: (via file:line) reached through that re-export; (names a, b) the names it takes; \
          (export) a re-export, passes names on; (type) types only, never runs\n\
          \n\

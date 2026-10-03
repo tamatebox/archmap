@@ -10,6 +10,7 @@ use archmap_core::{
     SymbolUses, UnreadReason, WHOLE_MODULE,
 };
 
+use crate::co_change::Changed;
 use crate::not_traced::{
     holds_global, not_traced, with_uses, EnvGaps, NotTraced, Own, Place, Spot, Spots, Subject,
 };
@@ -19,6 +20,7 @@ use crate::views::{
     ComponentView, EnvView, FileView, Importer, PackageNameView, QueryResult, SymbolView,
     UnmappedView,
 };
+use crate::work_section;
 use archmap_scan::ScanReport;
 
 use crate::{Answer, Format, Found, QueryRequest, Workspace};
@@ -156,6 +158,7 @@ pub(crate) fn file_view<'a>(
         dynamic_imports: facts.dynamic_imports,
         script,
         directive,
+        work: None,
         not_traced,
     }
 }
@@ -188,7 +191,7 @@ fn query(ws: &Workspace, request: &QueryRequest) -> Result<Answer> {
     let full = ws.graph();
     let rolled = full.rollup(depth);
 
-    let result = match resolve(full, &rolled, &ws.report, target)? {
+    let mut result = match resolve(full, &rolled, &ws.report, target)? {
         Resolved::Candidates(candidates) => {
             return Ok(Answer {
                 output: candidates.render(full, target, format, verbose)?,
@@ -236,6 +239,23 @@ fn query(ws: &Workspace, request: &QueryRequest) -> Result<Answer> {
         }),
     };
 
+    // the pull requests and items linked to the commits that changed a file
+    // or a component, when a work snapshot holds any
+    match &mut result {
+        QueryResult::File(view) => {
+            let path = view.file.clone();
+            let changed = Changed::File {
+                path: &path,
+                symbol: false,
+            };
+            view.work = Some(work_section::for_query(ws, full, changed));
+        }
+        QueryResult::Component(view) if view.component.path.is_some() => {
+            let changed = Changed::Component(view.component);
+            view.work = Some(work_section::for_query(ws, full, changed));
+        }
+        _ => {}
+    }
     let output = match format {
         Format::Json => crate::json(&result)?,
         Format::Text => crate::query_text::render(&result, target, full, &rolled, verbose),
@@ -540,6 +560,7 @@ fn component_view<'a>(
             .iter()
             .filter(|i| i.from == component.id)
             .collect(),
+        work: None,
         not_traced,
     }))
 }

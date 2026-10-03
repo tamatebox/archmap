@@ -193,6 +193,10 @@ HEAD's history`), and in `Not traced` the links its end cannot see. An item
 outside the snapshot's range says so with the links that name it; another
 repository's item, `not in this snapshot (it holds acme/shop)`; without a
 snapshot, where it looked. A file of the same name is read as the file.
+A file or a component ends, before `Not traced`, with `Work`: the pull
+requests and items the snapshot links to the commits that changed it, as
+`impact` gives it (see [work.md](work.md#work-in-impact-and-query)); the
+history is read for it only when a snapshot exists.
 
 `query` prints compact text by default: public symbols with their location
 in source order (by file, then line; JSON keeps them by id),
@@ -658,6 +662,10 @@ saying what was read (`history: HEAD 6bf7b15, full clone; 6 commits read, 5
 counted; left out 1 over 30 files; renames -M50%`), or why nothing was
 (`not read (not a git repository)`); see [history.md](history.md).
 Changing together is a fact of the history, never proof of a dependency.
+`Work` follows: the pull requests and items the work snapshot links to
+those same commits, by commit list or merge commit and then by link type,
+or one line saying there is no snapshot; see
+[work.md](work.md#work-in-impact-and-query).
 `Not traced` ends the answer as in `query`, and gives a script's note and a
 `declare global` one too,
 and `history:` when the history read may hide files changed with the

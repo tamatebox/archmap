@@ -5,8 +5,9 @@
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 
-use archmap_core::co_change::CoChange;
+use archmap_core::co_change::{CoChange, CommitRef};
 use archmap_core::history::{HistoryState, Renames};
+use archmap_core::work::{Item, ItemKind, ItemState, Range, Ref, RelationType};
 use archmap_core::{
     Component, ComponentId, DynamicImport, Edge, EnvUses, Evidence, ImportPlace, Symbol, SymbolId,
     SymbolUses, UnmappedImport,
@@ -50,6 +51,10 @@ pub struct ComponentView<'a> {
     pub not_mapped: Vec<&'a UnmappedImport>,
     /// Modules the component loads by names computed at runtime.
     pub dynamic_imports: Vec<&'a DynamicImport>,
+    /// The pull requests and items the work snapshot links to the commits
+    /// that changed it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work: Option<WorkSection<'a>>,
     /// What could reach the target unseen, from what analyzers record.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub not_traced: Option<NotTraced>,
@@ -98,6 +103,10 @@ pub struct FileView<'a> {
     /// The file's React directive: `use client` or `use server`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub directive: Option<&'a str>,
+    /// The pull requests and items the work snapshot links to the commits
+    /// that changed it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work: Option<WorkSection<'a>>,
     /// What could reach the target unseen, from what analyzers record.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub not_traced: Option<NotTraced>,
@@ -272,6 +281,10 @@ pub struct ImpactResult<'a> {
     /// history.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub co_change: Option<CoChangeSection<'a>>,
+    /// The pull requests and items the work snapshot links to the commits
+    /// that changed the target.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work: Option<WorkSection<'a>>,
     /// What could reach the target unseen, from what analyzers record.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub not_traced: Option<NotTraced>,
@@ -535,4 +548,149 @@ pub struct HistoryCoverage<'a> {
     pub renames: &'a Renames,
     /// Paths that are not UTF-8, skipped.
     pub skipped_paths: usize,
+}
+
+/// `Work`: the pull requests and issues the work snapshot links to the
+/// commits that changed the target, those `Changed in the same commits`
+/// counts. Every step is an observed link: a pull request's commit list or
+/// merge commit by SHA, then a link type the tracker records.
+#[derive(Debug, Serialize)]
+pub struct WorkSection<'a> {
+    /// Where the snapshot is read from.
+    pub snapshot: String,
+    #[serde(flatten)]
+    pub state: WorkState<'a>,
+    /// How the heading names the target.
+    #[serde(skip)]
+    pub(crate) label: String,
+}
+
+/// What the section could read.
+#[derive(Debug, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum WorkState<'a> {
+    /// No snapshot: nothing was read for the section.
+    NoSnapshot,
+    /// The snapshot could not be read.
+    Unreadable {
+        error: String,
+    },
+    /// The local history was not read, so no commit can be matched.
+    NoHistory,
+    Read(WorkLinks<'a>),
+}
+
+/// The links of the counted commits that changed the target.
+#[derive(Debug, Serialize)]
+pub struct WorkLinks<'a> {
+    /// The counted commits that changed the target.
+    pub commits: usize,
+    /// Of those, the ones a pull request or an item links.
+    pub linked: usize,
+    /// The commits that changed the target and were left out for their
+    /// size, which are not followed.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub large: usize,
+    /// Pull requests whose commit list or merge commit holds one of the
+    /// commits, newest connecting commit first.
+    pub pull_requests: Vec<LinkedPull<'a>>,
+    /// Items a commit links straight (an issue it closed, one its message
+    /// references), newest linking commit first.
+    pub from_commits: Vec<FromCommits<'a>>,
+    /// The commits no pull request or item links, newest first.
+    pub unlinked: Vec<CommitRef>,
+    /// Of those, the ones older than the snapshot's range, whose pull
+    /// requests it may not hold.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub older: usize,
+    pub coverage: WorkCoverage<'a>,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+/// A pull request linked to the target's commits.
+#[derive(Debug, Serialize)]
+pub struct LinkedPull<'a> {
+    pub number: u64,
+    pub state: ItemState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<&'a str>,
+    /// The target's commits its commit list holds, newest first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub by_commit_list: Vec<CommitRef>,
+    /// The target's commits that are its merge commit (a squash or the last
+    /// commit of a rebase).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub by_merge_commit: Vec<CommitRef>,
+    /// Its merge commit when that is no commit counted: a true merge's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merged_as: Option<&'a str>,
+    /// The items it links, by link type and direction.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<LinkedItem<'a>>,
+    #[serde(skip)]
+    pub(crate) item: Option<&'a Item>,
+}
+
+/// An item a pull request links, once, with every link the snapshot
+/// records between them.
+#[derive(Debug, Serialize)]
+pub struct LinkedItem<'a> {
+    #[serde(flatten)]
+    pub item: Other<'a>,
+    pub links: Vec<LinkEnd>,
+}
+
+/// A link by its type and the end the pull request is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct LinkEnd {
+    #[serde(rename = "type")]
+    pub kind: RelationType,
+    /// `from` when the pull request is the relation's `from` end.
+    pub end: &'static str,
+}
+
+/// An item that commits of the target link straight.
+#[derive(Debug, Serialize)]
+pub struct FromCommits<'a> {
+    #[serde(flatten)]
+    pub item: Other<'a>,
+    /// Each linking commit with the link type, newest first.
+    pub by: Vec<CommitLink>,
+}
+
+/// A commit that links an item, by the link type.
+#[derive(Debug, Serialize)]
+pub struct CommitLink {
+    #[serde(rename = "type")]
+    pub kind: RelationType,
+    pub commit: CommitRef,
+}
+
+/// The other end of a link: the item as the link names it, and as the
+/// snapshot holds it, when it does.
+#[derive(Debug, Serialize)]
+pub struct Other<'a> {
+    pub other: &'a Ref,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ItemKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<ItemState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<&'a str>,
+    #[serde(skip)]
+    pub(crate) found: Option<&'a Item>,
+}
+
+/// The snapshot the links come from.
+#[derive(Debug, Serialize)]
+pub struct WorkCoverage<'a> {
+    pub source: &'a str,
+    pub repository: &'a str,
+    pub fetched_at: &'a str,
+    pub range: &'a Range,
+    #[serde(skip)]
+    pub(crate) line: String,
 }
