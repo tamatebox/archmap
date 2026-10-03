@@ -547,7 +547,9 @@ the target is marked `(the target itself)`, and one of a changed component
 `(in the target)`. The list holds what a test runner runs by its defaults:
 pytest's `test_*.py` and `*_test.py` and the `tests.py` of Django and
 unittest (not unittest's wider `test*.py`), TS/JS `*.test.*` and `*.spec.*`
-files and those below `__tests__`, and Rust tests' root files.
+files and those below `__tests__` (Jest's default; Vitest collects only
+the named ones, so a helper there reads as a test), and Rust tests' root
+files.
 A reached `conftest.py` reads as its directory, whose tests and those
 below pytest loads it for (`tests/unit/ (conftest.py: pytest loads it for
 every test below)`). The rest of the test code it reaches ends the
