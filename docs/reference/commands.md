@@ -258,8 +258,11 @@ namespaces a barrel passes on (`money.formatPrice`), or to the symbol's own
 declaration in the file that defines it. For a class member, it is an
 access through the class (`Wallet.open()`) or `this.m` inside the class's
 own members of the same kind, static or not, and the arrow functions in
-them. Names in comments and strings are no uses, nor is an export
-specifier, which passes a name on. Each use is marked by what it does:
+them. A type query of what holds the symbol, its module or its class
+(`typeof m`, `keyof typeof m`, `typeof import('./money')`), is a use as a
+type too, since that type holds the type of every export or member. Names
+in comments and strings are no uses, nor is an export specifier, which
+passes a name on. Each use is marked by what it does:
 `(call)`, `(new)`, `(jsx)` for a JSX element's name, `(type)`, or `(read)`
 for any other (passed as a value, assigned, compared), then `(test)`; it
 ends in `as <name>` when the code names it otherwise:

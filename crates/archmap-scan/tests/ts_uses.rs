@@ -77,14 +77,20 @@ fn a_function_is_used_through_every_binding_that_reaches_it() {
             "src/cast.ts:3:32 call as m.formatPrice via 1",
             "src/cast.ts:4:24 call as m.formatPrice via 1",
             "src/hoisted.ts:1:28 call via 3",
+            // the module's type holds every export's (`typeof import(..)`,
+            // `typeof m`)
+            "src/importtype.ts:1:28 type via 1",
             "src/money.ts:10:12 call",
             // `import { formatPrice }; export { formatPrice as fmt2 }`
             "src/relayed.ts:3:24 call as fmt2 via 1",
+            "src/typeof.ts:3:26 type as m via 1",
             "src/types.ts:4:50 type via 4",
             "src/view.tsx:9:27 call as money.formatPrice via 1",
             "src/view.tsx:10:21 call via 1",
             "src/view.tsx:11:34 call as all.money.formatPrice via 2",
-            // `await vi.importActual(..)`, beside `typeof import(..)`
+            // `typeof import(..)` as the type argument, and the call through
+            // `await vi.importActual(..)`
+            "tests/actual.test.ts:2:56 type via 2 (test)",
             "tests/actual.test.ts:3:10 call via 2 (test)",
             // a mock stands in for the module, but the call names the symbol
             "tests/mocked.test.ts:8:24 call via 1 (test)",
@@ -106,11 +112,9 @@ fn a_function_is_used_through_every_binding_that_reaches_it() {
         "{:?}",
         places(&found.escapes)
     );
-    // a type of the module whole names no member of it
-    assert_eq!(
-        places(&found.unused),
-        ["src/unused.ts:1", "tests/actual.test.ts:2"]
-    );
+    // a namespace that reads only another export never names it, while the
+    // module's type holds every export's (above)
+    assert_eq!(places(&found.unused), ["src/rates.ts:1", "src/unused.ts:1"]);
     assert_eq!(
         places(&found.passed_on),
         ["src/index.ts:1", "src/index.ts:2", "src/relay.ts:1"]
@@ -222,6 +226,7 @@ fn a_class_is_used_by_new_by_its_static_members_and_in_types() {
             "src/app.ts:9:17 type via 1",
             "src/app.ts:9:26 read via 1",
             "src/app.ts:10:7 new via 1",
+            "src/importtype.ts:1:28 type via 1",
             "src/money.ts:6:18 type",
             "src/money.ts:7:16 new",
             "src/money.ts:14:35 type",
@@ -229,7 +234,9 @@ fn a_class_is_used_by_new_by_its_static_members_and_in_types() {
             "src/rich.ts:3:27 read via 1",
             "src/rich.ts:8:19 type via 1",
             "src/rich.ts:13:25 type via 1",
+            "src/typeof.ts:3:26 type as m via 1",
             "src/types.ts:3:32 type via 1",
+            "tests/actual.test.ts:2:56 type via 2 (test)",
         ]
     );
 }
@@ -243,7 +250,10 @@ fn a_member_is_used_through_its_class_and_through_this_in_its_own_kind() {
         shown(&open),
         [
             "src/app.ts:9:33 call via 1",
-            "src/money.ts:21:17 call as this.open"
+            "src/importtype.ts:1:28 type via 1",
+            "src/money.ts:21:17 call as this.open",
+            "src/typeof.ts:3:26 type as m via 1",
+            "tests/actual.test.ts:2:56 type via 2 (test)",
         ]
     );
     // a subclass inherits statics too (`Rich.open()`, `super.open()`): the
@@ -259,8 +269,11 @@ fn a_member_is_used_through_its_class_and_through_this_in_its_own_kind() {
     assert_eq!(
         shown(&pay),
         [
+            "src/importtype.ts:1:28 type via 1",
             "src/money.ts:13:10 call as this.pay",
             "src/money.ts:17:29 call as this.pay",
+            "src/typeof.ts:3:26 type as m via 1",
+            "tests/actual.test.ts:2:56 type via 2 (test)",
         ]
     );
     // the class's importers may call it through values (`w?.pay(7)`,
@@ -299,12 +312,23 @@ fn a_default_export_and_a_renamed_export_are_used_by_their_local_names() {
     // `export default total` is no use; the default import is
     assert_eq!(
         shown(&uses_of(&graph, "total")),
-        ["src/app.ts:11:70 call via 3"]
+        [
+            "src/app.ts:11:70 call via 3",
+            "src/importtype.ts:1:28 type via 1",
+            "src/typeof.ts:3:26 type as m via 1",
+            "tests/actual.test.ts:2:56 type via 2 (test)",
+        ]
     );
     // `export { rates as RATES }`: the uses of `rates`
     assert_eq!(
         shown(&uses_of(&graph, "RATES")),
-        ["src/money.ts:29:46 read as rates"]
+        [
+            "src/importtype.ts:1:28 type via 1",
+            "src/money.ts:29:46 read as rates",
+            "src/rates.ts:3:26 read as money.RATES via 1",
+            "src/typeof.ts:3:26 type as m via 1",
+            "tests/actual.test.ts:2:56 type via 2 (test)",
+        ]
     );
 }
 
@@ -355,4 +379,44 @@ fn files_that_changed_since_the_scan_are_unread_with_the_reason() {
     );
     assert_eq!(shown(&found), ["src/kept.ts:3:18 call via 1"]);
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn the_type_of_a_module_whole_takes_every_symbol_of_it() {
+    let graph = graph();
+    // `typeof m`, `typeof import('./money')` and a type argument of that
+    // kind hold the type of every export, the symbol's included: no
+    // statement of them may end `never named`
+    for name in ["formatPrice", "RATES"] {
+        let found = uses_of(&graph, name);
+        let typed: Vec<String> = shown(&found)
+            .into_iter()
+            .filter(|u| {
+                [
+                    "src/typeof.ts",
+                    "src/importtype.ts",
+                    "tests/actual.test.ts:2",
+                ]
+                .iter()
+                .any(|f| u.starts_with(f))
+            })
+            .collect();
+        assert_eq!(
+            typed,
+            [
+                "src/importtype.ts:1:28 type via 1",
+                "src/typeof.ts:3:26 type as m via 1",
+                "tests/actual.test.ts:2:56 type via 2 (test)",
+            ],
+            "{name}"
+        );
+    }
+    // a namespace that reads only another export never names it
+    let found = uses_of(&graph, "formatPrice");
+    let unused: Vec<String> = found
+        .unused
+        .iter()
+        .map(|e| format!("{}:{}", e.file, e.line.unwrap_or(0)))
+        .collect();
+    assert_eq!(unused, ["src/rates.ts:1", "src/unused.ts:1"]);
 }

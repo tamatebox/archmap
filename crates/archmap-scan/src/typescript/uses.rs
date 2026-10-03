@@ -440,7 +440,12 @@ impl<'g> Pass<'g, '_> {
                     if let Some(qualifier) = &t.qualifier {
                         qualifier_names(qualifier, &mut names);
                     }
-                    if paths.contains(&names) {
+                    // the module, or a namespace on the way, whole in a type
+                    // (`typeof import('./money')`) holds the symbol's type
+                    let holds = paths
+                        .iter()
+                        .any(|p| p.len() > names.len() && p.starts_with(&names));
+                    if paths.contains(&names) || holds {
                         let shown = match &t.qualifier {
                             Some(TSImportTypeQualifier::Identifier(i)) => i.span,
                             Some(TSImportTypeQualifier::QualifiedName(q)) => q.right.span,
@@ -935,11 +940,16 @@ fn follow_node(
         {
             out.subclasses.push(evidence_at(read, span));
         }
-        // passed on or named in a type, not used here
+        // the type of what holds the symbol, a module or a class (`typeof
+        // m`, `keyof typeof m`), takes the symbol's type with the rest
+        AstKind::TSTypeQuery(_) => {
+            let binding = (!written.is_empty()).then(|| written.to_owned());
+            uses.push(make_use(read, span, UseRole::Type, binding));
+        }
+        // passed on, not used here
         AstKind::ExportSpecifier(_)
         | AstKind::ExportDefaultDeclaration(_)
-        | AstKind::JSXClosingElement(_)
-        | AstKind::TSTypeQuery(_) => {}
+        | AstKind::JSXClosingElement(_) => {}
         _ => escape(out),
     }
 }
