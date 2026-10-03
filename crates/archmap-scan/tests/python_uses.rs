@@ -96,7 +96,12 @@ fn a_name_is_used_where_python_resolves_it_to_the_import() {
             "bazaar/tests/test_pay.py:7:12 call via 3 (test)",
         ]
     );
-    assert_eq!(places(&pay.unused), ["bazaar/unused.py:1"]);
+    // `model.eval()` and a method named `eval` read no name by a computed
+    // one: only the builtins do, as `globals()` does in `dynamic.py`
+    assert_eq!(
+        places(&pay.unused),
+        ["bazaar/evaluated.py:1", "bazaar/unused.py:1"]
+    );
     assert_eq!(places(&pay.passed_on), ["bazaar/billing/__init__.py:1"]);
     // the module passed as a value, and read by a dunder
     assert_eq!(

@@ -315,7 +315,7 @@ fn a_symbol_leaves_out_the_whole_module_imports_that_never_name_it() {
     // file all the same
     let pay = impact(&ws, "pay", DEFAULT_DEPTH, true);
     assert!(
-        pay.contains("  never used (1 import): bazaar/unused.py:1\n"),
+        pay.contains("  never used (2 imports): bazaar/evaluated.py:1, bazaar/unused.py:1\n"),
         "{pay}"
     );
     assert!(

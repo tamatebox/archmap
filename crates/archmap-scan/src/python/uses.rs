@@ -27,7 +27,7 @@ use ruff_python_ast::{self as ast, Expr, ExprContext, ModModule, PySourceType, S
 use ruff_python_parser::{parse_string_annotation, parse_unchecked_source, Parsed};
 use ruff_text_size::{Ranged, TextRange};
 
-use super::source::{scan_source, DunderAll, COMPUTED_NAMES};
+use super::source::{scan_source, DunderAll};
 use crate::lines::Lines;
 
 /// A file larger than this is not parsed: recovering from errors in a huge
@@ -234,7 +234,7 @@ impl Pass<'_> {
                 out.unread.push(unread(UnreadReason::Rebound));
             } else if read.syntax_error {
                 out.unread.push(unread(UnreadReason::ParseError));
-            } else if read.dynamic || may_bind.contains(&line) {
+            } else if walker.dynamic || may_bind.contains(&line) {
                 out.unread.push(unread(UnreadReason::DynamicAccess));
             } else if target.tail.len() == 2 {
                 // values or subclasses of the class may reach the method
@@ -492,9 +492,6 @@ struct File {
     test: bool,
     /// The parser recovered from an error: uses in the broken part are lost.
     syntax_error: bool,
-    /// Code may reach any of its names by a computed one (`globals()`,
-    /// `sys.modules`, `exec`, a module `__getattr__`).
-    dynamic: bool,
     /// Its `__all__`, as the scan reads it.
     all: Option<DunderAll>,
 }
@@ -514,7 +511,6 @@ impl File {
             path: file.to_owned(),
             lines: Lines::new(&text),
             syntax_error: !parsed.errors().is_empty(),
-            dynamic: COMPUTED_NAMES.iter().any(|call| text.contains(call)),
             all: scan_source(&text).all,
             parsed,
             text,
@@ -745,6 +741,10 @@ struct Walker<'r> {
     subclasses: Vec<Evidence>,
     /// The statements whose binding its scope binds again.
     rebound: BTreeSet<u32>,
+    /// Code may reach the file's names by a computed one: a call of the
+    /// builtin `globals()`, `locals()`, `vars()` without arguments, `eval`
+    /// or `exec`, or `sys.modules`.
+    dynamic: bool,
 }
 
 impl<'r> Walker<'r> {
@@ -763,6 +763,7 @@ impl<'r> Walker<'r> {
             strings: false,
             subclasses: Vec::new(),
             rebound: BTreeSet::new(),
+            dynamic: false,
         }
     }
 
@@ -977,6 +978,21 @@ impl<'r> Walker<'r> {
         }
     }
 
+    /// Whether `call` calls a builtin that reads names by computed ones:
+    /// `globals()`, `locals()`, `vars()` without arguments, `eval` or
+    /// `exec`, by a name the file binds nowhere (not `model.eval()`).
+    fn reads_namespace(&self, call: &ast::ExprCall) -> bool {
+        let Expr::Name(name) = &*call.func else {
+            return false;
+        };
+        let builtin = match name.id.as_str() {
+            "globals" | "locals" | "eval" | "exec" => true,
+            "vars" => call.arguments.is_empty(),
+            _ => false,
+        };
+        builtin && self.resolve(&name.id).is_none()
+    }
+
     /// For a method, a base that names its class: the subclass's code may
     /// reach the method unseen.
     fn bases(&mut self, arguments: &ast::Arguments) {
@@ -1164,11 +1180,14 @@ impl<'a> Visitor<'a> for Walker<'_> {
         match expr {
             Expr::Name(name) => self.name(name),
             Expr::Attribute(attribute) => {
+                let sys = matches!(&*attribute.value, Expr::Name(n) if n.id.as_str() == "sys");
+                self.dynamic |= sys && attribute.attr.as_str() == "modules";
                 if !self.attribute(attribute) {
                     visitor::walk_expr(self, expr);
                 }
             }
             Expr::Call(call) => {
+                self.dynamic |= self.reads_namespace(call);
                 let outer = self.callee.replace(call.func.range());
                 self.visit_expr(&call.func);
                 self.callee = outer;

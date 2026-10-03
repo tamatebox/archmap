@@ -355,9 +355,11 @@ reads, a statement's otherwise unused binding is no negative fact but
 name, `global pay` and an assignment, an import in `try` and another
 binding in `except ImportError`: `name bound again`), a file with a syntax
 error, whose code around it is still read (`parse error`), a file that may
-reach names by computed ones (`globals()`, `sys.modules`, `exec`, a module
-`__getattr__`) or a star of a module whose `__all__` code builds (`names
-reached dynamically`), and a file over 4 MB (`file too large`). A name a
+reach names by computed ones (a call of the builtin `globals()`,
+`locals()`, `vars()` without arguments, `eval` or `exec`, not a method of
+that name, or `sys.modules`) or a star of a module whose `__all__` code
+builds (`names reached dynamically`), and a file over 4 MB (`file too
+large`). A name a
 module-level import binds in a package's `__init__.py`, or that a
 module's literal `__all__` lists, is offered to whoever imports the
 module, so its statement is `passed_on`, never `never used`. A module bound
