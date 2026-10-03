@@ -550,12 +550,11 @@ fn symbol_list(
         [one] => {
             truncated |= importers(out, one, full, rolled, caps);
             if let Some(uses) = &one.used_at {
-                let rust = full
+                let language = full
                     .symbol(&one.symbol.id)
                     .and_then(|s| full.component(&s.component))
-                    .and_then(|c| c.language.as_deref())
-                    == Some("rust");
-                truncated |= used_at(out, uses, one.instance_method, rust, caps);
+                    .and_then(|c| c.language.as_deref());
+                truncated |= used_at(out, uses, one.instance_method, language, caps);
             }
         }
         [] => {}
@@ -637,21 +636,22 @@ fn importers(
 /// Where one symbol is used: a line per file, production code first, then
 /// the files with the most uses, then by path, and the imports whose
 /// binding is never used. A method that is not static says that the list
-/// holds only the uses through its class and `this`, so that an empty list
-/// never reads as unused.
+/// holds only the uses through its class and `this` (`self`), so that an
+/// empty list never reads as unused.
 fn used_at(
     out: &mut String,
     uses: &SymbolUses,
     instance_method: bool,
-    rust: bool,
+    language: Option<&str>,
     caps: &Caps,
 ) -> bool {
     // the calls through values and subclasses are under `Not traced`
     let partial = instance_method || !uses.subclasses.is_empty();
-    let lead = match (partial, rust) {
-        (true, false) => "through the class and this only: ",
-        (true, true) => "through the type and self only: ",
+    let lead = match (partial, language) {
         (false, _) => "",
+        (true, Some("rust")) => "through the type and self only: ",
+        (true, Some("python")) => "through the class and self only: ",
+        (true, _) => "through the class and this only: ",
     };
     let mut truncated = false;
     if uses.uses.is_empty() {
@@ -1171,6 +1171,30 @@ pub(crate) fn not_traced(
         lines.push(format!(
             "  whole module: {what}, which may use this: {}",
             with_more(&places, w.total)
+        ));
+    }
+    if let Some(n) = &found.strings {
+        let what = match n.total {
+            1 => "1 string names it by its dotted path".to_owned(),
+            n => format!("{n} strings name it by its dotted path"),
+        };
+        let places: Vec<String> = n
+            .shown
+            .iter()
+            .take(cap)
+            .map(|s| {
+                let at = place(&s.file, s.line);
+                if s.test {
+                    format!("{at} (test)")
+                } else {
+                    at
+                }
+            })
+            .collect();
+        truncated |= places.len() < n.total;
+        lines.push(format!(
+            "  strings: {what}, which code may look up (a mock's target): {}",
+            with_more(&places, n.total)
         ));
     }
     if let Some(d) = &found.dynamic {

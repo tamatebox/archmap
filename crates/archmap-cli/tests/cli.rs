@@ -2840,9 +2840,11 @@ fn query_on_a_ts_symbol_lists_where_it_is_used() {
         value[0]["used_at"]["mocked"][0],
         serde_json::json!({"file": "tests/mocked.test.ts", "line": 4, "test": true})
     );
-    // a language without a uses pass says nothing about uses
+    // an import a package's `__init__.py` never uses offers the name to
+    // whoever imports the package: no negative fact
     let python = query_text(&python_fixture(), &["notify"]);
-    assert!(!python.contains("Used at"), "{python}");
+    assert!(python.contains("\nUsed at: none found\n"), "{python}");
+    assert!(!python.contains("never used"), "{python}");
 }
 
 #[test]

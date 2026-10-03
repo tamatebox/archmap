@@ -25,7 +25,9 @@ cargo install --git https://github.com/tamatebox/archmap archmap-cli   # puts `a
 
 From a clone, `cargo install --path crates/archmap-cli` does the same.
 `cargo install` copies the binary, so the `archmap` on PATH does not follow
-the source. Re-run it after pulling or changing the code.
+the source. Re-run it after pulling or changing the code. Building needs
+Rust 1.97 or later, which Ruff's Python parser requires; an older toolchain
+stops with cargo's message naming the version (`rustup update`).
 
 ### Agent plugin
 
@@ -143,8 +145,8 @@ What works today, by the [roadmap](#roadmap) phase it belongs to:
 | `impact` file by file | 2 | ✅ | ✅ | ✅ |
 | Test code counted apart from production code | 2 | ✅ | ✅ | ✅ |
 | `check` rules and cycles | 3 | ✅ | ✅ | ◐ |
-| Callers of a symbol | 4 | ◐ | — | ◐ |
-| References to a symbol | 4 | ◐ | — | ◐ |
+| Callers of a symbol | 4 | ◐ | ◐ | ◐ |
+| References to a symbol | 4 | ◐ | ◐ | ◐ |
 | Type relationships | 4 | — | — | — |
 | Selective data flow | 4 | — | — | — |
 | Test-to-code links | 4 | — | — | — |
@@ -162,10 +164,12 @@ The gaps behind the marks:
 - TS/JS `check`: only `type` written in an import marks it as types only,
   so a type imported without it (`import { Money }` for an interface) can
   close a cycle that `cycles.forbid` reports.
-- Rust and TS/JS callers and references: `query` lists where a symbol is
-  used through the names imports bind and, for a method, through its class
-  or type and `this` or `self`; a call through a value of a type
-  (`wallet.pay()`) is not read, and `impact` does not narrow by uses yet.
+- Callers and references: `query` lists where a symbol is used through
+  the names imports bind and, for a method, through its class or type and
+  `this` or `self`; a call through a value of a type (`wallet.pay()`) is
+  not read, nor in Python a name its scope binds again or the uses in a
+  file that reaches names by computed ones (`globals()`), and `impact` does
+  not narrow by uses yet.
 
 The commands read one merged graph, so a gap in what an analyzer reads
 shows in all of them: an import that is not read is missing from `query`,
@@ -206,7 +210,7 @@ comes later.
 | 1 Structural Facts | modules, public symbols, imports with their target file and scope, dependencies | Rust, Python and TypeScript/JavaScript, target files and scope included |
 | 2 Structural Compression & Agent Context | roll-up; `summary`, `query` and `impact` small enough for an agent and at one granularity; file and module queries whose evidence leads directly to source; full detail with `--format json` | done for Rust, Python and TS/JS, test code counted apart |
 | 3 Rules & Declared Architecture | declared components and layers, cycles, forbidden dependencies, drift, CI `check` | done: deny rules, layers, allow lists, coverage, cycles with a file-level reading, undeclared imports, stale declarations; structural signals |
-| 4 Deep Static Analysis | precise symbol resolution, callers and reference graph, type relationships, selective data flow, test-to-code links; on demand for one selected area | started: where a Rust or TS/JS symbol is used, read on demand by `query`; agent traces point first to callers and references, then selective data flow |
+| 4 Deep Static Analysis | precise symbol resolution, callers and reference graph, type relationships, selective data flow, test-to-code links; on demand for one selected area | started: where a Rust, Python or TS/JS symbol is used, read on demand by `query`; agent traces point first to callers and references, then selective data flow |
 | 5 Cross-system Graph | OpenAPI, Terraform, databases, HTTP, events, CI/build/deploy relationships | planned |
 | 6 Change & Work Graph | 6A local git history: commits, renames and the files changed together; 6B issues, pull requests and their explicit links from a fetched GitHub snapshot; 6C code to work and work to code at query time, Issue → PR → Commit → File | 6A: files changed in the same commits in `impact`; 6B: `fetch github` and `query '#123'`, issues, pull requests and their links from a snapshot ([work.md](docs/reference/work.md)); 6C planned |
 | 7 Semantic Enrichment | LLM naming, responsibilities, intent and other semantic interpretations, stored separately as inferred facts | planned |

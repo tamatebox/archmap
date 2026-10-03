@@ -117,6 +117,16 @@ pub enum UnreadReason {
     Changed,
     /// The file is gone or cannot be read.
     FileGone,
+    /// Its scope binds the statement's name again (Python: an import and a
+    /// later `def` of the name, two imports in `try` and `except
+    /// ImportError`): which binding code reads depends on run order.
+    Rebound,
+    /// Code in the file may reach the binding by a computed name
+    /// (`globals()`, `sys.modules`, `exec`), or a star import may bind it
+    /// by an `__all__` that code builds.
+    DynamicAccess,
+    /// The file is too large to parse on demand.
+    TooLarge,
 }
 
 impl UnreadReason {
@@ -130,6 +140,9 @@ impl UnreadReason {
             UnreadReason::NoPath => "no path to the symbol",
             UnreadReason::Changed => "changed since the scan",
             UnreadReason::FileGone => "file gone",
+            UnreadReason::Rebound => "name bound again",
+            UnreadReason::DynamicAccess => "names reached dynamically",
+            UnreadReason::TooLarge => "file too large",
         }
     }
 }

@@ -244,8 +244,7 @@ instead, and `impact` answers for that component. What the lists miss:
 - Code that runs when a file loads (a side-effect import) is listed for
   neither.
 
-For a Rust, TypeScript or JavaScript symbol, `query` also lists where code
-uses it, under `Used at`. The uses are read when the query asks, from the file
+For a symbol, `query` also lists where code uses it, under `Used at`. The uses are read when the query asks, from the file
 that defines the symbol and the files of the statements the two lists
 name, and never enter the graph, `scan` or `graph.json`. A use is an
 identifier that the language's scoping, within its file, resolves to the
@@ -330,8 +329,40 @@ names are parsed. Inside an `impl` of a type, its own or a trait's,
 `Self { .. }` and `Self(..)` are uses of the type. A method taking `self`
 gets the uses through its type and `self` (`Used at: through the type and
 self only: ...`): `self.m()`, `Self::m()`, `Type::m()`. A file whose text
-changed since the scan is not read (`changed since the scan`). A symbol of
-Python gets no `Used at`.
+changed since the scan is not read (`changed since the scan`).
+In Python, the files are parsed when the query asks, with Ruff's parser,
+and each name is resolved by Python's scope rules: a name bound anywhere in
+a function is local to all of it unless declared `global` or `nonlocal`, a
+class body's names are not seen by its methods, comprehensions, lambdas
+and type parameters have scopes of their own, and defaults, annotations,
+decorators and a comprehension's first iterable belong to the scope around
+them. A use goes through the name a statement binds (`from charge import
+pay as settle`), a module bound whole (`charge.pay`,
+`store.billing.charge.pay`, `from store.billing import charge`), the name a
+package's `__init__.py` passes the symbol on as, renamed or not, a star
+import of a module whose `__all__` lists it (or that has none), or the
+symbol's own definition. A method gets the uses through its class and the
+first parameter of its class's other methods, `self` or `cls`, apart from
+a static method's (`Used at: through the class and self only: ...`);
+calling a class is `(new)`; an annotation is `(type)`, a string annotation
+(`w: "Wallet"`) too, apart from the strings of `Literal[...]`, and the
+fields of an f-string are code. Where nothing tells which binding code
+reads, a statement's otherwise unused binding is no negative fact but
+`unread`: a name its scope binds again (an import and a later `def` of the
+name, `global pay` and an assignment, an import in `try` and another
+binding in `except ImportError`: `name bound again`), a file with a syntax
+error, whose code around it is still read (`parse error`), a file that may
+reach names by computed ones (`globals()`, `sys.modules`, `exec`, a module
+`__getattr__`) or a star of a module whose `__all__` code builds (`names
+reached dynamically`), and a file over 4 MB (`file too large`). A name a
+module-level import binds in a package's `__init__.py`, or that a
+module's literal `__all__` lists, is offered to whoever imports the
+module, so its statement is `passed_on`, never `never used`. A module bound
+whole that the code passes as a value or reads a dunder of
+(`charge.__dict__`) is a `whole module` place in `Not traced`, and a string
+that names the symbol by its module's dotted path
+(`mock.patch("store.billing.charge.pay")`, or one ending in `charge.pay`)
+a `strings` place, which code may look up.
 
 ## impact
 

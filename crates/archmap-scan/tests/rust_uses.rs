@@ -238,3 +238,22 @@ fn a_file_that_changed_since_the_scan_is_not_read() {
         .any(|u| u.file == "src/b.rs" && u.reason == UnreadReason::Changed));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn a_symbol_no_pass_reads_lists_its_files_as_unread() {
+    // a module, which `query` shows as a component of its own
+    let report = report();
+    let symbol = report
+        .graph
+        .symbols
+        .values()
+        .find(|s| s.kind == archmap_core::SymbolKind::Module)
+        .expect("a module symbol");
+    let found = symbol_uses(&report, symbol);
+    assert!(found.uses.is_empty());
+    assert!(!found.unread.is_empty());
+    assert!(found
+        .unread
+        .iter()
+        .all(|u| u.reason == archmap_core::UnreadReason::LanguageNotRead && u.line.is_none()));
+}

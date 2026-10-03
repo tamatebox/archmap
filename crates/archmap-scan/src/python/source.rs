@@ -459,7 +459,7 @@ pub fn scan_source(text: &str) -> PyFile {
 /// What reaches a module's names by a computed one, so that a name bound
 /// and never written may still be used: `globals()["pay"]`,
 /// `sys.modules[__name__]`, a module `__getattr__`, code run from a string.
-const COMPUTED_NAMES: [&str; 8] = [
+pub(super) const COMPUTED_NAMES: [&str; 8] = [
     "globals(",
     "locals(",
     "vars(",

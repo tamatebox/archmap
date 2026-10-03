@@ -356,26 +356,3 @@ fn files_that_changed_since_the_scan_are_unread_with_the_reason() {
     assert_eq!(shown(&found), ["src/kept.ts:3:18 call via 1"]);
     std::fs::remove_dir_all(&dir).unwrap();
 }
-
-#[test]
-fn a_language_without_a_pass_lists_its_files_as_unread() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/simple-python-project");
-    let report = scan(&root, &ScanOptions::default()).unwrap();
-    let graph = &report.graph;
-    let symbol = graph
-        .symbols
-        .values()
-        .find(|s| {
-            graph
-                .symbol_importers(s)
-                .is_some_and(|i| !i.by_name.is_empty())
-        })
-        .expect("a python symbol that something imports");
-    let found = symbol_uses(&report, symbol);
-    assert!(found.uses.is_empty());
-    assert!(!found.unread.is_empty());
-    assert!(found
-        .unread
-        .iter()
-        .all(|u| u.reason == archmap_core::UnreadReason::LanguageNotRead && u.line.is_none()));
-}

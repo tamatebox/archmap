@@ -60,6 +60,7 @@ mod reexports;
 mod resolve;
 mod source;
 mod stdlib;
+pub(crate) mod uses;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

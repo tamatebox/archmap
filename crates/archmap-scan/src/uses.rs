@@ -63,6 +63,14 @@ pub fn symbol_uses(report: &ScanReport, symbol: &Symbol) -> SymbolUses {
         (Some("rust"), Some(index)) if symbol.kind != archmap_core::SymbolKind::Module => {
             crate::rust::uses::read(index, root, symbol, &statements, &mut found);
         }
+        (Some("python"), _) => {
+            let request = crate::python::uses::Request {
+                root,
+                symbol,
+                statements,
+            };
+            crate::python::uses::read(&request, &mut found);
+        }
         (Some("typescript" | "javascript"), _) => {
             let request = ts::Request {
                 root,

@@ -222,11 +222,22 @@ into the model in [graph.md](graph.md); how the commands present it is in
   `tests/` does, as for TS/JS; in a signature a parameter's default value reads `…`, since a default
   can hold a secret
 - source files are scanned structurally line by line, not parsed; function bodies are read only for imports
+- on demand, for the one symbol that `query` asks about, the file that defines it and the files of the
+  statements that import it are parsed with Ruff's parser (`ruff_python_parser`, pinned to an exact
+  version, since it is published as an internal component of Ruff), and each name in them is resolved
+  with Python's scope rules (`Used at`, see [commands.md](commands.md#query)); a file over 4 MB is not
+  parsed
 
 ### Python known gaps
 
 - Dynamic imports are recorded but not followed, and `sys.path` changes made at runtime are not
   seen.
+- `Used at` does not read a method called through a value of its class (`wallet.open()`) or
+  `super().open()`, a name read through another name its module is assigned to, a string that names the
+  symbol where a file imported it (`mock.patch("shop.web.views.pay")`) rather than by its own module's
+  path, or code in doctests (`>>> pay(1)`); a name that a nested function assigns through `nonlocal`
+  is not counted as bound again in the function around it, nor a name a class body's annotation scope
+  sees.
 - An `__init__.py` that imports a name without listing it in a literal `__all__` (or as `x as x`),
   or whose `__all__` is built at runtime (`__all__ += other.__all__`), is no barrel, since it may use
   what it imports: `impact` goes on from it file by file, to every importer of it and whatever imports

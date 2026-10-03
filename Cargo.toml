@@ -8,6 +8,8 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/tamatebox/archmap"
+# The highest any dependency needs: Ruff's parser crates.
+rust-version = "1.97"
 
 [workspace.dependencies]
 archmap-core = { path = "crates/archmap-core", version = "0.1.0" }
@@ -29,6 +31,11 @@ oxc_semantic = "0.152.0"
 oxc_span = "0.152.0"
 proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"
+# Published as an internal component of Ruff, whose API may change from one
+# version to the next: pinned exactly, and used only in `python/uses.rs`.
+ruff_python_ast = "=0.0.16"
+ruff_python_parser = "=0.0.16"
+ruff_text_size = "=0.0.16"
 rmcp = { version = "3.5", default-features = false, features = ["server", "macros", "transport-io"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

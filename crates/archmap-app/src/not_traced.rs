@@ -46,6 +46,11 @@ pub struct NotTraced {
     /// the symbol unseen.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) whole_module: Option<Spots>,
+    /// Strings that name a symbol by its dotted path
+    /// (`mock.patch("shop.charge.pay")`): code that looks the name up there
+    /// may use the symbol unseen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) strings: Option<Spots>,
     /// Statements and files whose uses of a symbol were not read, with why.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) uses: Option<UsesNotRead>,
@@ -285,10 +290,20 @@ pub(crate) fn with_uses(
     instance_method: bool,
 ) -> Option<NotTraced> {
     let mut found = found.unwrap_or_default();
-    if !uses.escapes.is_empty() {
+    // a string that names the symbol, apart from a module used as a value
+    let (strings, values): (Vec<&Evidence>, Vec<&Evidence>) = uses
+        .escapes
+        .iter()
+        .partition(|e| e.note.as_deref() == Some("string"));
+    for (list, into) in [
+        (values, &mut found.whole_module),
+        (strings, &mut found.strings),
+    ] {
+        if list.is_empty() {
+            continue;
+        }
         // production code first
-        let mut spots: Vec<Spot> = uses
-            .escapes
+        let mut spots: Vec<Spot> = list
             .iter()
             .map(|e| Spot {
                 file: e.file.clone(),
@@ -297,7 +312,7 @@ pub(crate) fn with_uses(
             })
             .collect();
         spots.sort_by(|a, b| (a.test, &a.file, a.line).cmp(&(b.test, &b.file, b.line)));
-        found.whole_module = Some(Spots {
+        *into = Some(Spots {
             total: spots.len(),
             shown: spots,
         });
@@ -359,6 +374,7 @@ pub(crate) fn with_uses(
         && found.script.is_none()
         && found.no_importers.is_none()
         && found.whole_module.is_none()
+        && found.strings.is_none()
         && found.uses.is_none()
         && found.values.is_none()
         && found.subclasses.is_none()
