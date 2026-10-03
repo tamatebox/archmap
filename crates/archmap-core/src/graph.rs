@@ -489,9 +489,9 @@ impl ArchitectureGraph {
         // a symbol, the file it is reached through and the name it goes by
         let mut changed: BTreeSet<&str> = BTreeSet::new();
         let mut symbol_name: Option<(&str, &str)> = None;
-        // for a symbol, how the files of its statements take it, and whether
-        // the statement takes types only
-        let mut start_ways: BTreeMap<&str, Vec<(Way, bool)>> = BTreeMap::new();
+        // for a symbol, how the files of its statements take it, whether the
+        // statement takes types only, and the file it loads
+        let mut start_ways: BTreeMap<&str, Vec<StartWay>> = BTreeMap::new();
         let target = match seed {
             ChangeSeed::File(file) => {
                 start.push((Node::File(file), 0, None));
@@ -529,10 +529,11 @@ impl ArchitectureGraph {
                     let by_name = found.by_name.iter().map(|(_, e)| (Way::Takes(e.via()), *e));
                     let whole = found.may_use.iter().map(|(_, e)| (Way::Whole, *e));
                     for (way, e) in by_name.chain(whole).filter(|(_, e)| tests || !e.test) {
-                        start_ways
-                            .entry(e.file.as_str())
-                            .or_default()
-                            .push((way, e.type_only));
+                        start_ways.entry(e.file.as_str()).or_default().push((
+                            way,
+                            e.type_only,
+                            e.target.as_deref(),
+                        ));
                     }
                     let statements: Vec<&Evidence> = found
                         .by_name
@@ -630,20 +631,26 @@ impl ArchitectureGraph {
             // the node each was reached from at its distance
             let mut parent: BTreeMap<Node, Node> = BTreeMap::new();
             let mut feeds: BTreeMap<&str, BTreeMap<&str, usize>> = BTreeMap::new();
-            // the ways into test files, for the walk that counts test code
-            let record = tests && cut.is_empty();
+            // the ways into test files, for the walks that count test code
+            let record = tests;
             let mut ways: BTreeMap<&str, Vec<(usize, Way, bool)>> = BTreeMap::new();
+            // the nodes the change reaches through statements that load
+            // values all the way, which run what changed
+            let mut runs: BTreeSet<Node> = BTreeSet::new();
             let mut queue: VecDeque<Node> = VecDeque::new();
-            let mut first: Vec<(Node, usize)> = start
+            let mut first: Vec<(Node, usize, bool)> = start
                 .iter()
                 .filter(|(node, _, loads)| {
                     !blocked(node)
                         && loads.is_none_or(|(loaded, types)| types || !cut.contains(loaded))
                 })
-                .map(|(node, d, _)| (*node, *d))
+                .map(|(node, d, loads)| (*node, *d, *d == 0 || loads.is_none_or(|(_, t)| !t)))
                 .collect();
-            first.sort_by_key(|(_, d)| *d);
-            for (node, d) in first {
+            first.sort_by_key(|(_, d, _)| *d);
+            for (node, d, running) in first {
+                if running {
+                    runs.insert(node);
+                }
                 if let Entry::Vacant(slot) = distance.entry(node) {
                     slot.insert(d);
                     queue.push_back(node);
@@ -652,12 +659,13 @@ impl ArchitectureGraph {
             while let Some(node) = queue.pop_front() {
                 let d = distance[&node];
                 let here = blocked(&node);
-                let mut next: Vec<(Node, usize, Node)> = Vec::new();
+                let node_runs = runs.contains(&node);
+                let mut next: Vec<(Node, usize, Node, bool)> = Vec::new();
                 if let (Node::File(f) | Node::Passes(f) | Node::Relays(f), false) = (node, here) {
                     let stands =
                         |owner: &&ComponentId| production.contains(&node) && stands_for(f, owner);
                     if let Some(owner) = owner_of(f).filter(stands) {
-                        next.push((Node::Component(owner), d, node));
+                        next.push((Node::Component(owner), d, node, node_runs));
                     }
                 }
                 let mut links: Vec<(Node, Link, Kind)> = Vec::new();
@@ -733,10 +741,12 @@ impl ArchitectureGraph {
                 }
                 let open = |(n, link, _): &(Node, Link, Kind)| link.types || !(here || blocked(n));
                 for (n, link, kind) in links.into_iter().filter(open) {
+                    // a module a mock replaces runs for nothing
+                    let n_runs = node_runs && link.values && !here && !blocked(&n);
                     if let (true, Node::File(t) | Node::Passes(t) | Node::Relays(t)) = (record, n) {
                         if test_code.contains(t) {
                             let way = way_of(node, kind, d);
-                            ways.entry(t).or_default().push((d, way, link.types_only()));
+                            ways.entry(t).or_default().push((d, way, n_runs));
                         }
                     }
                     // a barrel passes on the names of each file it is
@@ -756,13 +766,15 @@ impl ArchitectureGraph {
                             (n, distance.get(&n))
                         {
                             if let Some(owner) = owner_of(f).filter(|c| stands_for(f, c)) {
-                                next.push((Node::Component(owner), at, n));
+                                let running = n_runs || runs.contains(&n);
+                                next.push((Node::Component(owner), at, n, running));
                             }
                         }
                     }
-                    next.push((n, d + 1, node));
+                    next.push((n, d + 1, node, n_runs));
                 }
-                for (n, nd, from) in next {
+                for (n, nd, from, running) in next {
+                    let starts_running = running && runs.insert(n);
                     if distance.get(&n).is_none_or(|&old| nd < old) {
                         distance.insert(n, nd);
                         parent.insert(n, from);
@@ -771,6 +783,9 @@ impl ArchitectureGraph {
                         } else {
                             queue.push_back(n);
                         }
+                    } else if starts_running {
+                        // reached before: what it leads to runs as well now
+                        queue.push_back(n);
                     }
                 }
             }
@@ -779,6 +794,7 @@ impl ArchitectureGraph {
                 parent,
                 feeds,
                 ways,
+                runs,
             }
         };
         let Walk {
@@ -786,6 +802,7 @@ impl ArchitectureGraph {
             parent,
             feeds,
             ways,
+            runs,
         } = walk(&BTreeSet::new());
 
         // A test file whose mock replaces a module for its whole run (a
@@ -796,6 +813,15 @@ impl ArchitectureGraph {
         // depends on. One that a statement taking a symbol starts from
         // depends on the symbol's name the same way.
         let mut out: Vec<(&str, Vec<&Evidence>)> = Vec::new();
+        // the walks with replaced modules cut, and the set each test's mocks
+        // cut
+        type Walked<'a> = (
+            BTreeMap<Node<'a>, usize>,
+            BTreeMap<&'a str, Vec<(usize, Way<'a>, bool)>>,
+            BTreeSet<Node<'a>>,
+        );
+        let mut cut_walks: BTreeMap<BTreeSet<&str>, Walked> = BTreeMap::new();
+        let mut cut_of: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
         if tests {
             let alters = |target: &str, names: &BTreeSet<String>| {
                 let any = names.contains(WHOLE_MODULE);
@@ -847,16 +873,20 @@ impl ArchitectureGraph {
                 })
                 .collect();
             // one walk per set of replaced modules
-            let mut walked: BTreeMap<BTreeSet<&str>, BTreeMap<Node, usize>> = BTreeMap::new();
             for (file, mocks) in mocks {
                 if starts.contains(file) || !distance.contains_key(&Node::File(file)) {
                     continue;
                 }
                 let cut: BTreeSet<&str> =
                     mocks.iter().filter_map(|e| e.target.as_deref()).collect();
-                let other = walked
+                let other = &cut_walks
                     .entry(cut.clone())
-                    .or_insert_with(|| walk(&cut).distance);
+                    .or_insert_with(|| {
+                        let found = walk(&cut);
+                        (found.distance, found.ways, found.runs)
+                    })
+                    .0;
+                cut_of.insert(file, cut);
                 if !other.contains_key(&Node::File(file)) {
                     // the mocks of the modules the change reaches, in order
                     let reached = |e: &&Evidence| {
@@ -894,49 +924,90 @@ impl ArchitectureGraph {
                 };
             }
         }
-        // how each test file reaches the change: every way at its fewest
-        // steps, by precedence, and whether all of its own ways take types
-        // only
+        // how each test file reaches the change, in the walk its mocks give:
+        // every way at its fewest steps, by precedence, then where none of
+        // those takes values, the nearest that do
         if tests {
-            let at = |t: &'s str| {
-                [Node::File(t), Node::Passes(t), Node::Relays(t)]
-                    .iter()
-                    .filter_map(|n| distance.get(n).copied())
-                    .min()
-            };
             let mut found: BTreeSet<&str> = ways.keys().copied().collect();
             found.extend(start_ways.keys().copied().filter(|t| test_code.contains(t)));
             found.extend(seeds.iter().copied().filter(|t| test_code.contains(t)));
             for t in found {
-                let Some(dt) = at(t) else {
+                let (walked_distance, walked_ways, walked_runs, cut) = match cut_of.get(t) {
+                    Some(cut) => {
+                        let (d, w, r) = &cut_walks[cut];
+                        (d, w, r, Some(cut))
+                    }
+                    None => (&distance, &ways, &runs, None),
+                };
+                let at = [Node::File(t), Node::Passes(t), Node::Relays(t)]
+                    .iter()
+                    .filter_map(|n| distance.get(n).and(walked_distance.get(n)).copied())
+                    .min();
+                let Some(dt) = at else {
                     continue;
                 };
-                let into = || ways.get(t).into_iter().flatten();
-                let started = || start_ways.get(t).into_iter().flatten();
-                let mut shortest: Vec<Way> = match dt {
-                    0 => vec![Way::Target],
-                    _ => started()
-                        .filter(|_| dt == 1)
-                        .map(|(way, _)| *way)
-                        .chain(
-                            into()
-                                .filter(|(d, _, _)| d + 1 == dt)
-                                .map(|(_, way, _)| *way),
-                        )
-                        .collect(),
+                if dt == 0 {
+                    let target = TestRoute {
+                        way: TestWay::Target,
+                        steps: 0,
+                        types_only: false,
+                    };
+                    reach.test_ways.insert(
+                        t.to_owned(),
+                        TestReach {
+                            ways: vec![target],
+                            types_only: false,
+                        },
+                    );
+                    continue;
+                }
+                // each way at its fewest steps, which runs what changed when
+                // a link on it there does
+                let mut best: BTreeMap<Way, (usize, bool)> = BTreeMap::new();
+                let mut keep = |way: Way<'s>, steps: usize, running: bool| {
+                    let at = best.entry(way).or_insert((steps, running));
+                    if steps < at.0 {
+                        *at = (steps, running);
+                    } else if steps == at.0 {
+                        at.1 |= running;
+                    }
                 };
-                shortest.sort();
-                shortest.dedup();
-                let mut kinds = into()
-                    .map(|(_, _, types)| *types)
-                    .chain(started().map(|(_, types)| *types))
-                    .peekable();
-                let types_only = dt > 0 && kinds.peek().is_some() && kinds.all(|types| types);
+                for (way, types, loads) in start_ways.get(t).into_iter().flatten() {
+                    let open = loads.is_none_or(|l| *types || cut.is_none_or(|c| !c.contains(l)));
+                    if open {
+                        keep(*way, 1, !types);
+                    }
+                }
+                for (d, way, running) in walked_ways.get(t).into_iter().flatten() {
+                    keep(*way, d + 1, *running);
+                }
+                let fewest = best.values().map(|(steps, _)| *steps).min().unwrap_or(dt);
+                let nearest_running = best
+                    .values()
+                    .filter(|(_, running)| *running)
+                    .map(|(steps, _)| *steps)
+                    .min();
+                let shown = |steps: usize, running: bool| {
+                    steps == fewest || (Some(steps) == nearest_running && running)
+                };
+                let mut routes: Vec<TestRoute> = best
+                    .into_iter()
+                    .filter(|(_, (steps, running))| shown(*steps, *running))
+                    .map(|(way, (steps, running))| TestRoute {
+                        way: way.public(),
+                        steps,
+                        types_only: !running,
+                    })
+                    .collect();
+                routes.sort_by_key(|r| r.steps);
+                let running = [Node::File(t), Node::Passes(t), Node::Relays(t)]
+                    .iter()
+                    .any(|n| walked_runs.contains(n));
                 reach.test_ways.insert(
                     t.to_owned(),
                     TestReach {
-                        ways: shortest.into_iter().map(Way::public).collect(),
-                        types_only,
+                        ways: routes,
+                        types_only: !running,
                     },
                 );
             }
@@ -1803,13 +1874,25 @@ pub struct Reach {
     pub relayed: BTreeMap<String, Vec<String>>,
 }
 
-/// How a test file reaches the change: every way at its fewest steps, by
-/// precedence.
+/// How a test file reaches the change, in the walk its mocks leave: every
+/// way at its fewest steps, by precedence, then where none of those takes
+/// values, the nearest ways that do.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TestReach {
-    pub ways: Vec<TestWay>,
-    /// Each statement of it toward what the change reaches takes types
-    /// only, so its run loads none of them.
+    pub ways: Vec<TestRoute>,
+    /// No way of it runs what changed: each takes types only somewhere,
+    /// so running the test runs none of the change.
+    pub types_only: bool,
+}
+
+/// One way a test file reaches the change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestRoute {
+    pub way: TestWay,
+    /// Steps from the change.
+    pub steps: usize,
+    /// The way runs none of what changed: a statement on it, the test's
+    /// own or one further, takes types only.
     pub types_only: bool,
 }
 
@@ -1872,9 +1955,17 @@ struct Walk<'a> {
     /// the files it was reached from, each at its distance.
     feeds: BTreeMap<&'a str, BTreeMap<&'a str, usize>>,
     /// For each test file, every link into it: the distance it leads from,
-    /// the way it gives, and whether it takes types only.
+    /// the way it gives, and whether it runs what changed (it loads values
+    /// from a node that does).
     ways: BTreeMap<&'a str, Vec<(usize, Way<'a>, bool)>>,
+    /// The nodes that run what changed: reached through statements that
+    /// load values all the way.
+    runs: BTreeSet<Node<'a>>,
 }
+
+/// How a statement that takes a symbol takes it, whether it takes types
+/// only, and the file it loads.
+type StartWay<'a> = (Way<'a>, bool, Option<&'a str>);
 
 /// Where a walk starts, at what distance, and for a statement that takes a
 /// symbol, the file it loads and whether it takes types only.
@@ -1913,11 +2004,6 @@ impl Link {
         self.types |= other.types;
         self.values |= other.values;
     }
-
-    /// Every statement of it takes types only.
-    fn types_only(self) -> bool {
-        self.types && !self.values
-    }
 }
 
 /// How a link leads from what it loads to its importer.
@@ -1935,7 +2021,6 @@ enum Kind<'a> {
 /// a statement without re-exports before one through them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Way<'a> {
-    Target,
     Takes(Option<&'a str>),
     Whole,
     RunsFirst(&'a str),
@@ -1945,7 +2030,6 @@ enum Way<'a> {
 impl Way<'_> {
     fn public(self) -> TestWay {
         match self {
-            Way::Target => TestWay::Target,
             Way::Takes(via) => TestWay::Takes {
                 via: via.map(str::to_owned),
             },
@@ -4403,8 +4487,12 @@ mod tests {
         );
         // each needs the changed entry file run first
         let runs_first = TestReach {
-            ways: vec![TestWay::RunsFirst {
-                entry: "src/shop/__init__.py".into(),
+            ways: vec![TestRoute {
+                way: TestWay::RunsFirst {
+                    entry: "src/shop/__init__.py".into(),
+                },
+                steps: 1,
+                types_only: false,
             }],
             types_only: false,
         };
@@ -4494,10 +4582,13 @@ mod tests {
             ),
         ]);
         let reach = graph.change_impact(ChangeSeed::File("lib/a.ts"), 9);
-        let ways: Vec<(&str, &[TestWay], bool)> = reach
+        let ways: Vec<(&str, Vec<TestWay>, bool)> = reach
             .test_ways
             .iter()
-            .map(|(file, at)| (file.as_str(), at.ways.as_slice(), at.types_only))
+            .map(|(file, at)| {
+                let ways = at.ways.iter().map(|r| r.way.clone()).collect();
+                (file.as_str(), ways, at.types_only)
+            })
             .collect();
         let takes = |via: Option<&str>| TestWay::Takes {
             via: via.map(str::to_owned),
@@ -4505,21 +4596,104 @@ mod tests {
         assert_eq!(
             ways,
             [
-                ("tests/direct.test.ts", &[takes(None)][..], false),
+                ("tests/direct.test.ts", vec![takes(None)], false),
                 (
                     "tests/through.test.ts",
-                    &[TestWay::Through {
+                    vec![TestWay::Through {
                         from: "lib/b.ts".into()
-                    }][..],
+                    }],
                     false
                 ),
-                ("tests/typed.test.ts", &[takes(None)][..], true),
+                ("tests/typed.test.ts", vec![takes(None)], true),
                 (
                     "tests/via.test.ts",
-                    &[takes(Some("lib/index.ts:2"))][..],
+                    vec![takes(Some("lib/index.ts:2"))],
                     false
                 ),
             ]
+        );
+    }
+
+    #[test]
+    fn a_test_shows_the_nearest_way_that_takes_values_and_its_mocks_cut_others() {
+        let mut graph = ArchitectureGraph::default();
+        for file in [
+            "src/x.ts",
+            "src/cart.ts",
+            "src/m.ts",
+            "src/u.ts",
+            "src/item.ts",
+        ] {
+            let mut c = Component::new(file, file, ComponentKind::Module);
+            c.path = Some(file.into());
+            graph.add_component(c);
+        }
+        let statement = |file: &str, target: &str, types: bool| {
+            Edge::new(file, target, EdgeKind::Import).with_evidence(
+                Evidence::new(file)
+                    .at_line(1)
+                    .pointing_at(target)
+                    .taking(["v"])
+                    .type_only(types)
+                    .in_test(file.starts_with("tests/")),
+            )
+        };
+        graph.add_edges([
+            statement("src/cart.ts", "src/x.ts", false),
+            // types only, which a mock replaces nothing of
+            statement("src/m.ts", "src/x.ts", true),
+            statement("src/u.ts", "src/m.ts", false),
+            // values of a module that takes only a type of the target
+            statement("src/item.ts", "src/x.ts", true),
+            statement("tests/item.test.ts", "src/item.ts", false),
+            // a type of the target, and values through a module that uses it
+            statement("tests/mixed.test.ts", "src/x.ts", true),
+            statement("tests/mixed.test.ts", "src/cart.ts", false),
+            // values only through a module its mock replaces, a type beside
+            statement("tests/u.test.ts", "src/u.ts", false),
+            statement("tests/u.test.ts", "src/m.ts", true),
+            Edge::new("tests/u.test.ts", "src/m.ts", EdgeKind::Import).with_evidence(
+                Evidence::new("tests/u.test.ts")
+                    .at_line(4)
+                    .pointing_at("src/m.ts")
+                    .taking(["other"])
+                    .replacing(true)
+                    .in_test(true),
+            ),
+        ]);
+        let reach = graph.change_impact(ChangeSeed::File("src/x.ts"), 9);
+        let route = |way: TestWay, steps: usize, types_only: bool| TestRoute {
+            way,
+            steps,
+            types_only,
+        };
+        let through = |from: &str| TestWay::Through { from: from.into() };
+        // the type taken at one step, and the values its run loads at two
+        assert_eq!(
+            reach.test_ways["tests/mixed.test.ts"],
+            TestReach {
+                ways: vec![
+                    route(TestWay::Takes { via: None }, 1, true),
+                    route(through("src/cart.ts"), 2, false),
+                ],
+                types_only: false,
+            }
+        );
+        // a type further on: running the test runs none of the change
+        assert_eq!(
+            reach.test_ways["tests/item.test.ts"],
+            TestReach {
+                ways: vec![route(through("src/item.ts"), 2, true)],
+                types_only: true,
+            }
+        );
+        // its mock cuts the values: only the type is left
+        assert_eq!(
+            reach.test_ways["tests/u.test.ts"],
+            TestReach {
+                ways: vec![route(through("src/m.ts"), 2, true)],
+                types_only: true,
+            }
         );
     }
 

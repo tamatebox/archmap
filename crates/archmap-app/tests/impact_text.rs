@@ -140,8 +140,8 @@ fn a_file_answers_with_its_dependents_statements_tests_and_blind_spots() {
            scripts/report.cjs  2 steps, through src/lib/money.ts\n\
          \n\
          Tests to run again: 2\n  \
-           tests/helpers.ts (through src/lib/money.ts)\n  \
-           tests/money.test.ts (takes it)\n\
+           tests/helpers.ts (through src/lib/money.ts, types only)\n  \
+           tests/money.test.ts (mocks it)\n\
          \n\
          Changed in the same commits: not read (not a git repository)\n\
          \n\
@@ -376,12 +376,12 @@ fn a_test_whose_mock_replaces_a_module_on_the_way_is_left_out() {
         section(&pricing, "Tests to run again: 7"),
         [
             "  tests/actual.test.ts (through src/orders.ts)",
-            "  tests/auto.test.ts (through src/orders.ts)",
+            "  tests/auto.test.ts (through src/orders.ts, by its mock)",
             "  tests/both.test.ts (through src/orders.ts)",
-            "  tests/helper.test.ts (through src/orders.ts)",
-            "  tests/inside.test.ts (through src/orders.ts)",
-            "  tests/original.test.ts (through src/orders.ts)",
-            "  tests/passed.test.ts (through src/orders.ts)",
+            "  tests/helper.test.ts (through src/orders.ts, by its mock)",
+            "  tests/inside.test.ts (through src/orders.ts, by its mock)",
+            "  tests/original.test.ts (through src/orders.ts, by its mock)",
+            "  tests/passed.test.ts (through src/orders.ts, by its mock)",
             "  left out: 5 test files reach it only through modules their mocks replace: \
              tests/barrel.test.ts:4 (mocks src/index.ts), tests/jest.test.ts:3 (mocks \
              src/orders.ts), tests/replaced.test.ts:4 (mocks src/orders.ts), +2 more",
@@ -391,7 +391,7 @@ fn a_test_whose_mock_replaces_a_module_on_the_way_is_left_out() {
     let types = text(&ws, "src/types.ts");
     assert_eq!(
         section(&types, "Tests to run again: 1"),
-        ["  tests/typed.test.ts (through src/lines.ts)"]
+        ["  tests/typed.test.ts (through src/lines.ts, types only)"]
     );
     // a module that re-exports a name: only the mock that gives that name
     // depends on it
@@ -407,7 +407,7 @@ fn a_test_whose_mock_replaces_a_module_on_the_way_is_left_out() {
     assert_eq!(
         section(&audio, "Tests to run again: 2"),
         [
-            "  tests/default.test.ts (takes it)",
+            "  tests/default.test.ts (mocks it)",
             "  tests/media.test.ts (takes it, via src/media.ts:1)",
             "  left out: 1 test file reaches it only through a module its mock replaces: \
              tests/unrelated.test.ts:4 (mocks src/audio.ts)",

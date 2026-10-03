@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Context, Result};
 use archmap_core::{
     ArchitectureGraph, ChangeSeed, Component, ComponentId, ComponentKind, Edge, Evidence, Hop,
-    Symbol, TestReach, TestWay, UnmappedImport,
+    Symbol, TestReach, TestRoute, TestWay, UnmappedImport,
 };
 
 use crate::co_change::{self, Changed};
@@ -14,7 +14,7 @@ use crate::resolve::{resolve, Resolved};
 use crate::target::{component_file, fold, namesakes, reject_outside, unquote};
 use crate::views::{
     About, Dependent, ImpactResult, ImportSite, ImportSites, LeftOut, Location, MockCall,
-    MockingTest, Statements, TestFile, TestFiles, TestWayView,
+    MockingTest, Statements, TestFile, TestFiles, TestRouteView, TestWayView,
 };
 use crate::{Answer, Format, Found, ImpactRequest, Workspace};
 
@@ -303,6 +303,12 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
         co_change::section(history, full, changed)
     });
 
+    // the file a test that takes the target loads
+    let taken: Option<String> = match &traced {
+        Traced::File(file, _) => Some(file.clone()),
+        Traced::Symbol(symbol) => symbol.location().map(|e| e.file.clone()),
+        Traced::Component(_) => None,
+    };
     let about = match traced {
         Traced::Component(_) => About::Component,
         Traced::File(file, _) => About::File(file),
@@ -335,7 +341,14 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
         depth,
         direct,
         transitive,
-        tests: test_files(reach.tests, reach.test_ways, reach.left_out, caps.tests),
+        tests: test_files(
+            full,
+            taken.as_deref(),
+            reach.tests,
+            reach.test_ways,
+            reach.left_out,
+            caps.tests,
+        ),
         target: Some(at.id),
         module: None,
         folded_from: at.folded_from,
@@ -541,7 +554,12 @@ fn import_name_impact<'a>(
     let mut ways = std::mem::take(&mut reach.test_ways);
     for file in &tests {
         let way = ways.entry(file.clone()).or_default();
-        way.ways.insert(0, TestWay::Takes { via: None });
+        let takes = TestRoute {
+            way: TestWay::Takes { via: None },
+            steps: 1,
+            types_only: false,
+        };
+        way.ways.insert(0, takes);
         way.types_only = false;
     }
     tests.extend(reach.tests.iter().cloned());
@@ -564,7 +582,7 @@ fn import_name_impact<'a>(
         also_at_path: Vec::new(),
         direct,
         transitive,
-        tests: test_files(tests, ways, left_out, caps.tests),
+        tests: test_files(full, None, tests, ways, left_out, caps.tests),
         importers: Some(importers),
         imports_below: None,
         may_use: None,
@@ -577,35 +595,70 @@ fn import_name_impact<'a>(
 /// The test files to run again, and those left out with the mocks that
 /// replace a module on their way, the first `cap` of each by path.
 fn test_files(
+    full: &ArchitectureGraph,
+    taken: Option<&str>,
     tests: BTreeSet<String>,
     mut ways: BTreeMap<String, TestReach>,
     left_out: BTreeMap<String, Vec<Evidence>>,
     cap: usize,
 ) -> TestFiles {
-    let view = |way: TestWay| match way {
-        TestWay::Target => TestWayView::Target,
-        TestWay::Takes { via } => TestWayView::Takes { via },
-        TestWay::Whole => TestWayView::Whole,
-        TestWay::RunsFirst { entry } => TestWayView::RunsFirst { file: entry },
-        TestWay::Through { from } => TestWayView::Through { file: from },
+    // for each listed test and file it loads: whether every statement of
+    // it there puts a mock in place of the file
+    let mut mocks: BTreeMap<(&str, &str), bool> = BTreeMap::new();
+    for e in full
+        .edges
+        .iter()
+        .filter(|e| e.kind == archmap_core::EdgeKind::Import)
+        .flat_map(|e| &e.evidence)
+        .filter(|e| e.via().is_none() && tests.contains(&e.file))
+    {
+        if let Some(target) = e.target.as_deref() {
+            let mock = archmap_scan::is_mock_call(e.note.as_deref().unwrap_or(""));
+            *mocks.entry((e.file.as_str(), target)).or_insert(true) &= mock;
+        }
+    }
+    let by_mock = |test: &str, file: Option<&str>| {
+        file.is_some_and(|file| mocks.get(&(test, file)).copied().unwrap_or(false))
     };
+    let view = |test: &str, route: TestRoute| {
+        let (way, mock) = match route.way {
+            TestWay::Target => (TestWayView::Target, false),
+            TestWay::Takes { via } => {
+                let mock = via.is_none() && by_mock(test, taken);
+                (TestWayView::Takes { via }, mock)
+            }
+            TestWay::Whole => (TestWayView::Whole, false),
+            TestWay::RunsFirst { entry } => (TestWayView::RunsFirst { file: entry }, false),
+            TestWay::Through { from } => {
+                let mock = by_mock(test, Some(&from));
+                (TestWayView::Through { file: from }, mock)
+            }
+        };
+        TestRouteView {
+            way,
+            steps: route.steps,
+            types_only: route.types_only,
+            mock,
+        }
+    };
+    let files = tests
+        .iter()
+        .take(cap)
+        .map(|file| {
+            let reach = ways.remove(file).unwrap_or_default();
+            TestFile {
+                file: file.clone(),
+                ways: reach.ways.into_iter().map(|r| view(file, r)).collect(),
+                types_only: reach.types_only,
+            }
+        })
+        .collect();
     TestFiles {
         total: tests.len(),
-        shown: tests
-            .into_iter()
-            .take(cap)
-            .map(|file| {
-                let reach = ways.remove(&file).unwrap_or_default();
-                TestFile {
-                    file,
-                    ways: reach.ways.into_iter().map(view).collect(),
-                    types_only: reach.types_only,
-                }
-            })
-            .collect(),
+        files,
         left_out: LeftOut {
             total: left_out.len(),
-            shown: left_out
+            files: left_out
                 .into_iter()
                 .take(cap)
                 .map(|(file, mocks)| MockingTest {

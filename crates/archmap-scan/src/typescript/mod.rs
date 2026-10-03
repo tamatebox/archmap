@@ -75,6 +75,7 @@ use source::{ExportedSymbol, ImportStatement, ParsedFile};
 
 use language::{is_code, language_of};
 pub use language::{JAVASCRIPT, LANGUAGE};
+pub use source::is_mock_call;
 
 /// Prefix of the component ids of npm packages outside the repository.
 pub const EXTERNAL_PREFIX: &str = "ext:npm:";

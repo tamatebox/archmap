@@ -20,7 +20,7 @@ fn ids(dependents: &serde_json::Value) -> serde_json::Value {
 /// Where impact's statements are, and the component each is in.
 /// The files of impact's tests to run again, without how each reaches.
 fn test_files(tests: &serde_json::Value) -> serde_json::Value {
-    tests["shown"]
+    tests["files"]
         .as_array()
         .unwrap()
         .iter()
@@ -443,8 +443,8 @@ fn impact_of_a_file_uses_the_summary_depth() {
         serde_json::json!(["tests/test_billing.py", "tests/unit/factories.py"])
     );
     assert_eq!(
-        result["tests"]["shown"][0]["ways"],
-        serde_json::json!([{"kind": "runs_first", "file": "src/shop/__init__.py"}])
+        result["tests"]["files"][0]["ways"],
+        serde_json::json!([{"kind": "runs_first", "file": "src/shop/__init__.py", "steps": 2}])
     );
 }
 

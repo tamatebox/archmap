@@ -372,23 +372,35 @@ const MAX_FILES: usize = 3;
 /// way are counted at the end, located at their first such mock.
 fn tests(out: &mut String, result: &ImpactResult, caps: &Caps) -> bool {
     let total = result.tests.total;
-    let shown = result.tests.shown.len().min(caps.tests);
+    let shown = result.tests.files.len().min(caps.tests);
     if total == 0 {
         let _ = writeln!(out, "\nTests to run again: none");
     } else {
         let _ = writeln!(out, "\nTests to run again: {}", count(total, shown));
     }
-    // each with the first way it reaches the target
-    for test in &result.tests.shown[..shown] {
-        let mut how = match test.ways.first() {
+    // each with its nearest way that takes values, or where none does, its
+    // nearest
+    for test in &result.tests.files[..shown] {
+        let route = test
+            .ways
+            .iter()
+            .find(|r| !r.types_only)
+            .or(test.ways.first());
+        let mock = route.is_some_and(|r| r.mock);
+        let mut how = match route.map(|r| &r.way) {
             Some(TestWayView::Target) => match &result.about {
                 About::Component => "in the target".to_owned(),
                 _ => "the target itself".to_owned(),
             },
+            // a call that puts a mock in its place, and nothing else
+            Some(TestWayView::Takes { via: None }) if mock => "mocks it".to_owned(),
             Some(TestWayView::Takes { via: None }) => "takes it".to_owned(),
             Some(TestWayView::Takes { via: Some(via) }) => format!("takes it, via {via}"),
             Some(TestWayView::Whole) => "takes its module whole".to_owned(),
             Some(TestWayView::RunsFirst { file }) => format!("runs first: {file}"),
+            Some(TestWayView::Through { file }) if mock => {
+                format!("through {file}, by its mock")
+            }
             Some(TestWayView::Through { file }) => format!("through {file}"),
             None => String::new(),
         };
@@ -413,7 +425,7 @@ fn tests(out: &mut String, result: &ImpactResult, caps: &Caps) -> bool {
         n => format!("{n} test files reach it only through modules their mocks replace"),
     };
     let places: Vec<String> = left
-        .shown
+        .files
         .iter()
         .take(caps.locations)
         .filter_map(|test| test.mocks.first())

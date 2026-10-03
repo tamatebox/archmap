@@ -34,6 +34,7 @@ pub use options::ScanOptions;
 pub use rust::uses::takes_self;
 pub use stamp::{stamp, Stamp};
 pub use test_code::is_test_code;
+pub use typescript::is_mock_call;
 pub use uses::symbol_uses;
 
 use std::collections::BTreeMap;

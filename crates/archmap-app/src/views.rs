@@ -284,8 +284,8 @@ pub struct Statements {
 #[derive(Debug, Serialize)]
 pub struct TestFiles {
     pub total: usize,
-    /// The first ones by path.
-    pub shown: Vec<TestFile>,
+    /// Every one, by path.
+    pub files: Vec<TestFile>,
     /// The test files left out, which reach the target only through
     /// modules their mocks replace for their whole run.
     #[serde(skip_serializing_if = "LeftOut::is_empty")]
@@ -296,16 +296,32 @@ pub struct TestFiles {
 #[derive(Debug, Serialize)]
 pub struct TestFile {
     pub file: String,
-    /// Every way at its fewest steps from the target, by precedence: the
-    /// text shows the first.
-    pub ways: Vec<TestWayView>,
-    /// Each statement of it toward what the change reaches takes types
-    /// only.
+    /// Every way at its fewest steps from the target, by precedence, then
+    /// where none of those takes values, the nearest that do: the text
+    /// shows the first that takes values.
+    pub ways: Vec<TestRouteView>,
+    /// No way of it takes values: its run loads none of what the change
+    /// reaches.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub types_only: bool,
 }
 
-/// One way a test file reaches the target.
+/// One way a test file reaches the target, with its steps.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TestRouteView {
+    #[serde(flatten)]
+    pub way: TestWayView,
+    pub steps: usize,
+    /// The test's statements on it take types only.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub types_only: bool,
+    /// The test's statements on it are calls that put a mock in place of
+    /// the module.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub mock: bool,
+}
+
+/// What a way of a test file goes by.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TestWayView {
@@ -329,8 +345,8 @@ pub enum TestWayView {
 #[derive(Debug, Default, Serialize)]
 pub struct LeftOut {
     pub total: usize,
-    /// The first ones by path.
-    pub shown: Vec<MockingTest>,
+    /// Every one, by path.
+    pub files: Vec<MockingTest>,
 }
 
 impl LeftOut {

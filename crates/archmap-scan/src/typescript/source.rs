@@ -85,6 +85,23 @@ const MODULE_CALLS: [&str; 12] = [
     "jest.genMockFromModule",
 ];
 
+/// Whether a statement's note is a test runner's call that puts a mock in
+/// place of its module (`vi.mock`, `jest.requireMock`), as the scan notes
+/// such calls; not one that loads or keeps the real module.
+pub fn is_mock_call(note: &str) -> bool {
+    matches!(
+        note,
+        "vi.mock"
+            | "vi.doMock"
+            | "vi.importMock"
+            | "jest.mock"
+            | "jest.doMock"
+            | "jest.requireMock"
+            | "jest.createMockFromModule"
+            | "jest.genMockFromModule"
+    )
+}
+
 /// Module calls through which a file runs a module's real code, or keeps
 /// it, whatever a mock of the module in the file replaces.
 pub(crate) const LOADS_REAL: [&str; 10] = [
