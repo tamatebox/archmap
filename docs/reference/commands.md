@@ -744,7 +744,9 @@ target's own imports without an edge stay under `Not mapped`.
   the target. Production code comes first, and test code is marked
   `(test)`.
 - `named_like`: imports without an edge (`local name`, `unresolved`) that
-  may be the target unresolved: a relative specifier that, resolved against
+  may be the target unresolved, or for a symbol its file (a test that
+  imports the module by a name a `sys.path` entry added at runtime
+  resolves, whose uses are not read): a relative specifier that, resolved against
   the importer's directory, lands on the target's path (extension aside,
   an entry file by its directory); a path or dotted name that the target's
   path ends in, an alias such as `@/lib/utils` only within the target's own

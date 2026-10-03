@@ -462,8 +462,8 @@ pub(crate) const RUST_NOT_READ: &str = "the Rust analyzer reads src/ and what th
 pub(crate) struct Subject<'a> {
     /// The language of the target's analyzer.
     pub(crate) language: Option<&'a str>,
-    /// Where the target is, for imports without an edge that may name it.
-    /// `None` for a symbol.
+    /// Where the target is, for imports without an edge that may name it:
+    /// for a symbol, its file.
     pub(crate) place: Option<Place<'a>>,
     /// What belongs to the target itself, whose own calls `Not mapped`
     /// already lists.

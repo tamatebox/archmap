@@ -278,7 +278,8 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
             let declared = full.component(&symbol.component);
             Subject {
                 language: declared.and_then(|c| c.language.as_deref()),
-                place: None,
+                // an import that may be of its file, unresolved, may take it
+                place: symbol.location().map(|e| Place::File(&e.file)),
                 own: Own::File(symbol.location().map_or("", |e| e.file.as_str())),
                 script: declared.is_some_and(|c| c.kind == ComponentKind::Script),
                 unreached: none_found(&importers) && none_found(&may_use),

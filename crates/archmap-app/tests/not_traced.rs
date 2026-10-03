@@ -72,6 +72,26 @@ fn a_python_file_lists_dynamic_imports_elsewhere_and_imports_named_like_it() {
 }
 
 #[test]
+fn a_symbol_lists_the_imports_named_like_its_file() {
+    // a test that imports the module by a name a `sys.path` entry added at
+    // runtime makes it reach: no uses read there, so the answer hedges
+    let ws = scan(&fixture("python-uses"));
+    let text = query(&ws, "refund", Format::Text);
+    assert!(
+        text.contains(
+            "\n  named like it: 1 import of `charge` maps to no file: \
+             bazaar/tests/test_flat.py:1 (local name)\n"
+        ),
+        "{text}"
+    );
+    let json = impact(&ws, "refund");
+    assert_eq!(
+        json["not_traced"]["named_like"]["shown"][0]["file"],
+        "bazaar/tests/test_flat.py"
+    );
+}
+
+#[test]
 fn a_ts_file_counts_the_dynamic_imports_of_ts_and_js_and_an_alias_named_like_it() {
     let ws = scan(&fixture("simple-ts-project"));
     let text = query(&ws, "src/components/button.tsx", Format::Text);

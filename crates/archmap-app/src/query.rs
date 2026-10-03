@@ -230,7 +230,8 @@ fn symbol_view<'a>(
         full,
         &Subject {
             language,
-            place: None,
+            // an import that may be of its file, unresolved, may take it
+            place: symbol.location().map(|e| Place::File(&e.file)),
             own: Own::File(location),
             script: declared.is_some_and(|c| c.kind == ComponentKind::Script),
             unreached: imported_by.as_ref().is_some_and(Vec::is_empty)
