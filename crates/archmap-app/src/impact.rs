@@ -5,13 +5,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Context, Result};
 use archmap_core::{
     ArchitectureGraph, ChangeSeed, Component, ComponentId, ComponentKind, Edge, Evidence, Hop,
-    Symbol, TestReach, TestRoute, TestWay, UnmappedImport,
+    ImportPlace, Symbol, SymbolImporters, SymbolUses, TestReach, TestRoute, TestWay,
+    UnmappedImport,
 };
 
 use archmap_scan::ScanReport;
 
 use crate::co_change::{self, Changed};
-use crate::not_traced::{barrels, not_traced, Narrowed, NotTraced, Own, Place, Subject};
+use crate::not_traced::{barrels, not_traced, with_uses, Narrowed, NotTraced, Own, Place, Subject};
+use crate::query::{instance_method, uses_of};
 use crate::resolve::{resolve, Resolved};
 use crate::target::{component_file, fold, namesakes, reject_outside, unquote};
 use crate::views::{
@@ -154,6 +156,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
 
     let (mut importers, mut imports_below) = (None, None);
     let (mut symbol_id, mut may_use, mut subpath) = (None, None, None);
+    let (mut used_at, mut unnamed) = (None, BTreeSet::new());
     let traced: Traced;
     let (at, reach) = match resolve(full, &rolled, root, target)? {
         Resolved::Candidates(candidates) => {
@@ -215,8 +218,15 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
                 (fold(full, depth, &module.id), reach)
             }
             None => {
-                let reach = full.change_impact(ChangeSeed::Symbol(symbol), depth);
-                if let Some(found) = full.symbol_importers(symbol) {
+                // where it is used: a statement that takes its file whole
+                // and never names it leaves the first step
+                let found = full.symbol_importers(symbol);
+                used_at = uses_of(full, &ws.report, symbol);
+                if let (Some(found), Some(uses)) = (&found, &used_at) {
+                    unnamed = never_named(found, uses);
+                }
+                let reach = full.change_impact(ChangeSeed::Symbol(symbol, &unnamed), depth);
+                if let Some(found) = found {
                     importers = Some(symbol_sites(
                         full,
                         depth,
@@ -225,10 +235,16 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
                         found.recorded,
                         caps.sites,
                     ));
+                    let whole: Vec<(&Edge, &Evidence)> = found
+                        .may_use
+                        .iter()
+                        .copied()
+                        .filter(|(_, e)| !in_set(&unnamed, e))
+                        .collect();
                     may_use = Some(symbol_sites(
                         full,
                         depth,
-                        &found.may_use,
+                        &whole,
                         &found.through,
                         found.recorded,
                         caps.sites,
@@ -270,6 +286,14 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
         }
     };
     let mut not_traced = not_traced(full, &subject, usize::MAX);
+    // what the uses pass could not follow, as `query` names it
+    let instance = match &traced {
+        Traced::Symbol(symbol) => used_at.is_some() && instance_method(symbol),
+        _ => false,
+    };
+    if let Some(uses) = &used_at {
+        not_traced = with_uses(not_traced, uses, instance);
+    }
     // the barrels past which the reach went on by names only
     let narrowed = match &traced {
         Traced::File(file, _) => Some(Narrowed::File(file)),
@@ -360,6 +384,9 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
         importers,
         imports_below,
         may_use,
+        used_at,
+        unnamed,
+        instance_method: instance,
         co_change,
         not_traced,
         about,
@@ -381,6 +408,37 @@ fn render(
     Ok(match format {
         Format::Json => crate::json(result)?,
         Format::Text => crate::impact_text::render(result, full, rolled, verbose),
+    })
+}
+
+/// The statements of `found` that take the symbol's file whole and that the
+/// uses pass read and found never naming it: they take nothing of it. Not a
+/// statement that takes it by name, which loads the file all the same.
+fn never_named(found: &SymbolImporters, uses: &SymbolUses) -> BTreeSet<ImportPlace> {
+    let whole: BTreeSet<(&str, Option<u32>)> = found
+        .may_use
+        .iter()
+        .map(|(_, e)| (e.file.as_str(), e.line))
+        .collect();
+    uses.unused
+        .iter()
+        .filter(|e| whole.contains(&(e.file.as_str(), e.line)))
+        .filter_map(|e| {
+            Some(ImportPlace {
+                file: e.file.clone(),
+                line: e.line?,
+            })
+        })
+        .collect()
+}
+
+/// Whether `set` holds the statement `e` is evidence of.
+fn in_set(set: &BTreeSet<ImportPlace>, e: &Evidence) -> bool {
+    e.line.is_some_and(|line| {
+        set.contains(&ImportPlace {
+            file: e.file.clone(),
+            line,
+        })
     })
 }
 
@@ -590,6 +648,9 @@ fn import_name_impact<'a>(
         importers: Some(importers),
         imports_below: None,
         may_use: None,
+        used_at: None,
+        unnamed: BTreeSet::new(),
+        instance_method: false,
         co_change: None,
         not_traced: None,
         about: About::ImportName,

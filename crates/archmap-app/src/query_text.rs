@@ -10,8 +10,8 @@ use std::fmt::Write;
 
 use archmap_core::{
     ArchitectureGraph, Component, ComponentId, ComponentKind, DynamicImport, Edge, EdgeKind,
-    Evidence, Scope, Symbol, SymbolKind, SymbolUse, SymbolUses, UnmappedImport, UnmappedReason,
-    UseRole, WHOLE_MODULE,
+    Evidence, ImportPlace, Scope, Symbol, SymbolKind, SymbolUse, SymbolUses, UnmappedImport,
+    UnmappedReason, UseRole, WHOLE_MODULE,
 };
 
 use crate::not_traced::NotTraced;
@@ -24,7 +24,7 @@ const MAX_SYMBOLS: usize = 30;
 const MAX_NEIGHBORS: usize = 30;
 const MAX_LOCATIONS: usize = 3;
 const MAX_IMPORTERS: usize = 5;
-const MAX_USE_FILES: usize = 10;
+pub(crate) const MAX_USE_FILES: usize = 10;
 
 struct Caps {
     symbols: usize,
@@ -554,7 +554,17 @@ fn symbol_list(
                     .symbol(&one.symbol.id)
                     .and_then(|s| full.component(&s.component))
                     .and_then(|c| c.language.as_deref());
-                truncated |= used_at(out, uses, one.instance_method, language, caps);
+                truncated |= used_at(
+                    out,
+                    &UsedAt {
+                        uses,
+                        instance_method: one.instance_method,
+                        language,
+                        left_out: None,
+                    },
+                    caps.use_files,
+                    caps.locations,
+                );
             }
         }
         [] => {}
@@ -633,18 +643,31 @@ fn importers(
     truncated
 }
 
+/// What `used_at` writes for one symbol.
+pub(crate) struct UsedAt<'a> {
+    pub(crate) uses: &'a SymbolUses,
+    /// A method that is not static, whose calls through values are not read.
+    pub(crate) instance_method: bool,
+    /// The language of the component that declares it.
+    pub(crate) language: Option<&'a str>,
+    /// For `impact`: the imports of the whole module that never name it and
+    /// so left the reach.
+    pub(crate) left_out: Option<&'a BTreeSet<ImportPlace>>,
+}
+
 /// Where one symbol is used: a line per file, production code first, then
-/// the files with the most uses, then by path, and the imports whose
-/// binding is never used. A method that is not static says that the list
-/// holds only the uses through its class and `this` (`self`), so that an
-/// empty list never reads as unused.
-fn used_at(
-    out: &mut String,
-    uses: &SymbolUses,
-    instance_method: bool,
-    language: Option<&str>,
-    caps: &Caps,
-) -> bool {
+/// the files with the most uses, then by path (`files` files and
+/// `locations` per file shown), and the imports whose binding is never
+/// used. A method that is not static says that the list holds only the uses
+/// through its class and `this` (`self`), so that an empty list never reads
+/// as unused.
+pub(crate) fn used_at(out: &mut String, view: &UsedAt, use_files: usize, locations: usize) -> bool {
+    let UsedAt {
+        uses,
+        instance_method,
+        language,
+        left_out,
+    } = *view;
     // the calls through values and subclasses are under `Not traced`
     let partial = instance_method || !uses.subclasses.is_empty();
     let lead = match (partial, language) {
@@ -676,7 +699,7 @@ fn used_at(
                 *file,
             )
         });
-        let shown = files.len().min(caps.use_files);
+        let shown = files.len().min(use_files);
         truncated |= shown < files.len();
         let mut roles: BTreeMap<UseRole, usize> = BTreeMap::new();
         for found in &uses.uses {
@@ -705,7 +728,7 @@ fn used_at(
             }
             let locations: Vec<String> = list
                 .iter()
-                .take(caps.locations)
+                .take(locations)
                 .map(|u| use_location(u, alike[&use_location(u, false)] > 1))
                 .collect();
             truncated |= locations.len() < list.len();
@@ -730,18 +753,29 @@ fn used_at(
     for list in [&mut whole, &mut named] {
         list.dedup_by(|a, b| a.file == b.file && a.line == b.line);
     }
+    // in `impact`, those that left the reach say so
+    let (left, whole): (Vec<&Evidence>, Vec<&Evidence>) = whole.into_iter().partition(|e| {
+        left_out.is_some_and(|set| {
+            e.line.is_some_and(|line| {
+                set.contains(&ImportPlace {
+                    file: e.file.clone(),
+                    line,
+                })
+            })
+        })
+    });
     for (list, what) in [
         (named, "never used ({})"),
         (whole, "never named ({} of the whole module)"),
+        (
+            left,
+            "never named ({} of the whole module, left out of the reach)",
+        ),
     ] {
         if list.is_empty() {
             continue;
         }
-        let places: Vec<String> = list
-            .iter()
-            .take(caps.locations)
-            .map(|e| location(e))
-            .collect();
+        let places: Vec<String> = list.iter().take(locations).map(|e| location(e)).collect();
         truncated |= places.len() < list.len();
         let count = what.replace("{}", &plural(list.len(), "import"));
         let _ = writeln!(out, "  {count}: {}", with_more(&places, list.len()));
@@ -752,7 +786,7 @@ fn used_at(
         let places: Vec<String> = uses
             .mocked
             .iter()
-            .take(caps.locations)
+            .take(locations)
             .map(|e| {
                 let mut place = import_location(e, 0, false);
                 for name in &e.names {

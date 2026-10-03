@@ -272,6 +272,76 @@ fn a_symbol_answers_with_its_line_and_the_statements_that_take_it() {
 }
 
 #[test]
+fn a_symbol_leaves_out_the_whole_module_imports_that_never_name_it() {
+    // TS: a namespace import that reads only another export leaves; a
+    // type of the module whole (`typeof import(..)` in a test) stays
+    let ws = scan(&fixture("ts-uses"));
+    let out = impact(&ws, "formatPrice", DEFAULT_DEPTH, true);
+    assert!(
+        out.contains(
+            "  never named (1 import of the whole module, left out of the reach): \
+             src/rates.ts:1\n"
+        ),
+        "{out}"
+    );
+    assert!(!out.contains("src/rates.ts:1  in"), "{out}");
+    assert!(!out.contains("  rates.ts  "), "{out}");
+    assert!(out.contains("  tests/actual.test.ts ("), "{out}");
+
+    // Python: a star import that never names it leaves; one whose module
+    // is used as a value stays, and so does one the pass could not read
+    let ws = scan(&fixture("python-uses"));
+    let out = text(&ws, "refund");
+    assert!(
+        out.contains(
+            "  never named (1 import of the whole module, left out of the reach): \
+             bazaar/starred.py:1\n"
+        ),
+        "{out}"
+    );
+    assert_eq!(
+        section(&out, "May use: 2 (imports the whole module)"),
+        [
+            "  bazaar/dunder.py:1  in bazaar::bazaar",
+            "  bazaar/escaped.py:1  in bazaar::bazaar"
+        ]
+    );
+    let duty = text(&ws, "duty");
+    assert_eq!(
+        section(&duty, "May use: 1 (imports the whole module)"),
+        ["  bazaar/built.py:1  in bazaar::bazaar"]
+    );
+    // an import that takes it by name stays without a use: it loads the
+    // file all the same
+    let pay = impact(&ws, "pay", DEFAULT_DEPTH, true);
+    assert!(
+        pay.contains("  never used (1 import): bazaar/unused.py:1\n"),
+        "{pay}"
+    );
+    assert!(
+        pay.contains("bazaar/unused.py:1  in bazaar::bazaar"),
+        "{pay}"
+    );
+
+    // JSON names the statements that left
+    let json = ws
+        .impact(&ImpactRequest {
+            target: "refund",
+            depth: DEFAULT_DEPTH,
+            format: Format::Json,
+            verbose: false,
+        })
+        .unwrap()
+        .output;
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        value["unnamed"],
+        serde_json::json!([{"file": "bazaar/starred.py", "line": 1}])
+    );
+    assert!(value["used_at"]["uses"].is_array(), "{value}");
+}
+
+#[test]
 fn an_import_name_answers_with_the_statements_that_import_it() {
     let ws = scan(&fixture("simple-python-project"));
     let out = text(&ws, "pytest");
@@ -687,12 +757,19 @@ fn each_test_to_run_again_says_how_it_reaches_the_symbol() {
             "  tests/whole.test.ts (takes its module whole)"
         ]
     );
+    // `whole.test.ts` reads only `money.price`: it never names `Price`, so
+    // it takes nothing of it
+    let typed = text(&ws, "Price");
     assert_eq!(
-        section(&text(&ws, "Price"), "Tests to run again: 2"),
-        [
-            "  tests/typed.test.ts (takes it, types only)",
-            "  tests/whole.test.ts (takes its module whole)"
-        ]
+        section(&typed, "Tests to run again: 1"),
+        ["  tests/typed.test.ts (takes it, types only)"]
+    );
+    assert!(
+        typed.contains(
+            "  never named (1 import of the whole module, left out of the reach): \
+             tests/whole.test.ts:1\n"
+        ),
+        "{typed}"
     );
 }
 

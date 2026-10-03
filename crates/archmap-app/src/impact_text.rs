@@ -12,7 +12,8 @@ use archmap_core::{ArchitectureGraph, ComponentId};
 
 use crate::query_text::{
     component_head, count, display, file_head, import_counts, import_location, namesakes,
-    not_traced, place, plural, shell_word, statements_title, symbol_line, with_more,
+    not_traced, place, plural, shell_word, statements_title, symbol_line, used_at, with_more,
+    UsedAt, MAX_USE_FILES,
 };
 use crate::views::{
     About, Dependent, ImpactResult, ImportSites, TestRouteView, TestWayView, MAX_IMPORT_SITES,
@@ -29,6 +30,7 @@ struct Caps {
     statements: usize,
     tests: usize,
     locations: usize,
+    use_files: usize,
 }
 
 impl Caps {
@@ -39,6 +41,7 @@ impl Caps {
                 statements: usize::MAX,
                 tests: usize::MAX,
                 locations: usize::MAX,
+                use_files: usize::MAX,
             }
         } else {
             Caps {
@@ -46,6 +49,7 @@ impl Caps {
                 statements: MAX_IMPORT_SITES,
                 tests: MAX_TEST_FILES,
                 locations: MAX_LOCATIONS,
+                use_files: MAX_USE_FILES,
             }
         }
     }
@@ -77,6 +81,18 @@ pub(crate) fn render(
     if let Some(may_use) = result.may_use.as_ref().filter(|s| s.total > 0) {
         let note = Some("imports the whole module");
         truncated |= statements(&mut out, "May use", note, "whole", may_use, rolled, &caps);
+    }
+    if let (Some(uses), About::Symbol(symbol)) = (&result.used_at, &result.about) {
+        let language = full
+            .component(&symbol.component)
+            .and_then(|c| c.language.as_deref());
+        let view = UsedAt {
+            uses,
+            instance_method: result.instance_method,
+            language,
+            left_out: Some(&result.unnamed),
+        };
+        truncated |= used_at(&mut out, &view, caps.use_files, caps.locations);
     }
     truncated |= transitive(&mut out, result, rolled, &caps);
     truncated |= tests(&mut out, result, &caps);

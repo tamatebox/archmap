@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Component, ComponentId, ComponentKind, DynamicImport, Edge, EdgeKind, Evidence, GraphFragment,
-    LanguageCoverage, Symbol, SymbolId, UnmappedImport, UnreadMacro, SCHEMA_VERSION, WHOLE_MODULE,
+    ImportPlace, LanguageCoverage, Symbol, SymbolId, UnmappedImport, UnreadMacro, SCHEMA_VERSION,
+    WHOLE_MODULE,
 };
 
 /// Information about how a graph was produced.
@@ -367,7 +368,7 @@ impl ArchitectureGraph {
         let mut via_at: BTreeMap<(&str, &str), &str> = BTreeMap::new();
         // a declaration says a package is installed, not that a symbol of it
         // is used
-        let symbol = matches!(seed, ChangeSeed::Symbol(_));
+        let symbol = matches!(seed, ChangeSeed::Symbol(..));
         // where a file names a component without naming a file of it (a
         // manifest's declaration, an import of the package), by the
         // component and the file: the first line, and whether a manifest
@@ -511,10 +512,11 @@ impl ArchitectureGraph {
                 }
                 None
             }
-            ChangeSeed::Symbol(symbol) => {
+            ChangeSeed::Symbol(symbol, unnamed) => {
                 // the first step goes only through the statements that take
-                // the symbol by name or take its file whole; dependencies
-                // without file detail on its component stay, like the latter
+                // the symbol by name or take its file whole, apart from those
+                // of the latter that never name it; dependencies without file
+                // detail on its component stay, like the latter
                 start.push((Node::Component(&symbol.component), 0, None));
                 // the file and name a mock replaces it by
                 let reached = symbol
@@ -526,8 +528,25 @@ impl ArchitectureGraph {
                     Some((at.file.as_str(), reached_name(&symbol.name)))
                 });
                 if let Some(found) = self.symbol_importers(symbol) {
+                    // a statement that takes the file whole and never names
+                    // the symbol takes nothing of it
+                    let names = |e: &&Evidence| {
+                        e.line.is_none_or(|line| {
+                            let place = ImportPlace {
+                                file: e.file.clone(),
+                                line,
+                            };
+                            !unnamed.contains(&place)
+                        })
+                    };
+                    let may_use: Vec<&Evidence> = found
+                        .may_use
+                        .iter()
+                        .map(|(_, e)| *e)
+                        .filter(names)
+                        .collect();
                     let by_name = found.by_name.iter().map(|(_, e)| (Way::Takes(e.via()), *e));
-                    let whole = found.may_use.iter().map(|(_, e)| (Way::Whole, *e));
+                    let whole = may_use.iter().map(|e| (Way::Whole, *e));
                     for (way, e) in by_name.chain(whole).filter(|(_, e)| tests || !e.test) {
                         start_ways.entry(e.file.as_str()).or_default().push((
                             way,
@@ -538,8 +557,8 @@ impl ArchitectureGraph {
                     let statements: Vec<&Evidence> = found
                         .by_name
                         .iter()
-                        .chain(&found.may_use)
                         .map(|(_, e)| *e)
+                        .chain(may_use)
                         .filter(|e| tests || !e.test)
                         .collect();
                     // a file whose every such statement passes the name on
@@ -829,10 +848,10 @@ impl ArchitectureGraph {
                 match (seed, symbol_name) {
                     // the importers of a module that changed keep their names
                     (ChangeSeed::Importers(_), _) => false,
-                    (ChangeSeed::Symbol(_), Some((file, name))) => {
+                    (ChangeSeed::Symbol(..), Some((file, name))) => {
                         (target == file || passes) && (any || names.contains(name))
                     }
-                    (ChangeSeed::Symbol(_), None) => false,
+                    (ChangeSeed::Symbol(..), None) => false,
                     _ if changed.contains(target) => any || barrels.exported.may_have(names),
                     _ => passes && (any || barrels.may_pass(target, names)),
                 }
@@ -1837,8 +1856,11 @@ pub enum ChangeSeed<'a> {
     Importers(&'a [&'a str]),
     /// A symbol: its first step goes only through the statements that take
     /// it by name or take its file whole (see
-    /// [`ArchitectureGraph::symbol_importers`]), then file by file.
-    Symbol(&'a Symbol),
+    /// [`ArchitectureGraph::symbol_importers`]), then file by file. The set
+    /// holds statements of the latter that a uses pass read and found never
+    /// naming the symbol, which take nothing of it and leave the first step;
+    /// a statement that takes it by name stays, as it loads the file.
+    Symbol(&'a Symbol, &'a BTreeSet<ImportPlace>),
 }
 
 /// Components that may be affected by a change.
@@ -3171,7 +3193,7 @@ mod tests {
     #[test]
     fn change_impact_from_a_symbol_goes_no_further_than_its_barrels_pass_it() {
         let graph = behind_barrels();
-        let reach = graph.change_impact(ChangeSeed::Symbol(&price()), 2);
+        let reach = graph.change_impact(ChangeSeed::Symbol(&price(), &BTreeSet::new()), 2);
         let ids = |set: &BTreeSet<ComponentId>| -> Vec<String> {
             set.iter().map(|c| c.to_string()).collect()
         };
@@ -3252,7 +3274,7 @@ mod tests {
             "formatPrice",
             vec![Evidence::new("lib/money.ts").at_line(8)],
         );
-        let reach = graph.change_impact(ChangeSeed::Symbol(&price), 2);
+        let reach = graph.change_impact(ChangeSeed::Symbol(&price, &BTreeSet::new()), 2);
         let ids =
             |set: &BTreeSet<ComponentId>| set.iter().map(|c| c.to_string()).collect::<Vec<_>>();
         assert_eq!(ids(&reach.direct), ["named", "whole"]);
@@ -3260,6 +3282,55 @@ mod tests {
         // the whole file reaches the other importer too
         let file = graph.change_impact(ChangeSeed::File("lib/money.ts"), 2);
         assert_eq!(ids(&file.direct), ["named", "other", "whole"]);
+        // a statement that takes the file whole and never names the symbol
+        // leaves the first step; one that takes it by name stays, as it
+        // loads the file all the same
+        let place = |file: &str| ImportPlace {
+            file: file.into(),
+            line: 1,
+        };
+        let unnamed = BTreeSet::from([place("whole/b.ts"), place("named/a.ts")]);
+        let reach = graph.change_impact(ChangeSeed::Symbol(&price, &unnamed), 2);
+        assert_eq!(ids(&reach.direct), ["named"]);
+        assert_eq!(ids(&reach.transitive), ["named", "next"]);
+    }
+
+    #[test]
+    fn a_test_that_takes_the_file_whole_and_never_names_the_symbol_is_no_test_to_run() {
+        let mut graph = ArchitectureGraph::default();
+        let mut lib = Component::new("lib", "lib", ComponentKind::Module);
+        lib.path = Some("lib".into());
+        graph.add_component(lib);
+        let import = |file: &str, names: &[&str]| {
+            Edge::new("lib", "lib", EdgeKind::Import).with_evidence(
+                Evidence::new(file)
+                    .at_line(1)
+                    .in_test(true)
+                    .pointing_at("lib/money.ts")
+                    .taking(names.iter().copied()),
+            )
+        };
+        graph.add_edges([
+            import("lib/whole.test.ts", &["*"]),
+            import("lib/named.test.ts", &["formatPrice"]),
+        ]);
+        let price = symbol(
+            "lib::formatPrice",
+            "formatPrice",
+            vec![Evidence::new("lib/money.ts").at_line(8)],
+        );
+        let reach = graph.change_impact(ChangeSeed::Symbol(&price, &BTreeSet::new()), 2);
+        let tests: Vec<&str> = reach.tests.iter().map(String::as_str).collect();
+        assert_eq!(tests, ["lib/named.test.ts", "lib/whole.test.ts"]);
+        let unnamed = BTreeSet::from([ImportPlace {
+            file: "lib/whole.test.ts".into(),
+            line: 1,
+        }]);
+        let reach = graph.change_impact(ChangeSeed::Symbol(&price, &unnamed), 2);
+        let tests: Vec<&str> = reach.tests.iter().map(String::as_str).collect();
+        assert_eq!(tests, ["lib/named.test.ts"]);
+        let ways: Vec<&str> = reach.test_ways.keys().map(String::as_str).collect();
+        assert_eq!(ways, ["lib/named.test.ts"]);
     }
 
     #[test]
@@ -3629,7 +3700,7 @@ mod tests {
         );
         let mut graph = behind_re_exports();
         // through the barrel alone, only what may take the name
-        let reach = graph.change_impact(ChangeSeed::Symbol(&price), 9);
+        let reach = graph.change_impact(ChangeSeed::Symbol(&price, &BTreeSet::new()), 9);
         assert!(!reach
             .transitive
             .contains(&ComponentId::new("app/calendar.ts")));
@@ -3653,7 +3724,7 @@ mod tests {
                     .taking(["checkout"]),
             ),
         ]);
-        let reach = graph.change_impact(ChangeSeed::Symbol(&price), 9);
+        let reach = graph.change_impact(ChangeSeed::Symbol(&price, &BTreeSet::new()), 9);
         assert!(reach.transitive.contains(&ComponentId::new("app/pay.ts")));
         assert!(reach
             .transitive
@@ -3827,7 +3898,7 @@ mod tests {
                 vec![Evidence::new("lib/orders.ts").at_line(2)],
             )
         };
-        let symbol = reach(ChangeSeed::Symbol(&place));
+        let symbol = reach(ChangeSeed::Symbol(&place, &BTreeSet::new()));
         assert_eq!(
             tests(&symbol),
             [
@@ -4529,7 +4600,7 @@ mod tests {
             evidence: vec![Evidence::new("src/shop/__init__.py").at_line(3)],
         });
         let symbol = graph.symbols[&SymbolId::new("shop::VERSION")].clone();
-        let reach = graph.change_impact(ChangeSeed::Symbol(&symbol), 9);
+        let reach = graph.change_impact(ChangeSeed::Symbol(&symbol, &BTreeSet::new()), 9);
         assert!(reach.direct.is_empty(), "{reach:?}");
     }
 

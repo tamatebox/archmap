@@ -502,7 +502,17 @@ symbol those that take its name, with `May use` for those that take its file
 whole: one statement per line, production code first, located and marked as
 `query` marks them, and followed by the component it is in unless that
 component is the file itself. They include the statements inside the
-target's own component. For a Python package's `__init__.py`, which runs
+target's own component. For a symbol, `Used at` follows, as `query` gives
+it for Rust, Python and TS/JS, the uses in the file that defines it
+included, which no import list shows, and the first step leaves out the statements that take the symbol's
+file whole and that the uses pass read and found never naming it: they
+take nothing of it, so neither they nor what only they lead to are
+reached, and `Used at` lists them as `never named (1 import of the whole
+module, left out of the reach)`. One whose module the code uses as a
+value, or whose uses were not read, stays, and so does a statement that
+takes the symbol by name without a use, which loads the file all the
+same; `--format json` gives `used_at` as `query` does and the statements
+left out as `unnamed`. For a Python package's `__init__.py`, which runs
 before any module below it is loaded, `Imports below` lists in the same way
 the statements outside the package that import a module below it
 (`Imports below: 5 (they run it first)`), and their components are direct
@@ -590,7 +600,9 @@ declaration or an import that names no file was the way, `declared_in` or
 `target`, `scope`, `names`, `test`, `type_only`, `replaces`) with the
 `component` it is in and, for a symbol, the barrel it went through as
 `through`, `recorded` being false when no evidence names imported files for
-the language; `tests` as `{"total", "files"}` with every file by path, each
+the language; for a symbol, `used_at` as `query` gives it and `unnamed`,
+the statements that take its file whole and never name it, by `file` and
+`line`; `tests` as `{"total", "files"}` with every file by path, each
 with its `ways` (those at its fewest steps and, where none of them runs
 what changed, the nearest that do: `{"kind": "takes", "via"?}`, `whole`,
 `runs_first` and `through` with their `file`, `target`, each with its

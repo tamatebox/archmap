@@ -255,7 +255,11 @@ fn symbol_view<'a>(
 
 /// Where a symbol is used, or `None` for a language that no uses pass
 /// reads yet.
-fn uses_of(full: &ArchitectureGraph, report: &ScanReport, symbol: &Symbol) -> Option<SymbolUses> {
+pub(crate) fn uses_of(
+    full: &ArchitectureGraph,
+    report: &ScanReport,
+    symbol: &Symbol,
+) -> Option<SymbolUses> {
     // the symbol as scan recorded it, in the component that declares it
     let symbol = full.symbol(&symbol.id).unwrap_or(symbol);
     let found = archmap_scan::symbol_uses(report, symbol);
@@ -269,7 +273,7 @@ fn uses_of(full: &ArchitectureGraph, report: &ScanReport, symbol: &Symbol) -> Op
 /// A method called through values of its type: a TS/JS class member that
 /// is not static (`Wallet.pay`, not `static open()`), or a Rust method that
 /// takes `self` (`Edge::weight`, not `Edge::new`).
-fn instance_method(symbol: &Symbol) -> bool {
+pub(crate) fn instance_method(symbol: &Symbol) -> bool {
     let signature = symbol.signature.as_deref().unwrap_or("");
     match (symbol.name.contains('.'), symbol.name.contains("::")) {
         // TS/JS `Class.method`, not `static`

@@ -2,11 +2,13 @@
 //! [`crate::impact`], rendered as JSON there or as text by
 //! [`crate::query_text`] and [`crate::impact_text`].
 
+use std::collections::BTreeSet;
+
 use archmap_core::co_change::CoChange;
 use archmap_core::history::{HistoryState, Renames};
 use archmap_core::{
-    Component, ComponentId, DynamicImport, Edge, Evidence, Symbol, SymbolId, SymbolUses,
-    UnmappedImport,
+    Component, ComponentId, DynamicImport, Edge, Evidence, ImportPlace, Symbol, SymbolId,
+    SymbolUses, UnmappedImport,
 };
 use serde::Serialize;
 
@@ -199,9 +201,21 @@ pub struct ImpactResult<'a> {
     /// run it first.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub imports_below: Option<ImportSites<'a>>,
-    /// For a symbol: the statements that take its file whole.
+    /// For a symbol: the statements that take its file whole, apart from
+    /// those in `unnamed`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub may_use: Option<ImportSites<'a>>,
+    /// For a symbol of a language a uses pass reads: where it is used, read
+    /// from the files that define and import it, as `query` gives it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_at: Option<SymbolUses>,
+    /// The statements that take the symbol's file whole and never name it:
+    /// they left the reach.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub unnamed: BTreeSet<ImportPlace>,
+    /// A method that is not static, whose calls through values are not read.
+    #[serde(skip)]
+    pub(crate) instance_method: bool,
     /// Files changed in the same commits as the target, from the committed
     /// history.
     #[serde(skip_serializing_if = "Option::is_none")]
