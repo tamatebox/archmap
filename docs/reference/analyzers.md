@@ -213,8 +213,10 @@ into the model in [graph.md](graph.md); how the commands present it is in
   that module, each name on its own
 - the imports and dynamic imports of test code, by the rule [graph.md](graph.md) gives for Python and
   TS/JS alike, carry `test` in their evidence
-- calls to `import_module`, `__import__` and `spec_from_file_location` are recorded as dynamic imports,
-  which no edge can follow
+- a call to `import_module` or `__import__` that names its module with one string literal on its line
+  (`import_module("shop.mail")`, `import_module(".mail", package="shop")`, `__import__("json")` with no
+  other argument) is an import of that module, noted with the call and taking it whole; other calls
+  to them and to `spec_from_file_location` are recorded as dynamic imports, which no edge can follow
 - public top-level `def` / `class` / `CONSTANT` and public methods of public classes become symbols
   for files inside a regular package tree; a file outside any regular package tree (in a namespace
   tree such as `scripts/` or a `tests/` without `__init__.py`, or at the top of the project) gives

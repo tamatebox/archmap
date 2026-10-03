@@ -47,6 +47,9 @@ pub struct PyImport {
     /// file's text, and the file reaches no name by a computed one
     /// (`globals()`, `sys.modules`, a module `__getattr__`).
     pub relays: bool,
+    /// A call that loads a module named by a string literal
+    /// (`import_module("a.b")`, `__import__("a")`), read as `import a.b`.
+    pub call: Option<&'static str>,
 }
 
 /// One public definition.
@@ -207,11 +210,32 @@ pub fn scan_source(text: &str) -> PyFile {
         }
 
         if let Some(call) = dynamic_call(trimmed) {
-            out.dynamic_imports.push(PyDynamicImport {
-                call,
-                line: line_no,
-                local,
-            });
+            match literal_import(trimmed, call) {
+                // the name is written out: an import of that module
+                Some(module) => {
+                    paths.push(Vec::new());
+                    out.imports.push(PyImport {
+                        module,
+                        level: 0,
+                        names: Vec::new(),
+                        bound: Vec::new(),
+                        line: line_no,
+                        local,
+                        type_only,
+                        in_class,
+                        unread: false,
+                        end_line: line_no,
+                        reads: Vec::new(),
+                        relays: false,
+                        call: Some(call),
+                    });
+                }
+                None => out.dynamic_imports.push(PyDynamicImport {
+                    call,
+                    line: line_no,
+                    local,
+                }),
+            }
         }
 
         let code = strip_comment(trimmed);
@@ -264,6 +288,7 @@ pub fn scan_source(text: &str) -> PyFile {
                         end_line: line_no + extra as u32,
                         reads: Vec::new(),
                         relays: false,
+                        call: None,
                     });
                 }
             }
@@ -316,6 +341,7 @@ pub fn scan_source(text: &str) -> PyFile {
                     end_line: line_no + extra as u32,
                     reads: Vec::new(),
                     relays: false,
+                    call: None,
                 });
             }
             continue;
@@ -503,6 +529,64 @@ fn dynamic_call(code: &str) -> Option<&'static str> {
             is_call && !before.is_some_and(|c| c.is_alphanumeric() || c == '_') && is_code(code, at)
         })
     })
+}
+
+/// The module a call to `import_module` or `__import__` in `code` names by
+/// one string literal, as an absolute dotted name: `import_module("a.b")`,
+/// `import_module(".b", package="a")` or `import_module(".b", "a")` for a
+/// relative name, `__import__("a.b")` with no other argument. `None` for a
+/// computed name, an f-string, a relative name without a literal package,
+/// and `spec_from_file_location`, which takes a file path.
+fn literal_import(code: &str, call: &str) -> Option<String> {
+    if call == "spec_from_file_location" {
+        return None;
+    }
+    let at = code.match_indices(call).find_map(|(at, _)| {
+        let rest = code[at + call.len()..].trim_start();
+        let before = code[..at].chars().next_back();
+        let call_here = rest.starts_with('(')
+            && !before.is_some_and(|c| c.is_alphanumeric() || c == '_')
+            && is_code(code, at);
+        call_here.then_some(rest)
+    })?;
+    let mut args = at[1..].trim_start();
+    // one argument: a string literal, written plainly
+    let literal = |text: &mut &str| -> Option<String> {
+        let quote = text.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+        let end = text[1..].find(quote)? + 1;
+        let value = &text[1..end];
+        *text = text[end + 1..].trim_start();
+        let name = |c: char| c.is_alphanumeric() || c == '_' || c == '.';
+        (!value.is_empty() && value.chars().all(name)).then(|| value.to_owned())
+    };
+    let module = literal(&mut args)?;
+    let package = match (call, args.chars().next()?) {
+        (_, ')') => None,
+        ("import_module", ',') => {
+            args = args[1..].trim_start();
+            if let Some(rest) = args.strip_prefix("package") {
+                args = rest.trim_start().strip_prefix('=')?.trim_start();
+            }
+            let package = literal(&mut args)?;
+            args.starts_with(')').then_some(package)
+        }
+        _ => return None,
+    };
+    let level = module.chars().take_while(|c| *c == '.').count();
+    if level == 0 {
+        return Some(module);
+    }
+    // a relative name, from the package: one dot is the package itself
+    let package = package?;
+    let mut parts: Vec<&str> = package.split('.').collect();
+    for _ in 1..level {
+        parts.pop()?;
+    }
+    let rest = &module[level..];
+    if !rest.is_empty() {
+        parts.push(rest);
+    }
+    (!parts.is_empty()).then(|| parts.join("."))
 }
 
 /// Whether byte `at` of `line` is code: outside string literals (single,
@@ -1349,6 +1433,44 @@ match = None
                 (vec!["*"], vec!["*"]),
             ]
         );
+    }
+
+    #[test]
+    fn a_call_that_names_its_module_with_one_literal_loads_that_module() {
+        for (code, call, module) in [
+            (
+                "m = importlib.import_module('shop.mail')",
+                "import_module",
+                Some("shop.mail"),
+            ),
+            (
+                "import_module(\".mail\", package=\"shop\")",
+                "import_module",
+                Some("shop.mail"),
+            ),
+            (
+                "import_module('..x', 'shop.plugins')",
+                "import_module",
+                Some("shop.x"),
+            ),
+            ("__import__(\"json\")", "__import__", Some("json")),
+            // computed, formatted, relative without a package, more arguments
+            ("import_module(name)", "import_module", None),
+            ("import_module(f\"shop.{name}\")", "import_module", None),
+            ("import_module('.mail')", "import_module", None),
+            (
+                "__import__('a', globals(), locals(), ['b'])",
+                "__import__",
+                None,
+            ),
+            (
+                "spec_from_file_location('m', path)",
+                "spec_from_file_location",
+                None,
+            ),
+        ] {
+            assert_eq!(literal_import(code, call).as_deref(), module, "{code}");
+        }
     }
 
     #[test]

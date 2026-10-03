@@ -937,6 +937,8 @@ fn emit_imports(
 
         let note = if import.relays && symbols {
             "export"
+        } else if let Some(call) = import.call {
+            call
         } else if import.level > 0 {
             "relative import"
         } else {
@@ -1470,6 +1472,7 @@ mod tests {
             end_line: 1,
             reads: Vec::new(),
             relays: false,
+            call: None,
         }
     }
 

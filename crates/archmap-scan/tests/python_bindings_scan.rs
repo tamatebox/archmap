@@ -57,6 +57,10 @@ fn a_module_binding_takes_the_names_its_file_reads_through_it() {
             r#"store/billing/duty.py import -> store/billing/money.py ["cents"]"#,
             // what an f-string formats is code
             r#"store/formatted.py import -> store/billing/charge.py ["pay", "refund"]"#,
+            // a call that names its module with a literal, absolute or
+            // relative to its package
+            r#"store/loader.py import_module -> store/billing/rates.py ["*"]"#,
+            r#"store/loader.py import_module -> store/billing/rates.py ["*"]"#,
             r#"store/other.py import -> store/billing/charge.py ["pay"]"#,
             r#"store/passed.py import -> store/billing/charge.py ["*"]"#,
             r#"store/rated.py import -> store/billing/rates.py ["rate"]"#,
@@ -85,4 +89,17 @@ fn a_definition_with_its_body_on_one_line_ends_there() {
             ("check", "def check(order)"),
         ]
     );
+}
+
+#[test]
+fn a_computed_name_stays_a_call_that_loads_a_module_by_name() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/python-bindings");
+    let graph = scan(&root, &ScanOptions::default()).unwrap().graph;
+    let dynamic: Vec<(&str, Option<u32>)> = graph
+        .dynamic_imports
+        .iter()
+        .filter(|d| d.evidence.file == "store/loader.py")
+        .map(|d| (d.call.as_str(), d.evidence.line))
+        .collect();
+    assert_eq!(dynamic, [("import_module", Some(17))]);
 }
