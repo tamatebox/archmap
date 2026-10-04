@@ -63,9 +63,16 @@ Never add a dependency that points against the arrow. Never make `archmap-core` 
 - The plugin only calls the `archmap` binary: `.mcp.json` declares `archmap mcp --path ${CLAUDE_PROJECT_DIR:-.}`, and the binary is installed separately. Keep `crates/` vendor-neutral: nothing in them knows about any agent, and the server takes its root from `--path` and each call's `path`, never from an agent's environment variables.
 - `archmap` on PATH is a copy from the last `cargo install`, not the working tree. Develop and verify with `cargo run`; before trying a change through the plugin, reinstall with `cargo install --path crates/archmap-cli`.
 - `plugins/archmap/skills/archmap/SKILL.md` and the MCP texts in `crates/archmap-mcp/src/text.rs` restate behavior. When a change alters commands, flags, output wording or a known gap they name, update them in the same change. The texts say what a tool gives, when it helps and what it cannot see; they never name a capability archmap lacks or prescribe an order of tools.
-- README is the overview; `docs/reference/` (analyzers, graph, commands, mcp, rules) is where behavior is documented. A change that alters behavior updates the page that states it in the same change. README's "Support by language" marks and gap notes summarize `analyzers.md`; a change that closes or opens a gap updates both. Facts shared by every language go in `graph.md` or `commands.md`, not under each language.
+- README is the overview; `docs/reference/` (analyzers, graph, commands, mcp, rules, history, work) is where behavior is documented. A change that alters behavior updates the page that states it in the same change. README's "Support by language" marks and gap notes summarize `analyzers.md`; a change that closes or opens a gap updates both, and one that closes a gap only a README note names updates the note. README's Roadmap table states each phase's status: a change that ships part of a phase updates its row. Facts shared by every language go in `graph.md` or `commands.md`, not under each language.
 - Keep the skill a short guide to reading output and choosing the next command, not a manual. Its frontmatter follows the [Agent Skills](https://agentskills.io/specification) spec, so the skill directory also works outside Claude Code.
 - `plugin.json` omits `version` on purpose so installs follow commits. After editing, run `claude plugin validate .`; it warns about the missing version and must otherwise pass.
+
+## Versions and releases
+
+- One version for the workspace, `version` in `[workspace.package]`; no crate sets its own. A release is a tag `vX.Y.Z` on main. Every untagged build so far reports `0.1.0`, so the first tag is `v0.2.0`.
+- While 0.x, a release that breaks the CLI's commands or flags, `check`'s exit codes, the JSON (`SCHEMA_VERSION`), the MCP tools' parameters or `archmap.toml` raises the minor version; any other release raises the patch. Text output is no compatibility surface.
+- Mark a commit that breaks one of those with `!` (`feat!:`, `fix!:`) and say in its body what breaks, so a release can name it.
+- A release is one commit `chore: release vX.Y.Z` that bumps the version and the tag README's Install names for pinning (`cargo install --git ... --tag vX.Y.Z`), plus the tag on it; `plugin.json` stays without a version. Release notes go on the GitHub release, written from `git log` since the last tag, breaking changes first; no CHANGELOG file. Agents never push the commit or the tag.
 
 ## Conventions
 

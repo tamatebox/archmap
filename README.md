@@ -108,7 +108,7 @@ Details: [commands](docs/reference/commands.md), [MCP server](docs/reference/mcp
 | Language | Read from |
 |---|---|
 | [Rust](docs/reference/analyzers.md#rust) | `Cargo.toml` packages and dependencies; module files reached from every Cargo target: `src/lib.rs`, `src/main.rs`, the binaries, tests, examples, benches and build script Cargo finds beside them, and those `Cargo.toml` declares; `pub` items; `use` declarations and module paths in code |
-| [Python](docs/reference/analyzers.md#python) | `pyproject.toml`, `setup.py` / `setup.cfg` and requirements files; packages and namespace packages; public top-level definitions; `import` statements, scanned line by line and followed through the names modules bind from others, those under `if TYPE_CHECKING:` apart |
+| [Python](docs/reference/analyzers.md#python) | `pyproject.toml`, `setup.py` / `setup.cfg` and requirements files; packages and namespace packages; public top-level definitions; `import` statements and the `import_module` and `__import__` calls that name their module with a literal, scanned line by line and followed through the names modules bind from others, those under `if TYPE_CHECKING:` apart |
 | [TypeScript / JavaScript](docs/reference/analyzers.md#typescript-and-javascript) | `package.json` packages, workspaces and dependencies; directories and files; exported declarations, CommonJS exports and the globals of scripts; `import`, `export ... from`, `require`, `import()` and test mocks, resolved through tsconfig paths, workspace links and re-exports, imports of types only apart |
 
 Other languages are counted in `summary`, not analyzed. Each analyzer's
@@ -164,12 +164,11 @@ The gaps behind the marks:
 - TS/JS `check`: only `type` written in an import marks it as types only,
   so a type imported without it (`import { Money }` for an interface) can
   close a cycle that `cycles.forbid` reports.
-- Callers and references: `query` lists where a symbol is used through
-  the names imports bind and, for a method, through its class or type and
-  `this` or `self`; a call through a value of a type (`wallet.pay()`) is
-  not read, nor in Python a name its scope binds again or the uses in a
-  file that reaches names by computed ones (`globals()`), and `impact` does
-  not narrow by uses yet.
+- Callers and references: `query` and `impact` list where a symbol is used
+  through the names imports bind and, for a method, through its class or
+  type and `this` or `self`; a call through a value of a type
+  (`wallet.pay()`) is not read, nor in Python a name its scope binds again
+  or the uses in a file that reaches names by computed ones (`globals()`).
 
 The commands read one merged graph, so a gap in what an analyzer reads
 shows in all of them: an import that is not read is missing from `query`,
@@ -210,7 +209,7 @@ comes later.
 | 1 Structural Facts | modules, public symbols, imports with their target file and scope, dependencies | Rust, Python and TypeScript/JavaScript, target files and scope included |
 | 2 Structural Compression & Agent Context | roll-up; `summary`, `query` and `impact` small enough for an agent and at one granularity; file and module queries whose evidence leads directly to source; full detail with `--format json` | done for Rust, Python and TS/JS, test code counted apart |
 | 3 Rules & Declared Architecture | declared components and layers, cycles, forbidden dependencies, drift, CI `check` | done: deny rules, layers, allow lists, coverage, cycles with a file-level reading, undeclared imports, stale declarations; structural signals |
-| 4 Deep Static Analysis | precise symbol resolution, callers and reference graph, type relationships, selective data flow, test-to-code links; on demand for one selected area | started: where a Rust, Python or TS/JS symbol is used, read on demand by `query`; agent traces point first to callers and references, then selective data flow |
+| 4 Deep Static Analysis | precise symbol resolution, callers and reference graph, type relationships, selective data flow, test-to-code links; on demand for one selected area | started: where a Rust, Python or TS/JS symbol is used, read on demand by `query`, and by `impact` to leave out the imports of its file that never name it; agent traces point first to callers and references, then selective data flow |
 | 5 Cross-system Graph | OpenAPI, Terraform, databases, HTTP, events, CI/build/deploy relationships | planned |
 | 6 Change & Work Graph | 6A local git history: commits, renames and the files changed together; 6B issues, pull requests and their explicit links from a fetched GitHub snapshot; 6C code to work and work to code at query time, Issue → PR → Commit → File | 6A: files changed in the same commits in `impact`; 6B: `fetch github` and `query '#123'`, issues, pull requests and their links from a snapshot ([work.md](docs/reference/work.md)); 6C planned |
 | 7 Semantic Enrichment | LLM naming, responsibilities, intent and other semantic interpretations, stored separately as inferred facts | planned |
