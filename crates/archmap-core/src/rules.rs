@@ -231,6 +231,7 @@ pub fn check(graph: &ArchitectureGraph, rules: &RuleSet, depth: usize) -> Vec<Fi
     }
 
     let membership = declared_membership(graph, rules);
+    let loaded = loaded_dependencies(graph);
     for (index, rule) in rules.deny.iter().enumerate() {
         let from = Side::new(&rule.from, rules);
         let to = Side::new(&rule.to, rules);
@@ -246,29 +247,28 @@ pub fn check(graph: &ArchitectureGraph, rules: &RuleSet, depth: usize) -> Vec<Fi
                 });
             }
         }
-        // rules are about production code: what only tests import is no
-        // violation
-        for edge in graph.edges.iter().filter(|e| e.in_production()) {
-            let (Some(source), Some(target)) =
-                (graph.component(&edge.from), graph.component(&edge.to))
-            else {
+        for dependency in &loaded {
+            let (Some(source), Some(target)) = (
+                graph.component(dependency.from),
+                graph.component(dependency.to),
+            ) else {
                 continue;
             };
             if from.contains(source, &membership) && to.contains(target, &membership) {
                 findings.push(Finding::Forbidden {
                     rule: index,
                     deny: rule.clone(),
-                    from: edge.from.clone(),
-                    to: edge.to.clone(),
-                    edge: edge.kind,
-                    evidence: production(edge),
+                    from: dependency.from.clone(),
+                    to: dependency.to.clone(),
+                    edge: dependency.kind,
+                    evidence: dependency.evidence.clone(),
                 });
             }
         }
     }
 
-    findings.extend(check_layers(graph, rules, &membership));
-    findings.extend(check_allow(graph, rules, &membership));
+    findings.extend(check_layers(&loaded, rules, &membership));
+    findings.extend(check_allow(&loaded, rules, &membership));
     findings.extend(check_coverage(graph, rules, &membership, depth));
 
     if rules.undeclared_imports.forbid {
@@ -377,29 +377,101 @@ fn unknown_names<'a>(
         .collect()
 }
 
-/// Edges whose both ends belong to (different) declared components, with
-/// the names of those components.
-fn declared_edges<'g>(
-    graph: &'g ArchitectureGraph,
-    membership: &'g BTreeMap<ComponentId, &'g str>,
-) -> impl Iterator<Item = (&'g str, &'g str, &'g crate::Edge)> + 'g {
-    graph
-        .edges
-        .iter()
-        .filter(|edge| edge.in_production())
-        .filter_map(move |edge| {
-            let (from, to) = (*membership.get(&edge.from)?, *membership.get(&edge.to)?);
-            (from != to).then_some((from, to, edge))
-        })
+/// A dependency as `deny`, `layers` and `allow` count it: from a component
+/// to the component that holds a file its statements load.
+struct Loaded<'g> {
+    from: &'g ComponentId,
+    to: &'g ComponentId,
+    kind: EdgeKind,
+    evidence: Vec<Evidence>,
 }
 
-/// The evidence of an edge in production code, which a rule finding lists.
-fn production(edge: &crate::Edge) -> Vec<Evidence> {
-    edge.evidence.iter().filter(|e| !e.test).cloned().collect()
+/// The dependencies in production code that rules count: what only tests
+/// import is no violation, and a statement counts toward the file it loads.
+/// Evidence through a re-export (`via`) counts toward the component of the
+/// re-export's file, which the statement loads, when the graph records the
+/// re-export as an import of that component (a TS/JS `export ... from`, a
+/// Python `from .x import y`, a Rust `pub use` from outside the module's
+/// subtree), so a rule can require going through a facade, which a rule
+/// of its own then covers. A Rust `pub use` of the module's own subtree is
+/// no import, so the statement counts toward the component that defines
+/// the name. A statement with evidence of its own for the re-export's
+/// component is shown by it alone.
+fn loaded_dependencies(graph: &ArchitectureGraph) -> Vec<Loaded<'_>> {
+    fn place(at: &str) -> Option<(&str, u32)> {
+        let (file, line) = at.rsplit_once(':')?;
+        Some((file, line.parse().ok()?))
+    }
+    // the component of each statement that imports something
+    let statements: BTreeMap<(&str, u32), &ComponentId> = graph
+        .edges
+        .iter()
+        .filter(|edge| edge.kind == EdgeKind::Import)
+        .flat_map(|edge| {
+            edge.evidence
+                .iter()
+                .filter(|e| !e.test)
+                .filter_map(move |e| Some(((e.file.as_str(), e.line?), &edge.from)))
+        })
+        .collect();
+    let mut loaded: BTreeMap<(&ComponentId, &ComponentId, EdgeKind), Vec<&Evidence>> =
+        BTreeMap::new();
+    for edge in graph.edges.iter().filter(|edge| edge.in_production()) {
+        if edge.evidence.is_empty() {
+            loaded.entry((&edge.from, &edge.to, edge.kind)).or_default();
+        }
+        for e in edge.evidence.iter().filter(|e| !e.test) {
+            let to = e
+                .via()
+                .and_then(place)
+                .and_then(|at| statements.get(&at).copied())
+                .unwrap_or(&edge.to);
+            if to != &edge.from {
+                loaded
+                    .entry((&edge.from, to, edge.kind))
+                    .or_default()
+                    .push(e);
+            }
+        }
+    }
+    loaded
+        .into_iter()
+        .map(|((from, to, kind), evidence)| {
+            let own: BTreeSet<(&str, Option<u32>)> = evidence
+                .iter()
+                .filter(|e| e.via().is_none())
+                .map(|e| (e.file.as_str(), e.line))
+                .collect();
+            let evidence = evidence
+                .into_iter()
+                .filter(|e| e.via().is_none() || !own.contains(&(e.file.as_str(), e.line)))
+                .cloned()
+                .collect();
+            Loaded {
+                from,
+                to,
+                kind,
+                evidence,
+            }
+        })
+        .collect()
+}
+
+/// Dependencies whose both ends belong to (different) declared components,
+/// with the names of those components.
+fn declared_dependencies<'a>(
+    loaded: &'a [Loaded<'a>],
+    membership: &'a BTreeMap<ComponentId, &'a str>,
+) -> impl Iterator<Item = (&'a str, &'a str, &'a Loaded<'a>)> + 'a {
+    loaded.iter().filter_map(move |dependency| {
+        let from = *membership.get(dependency.from)?;
+        let to = *membership.get(dependency.to)?;
+        (from != to).then_some((from, to, dependency))
+    })
 }
 
 fn check_layers(
-    graph: &ArchitectureGraph,
+    loaded: &[Loaded<'_>],
     rules: &RuleSet,
     membership: &BTreeMap<ComponentId, &str>,
 ) -> Vec<Finding> {
@@ -416,16 +488,16 @@ fn check_layers(
         .enumerate()
         .map(|(i, n)| (n.as_str(), i))
         .collect();
-    for (from, to, edge) in declared_edges(graph, membership) {
+    for (from, to, dependency) in declared_dependencies(loaded, membership) {
         if let (Some(&upper), Some(&lower)) = (rank.get(from), rank.get(to)) {
             if lower < upper {
                 findings.push(Finding::LayerViolation {
                     from_layer: from.to_owned(),
                     to_layer: to.to_owned(),
-                    from: edge.from.clone(),
-                    to: edge.to.clone(),
-                    edge: edge.kind,
-                    evidence: production(edge),
+                    from: dependency.from.clone(),
+                    to: dependency.to.clone(),
+                    edge: dependency.kind,
+                    evidence: dependency.evidence.clone(),
                 });
             }
         }
@@ -434,7 +506,7 @@ fn check_layers(
 }
 
 fn check_allow(
-    graph: &ArchitectureGraph,
+    loaded: &[Loaded<'_>],
     rules: &RuleSet,
     membership: &BTreeMap<ComponentId, &str>,
 ) -> Vec<Finding> {
@@ -451,7 +523,7 @@ fn check_allow(
     }
 
     let mut observed: BTreeSet<(&str, &str)> = BTreeSet::new();
-    for (from, to, edge) in declared_edges(graph, membership) {
+    for (from, to, dependency) in declared_dependencies(loaded, membership) {
         observed.insert((from, to));
         if allowed
             .get(from)
@@ -460,10 +532,10 @@ fn check_allow(
             findings.push(Finding::UnexpectedDependency {
                 declared_from: from.to_owned(),
                 declared_to: to.to_owned(),
-                from: edge.from.clone(),
-                to: edge.to.clone(),
-                edge: edge.kind,
-                evidence: production(edge),
+                from: dependency.from.clone(),
+                to: dependency.to.clone(),
+                edge: dependency.kind,
+                evidence: dependency.evidence.clone(),
             });
         }
     }
@@ -1021,6 +1093,164 @@ mod tests {
         }));
         // jobs -> domain is allowed and observed: not reported
         assert_eq!(findings.len(), 2, "{findings:?}");
+    }
+
+    /// app imports a name from the facade src/shop, whose `__init__.py`
+    /// re-exports it from src/shop/billing; cli reaches the same name with
+    /// only `via` evidence, as a Rust `use` through a crate root's `pub use`.
+    fn facade_graph() -> ArchitectureGraph {
+        let mut g = modules(&[
+            ("app", "app"),
+            ("cli", "cli"),
+            ("shop", "src/shop"),
+            ("shop.billing", "src/shop/billing"),
+        ]);
+        let charge = "src/shop/billing/charge.py";
+        g.add_edges([
+            Edge::new("app", "shop", EdgeKind::Import).with_evidence(
+                Evidence::new("app/main.py")
+                    .at_line(1)
+                    .pointing_at("src/shop/__init__.py"),
+            ),
+            Edge::new("app", "shop.billing", EdgeKind::Import).with_evidence(
+                Evidence::new("app/main.py")
+                    .at_line(1)
+                    .pointing_at(charge)
+                    .with_note("import via src/shop/__init__.py:1"),
+            ),
+            Edge::new("cli", "shop.billing", EdgeKind::Import).with_evidence(
+                Evidence::new("cli/main.rs")
+                    .at_line(2)
+                    .pointing_at(charge)
+                    .with_note("use via src/shop/__init__.py:1"),
+            ),
+            Edge::new("shop", "shop.billing", EdgeKind::Import).with_evidence(
+                Evidence::new("src/shop/__init__.py")
+                    .at_line(1)
+                    .pointing_at(charge),
+            ),
+        ]);
+        g
+    }
+
+    #[test]
+    fn rules_count_the_file_a_statement_loads_not_the_one_a_re_export_leads_to() {
+        let set = RuleSet {
+            components: declared(&[
+                ("app", "app"),
+                ("cli", "cli"),
+                ("facade", "src/shop"),
+                ("internals", "src/shop/billing"),
+            ]),
+            deny: ["app", "cli", "facade"]
+                .into_iter()
+                .flat_map(|from| {
+                    ["facade", "internals"].map(|to| DenyRule {
+                        from: from.into(),
+                        to: to.into(),
+                        reason: None,
+                    })
+                })
+                .filter(|rule| rule.from != rule.to)
+                .collect(),
+            ..RuleSet::default()
+        };
+        let findings = check(&facade_graph(), &set, 2);
+        let forbidden: Vec<(&str, &str, Vec<String>)> = findings
+            .iter()
+            .filter_map(|f| match f {
+                Finding::Forbidden {
+                    from, to, evidence, ..
+                } => Some((
+                    from.as_str(),
+                    to.as_str(),
+                    evidence
+                        .iter()
+                        .map(|e| format!("{}:{}", e.file, e.line.unwrap_or(0)))
+                        .collect(),
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            forbidden,
+            vec![
+                // the statement loads src/shop/__init__.py, shown once
+                ("app", "shop", vec!["app/main.py:1".to_owned()]),
+                // only `via` evidence: the crate root it goes through counts
+                ("cli", "shop", vec!["cli/main.rs:2".to_owned()]),
+                (
+                    "shop",
+                    "shop.billing",
+                    vec!["src/shop/__init__.py:1".to_owned()]
+                ),
+            ],
+            "{findings:?}"
+        );
+
+        // layers and allow count the same dependencies
+        let set = RuleSet {
+            components: declared(&[
+                ("app", "app"),
+                ("facade", "src/shop"),
+                ("internals", "src/shop/billing"),
+            ]),
+            layers: LayerRule {
+                order: vec!["internals".into(), "app".into(), "facade".into()],
+            },
+            allow: vec![AllowRule {
+                from: "app".into(),
+                to: vec!["facade".into()],
+            }],
+            ..RuleSet::default()
+        };
+        let findings = check(&facade_graph(), &set, 2);
+        assert!(
+            matches!(
+                findings.as_slice(),
+                [Finding::LayerViolation { from_layer, to_layer, .. }]
+                    if from_layer == "facade" && to_layer == "internals"
+            ),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_re_export_that_is_no_import_leaves_the_dependency_on_the_definition() {
+        // src/lib.rs: `pub mod domain; pub mod infra; pub use infra::Repo;`,
+        // and src/domain.rs: `use crate::Repo;`. A `pub use` of the
+        // module's own subtree is no edge of the crate root.
+        let mut g = modules(&[
+            ("ledger", "."),
+            ("ledger::domain", "src/domain.rs"),
+            ("ledger::infra", "src/infra.rs"),
+        ]);
+        g.add_edges([
+            Edge::new("ledger::domain", "ledger::infra", EdgeKind::Import).with_evidence(
+                Evidence::new("src/domain.rs")
+                    .at_line(1)
+                    .pointing_at("src/infra.rs")
+                    .with_note("use via src/lib.rs:4"),
+            ),
+        ]);
+        let set = RuleSet {
+            components: declared(&[("domain", "src/domain.rs"), ("infra", "src/infra.rs")]),
+            deny: vec![DenyRule {
+                from: "domain".into(),
+                to: "infra".into(),
+                reason: None,
+            }],
+            ..RuleSet::default()
+        };
+        let findings = check(&g, &set, 2);
+        assert!(
+            matches!(
+                findings.as_slice(),
+                [Finding::Forbidden { from, to, .. }]
+                    if from.as_str() == "ledger::domain" && to.as_str() == "ledger::infra"
+            ),
+            "{findings:?}"
+        );
     }
 
     #[test]

@@ -45,7 +45,7 @@ archmap-cli ─┬───────────────> archmap-app  ->
 - `archmap-cli`: `clap` commands, stdout and stderr, exit codes and `scan`'s file output only, and `archmap mcp`, which only starts the server. No analysis, lookup or rendering.
 - `archmap-mcp`: the MCP server (rmcp, stdio): tool parameters and descriptions, server instructions (`src/text.rs`), the root of a call, and one workspace per root, scanned again when `archmap_app::stamp` changes. Answers come from `archmap-app` only; it never runs the CLI.
 
-Never add a dependency that points against the arrow. Never make `archmap-core` aware of Cargo, `syn`, files or paths beyond plain strings. An interface depends on `archmap-app` alone: never re-export items of `archmap-scan` or `archmap-core` to it, since archmap's Rust analyzer follows a `pub use` to the defining crate and `check` sees the edge; give `archmap-app` its own type instead.
+Never add a dependency that points against the arrow. Never make `archmap-core` aware of Cargo, `syn`, files or paths beyond plain strings. An interface depends on `archmap-app` alone: never re-export items of `archmap-scan` or `archmap-core` to it, and give `archmap-app` its own type instead. `check` counts only the crate a `use` loads, so it does not catch such a re-export; `query` shows it, followed to the defining crate.
 
 ## Adding an analyzer
 

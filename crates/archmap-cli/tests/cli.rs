@@ -589,6 +589,56 @@ fn check_reports_forbidden_dependencies_and_stale_declarations() {
 }
 
 #[test]
+fn check_counts_an_import_through_a_barrel_toward_the_barrel() {
+    // sale.ts takes formatPrice from src/index.ts, which passes on what
+    // src/shop/index.ts passes on from src/money.ts; price.ts goes through
+    // src/shop/index.ts alone
+    let rules = r#"
+[components]
+app = ["src/app"]
+facade = ["src/shop"]
+money = ["src/money.ts"]
+
+[[deny]]
+from = "app"
+to = "money"
+
+[[deny]]
+from = "facade"
+to = "money"
+"#;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/ts-reexports");
+    let out = check_with("barrel", &root, rules, &[]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(!text.contains("deny[0]"), "{text}");
+    assert!(
+        text.contains("forbidden by deny[1] facade -> money: shop -> money.ts (import)\n"),
+        "{text}"
+    );
+
+    // a Rust `pub use` of the crate root's own module is no import of the
+    // root: config.rs's `use lib_core::Invoice` still reaches billing
+    let rules = r#"
+[components]
+app = ["crates/app"]
+billing = ["crates/lib_core/src/billing"]
+
+[[deny]]
+from = "app"
+to = "billing"
+"#;
+    let out = check_with("subtree", &fixture_root(), rules, &[]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains(
+            "forbidden by deny[0] app -> billing: app::config -> lib_core::billing::invoice (import)\n  \
+             crates/app/src/config.rs:1 -> crates/lib_core/src/billing/invoice.rs  use via crates/lib_core/src/lib.rs:7\n"
+        ),
+        "{text}"
+    );
+}
+
+#[test]
 fn check_json_lists_the_same_findings() {
     let out = check_with(
         "shop-json",

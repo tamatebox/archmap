@@ -60,18 +60,23 @@ whose selectors cover only the package's `src` leaves it uncovered. A
 target's own file (`tests/total.rs`) belongs to the package and needs no
 declaration of its own.
 
-Rules count what an import loads and, through re-exports, the component
-that defines what it takes (its `via` evidence, see [graph.md](graph.md)). A
-Python `from shop import pay`, where `shop/__init__.py` binds `pay` from
-`shop.billing`, therefore depends on `shop.billing` as well as on `shop`: a
-`deny` from the importer to `shop.billing` finds it, as it finds an import
-through a TS/JS barrel; so does `import shop`, then `shop.pay(order)`, which
-takes `pay` through the module it binds. A file that binds a name twice
-(`from .x import pay`, then `pay = wrap(pay)`) may give such evidence for a
-definition that no longer holds the name, and a rule may find it there.
-`impact`, on the other hand, follows an `__init__.py` that may use what it
-imports to everything that imports it, and one that only passes a name on
-(its `from` import noted `export`) only to what takes that name.
+`deny`, `layers` and `allow` count the file an import loads, not the
+component that defines what it takes through a re-export the graph records
+as an import of its own, so a rule can require that code goes through a
+facade. A Python `from shop import pay`, where `shop/__init__.py` binds
+`pay` from `shop.billing`, depends on `shop`; `shop`'s own import of
+`shop.billing` is its dependency, which a rule of its own covers. A `deny`
+from the importer to `shop.billing` therefore finds nothing, nor does one
+through a TS/JS barrel (`export ... from`) or a Rust `pub use` of another
+crate or of a module outside the re-exporting module's subtree. A Rust
+`pub use` of the module's own subtree (`pub use infra::Repo` in `lib.rs`) is
+no import, so a `use crate::Repo` elsewhere still counts toward `infra`,
+where the name is defined: otherwise no rule could see that dependency. A
+statement whose only evidence goes through a re-export (its `via`
+evidence, see [graph.md](graph.md)) is listed by that evidence, which names
+the defining file after the arrow and the re-export in its note. `query`,
+`impact` and the cycle check follow every name to the file that defines
+it: it runs when the program does.
 
 Rules are about production code. `deny`, `layers` and `allow` leave out
 imports in test code (test files and directories, `#[cfg(test)]`, a Rust
