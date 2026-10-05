@@ -260,6 +260,30 @@ impl ImportResolver {
         }
     }
 
+    /// The names classic JSX calls in `file` (relative to the root), by
+    /// their first segment: its tsconfig's `jsxFactory` and
+    /// `jsxFragmentFactory` (`h` of `h.f`); none where `jsx` is `react-jsx`
+    /// or `react-jsxdev`, whose runtime the compiler imports itself, or
+    /// without a tsconfig.
+    pub(crate) fn jsx_factories(&self, file: &Path) -> Vec<String> {
+        let absolute = self.root.join(file);
+        let Ok(Some(tsconfig)) = self.configured(&absolute).0.find_tsconfig(&absolute) else {
+            return Vec::new();
+        };
+        if self.module_options(file).jsx_runtime {
+            return Vec::new();
+        }
+        ["jsxFactory", "jsxFragmentFactory"]
+            .into_iter()
+            .filter_map(|option| {
+                let pointer = format!("/compilerOptions/{option}");
+                let (value, _) = self.view.setting(tsconfig.path(), &pointer)?;
+                let root = value.as_str()?.split('.').next()?.trim().to_owned();
+                (!root.is_empty()).then_some(root)
+            })
+            .collect()
+    }
+
     /// The warning for a tsconfig the resolver cannot use, with paths
     /// relative to the root.
     fn tsconfig_problem(&self, err: &ResolveError) -> String {

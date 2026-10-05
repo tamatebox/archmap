@@ -187,7 +187,7 @@ impl Analyzer for TypeScriptAnalyzer {
                     continue;
                 }
             };
-            let parsed = match source::parse(file, &text) {
+            let mut parsed = match source::parse(file, &text) {
                 Ok(parsed) => parsed,
                 Err(err) => {
                     output
@@ -198,6 +198,16 @@ impl Analyzer for TypeScriptAnalyzer {
             };
             if let Some(language) = language_of(file) {
                 *output.read.entry(language.to_owned()).or_default() += 1;
+            }
+            // classic JSX calls the factories its tsconfig names, which no
+            // identifier of the file writes
+            if parsed.has_jsx {
+                let factories = resolver.jsx_factories(file);
+                for import in &mut parsed.imports {
+                    import
+                        .type_uses
+                        .retain(|_, locals| !locals.iter().any(|l| factories.contains(l)));
+                }
             }
             // a script declares its top-level names globally
             let script = !parsed.module_syntax
@@ -321,7 +331,7 @@ impl Analyzer for TypeScriptAnalyzer {
                             import.names.iter().partition(|name| {
                                 declarations
                                     || import.types.contains(*name)
-                                    || by_use && import.type_uses.contains(*name)
+                                    || by_use && import.type_uses.contains_key(*name)
                                     || typescript && definitions.is_type(loaded, name)
                             });
                         let recorded = |names: Vec<&String>| -> BTreeSet<String> {
@@ -370,7 +380,8 @@ impl Analyzer for TypeScriptAnalyzer {
                     _ => {
                         let erased = !import.names.is_empty()
                             && import.names.iter().all(|n| {
-                                import.types.contains(n) || by_use && import.type_uses.contains(n)
+                                import.types.contains(n)
+                                    || by_use && import.type_uses.contains_key(n)
                             });
                         // a load the tsconfig keeps runs, as above
                         let kept = typescript && options.keeps(import) && !import.type_statement;
@@ -1148,7 +1159,7 @@ impl Imports<'_> {
             }
             let type_only = import.types.contains(name)
                 || is_declaration_file(self.file)
-                || by_use && import.type_uses.contains(name)
+                || by_use && import.type_uses.contains_key(name)
                 || definition.type_only
                 || language_of(self.file) == Some(language::LANGUAGE)
                     && definitions.is_type(loaded, name);

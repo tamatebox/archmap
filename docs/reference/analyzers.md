@@ -413,8 +413,9 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   keeps the import running, as do an unused binding, `export { Money }`, JSX, a decorator, the
   heritage of a `declare class`, `import a = m.b` and a computed key in a type (`[KEY]: string`),
   and inside a class with any decorator every name counts as a value, since `emitDecoratorMetadata`
-  may emit its annotations, while a file with JSX counts `React`, and the factories its `@jsx` and
-  `@jsxFrag` pragmas name, as values, which classic JSX calls; an import of a package, or of a
+  may emit its annotations, while a file with JSX counts `React`, the factories its `@jsx` and
+  `@jsxFrag` pragmas name and, unless `jsx` is `react-jsx` or `react-jsxdev`, its tsconfig's
+  `jsxFactory` and `jsxFragmentFactory` as values, which classic JSX calls; an import of a package, or of a
   name that resolves to no scanned file, counts its names the same way; a tsconfig with
   `verbatimModuleSyntax` or `preserveValueImports` keeps the values a file imports, so there only
   `type` and names that can only be types count; every import and re-export of a declaration file
@@ -552,9 +553,8 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   file reaches only through `eval` or a string is not seen, a class with a decorator counts every
   name in it as a value even under TypeScript 5's decorators, which emit no metadata, and the
   options of other compilers that keep imports (Babel's `onlyRemoveTypeImports`, SWC's
-  `jsc.transform.verbatimModuleSyntax`) are not read, nor a tsconfig's `jsxFactory` and
-  `jsxFragmentFactory`, so a factory other than React that no pragma names and the file also writes
-  in a type counts as a type. A `const enum` and a namespace that holds
+  `jsc.transform.verbatimModuleSyntax`) are not read, nor a factory a bundler's or Babel's JSX
+  options name, which the file then counts as a type where it also writes it in one. A `const enum` and a namespace that holds
   only types count as values, though the compiler without `isolatedModules` erases the first and
   never emits the second.
 - A JavaScript file that Node runs is a module of its own even without `require` or exports;

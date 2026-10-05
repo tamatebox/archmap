@@ -60,8 +60,9 @@ pub(crate) struct ImportStatement {
     pub replaces: bool,
     /// The names among `names` whose bindings the file names, and only
     /// where TypeScript reads a type (see [`Positions`]): a compiler drops
-    /// them as it drops what `type` marks, unless the tsconfig keeps values.
-    pub type_uses: BTreeSet<String>,
+    /// them as it drops what `type` marks, unless the tsconfig keeps values;
+    /// each with the local names that bind it.
+    pub type_uses: BTreeMap<String, BTreeSet<String>>,
     /// `type` marks the whole statement (`import type`, `export type ..
     /// from`, an `import()` type), which every compiler erases; one whose
     /// names `type` marks one by one still loads its module where the
@@ -238,7 +239,7 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
             types,
             local: false,
             replaces: false,
-            type_uses: BTreeSet::new(),
+            type_uses: BTreeMap::new(),
             type_statement,
         };
         let whole = || vec![WHOLE_MODULE.to_owned()];
@@ -522,23 +523,29 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
         }
     }
     let mut kept: BTreeSet<(usize, String)> = BTreeSet::new();
-    let mut typed: BTreeSet<(usize, String)> = BTreeSet::new();
+    let mut typed: BTreeMap<(usize, String), BTreeSet<String>> = BTreeMap::new();
     for (local, (index, taken, type_only)) in &bindings {
         let name = taken.clone().unwrap_or_else(|| WHOLE_MODULE.to_owned());
         let only_types = positions.types.contains(local) && !positions.values.contains(local);
         match (*type_only, only_types) {
             (true, _) => {}
             (false, true) => {
-                typed.insert((*index, name));
+                typed
+                    .entry((*index, name))
+                    .or_default()
+                    .insert(local.clone());
             }
             (false, false) => {
                 kept.insert((*index, name));
             }
         }
     }
-    for (index, name) in typed.difference(&kept) {
-        if let Some(import) = file.imports.get_mut(*index) {
-            import.type_uses.insert(name.clone());
+    for ((index, name), locals) in typed {
+        if kept.contains(&(index, name.clone())) {
+            continue;
+        }
+        if let Some(import) = file.imports.get_mut(index) {
+            import.type_uses.insert(name, locals);
         }
     }
     // after the statements, so the indices in the export table stay valid
@@ -799,7 +806,7 @@ impl Calls<'_> {
             types,
             local,
             replaces: false,
-            type_uses: BTreeSet::new(),
+            type_uses: BTreeMap::new(),
             type_statement: type_only,
         });
     }
@@ -2700,7 +2707,7 @@ export default local;
         let uses = |i: usize| -> Vec<&str> {
             file.imports[i]
                 .type_uses
-                .iter()
+                .keys()
                 .map(String::as_str)
                 .collect()
         };

@@ -285,6 +285,11 @@ fn what_tsc_keeps_and_drops_at_the_edges_of_types_by_use() {
         evidence(&graph, "src/preact.tsx:2", "src/h.ts"),
         rows(&[(&["h"], false, "import")])
     );
+    // the tsconfig's `jsxFactory` as well, under classic JSX
+    assert_eq!(
+        evidence(&graph, "jsxcfg/view.tsx:1", "src/h.ts"),
+        rows(&[(&["h"], false, "import")])
+    );
     // a class that its file exports by `export type` only is a type
     assert_eq!(
         evidence(&graph, "src/wallets.ts:1", "src/wallet.ts"),
