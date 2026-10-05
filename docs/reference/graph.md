@@ -56,7 +56,11 @@ never writes again: `impact` follows a changed file or symbol through such
 barrels only to the statements that may take what they pass on. A TS/JS re-export of a package, or of a path that
 matches no file, keeps `export` as the first word of its note (`export
 react-aria, declared in web/package.json:4`): the file passes on names that
-the graph does not list. `exported_as` gives, for a TS/JS statement whose
+the graph does not list. A TS/JS statement into a package writes the import
+name second, after its kind (`import react-dom/client`, `vi.mock
+react-dom/client`), up to a comma or a colon; a package subpath target in
+`query` and `impact` keeps the statements whose second word is that
+subpath. `exported_as` gives, for a TS/JS statement whose
 file passes a taken name on under another, that name's new names (`export
 { formatPrice as price } from` records `{"formatPrice": ["price"]}`), and
 `*` the names of a module passed on as a namespace (`export * as money

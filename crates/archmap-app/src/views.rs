@@ -2,6 +2,7 @@
 //! [`crate::impact`], rendered as JSON there or as text by
 //! [`crate::query_text`] and [`crate::impact_text`].
 
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 
 use archmap_core::co_change::CoChange;
@@ -41,7 +42,9 @@ pub struct ComponentView<'a> {
     pub children: Vec<&'a ComponentId>,
     pub symbols: Vec<&'a Symbol>,
     pub outgoing: Vec<&'a Edge>,
-    pub incoming: Vec<&'a Edge>,
+    /// For a package subpath, the statements that import the subpath, and
+    /// the manifests that declare the package.
+    pub incoming: Vec<Cow<'a, Edge>>,
     /// Imports in the component that map to no component: dependencies
     /// that no edge shows.
     pub not_mapped: Vec<&'a UnmappedImport>,

@@ -157,7 +157,7 @@ fn component(
     }
 
     let outgoing = view.outgoing.iter().map(|e| (&e.to, *e));
-    let incoming = view.incoming.iter().map(|e| (&e.from, *e));
+    let incoming = view.incoming.iter().map(|e| (&e.from, e.as_ref()));
     truncated |= neighbors(out, "Depends on", outgoing, rolled, pairs, true, caps);
     truncated |= neighbors(out, "Used by", incoming, rolled, pairs, true, caps);
     if c.kind != ComponentKind::External {

@@ -1,6 +1,7 @@
 //! `query`: one target in detail, as a component, a file, symbols or an
 //! import name without a component.
 
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 
 use anyhow::{Context, Result};
@@ -10,7 +11,7 @@ use archmap_core::{
 };
 
 use crate::not_traced::{holds_global, not_traced, with_uses, Own, Place, Subject};
-use crate::resolve::{resolve, Resolved};
+use crate::resolve::{imports_subpath, resolve, Resolved};
 use crate::target::{component_file, fold, namesakes, reject_outside, unquote, AtDepth};
 use crate::views::{ComponentView, FileView, Importer, QueryResult, SymbolView, UnmappedView};
 use archmap_scan::ScanReport;
@@ -218,6 +219,26 @@ fn query(ws: &Workspace, request: &QueryRequest) -> Result<Answer> {
     })
 }
 
+/// `edge` with the evidence of the statements that import `spec`, a
+/// package subpath; a manifest's declaration of the package whole.
+fn importing_subpath<'a>(edge: &'a Edge, spec: &str) -> Option<Cow<'a, Edge>> {
+    if edge.kind != EdgeKind::Import {
+        return Some(Cow::Borrowed(edge));
+    }
+    let evidence: Vec<Evidence> = edge
+        .evidence
+        .iter()
+        .filter(|e| imports_subpath(e, spec))
+        .cloned()
+        .collect();
+    (!evidence.is_empty()).then(|| {
+        Cow::Owned(Edge {
+            evidence,
+            ..edge.clone()
+        })
+    })
+}
+
 /// A symbol with the statements that import it, read in the full graph,
 /// production code first, as `impact` lists them, and where it is used.
 fn symbol_view<'a>(
@@ -352,6 +373,14 @@ fn component_view<'a>(
         .component(&at.id)
         .with_context(|| format!("`{}` is missing after roll-up", at.id))?;
     let (also_named, also_at_path) = namesakes(full, component);
+    let incoming = rolled
+        .incoming(&component.id)
+        .filter_map(|edge| match &subpath {
+            // `requested` is the package name and the subpath
+            Some(_) => importing_subpath(edge, requested),
+            None => Some(Cow::Borrowed(edge)),
+        })
+        .collect();
     let not_traced = not_traced(
         full,
         &Subject {
@@ -380,7 +409,7 @@ fn component_view<'a>(
             .collect(),
         symbols: rolled.symbols_of(&component.id).collect(),
         outgoing: rolled.outgoing(&component.id).collect(),
-        incoming: rolled.incoming(&component.id).collect(),
+        incoming,
         not_mapped: rolled
             .unmapped_imports
             .iter()

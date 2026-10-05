@@ -1971,3 +1971,64 @@ fn each_workspace_links_its_own_members() {
         report.warnings
     );
 }
+
+#[test]
+fn a_package_import_notes_the_import_name_after_its_kind() {
+    // `query` and `impact` read a package subpath from the note's second word
+    let root = temp_repo(
+        "package-notes",
+        &[
+            (
+                "package.json",
+                "{ \"name\": \"notes\", \"dependencies\": { \"kit\": \"1.0.0\" } }",
+            ),
+            (
+                "src/a.ts",
+                "import { a } from 'kit/sub';\nexport const x = a;\n",
+            ),
+            (
+                "src/b.ts",
+                "import type { B } from 'kit/sub';\nexport let y: B;\n",
+            ),
+            ("src/c.ts", "export { c } from 'kit/sub';\n"),
+            (
+                "src/d.js",
+                "const d = require('kit/sub');\nmodule.exports = d;\n",
+            ),
+            (
+                "src/e.ts",
+                "export async function e() { return import('kit/sub'); }\n",
+            ),
+            (
+                "src/f.ts",
+                "import g = require('kit/sub');\nexport const f = g;\n",
+            ),
+            (
+                "src/types.d.ts",
+                "import { H } from 'kit/sub';\nexport type T = H;\n",
+            ),
+            (
+                "src/a.test.ts",
+                "import { vi } from 'vitest';\nvi.mock('kit/sub');\n",
+            ),
+        ],
+    );
+    let report = scan(&root, &ScanOptions::default()).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    let noted: BTreeMap<String, String> = report
+        .graph
+        .edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Import && e.to == id("ext:npm:kit"))
+        .flat_map(|e| &e.evidence)
+        .map(|e| (e.file.clone(), e.note.clone().unwrap_or_default()))
+        .collect();
+    assert_eq!(noted.len(), 8, "{noted:#?}");
+    for (file, note) in &noted {
+        let written = note
+            .split_whitespace()
+            .nth(1)
+            .map(|w| w.trim_end_matches([',', ':']));
+        assert_eq!(written, Some("kit/sub"), "{file}: {note}");
+    }
+}

@@ -137,9 +137,10 @@ archmap query acme/shop#123 --snapshot ../shop-github.json
 
 `query` works on top of the rolled-up graph, for a component, a symbol or a
 single file, including the imports no edge shows. It also takes a directory
-for the component that owns it, a package subpath for its package
-(`react-dom/client`), and an import name that no component carries (`torch`
-declared as an extra) for the imports of it that no edge shows. A component
+for the component that owns it, a package subpath for its package with
+the statements that import that subpath (`react-dom/client`), and an
+import name that no component carries (`torch` declared as an extra) for
+the imports of it that no edge shows. A component
 that is one file (a TS/JS file, a Rust module without submodules) answers as
 that file, with the statements that import it, even where it folds into an
 ancestor. How a target is looked up, and what happens when it names several
@@ -399,8 +400,9 @@ changed, directly or through other files, not merely because it imports some
 file of the same component. A file target starts from that file; a component
 target starts from all of its files. Like `query`, it takes a file as
 `<component>.<file stem>` too, a directory for the component that owns
-it and a package subpath for its package, and a component that is one file
-answers as that file. Dependencies without a target file
+it and a package subpath for its package, starting from the statements
+that import that subpath as from those of an import name, and a component
+that is one file answers as that file. Dependencies without a target file
 (manifests, external packages) are followed component by component, and the
 result is still reported at the roll-up depth. A file reached through
 production code stands for its component there; one reached through test
@@ -742,7 +744,10 @@ matches decides:
 6. a file as `<component>.<file stem>` (`shop.users`)
 7. a directory, for the component that owns it
 8. a package subpath of an npm or TS/JS package (`react-dom/client`,
-   `@acme/ui/button`), for that package
+   `@acme/ui/button`), for that package and the statements that import
+   that subpath or a module below it, with or without a file extension
+   (`react-dom/client.js`) or an `index` file; JSON keeps the same
+   statements
 9. an import name that no component carries
 10. a file name or stem anywhere under the root (`users.py`, `users`)
 

@@ -312,6 +312,52 @@ fn a_package_subpath_answers_for_its_package() {
 }
 
 #[test]
+fn a_package_subpath_lists_only_the_statements_that_import_it() {
+    let repo = Repo::new(
+        "subpath-importers",
+        &[
+            (
+                "package.json",
+                "{\"name\": \"site\", \"dependencies\": {\"react-dom\": \"19.0.0\"}}\n",
+            ),
+            (
+                "src/client/mount.ts",
+                "import { createRoot } from 'react-dom/client';\nexport const mount = createRoot;\n",
+            ),
+            (
+                "src/server/render.ts",
+                "import { renderToString } from 'react-dom/server';\nexport const render = renderToString;\n",
+            ),
+        ],
+    );
+    let ws = scan(&repo.0);
+    let answer = query(&ws, "react-dom/client");
+    assert!(
+        answer.output.contains("src/client/mount.ts:1"),
+        "{}",
+        answer.output
+    );
+    assert!(!answer.output.contains("src/server"), "{}", answer.output);
+    // the package's declaration stays
+    assert!(
+        answer.output.contains("declared in package.json"),
+        "{}",
+        answer.output
+    );
+
+    let json = query_as(&ws, "react-dom/client", Format::Json).output;
+    assert!(
+        json.contains("\"note\": \"import react-dom/client\""),
+        "{json}"
+    );
+    assert!(!json.contains("react-dom/server"), "{json}");
+
+    let json = impact(&ws, "react-dom/client").output;
+    assert!(json.contains("src/client/mount.ts"), "{json}");
+    assert!(!json.contains("src/server"), "{json}");
+}
+
+#[test]
 fn a_subpath_of_a_workspace_package_answers_for_that_package() {
     let repo = Repo::new(
         "internal-subpath",

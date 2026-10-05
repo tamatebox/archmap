@@ -7,7 +7,8 @@ use std::path::Path;
 
 use anyhow::{bail, Result};
 use archmap_core::{
-    ArchitectureGraph, Component, ComponentId, ComponentKind, Symbol, SymbolId, SymbolKind,
+    ArchitectureGraph, Component, ComponentId, ComponentKind, Evidence, Symbol, SymbolId,
+    SymbolKind,
 };
 use serde::Serialize;
 
@@ -214,6 +215,41 @@ fn takes_subpaths(component: &Component) -> bool {
         }
         _ => false,
     }
+}
+
+/// Whether `evidence` is of a statement that imports `spec`, a package
+/// subpath (`react-dom/client`), or a module below it: the analyzers write
+/// the import name after the statement's kind (`import react-dom/client`,
+/// `export react-dom/client, declared in packages/web/package.json:4`).
+pub(crate) fn imports_subpath(evidence: &Evidence, spec: &str) -> bool {
+    let Some(written) = evidence
+        .note
+        .as_deref()
+        .and_then(|note| note.split_whitespace().nth(1))
+    else {
+        return false;
+    };
+    let (written, spec) = (
+        module_path(written.trim_end_matches([',', ':'])),
+        module_path(spec),
+    );
+    written == spec
+        || written
+            .strip_prefix(spec)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// An import name without a file extension or an `index` file at its end,
+/// which name the same module (`kit/sub.js`, `kit/sub/index` -> `kit/sub`).
+fn module_path(name: &str) -> &str {
+    const EXTENSIONS: [&str; 9] = [
+        ".js", ".mjs", ".cjs", ".jsx", ".ts", ".mts", ".cts", ".tsx", ".json",
+    ];
+    let name = EXTENSIONS
+        .iter()
+        .find_map(|ext| name.strip_suffix(ext))
+        .unwrap_or(name);
+    name.strip_suffix("/index").unwrap_or(name)
 }
 
 /// `react-dom/client` -> (`react-dom`, `client`); `@scope/pkg/sub` ->
@@ -488,6 +524,29 @@ mod tests {
         assert_eq!(unquote("'a\""), "'a\"");
         assert_eq!(unquote("''a''"), "'a'");
         assert_eq!(unquote("'"), "'");
+    }
+
+    #[test]
+    fn a_subpath_matches_its_statements_with_or_without_an_extension() {
+        let noted = |note: &str| Evidence::new("a.ts").at_line(1).with_note(note);
+        for note in [
+            "import kit/sub",
+            "import kit/sub.js",
+            "import kit/sub/index.ts",
+            "import kit/sub/deep",
+            "export kit/sub, declared in web/package.json:4",
+        ] {
+            assert!(imports_subpath(&noted(note), "kit/sub"), "{note}");
+            assert!(imports_subpath(&noted(note), "kit/sub.js"), "{note}");
+        }
+        for note in [
+            "import kit/subway",
+            "import kit/sub.browser",
+            "import kit",
+            "import",
+        ] {
+            assert!(!imports_subpath(&noted(note), "kit/sub"), "{note}");
+        }
     }
 
     #[test]

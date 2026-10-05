@@ -4,9 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result};
 use archmap_core::{
-    ArchitectureGraph, ChangeSeed, Component, ComponentId, ComponentKind, Edge, Evidence,
+    ArchitectureGraph, ChangeSeed, Component, ComponentId, ComponentKind, Edge, EdgeKind, Evidence,
     FirstStep, Hop, ImportPlace, Symbol, SymbolImporters, SymbolUses, TestReach, TestRoute,
-    TestWay, UnmappedImport,
+    TestWay,
 };
 
 use archmap_scan::ScanReport;
@@ -17,7 +17,7 @@ use crate::not_traced::{
     Subject,
 };
 use crate::query::{instance_method, uses_of};
-use crate::resolve::{resolve, Resolved};
+use crate::resolve::{imports_subpath, resolve, Resolved};
 use crate::target::{component_file, fold, namesakes, reject_outside, unquote};
 use crate::views::{
     About, Dependent, ImpactResult, ImportSite, ImportSites, LeftOut, Location, MockCall,
@@ -173,7 +173,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
     let rolled = full.rollup(depth);
 
     let (mut importers, mut imports_below) = (None, None);
-    let (mut symbol_id, mut may_use, mut subpath) = (None, None, None);
+    let (mut symbol_id, mut may_use) = (None, None);
     let (mut used_at, mut unnamed) = (None, BTreeSet::new());
     // statements that take a symbol's file whole, those that never name it
     // included
@@ -209,14 +209,12 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
             };
             (fold(full, depth, &component.id), reach)
         }
-        Resolved::Package {
-            component,
-            subpath: after,
-        } => {
-            subpath = Some(after);
-            traced = Traced::Component(component);
-            let reach = full.change_impact(ChangeSeed::Component(&component.id), depth);
-            (fold(full, depth, &component.id), reach)
+        Resolved::Package { component, subpath } => {
+            let result = subpath_impact(full, &ws.report, depth, target, component, subpath, caps);
+            return Ok(Answer {
+                output: render(&result, format, full, &rolled, verbose)?,
+                found: Found::One,
+            });
         }
         Resolved::File(file) => {
             let owner = full
@@ -498,7 +496,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
         module: None,
         folded_from: at.folded_from,
         symbol: symbol_id,
-        subpath,
+        subpath: None,
         importers,
         imports_below,
         may_use,
@@ -711,15 +709,71 @@ fn import_name_impact<'a>(
     module: &'a str,
     caps: Caps,
 ) -> ImpactResult<'a> {
-    let imports: Vec<&UnmappedImport> = full.unmapped_imports_of(module).collect();
+    let statements: Vec<(&ComponentId, &Evidence)> = full
+        .unmapped_imports_of(module)
+        .map(|i| (&i.from, &i.evidence))
+        .collect();
+    let mut result = importers_impact(full, report, depth, target, &statements, caps);
+    result.module = Some(module.to_owned());
+    result
+}
+
+/// What changing a package subpath (`react-dom/client`) may reach: as for
+/// an import name, from the statements that import the subpath alone.
+fn subpath_impact<'a>(
+    full: &'a ArchitectureGraph,
+    report: &ScanReport,
+    depth: usize,
+    target: &'a str,
+    package: &'a Component,
+    subpath: String,
+    caps: Caps,
+) -> ImpactResult<'a> {
+    let statements: Vec<(&ComponentId, &Evidence)> = full
+        .incoming(&package.id)
+        .filter(|edge| edge.kind == EdgeKind::Import)
+        .flat_map(|edge| {
+            edge.evidence
+                .iter()
+                .filter(|e| imports_subpath(e, target))
+                .map(move |e| (&edge.from, e))
+        })
+        .collect();
+    let mut result = importers_impact(full, report, depth, target, &statements, caps);
+    let at = fold(full, depth, &package.id);
+    let (also_named, also_at_path) = full
+        .component(&at.id)
+        .map(|c| namesakes(full, c))
+        .unwrap_or_default();
+    result.also_named = also_named.into_iter().cloned().collect();
+    result.also_at_path = also_at_path.into_iter().cloned().collect();
+    result.target = Some(at.id);
+    result.folded_from = at.folded_from;
+    result.subpath = Some(subpath);
+    result.about = About::Component;
+    result
+}
+
+/// What changing what `statements` import may reach, apart from the
+/// components that hold them: the components whose production files hold
+/// them, everything that reaches those files, and the test files among
+/// them or that reach them.
+fn importers_impact<'a>(
+    full: &'a ArchitectureGraph,
+    report: &ScanReport,
+    depth: usize,
+    target: &'a str,
+    statements: &[(&'a ComponentId, &'a Evidence)],
+    caps: Caps,
+) -> ImpactResult<'a> {
     let (mut direct, mut tests) = (BTreeSet::new(), BTreeSet::new());
     let mut seeds: BTreeSet<&str> = BTreeSet::new();
-    for import in &imports {
-        let file = import.evidence.file.as_str();
-        if import.evidence.test {
+    for (from, evidence) in statements {
+        let file = evidence.file.as_str();
+        if evidence.test {
             tests.insert(file.to_owned());
         } else {
-            direct.insert(full.ancestor_at(&import.from, depth));
+            direct.insert(full.ancestor_at(from, depth));
         }
         seeds.insert(file);
     }
@@ -761,15 +815,14 @@ fn import_name_impact<'a>(
             barrels: Some(found),
             ..NotTraced::default()
         });
-    let statements = imports.iter().map(|i| (&i.from, &i.evidence));
-    let importers = sites(full, depth, statements, true, caps.sites);
+    let importers = sites(full, depth, statements.iter().copied(), true, caps.sites);
     let counted = counts(importers.shown.iter());
     let (direct, transitive) = dependents(full, &reach, &counted, &BTreeSet::new(), 1);
     ImpactResult {
         requested: target,
         depth,
         target: None,
-        module: Some(module.to_owned()),
+        module: None,
         folded_from: None,
         symbol: None,
         subpath: None,
