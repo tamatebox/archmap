@@ -189,7 +189,8 @@ pub struct ImpactResult<'a> {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub also_at_path: Vec<ComponentId>,
     /// Components that directly depend on the target, those with the most
-    /// statements into it in production code first, ties by name.
+    /// statements into it in production code first, then the most
+    /// statements, then by name.
     pub direct: Vec<Dependent>,
     /// Every component that transitively depends on the target, `direct`
     /// included, nearest first, ties by name.

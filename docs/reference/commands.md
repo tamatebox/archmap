@@ -610,24 +610,33 @@ imports it without naming a file of it (`(imported in src/page.tsx:2)`);
 ties go by the name shown. A component that holds the target, such as a
 package whose own barrel re-exports it, names the files of it the change
 reaches, nearest first (`ts-shop (src/index.ts)  2 imports`), since the
-target is inside it and the rest of it may not be reached. Lists show 30 components, 5 statements, 20 test files, 5 files changed in
-the same commits with 2 commits each, and 3 locations per kind of `Not
-traced`, and their headings count the rest
-(`6, showing 5`); a capped statement list ends with the components the rest
-are in, most first (`13 more in: app/x 5, app/y 4, app/z 2, +2 more
-components`); an answer with a capped list ends by saying so, and
+target is inside it and the rest of it may not be reached. Lists show 30
+components, 5 statements, 20 test files, 5 files changed in the same commits
+with 2 commits each, 3 files of a component that holds the target, 3 entries
+each of `not tests` and `left out`, and 3 locations per kind of `Not
+traced`, and their headings count the rest (`6, showing 5`); a capped
+statement list ends with the 3 components the rest are in, most first (`13
+more in: app/x 5, app/y 4, app/z 2, +2 more components`); an answer with a
+capped list ends by saying so, and
 `--verbose` lists every entry. `--format json` lists every entry with all
 its evidence, whatever `--verbose` says, and for a busy target runs large:
-`direct` and `transitive` (which includes `direct`) as objects with the
+the target as given as `requested`, the roll-up `depth`, the component that
+changes as `target`, and when it is folded into that at the depth the
+component that owns the request as `folded_from`, for a symbol its id as
+`symbol`, for a package subpath the part after the package name as
+`subpath`; `direct` and `transitive` (which includes `direct`) as objects with the
 component's `id`, its `distance` (1 for a direct one), for one that holds
 the target the files of it reached as `files`, for a direct one its
 `imports` (`{"production", "tests"}`), and for one further what it was
 reached `through` (a file's path or a component's id) and, where a
 declaration or an import that names no file was the way, `declared_in` or
-`imported_in` (`{"file", "line"}`), in the text's order;
+`imported_in` (`{"file", "line"}`), in the text's order (direct ones by
+most statements in production code, then most statements, then name; the
+others by distance, then name);
 `importers`, `imports_below` and `may_use` as `{"recorded", "total",
 "statements"}`, each statement its evidence (`file`, `line`, `note`,
-`target`, `scope`, `names`, `test`, `type_only`, `replaces`) with the
+`target`, `scope`, `names`, `exported_as` for a re-export that renames what
+it passes on, `test`, `type_only`, `replaces`) with the
 `component` it is in and, for a symbol, the barrel it went through as
 `through`, for a Rust file of methods the type a statement takes as
 `takes_type`, `recorded` being false when no evidence names imported files for
@@ -640,7 +649,7 @@ what changed, the nearest that do: `{"kind": "takes", "via"?}`, `whole`,
 `steps`, `types_only` when it runs none of the change and `mock` when only
 mock calls load its file), `types_only`, and for a `conftest.py` the
 directory it `stands_for`; `not_tests` with each such file, its `kind`
-(`helper`, `example`, `bench`), its `ways` and, for a helper, the paths of
+(`helper`, `example`, `bench`), its `ways`, `types_only` and, for a helper, the paths of
 the listed tests that load it as `for_tests`; and `left_out` as `{"total",
 "files"}` with every test file and the `mocks` of
 each, by `file`, `line` and the `target` it replaces, when a mock left one

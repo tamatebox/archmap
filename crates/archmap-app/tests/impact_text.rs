@@ -731,6 +731,43 @@ fn a_rust_glob_stays_in_the_reach_where_its_file_may_use_the_symbol() {
 }
 
 #[test]
+fn small_lists_say_what_they_hold() {
+    // a component's bench, example and helper are in the target
+    let ws = scan(&fixture("rust-cargo-targets"));
+    let out = text(&ws, "kiosk");
+    assert!(
+        out.contains("kiosk/benches/speed.rs (bench, in the target)"),
+        "{out}"
+    );
+    // verbose names every file of a component that holds the target
+    let ws = scan(&fixture("python-bindings"));
+    let every = impact(&ws, "store/billing/money.py", DEFAULT_DEPTH, true);
+    assert!(
+        every.contains("store/refunds.py, store/unused.py)  2 steps"),
+        "{every}"
+    );
+    // a test that defines the symbol changes with it
+    let files: Vec<(String, String)> = [
+        ("Cargo.toml", "[package]\nname = \"p\"\nversion = \"0.1.0\"\n"),
+        ("src/lib.rs", "pub fn work() -> u32 {\n    1\n}\n"),
+        (
+            "tests/it.rs",
+            "pub fn expected() -> u32 {\n    1\n}\n\n#[test]\nfn works() {\n    assert_eq!(p::work(), expected());\n}\n",
+        ),
+    ]
+    .into_iter()
+    .map(|(file, text)| (file.to_owned(), text.to_owned()))
+    .collect();
+    let repo = Repo::new("test-symbol", &files);
+    let out = text(&scan(&repo.0), "expected");
+    assert_eq!(
+        section(&out, "Tests to run again: 1"),
+        ["  tests/it.rs (defines it)"],
+        "{out}"
+    );
+}
+
+#[test]
 fn a_helper_whose_mock_cuts_its_way_is_no_test_left_out() {
     let files: Vec<(String, String)> = [
         (

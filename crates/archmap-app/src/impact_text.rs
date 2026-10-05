@@ -31,6 +31,8 @@ struct Caps {
     tests: usize,
     locations: usize,
     use_files: usize,
+    /// The files a component that holds the target names.
+    holder_files: usize,
 }
 
 impl Caps {
@@ -42,6 +44,7 @@ impl Caps {
                 tests: usize::MAX,
                 locations: usize::MAX,
                 use_files: usize::MAX,
+                holder_files: usize::MAX,
             }
         } else {
             Caps {
@@ -50,6 +53,7 @@ impl Caps {
                 tests: MAX_TEST_FILES,
                 locations: MAX_LOCATIONS,
                 use_files: MAX_USE_FILES,
+                holder_files: MAX_FILES,
             }
         }
     }
@@ -194,7 +198,7 @@ fn direct(
     );
     // those with the most statements into the target first
     for dependent in &result.direct[..shown] {
-        let mut line = format!("  {}", dependent_name(rolled, dependent));
+        let mut line = format!("  {}", dependent_name(rolled, dependent, caps));
         let counted = dependent.imports.unwrap_or_default();
         if let Some(counts) = import_counts(counted.production, counted.tests) {
             let _ = write!(line, "  {counts}");
@@ -353,7 +357,7 @@ fn transitive(
     for dependent in &further[..shown] {
         let mut line = format!(
             "  {}  {} steps",
-            dependent_name(rolled, dependent),
+            dependent_name(rolled, dependent, caps),
             dependent.distance
         );
         if let Some(through) = &dependent.through_shown {
@@ -380,12 +384,12 @@ fn transitive(
 
 /// A dependent as the lists name it: a component that holds the target with
 /// the files of its own it is reached through (`ts-shop (src/index.ts)`).
-fn dependent_name(rolled: &ArchitectureGraph, dependent: &Dependent) -> String {
+fn dependent_name(rolled: &ArchitectureGraph, dependent: &Dependent, caps: &Caps) -> String {
     let name = display(rolled, &dependent.id);
     match dependent.files.len() {
         0 => name.to_owned(),
         n => {
-            let shown = &dependent.files[..n.min(MAX_FILES)];
+            let shown = &dependent.files[..n.min(caps.holder_files)];
             format!("{name} ({})", with_more(shown, n))
         }
     }
@@ -435,7 +439,10 @@ fn tests(out: &mut String, result: &ImpactResult, caps: &Caps) -> bool {
             .map(|other| {
                 let mut notes = vec![other.kind.to_owned()];
                 if let Some(TestWayView::Target) = other.ways.first().map(|r| &r.way) {
-                    notes.push("the target itself".to_owned());
+                    notes.push(match result.about {
+                        About::Component => "in the target".to_owned(),
+                        _ => "the target itself".to_owned(),
+                    });
                 }
                 if !other.for_tests.is_empty() {
                     let n = other.for_tests.len();
@@ -480,6 +487,7 @@ fn way_text(ways: &[TestRouteView], types_only: bool, about: &About) -> Option<S
     let mut how = match route.map(|r| &r.way)? {
         TestWayView::Target => match about {
             About::Component => "in the target".to_owned(),
+            About::Symbol(_) => "defines it".to_owned(),
             _ => "the target itself".to_owned(),
         },
         // a call that puts a mock in its place, and nothing else

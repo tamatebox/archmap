@@ -178,7 +178,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
     // included
     let mut takes_whole = false;
     let traced: Traced;
-    let (at, reach) = match resolve(full, &rolled, root, target)? {
+    let (at, mut reach) = match resolve(full, &rolled, root, target)? {
         Resolved::Candidates(candidates) => {
             return Ok(Answer {
                 output: candidates.render(full, target, format)?,
@@ -330,6 +330,20 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
             }
         }
     };
+    // a symbol that test code defines changes that file
+    if let Traced::Symbol(symbol) = &traced {
+        if let Some(at) = symbol.location().filter(|e| e.test) {
+            reach.tests.insert(at.file.clone());
+            let ways = reach.test_ways.entry(at.file.clone()).or_default();
+            let target = TestRoute {
+                way: TestWay::Target,
+                steps: 0,
+                types_only: false,
+            };
+            ways.ways.insert(0, target);
+            ways.types_only = false;
+        }
+    }
     let mut not_traced = not_traced(full, &subject, usize::MAX);
     // what the uses pass could not follow, as `query` names it
     let instance = match &traced {
