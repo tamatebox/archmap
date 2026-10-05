@@ -658,7 +658,9 @@ to run again for another. Those files did not change, so a test that mocks
 one of them is left out. For
 a symbol, the first step goes only through the statements that `query` lists
 for the symbol: those that take its name (`Imported by`) and those that take
-its file whole (`May use`); every later step is file by file as above, and
+its file whole (`May use`), and the files other than its own where `Used at`
+finds a use through no such statement (a Rust module that re-exports it from
+its subtree and calls it); every later step is file by file as above, and
 imports without a target file on the symbol's component are kept, while a
 declaration in a manifest carries no part of it, since it says a package is
 installed, not that a symbol of it is used. So a file that imports another

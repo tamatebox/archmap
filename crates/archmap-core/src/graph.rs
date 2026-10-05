@@ -524,7 +524,7 @@ impl ArchitectureGraph {
                 }
                 None
             }
-            ChangeSeed::Symbol(symbol, unnamed) => {
+            ChangeSeed::Symbol(symbol, unnamed, users) => {
                 // the first step goes only through the statements that take
                 // the symbol by name or take its file whole, apart from those
                 // of the latter that never name it; dependencies without file
@@ -589,6 +589,19 @@ impl ArchitectureGraph {
                         (node(e), 1, loads)
                     }));
                     production.extend(statements.iter().filter(|e| !e.test).map(node));
+                }
+                for user in users.iter().map(String::as_str) {
+                    let test = test_code.contains(user);
+                    if tests || !test {
+                        start.push((Node::File(user), 1, None));
+                        start_ways
+                            .entry(user)
+                            .or_default()
+                            .push((Way::Takes(None), false, None));
+                    }
+                    if !test {
+                        production.insert(Node::File(user));
+                    }
                 }
                 Some(self.ancestor_at(&symbol.component, depth))
             }
@@ -1949,8 +1962,10 @@ pub enum ChangeSeed<'a> {
     /// [`ArchitectureGraph::symbol_importers`]), then file by file. The set
     /// holds statements of the latter that a uses pass read and found never
     /// naming the symbol, which take nothing of it and leave the first step;
-    /// a statement that takes it by name stays, as it loads the file.
-    Symbol(&'a Symbol, &'a BTreeSet<ImportPlace>),
+    /// a statement that takes it by name stays, as it loads the file. The
+    /// files hold uses of it through no statement of its own (a Rust module
+    /// that re-exports it from its subtree and calls it), which take it too.
+    Symbol(&'a Symbol, &'a BTreeSet<ImportPlace>, &'a BTreeSet<String>),
 }
 
 /// Components that may be affected by a change.
@@ -3309,7 +3324,10 @@ mod tests {
     #[test]
     fn change_impact_from_a_symbol_goes_no_further_than_its_barrels_pass_it() {
         let graph = behind_barrels();
-        let reach = graph.change_impact(ChangeSeed::Symbol(&price(), &BTreeSet::new()), 2);
+        let reach = graph.change_impact(
+            ChangeSeed::Symbol(&price(), &BTreeSet::new(), &BTreeSet::new()),
+            2,
+        );
         let ids = |set: &BTreeSet<ComponentId>| -> Vec<String> {
             set.iter().map(|c| c.to_string()).collect()
         };
@@ -3390,7 +3408,10 @@ mod tests {
             "formatPrice",
             vec![Evidence::new("lib/money.ts").at_line(8)],
         );
-        let reach = graph.change_impact(ChangeSeed::Symbol(&price, &BTreeSet::new()), 2);
+        let reach = graph.change_impact(
+            ChangeSeed::Symbol(&price, &BTreeSet::new(), &BTreeSet::new()),
+            2,
+        );
         let ids =
             |set: &BTreeSet<ComponentId>| set.iter().map(|c| c.to_string()).collect::<Vec<_>>();
         assert_eq!(ids(&reach.direct), ["named", "whole"]);
@@ -3406,7 +3427,7 @@ mod tests {
             line: 1,
         };
         let unnamed = BTreeSet::from([place("whole/b.ts"), place("named/a.ts")]);
-        let reach = graph.change_impact(ChangeSeed::Symbol(&price, &unnamed), 2);
+        let reach = graph.change_impact(ChangeSeed::Symbol(&price, &unnamed, &BTreeSet::new()), 2);
         assert_eq!(ids(&reach.direct), ["named"]);
         assert_eq!(ids(&reach.transitive), ["named", "next"]);
     }
@@ -3435,14 +3456,17 @@ mod tests {
             "formatPrice",
             vec![Evidence::new("lib/money.ts").at_line(8)],
         );
-        let reach = graph.change_impact(ChangeSeed::Symbol(&price, &BTreeSet::new()), 2);
+        let reach = graph.change_impact(
+            ChangeSeed::Symbol(&price, &BTreeSet::new(), &BTreeSet::new()),
+            2,
+        );
         let tests: Vec<&str> = reach.tests.iter().map(String::as_str).collect();
         assert_eq!(tests, ["lib/named.test.ts", "lib/whole.test.ts"]);
         let unnamed = BTreeSet::from([ImportPlace {
             file: "lib/whole.test.ts".into(),
             line: 1,
         }]);
-        let reach = graph.change_impact(ChangeSeed::Symbol(&price, &unnamed), 2);
+        let reach = graph.change_impact(ChangeSeed::Symbol(&price, &unnamed, &BTreeSet::new()), 2);
         let tests: Vec<&str> = reach.tests.iter().map(String::as_str).collect();
         assert_eq!(tests, ["lib/named.test.ts"]);
         let ways: Vec<&str> = reach.test_ways.keys().map(String::as_str).collect();
@@ -3816,7 +3840,10 @@ mod tests {
         );
         let mut graph = behind_re_exports();
         // through the barrel alone, only what may take the name
-        let reach = graph.change_impact(ChangeSeed::Symbol(&price, &BTreeSet::new()), 9);
+        let reach = graph.change_impact(
+            ChangeSeed::Symbol(&price, &BTreeSet::new(), &BTreeSet::new()),
+            9,
+        );
         assert!(!reach
             .transitive
             .contains(&ComponentId::new("app/calendar.ts")));
@@ -3840,7 +3867,10 @@ mod tests {
                     .taking(["checkout"]),
             ),
         ]);
-        let reach = graph.change_impact(ChangeSeed::Symbol(&price, &BTreeSet::new()), 9);
+        let reach = graph.change_impact(
+            ChangeSeed::Symbol(&price, &BTreeSet::new(), &BTreeSet::new()),
+            9,
+        );
         assert!(reach.transitive.contains(&ComponentId::new("app/pay.ts")));
         assert!(reach
             .transitive
@@ -4014,7 +4044,11 @@ mod tests {
                 vec![Evidence::new("lib/orders.ts").at_line(2)],
             )
         };
-        let symbol = reach(ChangeSeed::Symbol(&place, &BTreeSet::new()));
+        let symbol = reach(ChangeSeed::Symbol(
+            &place,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        ));
         assert_eq!(
             tests(&symbol),
             [
@@ -4716,7 +4750,10 @@ mod tests {
             evidence: vec![Evidence::new("src/shop/__init__.py").at_line(3)],
         });
         let symbol = graph.symbols[&SymbolId::new("shop::VERSION")].clone();
-        let reach = graph.change_impact(ChangeSeed::Symbol(&symbol, &BTreeSet::new()), 9);
+        let reach = graph.change_impact(
+            ChangeSeed::Symbol(&symbol, &BTreeSet::new(), &BTreeSet::new()),
+            9,
+        );
         assert!(reach.direct.is_empty(), "{reach:?}");
     }
 

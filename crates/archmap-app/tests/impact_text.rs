@@ -833,6 +833,50 @@ fn an_import_name_reaches_the_tests_that_load_a_helper_importing_it() {
 }
 
 #[test]
+fn a_symbol_reaches_through_a_file_that_uses_it_without_a_statement_of_it() {
+    // lib.rs re-exports Engine from its own module and calls it: the
+    // re-export is no import, the call a use
+    let manifest = |name: &str, dependency: &str| {
+        format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n[dependencies]\n{dependency}")
+    };
+    let files: Vec<(String, String)> = [
+        ("Cargo.toml", "[workspace]\nmembers = [\"p\", \"q\"]\n".to_owned()),
+        ("p/Cargo.toml", manifest("p", "")),
+        (
+            "p/src/engine.rs",
+            "pub struct Engine;\n\nimpl Engine {\n    pub fn new() -> Self {\n        Engine\n    }\n}\n"
+                .to_owned(),
+        ),
+        (
+            "p/src/lib.rs",
+            "mod engine;\n\npub use engine::Engine;\n\npub fn start() {\n    Engine::new();\n}\n"
+                .to_owned(),
+        ),
+        (
+            "p/tests/start.rs",
+            "#[test]\nfn starts() {\n    p::start();\n}\n".to_owned(),
+        ),
+        ("q/Cargo.toml", manifest("q", "p = { path = \"../p\" }")),
+        ("q/src/main.rs", "fn main() {\n    p::start();\n}\n".to_owned()),
+    ]
+    .into_iter()
+    .map(|(file, text)| (file.to_owned(), text))
+    .collect();
+    let repo = Repo::new("use-only", &files);
+    let out = text(&scan(&repo.0), "Engine::new");
+    assert_eq!(
+        section(&out, "Direct dependents: 1"),
+        ["  p (p/src/lib.rs)"],
+        "{out}"
+    );
+    assert_eq!(
+        section(&out, "Tests to run again: 1"),
+        ["  p/tests/start.rs (through p/src/lib.rs)"],
+        "{out}"
+    );
+}
+
+#[test]
 fn no_importers_is_said_only_when_nothing_imports_the_target() {
     // statements of the whole module that never name the symbol import it
     let ws = scan(&fixture("rust-uses"));

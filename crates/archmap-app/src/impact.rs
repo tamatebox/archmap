@@ -245,7 +245,21 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
                 if let (Some(found), Some(uses)) = (&found, &used_at) {
                     unnamed = never_named(found, uses);
                 }
-                let reach = full.change_impact(ChangeSeed::Symbol(symbol, &unnamed), depth);
+                // files that use it through no statement of it take it too
+                let defining = symbol.location().map(|e| e.file.as_str());
+                let listed: BTreeSet<&str> = found
+                    .iter()
+                    .flat_map(|f| f.by_name.iter().chain(&f.may_use))
+                    .map(|(_, e)| e.file.as_str())
+                    .collect();
+                let users: BTreeSet<String> = used_at
+                    .iter()
+                    .flat_map(|u| &u.uses)
+                    .map(|u| u.evidence.file.as_str())
+                    .filter(|f| Some(*f) != defining && !listed.contains(f))
+                    .map(str::to_owned)
+                    .collect();
+                let reach = full.change_impact(ChangeSeed::Symbol(symbol, &unnamed, &users), depth);
                 if let Some(found) = found {
                     importers = Some(symbol_sites(
                         full,
