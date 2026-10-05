@@ -459,8 +459,10 @@ fn tests(out: &mut String, result: &ImpactResult, caps: &Caps) -> bool {
         .files
         .iter()
         .take(caps.locations)
-        .filter_map(|test| test.mocks.first())
-        .map(|mock| format!("{} (mocks {})", place(&mock.file, mock.line), mock.target))
+        .map(|test| match test.mocks.first() {
+            Some(mock) => format!("{} (mocks {})", place(&mock.file, mock.line), mock.target),
+            None => test.file.clone(),
+        })
         .collect();
     let _ = writeln!(
         out,

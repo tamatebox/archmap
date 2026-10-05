@@ -919,12 +919,14 @@ impl ArchitectureGraph {
                     .0;
                 cut_of.insert(file, cut);
                 if !other.contains_key(&Node::File(file)) {
-                    // the mocks of the modules the change reaches, in order
+                    // the mocks of the modules the change reaches, in order,
+                    // a symbol's own file among them
                     let reached = |e: &&Evidence| {
                         e.target.as_deref().is_some_and(|t| {
                             distance.contains_key(&Node::File(t))
                                 || distance.contains_key(&Node::Passes(t))
                                 || distance.contains_key(&Node::Relays(t))
+                                || symbol && symbol_name.is_some_and(|(file, _)| file == t)
                         })
                     };
                     let mut mocks: Vec<&Evidence> = mocks.into_iter().filter(reached).collect();
@@ -935,6 +937,7 @@ impl ArchitectureGraph {
             for (file, _) in &out {
                 distance.remove(&Node::File(file));
                 distance.remove(&Node::Passes(file));
+                distance.remove(&Node::Relays(file));
             }
         }
         let left_out = out

@@ -489,6 +489,51 @@ fn a_test_whose_mock_replaces_a_module_on_the_way_is_left_out() {
              tests/unrelated.test.ts:4 (mocks src/audio.ts)",
         ]
     );
+    // a symbol of it names the same mock
+    let symbol = text(&ws, "ts-mocks::src/audio.ts::getAudioUrl");
+    assert!(
+        symbol.contains(
+            "  left out: 1 test file reaches it only through a module its mock replaces: \
+             tests/unrelated.test.ts:4 (mocks src/audio.ts)\n"
+        ),
+        "{symbol}"
+    );
+    // a test left out is no test to run again, though it re-exports a
+    // module on another way its mock cuts as well
+    let files: Vec<(String, String)> = [
+        (
+            "package.json",
+            r#"{"name": "relays", "devDependencies": {"vitest": "1.0.0"}}"#,
+        ),
+        ("src/api.ts", "export function get() {\n  return 1;\n}\n"),
+        (
+            "src/data.ts",
+            "import { get } from './api';\n\nexport const data = get();\n",
+        ),
+        (
+            "src/render.ts",
+            "import { data } from './data';\n\nexport function render() {\n  return data;\n}\n",
+        ),
+        (
+            "tests/utils.test.ts",
+            "import { vi } from 'vitest';\nimport { data } from '../src/data';\n\
+             export { render } from '../src/render';\n\n\
+             vi.mock('../src/data', () => ({ other: 1 }));\n\nexport const value = data;\n",
+        ),
+    ]
+    .into_iter()
+    .map(|(file, text)| (file.to_owned(), text.to_owned()))
+    .collect();
+    let repo = Repo::new("left-out-relays", &files);
+    let relays = text(&scan(&repo.0), "src/api.ts");
+    assert_eq!(
+        section(&relays, "Tests to run again: none"),
+        [
+            "  left out: 1 test file reaches it only through a module its mock replaces: \
+             tests/utils.test.ts:5 (mocks src/data.ts)"
+        ],
+        "{relays}"
+    );
     // the mocked module itself: the mocks replace its names
     let orders = text(&ws, "src/orders.ts");
     assert!(orders.contains("\nTests to run again: 11\n"), "{orders}");
