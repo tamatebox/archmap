@@ -310,6 +310,7 @@ mod tests {
             dynamic_imports: vec![DynamicImport {
                 from: ComponentId::new("a"),
                 call: "import".into(),
+                prefix: None,
                 evidence: statement("app/test/page.tsx", false),
             }],
             ..Default::default()

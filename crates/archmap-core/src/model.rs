@@ -224,7 +224,39 @@ pub struct DynamicImport {
     pub from: ComponentId,
     /// The function called (`import_module`).
     pub call: String,
+    /// The static start of the name, where the code writes one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<DynamicPrefix>,
     pub evidence: Evidence,
+}
+
+/// The start of a computed module name that the code writes out
+/// (`` import(`./pages/${name}`) ``, `import_module(f"plugins.{name}")`).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct DynamicPrefix {
+    /// As written: `./pages/`, `plugins.`.
+    pub written: String,
+    /// Where the analyzer knows what it names: the start of the paths,
+    /// relative to the root, of every file the call can load (`src/pages/`,
+    /// `src/plugins/`). A call loads no file whose path does not start so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+impl DynamicImport {
+    /// Whether the call may load a file at or below `place` (a file or a
+    /// directory, relative to the root): always, unless its prefix's path
+    /// says where every file it loads is.
+    pub fn may_load(&self, place: &str) -> bool {
+        match self.prefix.as_ref().and_then(|p| p.path.as_deref()) {
+            Some(path) => {
+                // a file under the prefix, or a directory that holds some
+                let dir = format!("{}/", place.trim_end_matches('/'));
+                place.starts_with(path) || path.starts_with(&dir) || place.is_empty()
+            }
+            None => true,
+        }
+    }
 }
 
 /// A macro call whose arguments the analyzer could not read (a DSL such as
@@ -353,6 +385,33 @@ impl Edge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dynamic_import_with_a_known_prefix_loads_only_below_it() {
+        let call = |path: Option<&str>| DynamicImport {
+            from: ComponentId::new("app"),
+            call: "import()".into(),
+            prefix: Some(DynamicPrefix {
+                written: "./pages/".into(),
+                path: path.map(str::to_owned),
+            }),
+            evidence: Evidence::new("src/app.ts").at_line(3),
+        };
+        let known = call(Some("src/pages/"));
+        // a file below it, a directory that holds it, the root
+        for place in ["src/pages/home.ts", "src/pages", "src", ""] {
+            assert!(known.may_load(place), "{place}");
+        }
+        for place in ["src/lib/money.ts", "src/pager.ts", "lib"] {
+            assert!(!known.may_load(place), "{place}");
+        }
+        // a prefix that ends inside a name
+        let partial = call(Some("src/pages/page-"));
+        assert!(partial.may_load("src/pages/page-home.ts"));
+        assert!(!partial.may_load("src/pages/admin.ts"));
+        // where it leads is not known: anything
+        assert!(call(None).may_load("src/lib/money.ts"));
+    }
 
     fn import(module: &str) -> UnmappedImport {
         UnmappedImport {

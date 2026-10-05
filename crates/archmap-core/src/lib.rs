@@ -28,8 +28,8 @@ pub use graph::{
     TestRoute, TestWay,
 };
 pub use model::{
-    Component, ComponentId, ComponentKind, DynamicImport, Edge, EdgeKind, LanguageCoverage, Symbol,
-    SymbolId, SymbolKind, UnmappedImport, UnmappedReason, UnreadMacro,
+    Component, ComponentId, ComponentKind, DynamicImport, DynamicPrefix, Edge, EdgeKind,
+    LanguageCoverage, Symbol, SymbolId, SymbolKind, UnmappedImport, UnmappedReason, UnreadMacro,
 };
 pub use uses::{ImportPlace, Renamed, SymbolUse, SymbolUses, Unread, UnreadReason, UseRole};
 

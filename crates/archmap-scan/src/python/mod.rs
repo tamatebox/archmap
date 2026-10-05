@@ -69,8 +69,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use archmap_core::{
-    Component, ComponentId, ComponentKind, DynamicImport, Edge, EdgeKind, Evidence, Scope, Symbol,
-    SymbolId, UnmappedImport, UnmappedReason, WHOLE_MODULE,
+    Component, ComponentId, ComponentKind, DynamicImport, DynamicPrefix, Edge, EdgeKind, Evidence,
+    Scope, Symbol, SymbolId, UnmappedImport, UnmappedReason, WHOLE_MODULE,
 };
 
 use crate::analyzer::AnalyzerOutput;
@@ -1277,9 +1277,14 @@ fn emit_imports(
     }
 
     for dynamic in &scanned.dynamic_imports {
+        let prefix = dynamic.prefix.as_ref().map(|written| DynamicPrefix {
+            written: written.clone(),
+            path: prefix_path(written, modules, by_dotted),
+        });
         output.fragment.push_dynamic_import(DynamicImport {
             from: owner.clone(),
             call: dynamic.call.to_owned(),
+            prefix,
             evidence: Evidence::new(&file_display)
                 .at_line(dynamic.line)
                 .in_scope(scope(dynamic.local))
@@ -1287,6 +1292,23 @@ fn emit_imports(
         });
     }
     resolved
+}
+
+/// The start of the paths a computed name's static start leads to, when it
+/// names a package of the scan and then the start of a name in it:
+/// `plugins.` for `src/plugins/`, `plugins.csv_` for `src/plugins/csv_`.
+fn prefix_path(
+    written: &str,
+    modules: &[Module],
+    by_dotted: &BTreeMap<&str, usize>,
+) -> Option<String> {
+    let (package, rest) = written.rsplit_once('.')?;
+    let module = &modules[*by_dotted.get(package)?];
+    let dir = display_path(&module.dir);
+    Some(match dir.is_empty() {
+        true => rest.to_owned(),
+        false => format!("{dir}/{rest}"),
+    })
 }
 
 fn scope(local: bool) -> Scope {

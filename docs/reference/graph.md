@@ -12,7 +12,7 @@ ArchitectureGraph
 ├── symbols:    { id -> Symbol { kind: function | struct | enum | trait | ..., component, signature, evidence } }
 ├── edges:      [ Edge { from, to, kind: import | dependency | call | http | database | event | unknown, evidence } ]
 ├── unmapped_imports: [ UnmappedImport { from, module, reason: undeclared | declared_not_required | local_name | unresolved, provided_by?, evidence } ]
-├── dynamic_imports:  [ DynamicImport { from, call, evidence } ]
+├── dynamic_imports:  [ DynamicImport { from, call, prefix?: { written, path? }, evidence } ]
 └── unread_macros:    [ UnreadMacro { from, name, names?, evidence } ]
 
 Evidence { file, line?, note?, target?, scope?: module | local, names?, test?, type_only?, replaces? }
@@ -132,7 +132,10 @@ file's part of it, and several files may give a symbol of that name.
 
 An unmapped import is an import that maps to no component, standard-library
 imports aside, and `reason` says why. A dynamic import is a call that loads a
-module by a name computed at runtime. An unread macro is a Rust macro call
+module by a name computed at runtime; its `prefix` is the start of the name
+that the code writes out, as `written` (`./pages/`, `plugins.`), with the
+`path` that every file it can load starts with, relative to the root, where
+the analyzer knows it (`src/pages/`, `src/plugins/`). An unread macro is a Rust macro call
 whose arguments are no code the analyzer reads (`json!({ .. })`), with the
 names its `a::b` paths write. All three are observations, never edges:
 they mark where a dependency may exist that no edge shows. `query` lists them

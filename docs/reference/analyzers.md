@@ -233,7 +233,10 @@ into the model in [graph.md](graph.md); how the commands present it is in
 - a call to `import_module` or `__import__` that names its module with one string literal on its line
   (`import_module("shop.mail")`, `import_module(".mail", package="shop")`, `__import__("json")` with no
   other argument) is an import of that module, noted with the call and taking it whole; other calls
-  to them and to `spec_from_file_location` are recorded as dynamic imports, which no edge can follow
+  to them and to `spec_from_file_location` are recorded as dynamic imports, which no edge can follow,
+  with the static start of the name where the line writes one (an f-string's text before its first
+  field, a string literal before `+`, `%` or `.format(`), and when that starts with a package of the
+  scan, the path below it (`f"plugins.{name}"` for `src/plugins/`)
 - public top-level `def` / `class` / `CONSTANT` and public methods of public classes become symbols
   for files inside a regular package tree; a file outside any regular package tree (in a namespace
   tree such as `scripts/` or a `tests/` without `__init__.py`, or at the top of the project) gives
@@ -350,7 +353,12 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   the names its result is destructured into at once or the property read from it
   (`const { pad, trim: t } = require('./format')`, `const { run } = await import('./job')`,
   `require('./fn').default`), and any other call the whole module (`*`), a destructuring with a rest
-  element or a computed key included; `require` and `import()` of a computed specifier are dynamic imports
+  element or a computed key included; `require` and `import()` of a computed specifier are dynamic imports,
+  with the static start of the specifier where it writes one (a template's text before its first
+  substitution, the string a `+` starts with, the segments of `path.join(__dirname, ..)` or
+  `path.resolve` before a computed one), and for a relative one the path it leads to from the file
+  (`` import(`./pages/${name}`) `` in `src/app.ts` for `src/pages/`); a bare one, which an alias or a
+  package may answer, records no path
 - an `import()` type (`typeof import('./m')`, `import('./m').Wallet`) is an `import` edge that takes types
   only: `*`, or the first name after it; calls on one line that load one module with one note are one
   statement with the names of all (`import('./m').A | import('./m').B` takes `A` and `B`)

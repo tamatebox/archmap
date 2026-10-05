@@ -504,7 +504,7 @@ Tests to run again: 1
 Marks: (via file:line) reached through that re-export; (export) a re-export, passes names on; (type) types only, never runs
 
 Not traced (what this answer may miss):
-  dynamic: 2 calls load modules by computed names, which may be this: scripts/report.cjs:4, src/app/lazy.tsx:7
+  dynamic: 1 call loads a module by a computed name, which may be this: scripts/report.cjs:4
   barrels: 1 file passes on what may change, and only what takes it from there is followed; a rename, a removal or an error on load also breaks whatever else loads that file: src/index.ts:8 (+2 more re-exports on the way)
 
 Lists are capped; verbose lists every entry, and JSON every entry with all evidence.
@@ -783,8 +783,11 @@ target's own imports without an edge stay under `Not mapped`.
 - `dynamic`: calls elsewhere in the target's language (TypeScript and
   JavaScript count as one) that load modules by computed names
   (`importlib.import_module(name)`, `require(path)`); any of them may load
-  the target. Production code comes first, and test code is marked
-  `(test)`.
+  the target. A call whose name starts with text that leads to a known path
+  (`` import(`./pages/${name}`) ``, `import_module(f"plugins.{name}")`)
+  counts only for a target at or below that path, or a directory that holds
+  it, and says so (`(below src/pages/)`, JSON `below`). Production code comes
+  first, and test code is marked `(test)`.
 - `named_like`: imports without an edge (`local name`, `unresolved`) that
   may be the target unresolved, or for a symbol its file (a test that
   imports the module by a name a `sys.path` entry added at runtime

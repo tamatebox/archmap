@@ -71,6 +71,8 @@ pub struct PyDynamicImport {
     pub line: u32,
     /// Inside a function body.
     pub local: bool,
+    /// The static start of the dotted name it computes (`plugins.`).
+    pub prefix: Option<String>,
 }
 
 /// The module-level `__all__`: the names a star import of the file takes.
@@ -145,6 +147,7 @@ pub fn scan_source(text: &str) -> PyFile {
                         call,
                         line: line_no,
                         local,
+                        prefix: computed_prefix(code, call),
                     });
                 }
                 in_string = reopened.map(|(open, _)| (open, local));
@@ -171,6 +174,7 @@ pub fn scan_source(text: &str) -> PyFile {
                     call,
                     line: line_no,
                     local,
+                    prefix: computed_prefix(before, call),
                 });
             }
             // `DOC = """`, at module level
@@ -234,6 +238,7 @@ pub fn scan_source(text: &str) -> PyFile {
                     call,
                     line: line_no,
                     local,
+                    prefix: computed_prefix(trimmed, call),
                 }),
             }
         }
@@ -531,6 +536,58 @@ fn dynamic_call(code: &str) -> Option<&'static str> {
     })
 }
 
+/// The text after the opening parenthesis of the call to `call` in `code`,
+/// its spaces trimmed.
+fn arguments<'c>(code: &'c str, call: &str) -> Option<&'c str> {
+    let rest = code.match_indices(call).find_map(|(at, _)| {
+        let rest = code[at + call.len()..].trim_start();
+        let before = code[..at].chars().next_back();
+        let call_here = rest.starts_with('(')
+            && !before.is_some_and(|c| c.is_alphanumeric() || c == '_')
+            && is_code(code, at);
+        call_here.then_some(rest)
+    })?;
+    Some(rest[1..].trim_start())
+}
+
+/// The static start of the dotted name a call to `import_module` or
+/// `__import__` in `code` computes: an f-string's text before its first
+/// field (`f"plugins.{name}"`), or a string literal's before `+`, `%` or
+/// `.format(` follows it (`"plugins." + name`). `None` for a relative name,
+/// a name that starts computed, and other calls.
+fn computed_prefix(code: &str, call: &str) -> Option<String> {
+    if !matches!(call, "import_module" | "__import__") {
+        return None;
+    }
+    let args = arguments(code, call)?;
+    let (formatted, args) = match args.strip_prefix(['f', 'F']) {
+        Some(rest) if rest.starts_with(['"', '\'']) => (true, rest),
+        _ => (false, args),
+    };
+    let quote = args.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+    let body = &args[1..];
+    let end = body.find(quote)?;
+    let (text, after) = (&body[..end], body[end + 1..].trim_start());
+    let prefix = if formatted {
+        let field = text.find('{')?;
+        if text[field..].starts_with("{{") {
+            return None;
+        }
+        &text[..field]
+    } else if after.starts_with('+') {
+        text
+    } else if after.starts_with('%') {
+        &text[..text.find('%')?]
+    } else if after.starts_with(".format(") {
+        &text[..text.find('{')?]
+    } else {
+        return None;
+    };
+    let name = |c: char| c.is_alphanumeric() || c == '_' || c == '.';
+    (!prefix.is_empty() && !prefix.starts_with('.') && prefix.chars().all(name))
+        .then(|| prefix.to_owned())
+}
+
 /// The module a call to `import_module` or `__import__` in `code` names by
 /// one string literal, as an absolute dotted name: `import_module("a.b")`,
 /// `import_module(".b", package="a")` or `import_module(".b", "a")` for a
@@ -541,15 +598,7 @@ fn literal_import(code: &str, call: &str) -> Option<String> {
     if call == "spec_from_file_location" {
         return None;
     }
-    let at = code.match_indices(call).find_map(|(at, _)| {
-        let rest = code[at + call.len()..].trim_start();
-        let before = code[..at].chars().next_back();
-        let call_here = rest.starts_with('(')
-            && !before.is_some_and(|c| c.is_alphanumeric() || c == '_')
-            && is_code(code, at);
-        call_here.then_some(rest)
-    })?;
-    let mut args = at[1..].trim_start();
+    let mut args = arguments(code, call)?;
     // one argument: a string literal, written plainly
     let literal = |text: &mut &str| -> Option<String> {
         let quote = text.chars().next().filter(|c| *c == '"' || *c == '\'')?;
@@ -1471,6 +1520,49 @@ match = None
         ] {
             assert_eq!(literal_import(code, call).as_deref(), module, "{code}");
         }
+    }
+
+    #[test]
+    fn a_computed_name_s_static_start_is_its_prefix() {
+        let prefix = |code: &str| computed_prefix(code, "import_module");
+        assert_eq!(
+            prefix("m = import_module(f\"plugins.{name}\")").as_deref(),
+            Some("plugins.")
+        );
+        assert_eq!(
+            prefix("import_module('plugins.csv_' + kind)").as_deref(),
+            Some("plugins.csv_")
+        );
+        assert_eq!(
+            prefix("import_module(\"a.b.%s\" % name)").as_deref(),
+            Some("a.b.")
+        );
+        assert_eq!(
+            prefix("import_module('a.{}'.format(name))").as_deref(),
+            Some("a.")
+        );
+        assert_eq!(
+            computed_prefix("__import__(f'x.{y}')", "__import__").as_deref(),
+            Some("x.")
+        );
+        // nothing static before the computed part, a relative name, an
+        // escaped brace, a literal, another call
+        for code in [
+            "import_module(f\"{name}.x\")",
+            "import_module(f\".{name}\", package=__name__)",
+            "import_module(f\"a{{b}}.{c}\")",
+            "import_module(\"a.b\")",
+            "import_module(name)",
+        ] {
+            assert_eq!(prefix(code), None, "{code}");
+        }
+        assert_eq!(
+            computed_prefix(
+                "spec_from_file_location(f'a.{b}', p)",
+                "spec_from_file_location"
+            ),
+            None
+        );
     }
 
     #[test]

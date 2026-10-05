@@ -107,7 +107,8 @@ fn busy_package(name: &str) -> Repo {
     for i in 0..4 {
         files.push((
             format!("src/app/load{i}.ts"),
-            "export function load(name: string) {\n  return import(`./${name}`);\n}\n".to_owned(),
+            "export function load(name: string) {\n  return import(`../lib/${name}`);\n}\n"
+                .to_owned(),
         ));
     }
     Repo::new(name, &files)
@@ -149,8 +150,8 @@ fn a_file_answers_with_its_dependents_statements_tests_and_blind_spots() {
          names on; (type) types only, never runs\n\
          \n\
          Not traced (what this answer may miss):\n  \
-           dynamic: 2 calls load modules by computed names, which may be this: \
-           scripts/report.cjs:4, src/app/lazy.tsx:7\n  \
+           dynamic: 1 call loads a module by a computed name, which may be this: \
+           scripts/report.cjs:4\n  \
            barrels: 1 file passes on what may change, and only what takes it from there is followed; a \
            rename, a removal or an error on load also breaks whatever else loads that file: \
            src/index.ts:8 (+2 more re-exports on the way)\n\
@@ -187,7 +188,8 @@ fn every_list_is_capped_and_says_how_many_it_shows() {
         not_traced,
         [
             "  dynamic: 4 calls load modules by computed names, which may be this: \
-             src/app/load0.ts:2, src/app/load1.ts:2, src/app/load2.ts:2, +1 more"
+             src/app/load0.ts:2 (below src/lib/), src/app/load1.ts:2 (below src/lib/), \
+             src/app/load2.ts:2 (below src/lib/), +1 more"
         ]
     );
     assert!(
@@ -209,9 +211,8 @@ fn verbose_lists_every_entry() {
     );
     assert_eq!(section(&out, "Imported by: 60").len(), 60);
     assert_eq!(section(&out, "Tests to run again: 25").len(), 25);
-    assert!(
-        section(&out, "Not traced (what this answer may miss):")[0].ends_with("src/app/load3.ts:2")
-    );
+    assert!(section(&out, "Not traced (what this answer may miss):")[0]
+        .ends_with("src/app/load3.ts:2 (below src/lib/)"));
     assert!(!out.contains("Lists are capped"), "{out}");
 }
 

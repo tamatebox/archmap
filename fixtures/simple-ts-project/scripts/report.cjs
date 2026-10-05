@@ -1,7 +1,7 @@
 const { pad } = require('./format.cjs');
 
 function plugin(name) {
-  return require(`./plugins/${name}`);
+  return require(name);
 }
 
 async function money() {

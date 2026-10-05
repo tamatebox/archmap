@@ -11,10 +11,18 @@ use archmap_app::{Format, ImpactRequest, QueryRequest, ScanMode, Workspace, DEFA
 /// target's, a piece of test code's that runs as no test).
 const WORDS: [&str; 4] = ["bench", "example", "file", "helper"];
 
-/// The one-word parentheses after a location, which is how marks are
-/// written: after a space that follows `file:line`, a path or another mark.
-/// A path's own (`app/(test)/page.tsx`) follows no space, and a
-/// signature's (`pad = (text) =>`) no location.
+/// Parentheses with a place that are no marks, as the line they are on
+/// says what they are: how a test file reaches the change (`(through
+/// src/lib.rs)`), and what a left-out test's mock replaces (`(mocks
+/// src/audio.ts)`).
+const PHRASES: [&str; 2] = ["mocks …", "through …"];
+
+/// The marks after a location, which is how marks are written: after a
+/// space that follows `file:line`, a path or another mark, one word in
+/// parentheses (`(type)`), or a word and one place (`(via src/a.ts:2)`,
+/// `(below src/pages/)`), which this gives as `via …`. A path's own
+/// parentheses (`app/(test)/page.tsx`) follow no space, and a signature's
+/// (`pad = (text) =>`) no location.
 fn one_word(text: &str) -> BTreeSet<String> {
     let mut found = BTreeSet::new();
     for (at, _) in text.match_indices(" (") {
@@ -25,9 +33,22 @@ fn one_word(text: &str) -> BTreeSet<String> {
             || before.contains('.');
         let rest = &text[at + 2..];
         let Some(end) = rest.find(')') else { continue };
-        let word = &rest[..end];
-        if located && !word.is_empty() && word.chars().all(|c| c.is_ascii_lowercase()) {
-            found.insert(word.to_owned());
+        let inside = &rest[..end];
+        let word = |w: &str| !w.is_empty() && w.chars().all(|c| c.is_ascii_lowercase());
+        if !located {
+            continue;
+        }
+        match inside.split_once(' ') {
+            None if word(inside) => {
+                found.insert(inside.to_owned());
+            }
+            // one place after the word, and nothing else
+            Some((first, place))
+                if word(first) && !place.contains(' ') && place.contains(['/', ':']) =>
+            {
+                found.insert(format!("{first} …"));
+            }
+            _ => {}
         }
     }
     found
@@ -42,7 +63,11 @@ fn explained(text: &str) -> BTreeSet<String> {
     line.split("; ")
         .filter_map(|entry| entry.strip_prefix('('))
         .filter_map(|entry| entry.split_once(')'))
-        .map(|(word, _)| word.to_owned())
+        // `(via file:line)` explains every `(via <place>)`
+        .map(|(mark, _)| match mark.split_once(' ') {
+            Some((first, _)) => format!("{first} …"),
+            None => mark.to_owned(),
+        })
         .collect()
 }
 
@@ -57,18 +82,29 @@ fn unexplained(text: &str) -> BTreeSet<String> {
     one_word(&body)
         .into_iter()
         .filter(|w| !explained.contains(w) && !WORDS.contains(&w.as_str()))
+        .filter(|w| !PHRASES.contains(&w.as_str()))
         .collect()
 }
 
 #[test]
 fn the_helpers_tell_marks_and_their_line_apart() {
     let text = "a.ts:1 (local) (type)\nb (helper, for 1 test listed)\napp/(test)/x.tsx\n\
-                exports.pad = (text) =>  f.cjs:1\nMarks: (type) types only, never runs\n";
+                exports.pad = (text) =>  f.cjs:1\nc.ts:2 (via d.ts:3) (below src/pages/)\n\
+                Marks: (type) types only, never runs; (via file:line) reached through that \
+                re-export\n";
     assert_eq!(
         one_word(text),
-        BTreeSet::from(["local".to_owned(), "type".to_owned()])
+        BTreeSet::from([
+            "below …".to_owned(),
+            "local".to_owned(),
+            "type".to_owned(),
+            "via …".to_owned()
+        ])
     );
-    assert_eq!(unexplained(text), BTreeSet::from(["local".to_owned()]));
+    assert_eq!(
+        unexplained(text),
+        BTreeSet::from(["below …".to_owned(), "local".to_owned()])
+    );
 }
 
 #[test]

@@ -4954,6 +4954,7 @@ mod tests {
         let dynamic = |from: &str, line: u32| DynamicImport {
             from: from.into(),
             call: "import_module".into(),
+            prefix: None,
             evidence: Evidence::new("a/b/c.py").at_line(line),
         };
         let mut graph = tree();

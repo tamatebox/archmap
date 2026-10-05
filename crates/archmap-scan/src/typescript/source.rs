@@ -12,7 +12,7 @@ use archmap_core::{SymbolKind, WHOLE_MODULE};
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
     Argument, ArrowFunctionBody, AssignmentExpression, AssignmentPattern, AssignmentTarget,
-    BindingPattern, CallExpression, Class, ClassElement, Declaration, Decorator,
+    BinaryOperator, BindingPattern, CallExpression, Class, ClassElement, Declaration, Decorator,
     ExportDefaultDeclarationKind, ExportNamedDeclaration, ExportSpecifier, Expression,
     FormalParameter, FormalParameters, Function, IdentifierReference, ImportDeclarationSpecifier,
     ImportExpression, MethodDefinitionKind, NewExpression, ObjectExpression, ObjectProperty,
@@ -75,6 +75,8 @@ pub(crate) struct DynamicCall {
     pub call: &'static str,
     pub line: u32,
     pub local: bool,
+    /// The static start of the specifier it computes (`./pages/`).
+    pub prefix: Option<String>,
 }
 
 /// Calls that load a module named by their first argument; `vi.mock` and
@@ -788,11 +790,12 @@ impl Calls<'_> {
         });
     }
 
-    fn dynamic(&mut self, call: &'static str, start: u32) {
+    fn dynamic(&mut self, call: &'static str, start: u32, specifier: Option<&Expression>) {
         self.dynamic.push(DynamicCall {
             call,
             line: self.lines.line(start),
             local: !self.functions.is_empty(),
+            prefix: specifier.and_then(computed_prefix),
         });
     }
 }
@@ -870,7 +873,9 @@ impl<'a> Visit<'a> for Calls<'_> {
                     }
                 }
                 // a mock of a computed name loads nothing to point at
-                None if note == "require" => self.dynamic(note, it.span.start),
+                None if note == "require" => {
+                    self.dynamic(note, it.span.start, first.as_expression())
+                }
                 None => {}
             }
         }
@@ -891,7 +896,7 @@ impl<'a> Visit<'a> for Calls<'_> {
                     self.import(specifier.clone(), it.span.start, "import()", name, false);
                 }
             }
-            None => self.dynamic("import()", it.span.start),
+            None => self.dynamic("import()", it.span.start, Some(&it.source)),
         }
         walk::walk_import_expression(self, it);
     }
@@ -1679,6 +1684,54 @@ impl<'a> Visit<'a> for Positions {
         walk::walk_class(self, it);
         self.decorated -= usize::from(decorated);
     }
+}
+
+/// The static start of a computed specifier: a template's text before its
+/// first substitution (`` `./pages/${name}` ``), the string a `+` starts
+/// with (`'./pages/' + name`), or the segments `path.join(__dirname, ..)`
+/// or `path.resolve` writes before a computed one, from the file's
+/// directory (`./handlers/`). `None` when it starts computed.
+fn computed_prefix(specifier: &Expression) -> Option<String> {
+    let prefix = match specifier.get_inner_expression() {
+        Expression::TemplateLiteral(t) if !t.expressions.is_empty() => {
+            t.quasis.first()?.value.cooked.as_ref()?.to_string()
+        }
+        Expression::BinaryExpression(b) if b.operator == BinaryOperator::Addition => {
+            match b.left.get_inner_expression() {
+                Expression::StringLiteral(s) => s.value.to_string(),
+                left => computed_prefix(left)?,
+            }
+        }
+        Expression::CallExpression(call) => {
+            let Expression::StaticMemberExpression(callee) = &call.callee else {
+                return None;
+            };
+            let on_path = matches!(&callee.object, Expression::Identifier(o) if o.name == "path");
+            if !on_path || !matches!(callee.property.name.as_str(), "join" | "resolve") {
+                return None;
+            }
+            let mut args = call.arguments.iter().map(|a| a.as_expression());
+            let first = args.next()??;
+            if !matches!(first, Expression::Identifier(d) if d.name == "__dirname") {
+                return None;
+            }
+            let mut prefix = String::from("./");
+            for arg in args {
+                match arg? {
+                    Expression::StringLiteral(s) => {
+                        prefix.push_str(s.value.trim_matches('/'));
+                        prefix.push('/');
+                    }
+                    // a segment computed: the path so far is the prefix
+                    _ => return Some(prefix),
+                }
+            }
+            // every segment written out: no name is computed
+            return None;
+        }
+        _ => return None,
+    };
+    (!prefix.is_empty()).then_some(prefix)
 }
 
 /// A number, or arithmetic of numbers (`20 * 1024 * 1024`).
@@ -2563,6 +2616,37 @@ export default local;
         // JavaScript has no types to read
         let file = parse(Path::new("uses.js"), "import { A } from './m';\n").unwrap();
         assert!(file.imports[0].type_uses.is_empty());
+    }
+
+    #[test]
+    fn a_computed_specifier_s_static_start_is_its_prefix() {
+        let file = parse(
+            Path::new("loader.js"),
+            "const path = require('path');\n\
+             import(`./pages/${name}`);\n\
+             require('./handlers/' + name + '.js');\n\
+             require(path.join(__dirname, 'plugins', kind, 'index.js'));\n\
+             import(`${base}/x`);\n\
+             require(path.join(__dirname, 'all'));\n\
+             require(name);\n",
+        )
+        .unwrap();
+        let prefixes: Vec<(u32, Option<&str>)> = file
+            .dynamic
+            .iter()
+            .map(|d| (d.line, d.prefix.as_deref()))
+            .collect();
+        assert_eq!(
+            prefixes,
+            [
+                (2, Some("./pages/")),
+                (3, Some("./handlers/")),
+                (4, Some("./plugins/")),
+                (5, None),
+                (6, None),
+                (7, None),
+            ]
+        );
     }
 
     #[test]

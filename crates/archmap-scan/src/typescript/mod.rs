@@ -62,8 +62,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use archmap_core::{
-    Component, ComponentId, ComponentKind, DynamicImport, Edge, EdgeKind, Evidence, Scope, Symbol,
-    SymbolId, UnmappedImport, UnmappedReason, WHOLE_MODULE,
+    Component, ComponentId, ComponentKind, DynamicImport, DynamicPrefix, Edge, EdgeKind, Evidence,
+    Scope, Symbol, SymbolId, UnmappedImport, UnmappedReason, WHOLE_MODULE,
 };
 
 use crate::analyzer::AnalyzerOutput;
@@ -225,9 +225,14 @@ impl Analyzer for TypeScriptAnalyzer {
                 }
             }
             for call in &parsed.dynamic {
+                let prefix = call.prefix.as_ref().map(|written| DynamicPrefix {
+                    written: written.clone(),
+                    path: prefix_path(file, written),
+                });
                 output.fragment.push_dynamic_import(DynamicImport {
                     from: owner.component.clone(),
                     call: call.call.to_owned(),
+                    prefix,
                     evidence: Evidence::new(display_path(file))
                         .at_line(call.line)
                         .in_scope(scope(call.local))
@@ -476,6 +481,33 @@ fn is_script(file: &Path, parsed: &ParsedFile, type_module: bool, options: Modul
         || (type_module && options.node)
         || (parsed.has_jsx && options.jsx_runtime)
         || (options.force && !declarations))
+}
+
+/// The start of the paths a relative computed specifier written in `file`
+/// leads to (`./pages/` in `src/app.ts` for `src/pages/`), relative to the
+/// root; `None` for a bare one, which an alias or a package may answer, and
+/// one that leaves the root.
+fn prefix_path(file: &Path, written: &str) -> Option<String> {
+    if !(written.starts_with("./") || written.starts_with("../")) {
+        return None;
+    }
+    let (dir, rest) = written.rsplit_once('/')?;
+    let mut parts: Vec<String> = file
+        .parent()?
+        .iter()
+        .map(|c| c.to_str().map(str::to_owned))
+        .collect::<Option<_>>()?;
+    for segment in dir.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            name => parts.push(name.to_owned()),
+        }
+    }
+    parts.push(rest.to_owned());
+    Some(parts.join("/"))
 }
 
 /// Whether `file` is a declaration file, which is never emitted:

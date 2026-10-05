@@ -6,8 +6,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use archmap_core::{
-    ArchitectureGraph, ComponentId, ComponentKind, EdgeKind, Evidence, Symbol, SymbolUses,
-    UnmappedImport, UnmappedReason, UnreadMacro, UnreadReason,
+    ArchitectureGraph, ComponentId, ComponentKind, DynamicImport, EdgeKind, Evidence, Symbol,
+    SymbolUses, UnmappedImport, UnmappedReason, UnreadMacro, UnreadReason,
 };
 use serde::Serialize;
 
@@ -419,6 +419,10 @@ pub(crate) struct DynamicCall {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) line: Option<u32>,
     pub(crate) call: String,
+    /// The paths it can load start so, relative to the root, where the
+    /// analyzer knows the static start of the name it computes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) below: Option<String>,
     /// The call is test code.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub(crate) test: bool,
@@ -531,14 +535,21 @@ pub(crate) fn not_traced(
         Own::Component(id, depth) => full.ancestor_at(component, depth) == *id,
     };
 
+    // a call whose name starts with a path the target is not under loads
+    // nothing of it
+    let may_load = |d: &DynamicImport| match &subject.place {
+        Some(Place::File(place) | Place::Directory(place)) => d.may_load(place),
+        None => true,
+    };
     let mut calls: Vec<DynamicCall> = full
         .dynamic_imports
         .iter()
-        .filter(|d| in_family(&d.from) && !own(&d.from, &d.evidence.file))
+        .filter(|d| in_family(&d.from) && !own(&d.from, &d.evidence.file) && may_load(d))
         .map(|d| DynamicCall {
             file: d.evidence.file.clone(),
             line: d.evidence.line,
             call: d.call.clone(),
+            below: d.prefix.as_ref().and_then(|p| p.path.clone()),
             test: d.evidence.test,
         })
         .collect();
@@ -837,6 +848,7 @@ mod tests {
         let call = |file: &str, test: bool| DynamicImport {
             from: ComponentId::new("web"),
             call: "import".into(),
+            prefix: None,
             evidence: Evidence::new(file).at_line(1).in_test(test),
         };
         // a Next.js route below app/test/, which the path rule alone calls test code

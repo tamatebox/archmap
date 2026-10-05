@@ -1084,7 +1084,7 @@ pub(crate) fn import_location(evidence: &Evidence, more_files: usize, show_targe
 /// statement's marks as `import_location` writes them, the one a neighbor's
 /// statement adds, the roles of a use, then a path's in the history. A new
 /// mark gets its entry here.
-const MARKS: [(&str, &str, &str); 12] = [
+const MARKS: [(&str, &str, &str); 13] = [
     (
         " (via ",
         "(via file:line)",
@@ -1105,6 +1105,11 @@ const MARKS: [(&str, &str, &str); 12] = [
         "any other use: passed, assigned, compared",
     ),
     (" (submodule)", "(submodule)", "a git submodule, not a file"),
+    (
+        " (below ",
+        "(below path)",
+        "computed name, loads only there",
+    ),
 ];
 
 /// `Marks: (type) types only, never runs; (test) in test code`: what the
@@ -1332,12 +1337,14 @@ pub(crate) fn not_traced(
             .iter()
             .take(cap)
             .map(|c| {
-                let at = place(&c.file, c.line);
+                let mut at = place(&c.file, c.line);
                 if c.test {
-                    format!("{at} (test)")
-                } else {
-                    at
+                    at.push_str(" (test)");
                 }
+                if let Some(below) = &c.below {
+                    let _ = write!(at, " (below {below})");
+                }
+                at
             })
             .collect();
         truncated |= places.len() < d.total;

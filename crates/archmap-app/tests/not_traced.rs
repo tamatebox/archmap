@@ -97,10 +97,11 @@ fn a_symbol_lists_the_imports_named_like_its_file() {
 fn a_ts_file_counts_the_dynamic_imports_of_ts_and_js_and_an_alias_named_like_it() {
     let ws = scan(&fixture("simple-ts-project"));
     let text = query(&ws, "src/components/button.tsx", Format::Text);
+    // `import(`./${name}`)` in src/app/ loads nothing of src/components/
     assert!(
         text.contains(
-            "\n  dynamic: 2 calls load modules by computed names, which may be this: \
-             scripts/report.cjs:4, src/app/lazy.tsx:7\n"
+            "\n  dynamic: 1 call loads a module by a computed name, which may be this: \
+             scripts/report.cjs:4\n"
         ),
         "{text}"
     );
@@ -110,6 +111,36 @@ fn a_ts_file_counts_the_dynamic_imports_of_ts_and_js_and_an_alias_named_like_it(
              (local name)\n"
         ),
         "{text}"
+    );
+    let text = query(&ws, "src/app/page.tsx", Format::Text);
+    assert!(
+        text.contains(
+            "\n  dynamic: 2 calls load modules by computed names, which may be this: \
+             scripts/report.cjs:4, src/app/lazy.tsx:7 (below src/app/)\n"
+        ),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_computed_name_with_a_static_start_counts_only_for_targets_below_it() {
+    // `import_module(f"store.{name}")` loads a module of the package `store`
+    let ws = scan(&fixture("python-bindings"));
+    let text = query(&ws, "store/billing/charge.py", Format::Text);
+    assert!(
+        text.contains(
+            "\n  dynamic: 1 call loads a module by a computed name, which may be this: \
+             store/loader.py:17 (below store/)\n"
+        ),
+        "{text}"
+    );
+    let text = query(&ws, "spec/test_pay.py", Format::Text);
+    assert!(!text.contains("dynamic:"), "{text}");
+    let charge = query(&ws, "store/billing/charge.py", Format::Json);
+    let json: serde_json::Value = serde_json::from_str(&charge).unwrap();
+    assert_eq!(
+        json["not_traced"]["dynamic"]["locations"][0]["below"], "store/",
+        "{json}"
     );
 }
 

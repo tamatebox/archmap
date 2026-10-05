@@ -4,8 +4,8 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use archmap_core::{
-    ArchitectureGraph, ComponentId, ComponentKind, DynamicImport, EdgeKind, Evidence,
-    LanguageCoverage, Scope, SymbolKind, UnmappedReason,
+    ArchitectureGraph, ComponentId, ComponentKind, DynamicImport, DynamicPrefix, EdgeKind,
+    Evidence, LanguageCoverage, Scope, SymbolKind, UnmappedReason,
 };
 use archmap_scan::{scan, ScanOptions};
 
@@ -826,6 +826,11 @@ fn dynamic_imports_are_recorded_where_they_are_called() {
         vec![DynamicImport {
             from: id("shop::scripts"),
             call: "import_module".into(),
+            // the static start of the name, whose package is no module here
+            prefix: Some(DynamicPrefix {
+                written: "shop.plugins.".into(),
+                path: None,
+            }),
             evidence: Evidence::new("scripts/plugins.py")
                 .at_line(5)
                 .in_scope(Scope::Local),

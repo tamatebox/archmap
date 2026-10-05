@@ -160,6 +160,7 @@ mod tests {
         fragment.push_dynamic_import(DynamicImport {
             from: "app::lib".into(),
             call: "import_module".into(),
+            prefix: None,
             evidence: Evidence::new("lib/run.py").at_line(2),
         });
 
