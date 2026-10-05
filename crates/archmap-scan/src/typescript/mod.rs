@@ -871,15 +871,6 @@ impl Imports<'_> {
     /// aliases write it), else undeclared.
     fn undeclared(&self, import: &ImportStatement, package: &str) -> (UnmappedReason, String) {
         let spec = &import.specifier;
-        if let Some(alias) = self.bundler.matching(self.file, spec) {
-            let note = format!(
-                "{} {spec}: no file matches; {} declares the alias `{}`",
-                import.note,
-                display_path(alias.config),
-                alias.key
-            );
-            return (UnmappedReason::Unresolved, note);
-        }
         if let Some((pattern, file)) = self.aliases.matching(spec, self.file) {
             let note = format!(
                 "{} {spec}: no file matches; {file} declares the alias `{pattern}`",
@@ -958,6 +949,27 @@ impl Imports<'_> {
                 );
             }
             Resolved::NotFound => {
+                // an alias leads where no file is: no package or member
+                // stands in for it, as the bundler would not look further
+                if let Some(alias) = self.bundler.matching(self.file, spec) {
+                    let above = match alias.path {
+                        Some(_) => "",
+                        None => ", to a path outside the scan",
+                    };
+                    let note = format!(
+                        "{} {spec}: no file matches; {} declares the alias `{}`{above}",
+                        import.note,
+                        display_path(alias.config),
+                        alias.key
+                    );
+                    output.fragment.push_unmapped_import(self.unmapped(
+                        import,
+                        type_only,
+                        UnmappedReason::Unresolved,
+                        note,
+                    ));
+                    return;
+                }
                 let Some(package) = resolve::package_name(spec) else {
                     let why = if resolve::is_path(spec) {
                         "no file matches"

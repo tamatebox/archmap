@@ -46,17 +46,30 @@ const WEBPACK: &str = "webpack.config";
 /// Module-level `const` bindings a value is followed through, at most.
 const MAX_DEPTH: usize = 8;
 
-/// Babel's configs, in the order they are read; `package.json` gives its
-/// `babel` key.
-const BABEL: [&str; 7] = [
+/// Babel's project-wide configs, in the order they are read.
+const BABEL_CONFIGS: [&str; 5] = [
     "babel.config.js",
     "babel.config.cjs",
     "babel.config.mjs",
+    "babel.config.cts",
     "babel.config.json",
+];
+
+/// Babel's file-relative configs, which apply only up to the nearest
+/// `package.json`; that file gives its `babel` key.
+const BABELRC: [&str; 6] = [
     ".babelrc",
     ".babelrc.json",
+    ".babelrc.js",
+    ".babelrc.cjs",
+    ".babelrc.mjs",
     "package.json",
 ];
+
+/// Segments a path is computed below, so that one which climbs above the
+/// root shows it.
+const PAD: usize = 64;
+const ABOVE: &str = "\u{0}";
 
 /// The aliases of every package whose bundler or Babel config declares
 /// some.
@@ -64,16 +77,33 @@ const BABEL: [&str; 7] = [
 pub(crate) struct BundlerAliases {
     /// By the package's directory, relative to the root.
     scopes: BTreeMap<PathBuf, Scope>,
-    /// The directories that hold a `package.json`, relative to the root.
+    /// The directories of a package: a `package.json` with a name, or one
+    /// beside a config read here, relative to the root.
     packages: BTreeSet<PathBuf>,
+    /// The directories of every `package.json`, a marker without a name
+    /// (`{ "type": "module" }`) included, where Babel's file-relative
+    /// configs stop.
+    markers: BTreeSet<PathBuf>,
 }
 
-/// What one package's configs rewrite.
+/// What one directory's configs rewrite, in the order Babel and then a
+/// bundler apply them.
 #[derive(Debug, Default)]
 struct Scope {
-    /// Babel's first, then Vite's, then webpack's.
+    /// Babel's `.babelrc` and `babel` key, for the files up to the nearest
+    /// `package.json`.
+    babelrc: Rewrites,
+    /// Babel's `babel.config.*`, for the package's files.
+    babel: Rewrites,
+    /// Vite's, then webpack's, for the package's files.
+    bundler: Vec<Alias>,
+}
+
+/// What Babel's module resolver rewrites.
+#[derive(Debug, Default)]
+struct Rewrites {
     aliases: Vec<Alias>,
-    /// Babel's `root` directories, relative to the root.
+    /// The `root` directories, relative to the root.
     roots: Vec<PathBuf>,
 }
 
@@ -83,101 +113,166 @@ struct Alias {
     key: String,
     /// webpack's `key$`: only the key itself, no path below it.
     exact: bool,
-    /// Relative to the root.
-    target: PathBuf,
+    /// Relative to the root; `None` for a path above it, which the scan
+    /// does not hold.
+    target: Option<PathBuf>,
     /// The config that declares it, relative to the root.
     config: PathBuf,
 }
 
 /// An alias a specifier matches.
 pub(crate) struct Rewritten<'a> {
-    /// The path it leads to, relative to the root.
-    pub(crate) path: PathBuf,
+    /// The path it leads to, relative to the root; `None` above it.
+    pub(crate) path: Option<PathBuf>,
     pub(crate) key: &'a str,
     pub(crate) config: &'a Path,
 }
 
 impl BundlerAliases {
     pub(crate) fn read(ctx: &RepoContext) -> Self {
-        let packages: BTreeSet<PathBuf> = ctx
+        let dir_of = |f: &Path| f.parent().unwrap_or(Path::new("")).to_path_buf();
+        let manifests: Vec<&PathBuf> = ctx
             .files()
             .iter()
             .filter(|f| f.file_name().is_some_and(|n| n == "package.json"))
-            .map(|f| f.parent().unwrap_or(Path::new("")).to_path_buf())
             .collect();
+        let markers: BTreeSet<PathBuf> = manifests.iter().map(|f| dir_of(f)).collect();
+        let named = |f: &&&PathBuf| {
+            let text = ctx.read_to_string(f).ok();
+            let value = text.as_deref().and_then(json_config);
+            value.is_some_and(|v| v.get("name").is_some_and(|n| n.is_string()))
+        };
+        let mut packages: BTreeSet<PathBuf> =
+            manifests.iter().filter(named).map(|f| dir_of(f)).collect();
         let mut configs: Vec<&PathBuf> = ctx
             .files()
             .iter()
             .filter(|f| bundler_of(f).is_some())
-            .filter(|f| packages.contains(f.parent().unwrap_or(Path::new(""))))
+            .filter(|f| markers.contains(&dir_of(f)))
             .collect();
         // Vite before webpack in one package, each in path order
         configs.sort_by_key(|f| (bundler_of(f) != Some(VITE), (*f).clone()));
         let mut scopes: BTreeMap<PathBuf, Scope> = BTreeMap::new();
-        for dir in &packages {
-            for name in BABEL {
-                let config = dir.join(name);
-                let Ok(text) = ctx.read_to_string(&config) else {
-                    continue;
-                };
-                let (aliases, roots) = module_resolver(&config, &text);
-                let scope = scopes.entry(dir.clone()).or_default();
-                scope.aliases.extend(aliases);
-                scope.roots.extend(roots);
+        let read = |config: &Path| ctx.read_to_string(config).ok();
+        for dir in &markers {
+            for (names, relative) in [(&BABELRC[..], true), (&BABEL_CONFIGS[..], false)] {
+                for name in names {
+                    let config = dir.join(name);
+                    let Some((aliases, roots)) =
+                        read(&config).map(|t| module_resolver(&config, &t))
+                    else {
+                        continue;
+                    };
+                    if aliases.is_empty() && roots.is_empty() {
+                        continue;
+                    }
+                    let scope = scopes.entry(dir.clone()).or_default();
+                    let rewrites = if relative {
+                        &mut scope.babelrc
+                    } else {
+                        packages.insert(dir.clone());
+                        &mut scope.babel
+                    };
+                    rewrites.aliases.extend(aliases);
+                    rewrites.roots.extend(roots);
+                }
             }
         }
         for config in configs {
-            let Ok(text) = ctx.read_to_string(config) else {
+            let Some(aliases) = read(config).map(|t| aliases_of(config, &t)) else {
                 continue;
             };
-            let aliases = aliases_of(config, &text);
-            let dir = config.parent().unwrap_or(Path::new("")).to_path_buf();
-            scopes.entry(dir).or_default().aliases.extend(aliases);
+            if !aliases.is_empty() {
+                packages.insert(dir_of(config));
+                scopes
+                    .entry(dir_of(config))
+                    .or_default()
+                    .bundler
+                    .extend(aliases);
+            }
         }
-        scopes.retain(|_, scope| !scope.aliases.is_empty() || !scope.roots.is_empty());
-        BundlerAliases { scopes, packages }
+        BundlerAliases {
+            scopes,
+            packages,
+            markers,
+        }
     }
 
-    /// What the configs of the package that owns `file` (relative to the
-    /// root) rewrite; nothing for a bundler's own config.
-    fn scope(&self, file: &Path) -> Option<&Scope> {
+    /// What the configs about `file` (relative to the root) rewrite, in the
+    /// order they apply: Babel's file-relative config up to the nearest
+    /// `package.json`, then those of the package that owns the file. A
+    /// bundler's own config is outside them.
+    fn scopes(&self, file: &Path) -> [Option<&Scope>; 2] {
         if self.scopes.is_empty() || bundler_of(file).is_some() {
-            return None;
+            return [None, None];
         }
-        let package = file
-            .ancestors()
-            .skip(1)
-            .find(|dir| self.packages.contains(*dir))?;
-        self.scopes.get(package)
+        let nearest = |dirs: &BTreeSet<PathBuf>| {
+            file.ancestors()
+                .skip(1)
+                .find(|dir| dirs.contains(*dir))
+                .and_then(|dir| self.scopes.get(dir))
+        };
+        [nearest(&self.markers), nearest(&self.packages)]
+    }
+
+    /// Babel's aliases and roots that apply to `file`, in order.
+    fn babel(&self, file: &Path) -> impl Iterator<Item = &Rewrites> {
+        let [relative, package] = self.scopes(file);
+        relative
+            .map(|s| &s.babelrc)
+            .into_iter()
+            .chain(package.map(|s| &s.babel))
     }
 
     /// The directories in which Babel looks for a bare name written in
     /// `file`, relative to the root.
-    pub(crate) fn roots(&self, file: &Path) -> &[PathBuf] {
-        self.scope(file).map_or(&[], |scope| scope.roots.as_slice())
+    pub(crate) fn roots(&self, file: &Path) -> Vec<&PathBuf> {
+        self.babel(file).flat_map(|r| &r.roots).collect()
     }
 
-    /// The alias that `specifier`, written in `file` (relative to the
-    /// root), matches: the first its package's configs declare whose key is
-    /// the specifier or the specifier's first segments.
-    pub(crate) fn matching(&self, file: &Path, specifier: &str) -> Option<Rewritten<'_>> {
-        self.scope(file)?.aliases.iter().find_map(|alias| {
-            let rest = match specifier.strip_prefix(alias.key.as_str())? {
-                "" => "",
-                rest if !alias.exact => rest.strip_prefix('/')?,
-                _ => return None,
-            };
-            let path = match rest {
-                "" => alias.target.clone(),
-                rest => alias.target.join(rest),
-            };
-            Some(Rewritten {
-                path,
-                key: &alias.key,
-                config: &alias.config,
-            })
-        })
+    /// Babel's alias that `specifier`, written in `file` (relative to the
+    /// root), matches: the first whose key is the specifier or its first
+    /// segments. Babel rewrites the source before any bundler sees it.
+    pub(crate) fn babel_alias(&self, file: &Path, specifier: &str) -> Option<Rewritten<'_>> {
+        let aliases = self.babel(file).flat_map(|r| &r.aliases);
+        first_match(aliases, specifier)
     }
+
+    /// A bundler's alias that `specifier`, written in `file`, matches.
+    pub(crate) fn bundler_alias(&self, file: &Path, specifier: &str) -> Option<Rewritten<'_>> {
+        let [_, package] = self.scopes(file);
+        first_match(package.into_iter().flat_map(|s| &s.bundler), specifier)
+    }
+
+    /// The alias, Babel's or a bundler's, that `specifier` matches.
+    pub(crate) fn matching(&self, file: &Path, specifier: &str) -> Option<Rewritten<'_>> {
+        self.babel_alias(file, specifier)
+            .or_else(|| self.bundler_alias(file, specifier))
+    }
+}
+
+/// The first of `aliases` whose key is `specifier` or its first segments,
+/// and where it leads.
+fn first_match<'a>(
+    aliases: impl IntoIterator<Item = &'a Alias>,
+    specifier: &str,
+) -> Option<Rewritten<'a>> {
+    aliases.into_iter().find_map(|alias| {
+        let rest = match specifier.strip_prefix(alias.key.as_str())? {
+            "" => "",
+            rest if !alias.exact => rest.strip_prefix('/')?,
+            _ => return None,
+        };
+        let path = alias.target.as_ref().map(|target| match rest {
+            "" => target.clone(),
+            rest => target.join(rest),
+        });
+        Some(Rewritten {
+            path,
+            key: &alias.key,
+            config: &alias.config,
+        })
+    })
 }
 
 /// The bundler whose config `file` is: `vite.config` or `webpack.config`.
@@ -204,7 +299,7 @@ fn aliases_of(config: &Path, text: &str) -> Vec<Alias> {
     };
     let mut reader = Reader {
         vite: bundler_of(config) == Some(VITE),
-        dir,
+        dir: padded(dir),
         modules: BTreeMap::new(),
         consts: BTreeMap::new(),
         root_set: false,
@@ -258,7 +353,7 @@ fn aliases_of(config: &Path, text: &str) -> Vec<Alias> {
                 Some(name) => (name.to_owned(), true),
                 None => (key, false),
             };
-            let target: PathBuf = reader.path(value, 0)?.iter().collect();
+            let target = landed(&reader.path(value, 0)?);
             (!key.is_empty()).then(|| Alias {
                 key,
                 exact,
@@ -276,19 +371,28 @@ fn module_resolver(config: &Path, text: &str) -> (Vec<Alias>, Vec<PathBuf>) {
     let Some(dir) = components(config.parent().unwrap_or(Path::new(""))) else {
         return (Vec::new(), Vec::new());
     };
-    let relative = |value: &str| -> Option<PathBuf> {
+    let dir = padded(dir);
+    // where an alias's value leads: `Some(None)` above the root
+    let relative = |value: &str| -> Option<Option<PathBuf>> {
         // a package name, an absolute path or a glob is no directory here
         if !value.starts_with('.') || value.contains('*') {
             return None;
         }
-        Some(join(dir.clone(), [value])?.iter().collect())
+        Some(landed(&join(dir.clone(), [value])?))
+    };
+    // a root is a directory, `./` written or not, inside the root
+    let root_dir = |value: &str| -> Option<PathBuf> {
+        if value.contains('*') {
+            return None;
+        }
+        landed(&join(dir.clone(), [value])?)
     };
     // (key, target) pairs and roots, each as the config writes them
-    let mut aliases: Vec<(String, Option<PathBuf>)> = Vec::new();
+    let mut aliases: Vec<(String, Option<Option<PathBuf>>)> = Vec::new();
     let mut roots: Vec<PathBuf> = Vec::new();
     let is_plugin = |name: &str| matches!(name, "module-resolver" | "babel-plugin-module-resolver");
     match config.extension().and_then(|e| e.to_str()) {
-        Some("js" | "cjs" | "mjs") => {
+        Some("js" | "cjs" | "mjs" | "cts") => {
             let Ok(source_type) = source_type(config) else {
                 return (Vec::new(), Vec::new());
             };
@@ -329,22 +433,24 @@ fn module_resolver(config: &Path, text: &str) -> (Vec<Alias>, Vec<PathBuf>) {
             let Some(options) = options else {
                 return (Vec::new(), Vec::new());
             };
-            let strings = |expr: &Expression| -> Vec<String> {
+            // a string written out, or a path computed (`path.resolve(__dirname,
+            // 'src')`)
+            let root_of = |expr: &Expression| -> Option<PathBuf> {
                 match reader.followed(expr, 0) {
-                    Expression::StringLiteral(s) => vec![s.value.to_string()],
-                    Expression::ArrayExpression(a) => a
-                        .elements
-                        .iter()
-                        .filter_map(|e| match e {
-                            ArrayExpressionElement::StringLiteral(s) => Some(s.value.to_string()),
-                            _ => None,
-                        })
-                        .collect(),
-                    _ => Vec::new(),
+                    Expression::StringLiteral(s) => root_dir(s.value.as_str()),
+                    value => landed(&reader.path(value, 0)?),
                 }
             };
             if let Some(root) = property(options, "root") {
-                roots.extend(strings(root).iter().filter_map(|r| relative(r)));
+                match reader.followed(root, 0) {
+                    Expression::ArrayExpression(a) => roots.extend(
+                        a.elements
+                            .iter()
+                            .filter_map(ArrayExpressionElement::as_expression)
+                            .filter_map(root_of),
+                    ),
+                    value => roots.extend(root_of(value)),
+                }
             }
             if let Some(Expression::ObjectExpression(alias)) =
                 property(options, "alias").map(|a| reader.followed(a, 0))
@@ -358,7 +464,7 @@ fn module_resolver(config: &Path, text: &str) -> (Vec<Alias>, Vec<PathBuf>) {
                     };
                     let target = match reader.followed(&p.value, 0) {
                         Expression::StringLiteral(s) => relative(s.value.as_str()),
-                        value => reader.path(value, 0).map(|c| c.iter().collect()),
+                        value => reader.path(value, 0).map(|c| landed(&c)),
                     };
                     aliases.push((key.into_owned(), target));
                 }
@@ -390,7 +496,7 @@ fn module_resolver(config: &Path, text: &str) -> (Vec<Alias>, Vec<PathBuf>) {
                 }
                 _ => Vec::new(),
             };
-            roots.extend(root.into_iter().filter_map(relative));
+            roots.extend(root.into_iter().filter_map(root_dir));
             for (key, target) in options
                 .get("alias")
                 .and_then(|a| a.as_object())
@@ -712,6 +818,23 @@ fn components(dir: &Path) -> Option<Vec<String>> {
     join(Vec::new(), [dir.to_str()?])
 }
 
+/// `dir` below [`PAD`] segments that stand for what is above the root.
+fn padded(dir: Vec<String>) -> Vec<String> {
+    let mut path = vec![ABOVE.to_owned(); PAD];
+    path.extend(dir);
+    path
+}
+
+/// Where a path computed from a [`padded`] directory lands, relative to
+/// the root; `None` above the root, where it climbed into the padding.
+fn landed(path: &[String]) -> Option<PathBuf> {
+    let (above, inside) = path.split_at_checked(PAD)?;
+    above
+        .iter()
+        .all(|segment| segment == ABOVE)
+        .then(|| inside.iter().collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -723,7 +846,11 @@ mod tests {
             .into_iter()
             .map(|a| {
                 let exact = if a.exact { "$" } else { "" };
-                format!("{}{exact} -> {}", a.key, a.target.display())
+                let target = a
+                    .target
+                    .as_ref()
+                    .map_or("(outside)".into(), |t| t.display().to_string());
+                format!("{}{exact} -> {target}", a.key)
             })
             .collect()
     }
@@ -773,8 +900,12 @@ mod tests {
                     \x20   ok: path.resolve(__dirname, 'src'),\n\
                     \x20 } },\n\
                     } as const;\n";
-        // `root` is set, so `/src` is not from this directory
-        assert_eq!(aliases("app/vite.config.js", text), ["ok -> app/src"]);
+        // `root` is set, so `/src` is not from this directory; a path above
+        // the root keeps its key, which then leads to no scanned file
+        assert_eq!(
+            aliases("app/vite.config.js", text),
+            ["up -> (outside)", "ok -> app/src"]
+        );
         // a merged config is not read
         let text = "import { mergeConfig } from 'vite';\n\
                     export default mergeConfig(base, { resolve: { alias: { a: '/a' } } });\n";
@@ -810,7 +941,13 @@ mod tests {
             let (aliases, roots) = module_resolver(Path::new(path), text);
             let aliases = aliases
                 .iter()
-                .map(|a| format!("{} -> {}", a.key, a.target.display()))
+                .map(|a| {
+                    let target = a
+                        .target
+                        .as_ref()
+                        .map_or("(outside)".into(), |t| t.display().to_string());
+                    format!("{} -> {target}", a.key)
+                })
                 .collect();
             let roots = roots.iter().map(|r| r.display().to_string()).collect();
             (aliases, roots)
@@ -820,7 +957,7 @@ mod tests {
                     \x20 plugins: [\n\
                     \x20   'other-plugin',\n\
                     \x20   ['module-resolver', {\n\
-                    \x20     root: './src',\n\
+                    \x20     root: ['./src', 'lib', path.resolve(__dirname, 'vendor'), './packages/*'],\n\
                     \x20     alias: {\n\
                     \x20       shared: path.resolve(__dirname, '../shared'),\n\
                     \x20       '^~(.+)': './src/\\\\1',\n\
@@ -834,7 +971,11 @@ mod tests {
             read("mobile/babel.config.js", text),
             (
                 vec!["shared -> shared".to_owned()],
-                vec!["mobile/src".to_owned()]
+                vec![
+                    "mobile/src".to_owned(),
+                    "mobile/lib".to_owned(),
+                    "mobile/vendor".to_owned()
+                ]
             )
         );
         // JSON with comments, roots as a list, a glob left out

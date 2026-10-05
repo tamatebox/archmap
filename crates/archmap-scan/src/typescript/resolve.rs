@@ -157,30 +157,12 @@ impl ImportResolver {
         problems: &mut BTreeSet<String>,
     ) -> Resolved {
         let absolute = self.root.join(file);
-        // a bundler rewrites the specifier before anything resolves it
-        let rewritten = self
-            .bundler
-            .matching(file, specifier)
-            .map(|alias| self.root.join(alias.path));
-        let specifier = match rewritten.as_deref().and_then(Path::to_str) {
-            Some(path) => path,
-            None => specifier,
-        };
-        let attempt = |with: &ResolverGeneric<ViewFs>,
-                       without: &ResolverGeneric<ViewFs>,
-                       problems: &mut BTreeSet<String>| {
-            match with.resolve_file(&absolute, specifier) {
-                Err(err) if is_tsconfig_problem(&err) => {
-                    problems.insert(self.tsconfig_problem(&err));
-                    without.resolve_file(&absolute, specifier)
-                }
-                other => other,
-            }
-        };
         let (with, untyped_with) = self.configured(&absolute);
-        // Babel's module resolver finds a bare name in its roots first, where
-        // a file of that path exists
-        if rewritten.is_none() && !is_path(specifier) && !specifier.starts_with('#') {
+        // Babel rewrites the source before anything else sees it: its alias,
+        // else a root that holds a file of the bare name; then a bundler
+        // rewrites what it matches
+        let babel = self.bundler.babel_alias(file, specifier);
+        if babel.is_none() && !is_path(specifier) && !specifier.starts_with('#') {
             for root in self.bundler.roots(file) {
                 let Some(candidate) = self
                     .root
@@ -198,6 +180,29 @@ impl ImportResolver {
                 }
             }
         }
+        let rewritten = match babel.or_else(|| self.bundler.bundler_alias(file, specifier)) {
+            // an alias that leads above the root leads to no scanned file
+            Some(alias) => match alias.path {
+                Some(path) => Some(self.root.join(path)),
+                None => return Resolved::NotFound,
+            },
+            None => None,
+        };
+        let specifier = match rewritten.as_deref().and_then(Path::to_str) {
+            Some(path) => path,
+            None => specifier,
+        };
+        let attempt = |with: &ResolverGeneric<ViewFs>,
+                       without: &ResolverGeneric<ViewFs>,
+                       problems: &mut BTreeSet<String>| {
+            match with.resolve_file(&absolute, specifier) {
+                Err(err) if is_tsconfig_problem(&err) => {
+                    problems.insert(self.tsconfig_problem(&err));
+                    without.resolve_file(&absolute, specifier)
+                }
+                other => other,
+            }
+        };
         let mut result = attempt(with, &self.without_tsconfig, problems);
         // the `types` condition of a package the view holds (a linked one,
         // the package's own `imports` and name) can lead to built

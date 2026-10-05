@@ -338,12 +338,17 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   (`path.resolve(__dirname, 'src')` or `path.join` with `path` imported or required,
   `fileURLToPath(new URL('./src', import.meta.url))`, `new URL(..).pathname`, and for Vite `/src`
   from the config's directory where it sets no `root`); the config itself and the files of a package
-  below it with a `package.json` of its own are outside its aliases; before those, Babel's
+  below it with a `package.json` of its own (one with a `name`; a marker such as `{ "type":
+  "module" }` is none) are outside its aliases; before those, Babel's
   `babel-plugin-module-resolver`, which rewrites the source before any bundler sees it, in the
-  package's `babel.config.*`, `.babelrc`, `.babelrc.json` or the `babel` key of its `package.json`:
-  its `alias`, matched the same way, and its `root` directories, where a bare name resolves when
-  a file of that path is there, both relative to the config's directory (a regex key, a package
-  replacement and a glob root count for nothing); the resolver sees only the
+  package's `babel.config.*`, or in a `.babelrc`, `.babelrc.json`, `.babelrc.js` (`.cjs`, `.mjs`) or
+  the `babel` key of a `package.json`, which apply only up to the nearest `package.json`: its
+  `alias`, matched the same way, then its `root` directories (`./src`, `src` or
+  `path.resolve(__dirname, 'src')`), where a bare name resolves when a file of that path is there,
+  both relative to the config's directory (a regex key, a package replacement and a glob root
+  count for nothing); an alias whose path leads above the root, or to no file, makes the import
+  `unresolved` with the config named, and no package of the name stands in for it, as the bundler
+  would not look further; the resolver sees only the
   scanned files, so `node_modules` and build output never change the graph,
   and an `extends` it cannot load, in a tsconfig, a jsconfig or a config one extends, is dropped with a
   warning while the file's own `paths` still apply
@@ -563,7 +568,10 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   one is an import of a file, as for a stylesheet, and the imports inside them are not read.
 - A tsconfig's `customConditions` count for every file, not only those its config covers.
 - Aliases are read only from tsconfigs, jsconfigs, and at a package's top the `resolve.alias`
-  written in a `vite.config.*` or `webpack.config.*` and Babel's module resolver: aliases a
+  written in a `vite.config.*` or `webpack.config.*` and Babel's module resolver: a jsconfig's
+  `include`, which a tsconfig's resolution honors, a Vite `find` with a trailing `/`, which Vite
+  normalizes, an alias to a workspace member's directory whose `package.json` gives only
+  `exports`, which the rewritten path does not follow, aliases a
   plugin adds, a bundler's replacement relative to the
   importing file (`'./src'`, which both bundlers resolve again from there) or naming a package
   (`react` to `preact/compat`), a regex `find`, Vite's `root` and a key ending in `$`, a config

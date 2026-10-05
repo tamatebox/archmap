@@ -161,3 +161,55 @@ fn babel_s_module_resolver_rewrites_its_package_s_imports() {
         set(&["1 -> pkgbabel-app/app/helpers/util.js"])
     );
 }
+
+#[test]
+fn an_alias_that_leads_to_no_scanned_file_is_unresolved_and_names_its_config() {
+    let graph = scan_fixture();
+    // above the root
+    assert_eq!(
+        unmapped(&graph, "vite-app/src/far.ts"),
+        set(&["1 outside/x unresolved"])
+    );
+    let note = graph
+        .unmapped_imports
+        .iter()
+        .find(|u| u.evidence.file == "vite-app/src/far.ts")
+        .and_then(|u| u.evidence.note.clone());
+    assert_eq!(
+        note.as_deref(),
+        Some(
+            "import outside/x: no file matches; vite-app/vite.config.ts declares the alias \
+             `outside`, to a path outside the scan"
+        )
+    );
+    // no file below the alias: no package of the name stands in for it
+    assert_eq!(
+        loads(&graph, "shim-app/src/main.ts"),
+        set(&["1 -> shim-app/src/shims/lodash/index.ts"])
+    );
+    assert_eq!(
+        unmapped(&graph, "shim-app/src/main.ts"),
+        set(&["2 lodash/fp unresolved"])
+    );
+}
+
+#[test]
+fn a_package_json_without_a_name_is_no_package_for_a_bundler_s_aliases() {
+    let graph = scan_fixture();
+    assert_eq!(
+        loads(&graph, "vite-app/src/workers/w.ts"),
+        set(&["1 -> vite-app/src/a.ts"])
+    );
+}
+
+#[test]
+fn babel_s_rewrites_come_before_a_bundler_s_and_any_babelrc_is_read() {
+    let graph = scan_fixture();
+    // rn-app's webpack alias `components` loses to Babel's root
+    assert!(loads(&graph, "rn-app/src/App.tsx").contains("1 -> rn-app/src/components/Card.tsx"));
+    // a `.babelrc.js`
+    assert_eq!(
+        loads(&graph, "rcjs-app/main.js"),
+        set(&["1 -> rcjs-app/lib/y.js"])
+    );
+}
