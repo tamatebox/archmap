@@ -415,7 +415,9 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   `export { a } from`, the name the loaded file's default export declares for a default import (`limitOf`
   for `export default function limitOf`, `default` when it declares none or re-exports it), `*` for a
   namespace import, `import x = require()` and
-  `export *`, none for a side-effect import; `via` evidence records the names as the defining file
+  `export *`, none for a side-effect import; from a module that is one declaration (`module.exports =
+  logger`, `export = Engine`), a name it does not export is a member of that declaration, so
+  `const { info } = require('./logger')` records `logger`; `via` evidence records the names as the defining file
   declares them, one evidence per defining file and re-export, and re-export statements are not walked
 - on demand, for one name, `query` and `impact` read where the code reads and writes an environment
   variable on `process.env` (`.X`, `["X"]`, a destructuring) and `import.meta.env`, `process`

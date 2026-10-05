@@ -474,8 +474,10 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
             Statement::TSExportAssignment(a) => {
                 if let Expression::Identifier(id) = &a.expression {
                     let local = id.name.to_string();
-                    file.symbols
-                        .extend(locals.get(&local).cloned().unwrap_or_default());
+                    if let Some(symbols) = locals.get(&local) {
+                        file.symbols.extend(symbols.iter().cloned());
+                        file.exports.module_value.get_or_insert(local.clone());
+                    }
                     exported.push((local, "default".to_owned(), line, false));
                 }
             }
@@ -702,6 +704,12 @@ fn commonjs_exports(
                 if let Some(symbols) = declared {
                     if file.exports.default_name.is_none() {
                         file.exports.default_name = Some(symbols[0].name.clone());
+                    }
+                    // `module.exports = logger`: what `require` gives
+                    if target.is_none() {
+                        file.exports
+                            .module_value
+                            .get_or_insert(symbols[0].name.clone());
                     }
                     file.symbols.extend(symbols);
                 }
@@ -2702,6 +2710,8 @@ export default local;
             .collect();
         assert_eq!(symbols, [("Engine", 1), ("Engine.start", 2)]);
         assert_eq!(file.exports.default_name.as_deref(), Some("Engine"));
+        // what `import x = require()` gives is the declaration itself
+        assert_eq!(file.exports.module_value.as_deref(), Some("Engine"));
     }
 
     #[test]
@@ -2945,6 +2955,7 @@ export default local;
         .unwrap();
         assert_eq!(file.symbols[0].name, "limitOf");
         assert_eq!(file.exports.default_name.as_deref(), Some("limitOf"));
+        assert_eq!(file.exports.module_value.as_deref(), Some("limitOf"));
         // `exports.default` is the default export, under its declared name
         let file = parse(
             Path::new("d.js"),
@@ -2953,6 +2964,8 @@ export default local;
         .unwrap();
         assert_eq!(file.symbols[0].name, "helper");
         assert_eq!(file.exports.default_name.as_deref(), Some("helper"));
+        // `require` gives an object that holds it, not the declaration
+        assert_eq!(file.exports.module_value, None);
         // the placeholders compilers write before the real assignments
         let file = parse(
             Path::new("v.js"),

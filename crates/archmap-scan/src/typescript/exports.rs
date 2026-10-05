@@ -22,6 +22,11 @@ pub(crate) struct ExportTable {
     /// carries: `limitOf` for `export default function limitOf`. `None` for
     /// an anonymous or a re-exported default, or none at all.
     pub default_name: Option<String>,
+    /// The declaration that the module itself is, by its name:
+    /// `logger` for `module.exports = logger`, `Engine` for `export =
+    /// Engine`. `require` and `import x = require()` give it rather than a
+    /// namespace that holds it; `exports.default = ..` gives no such value.
+    pub module_value: Option<String>,
     /// The names the file declares only as types: interfaces and type
     /// aliases that no value of the same name merges with. The compiler
     /// erases an import or a re-export that takes nothing else.
@@ -173,7 +178,9 @@ impl<'a> Definitions<'a> {
 
     /// The name a statement that takes `name` from `file` records: `name`
     /// itself, except that a default export goes by the name its
-    /// declaration in `file` gives. A default that `file` re-exports, whole
+    /// declaration in `file` gives, and a name `file` does not export, from
+    /// a module that is one declaration (`module.exports = logger`), by
+    /// that declaration's. A default that `file` re-exports, whole
     /// or not, stays `default`: `file` declares no name for it, and the
     /// statement's `via` evidence names it as the defining file does.
     pub(crate) fn recorded(&self, file: &Path, name: &str) -> String {
@@ -251,15 +258,21 @@ impl<'a> Index<'a> {
     }
 
     /// `name` as `file` declares it: a default export by the name its
-    /// declaration gives, when it gives one.
+    /// declaration gives, when it gives one, and a name it does not export
+    /// by the declaration the module is, of which it is a member (`info`
+    /// of `const { info } = require('./logger')` for `module.exports =
+    /// logger`).
     fn declared(&self, file: &Path, name: String) -> String {
-        if name != "default" {
+        let Some(exports) = self.modules.get(file).map(|m| &m.exports) else {
             return name;
-        }
-        self.modules
-            .get(file)
-            .and_then(|m| m.exports.default_name.clone())
-            .unwrap_or(name)
+        };
+        let value = match name.as_str() {
+            "default" => exports.default_name.clone(),
+            WHOLE_MODULE => None,
+            _ if exports.names.contains_key(&name) => None,
+            _ => exports.module_value.clone(),
+        };
+        value.unwrap_or(name)
     }
 
     /// Where `name`, as `file` exports it, is defined. `walked` holds what
@@ -458,6 +471,7 @@ mod tests {
                     .collect(),
                 stars: stars.iter().map(|&(i, l)| (i, l, false)).collect(),
                 default_name: None,
+                module_value: None,
                 types: BTreeSet::new(),
                 type_exports: BTreeSet::new(),
             },
@@ -701,6 +715,24 @@ mod tests {
         // other names, and files that are no scanned code, stay as written
         assert_eq!(recorded("index.ts", "other"), "other");
         assert_eq!(recorded("data.json", "default"), "default");
+        // `module.exports = logger; module.exports.extra = 1`: a name the
+        // file does not export is a member of the declaration it is
+        let mut logger = with_default(
+            module(
+                &[("default", Export::Local), ("extra", Export::Local)],
+                &[],
+                &[],
+            ),
+            "logger",
+        );
+        logger.exports.module_value = Some("logger".to_owned());
+        let cjs = self::modules([("logger.js", logger)]);
+        let definitions = Definitions::new(&cjs);
+        let recorded = |name: &str| definitions.recorded(Path::new("logger.js"), name);
+        assert_eq!(recorded("info"), "logger");
+        assert_eq!(recorded("default"), "logger");
+        assert_eq!(recorded("extra"), "extra");
+        assert_eq!(recorded(WHOLE_MODULE), WHOLE_MODULE);
     }
 
     #[test]

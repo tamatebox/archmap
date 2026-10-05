@@ -1512,6 +1512,31 @@ fn each_test_to_run_again_says_how_it_reaches_the_symbol() {
 }
 
 #[test]
+fn a_require_of_a_module_that_is_the_symbol_stays_in_the_reach() {
+    // `module.exports = logger`: `logger.info()` through the binding of
+    // `require` uses it, so the caller and its test stay; a binding
+    // nothing reads leaves
+    let ws = scan(&fixture("ts-module-value"));
+    let out = text(&ws, "logger");
+    assert_eq!(
+        section(&out, "Direct dependents: 2"),
+        ["  app.js  1 import", "  held.js  1 import"],
+        "{out}"
+    );
+    assert_eq!(
+        section(&out, "Tests to run again: 1"),
+        ["  tests/app.test.js (through src/app.js)"],
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            "  never named (1 import of the whole module, left out of the reach): src/idle.js:1\n"
+        ),
+        "{out}"
+    );
+}
+
+#[test]
 fn a_conftest_stands_for_its_tests_and_a_helper_is_no_test() {
     let files: Vec<(String, String)> = [
         ("pyproject.toml", "[project]\nname = \"shop\"\n"),

@@ -246,9 +246,21 @@ impl<'g> Pass<'g, '_> {
         let mut found = BTreeSet::new();
         if module == self.defining {
             found.insert(self.tail.clone());
-            let default = self
+            let (default, value) = self
                 .parsed(module)
-                .and_then(|p| p.exports.default_name.clone());
+                .map(|p| {
+                    (
+                        p.exports.default_name.clone(),
+                        p.exports.module_value.clone(),
+                    )
+                })
+                .unwrap_or_default();
+            // `module.exports = logger`, `export = Engine`: the module is
+            // the symbol, or its class, so the path from it starts past
+            // that name (`[]`, `["boot"]`)
+            if value.as_ref() == Some(&self.tail[0]) {
+                found.insert(self.tail[1..].to_vec());
+            }
             let names = default
                 .filter(|d| d == &self.tail[0])
                 .map(|_| "default".to_owned())
@@ -287,7 +299,7 @@ impl<'g> Pass<'g, '_> {
                 Export::Reexport { import, name, .. } => {
                     if let Some(target) = self.loaded(module, lines[*import]) {
                         for mut path in self.paths_of(target, hops + 1) {
-                            if &path[0] == name {
+                            if path.first() == Some(name) {
                                 path[0] = exported.clone();
                                 found.insert(path);
                             }
@@ -307,12 +319,13 @@ impl<'g> Pass<'g, '_> {
         for import in stars {
             if let Some(target) = self.loaded(module, lines[import]) {
                 let paths = self.paths_of(target, hops + 1);
-                // a name the barrel exports itself wins over `export *`
-                found.extend(
-                    paths.into_iter().filter(|p| {
-                        p[0] != "default" && !names.iter().any(|(name, _)| name == &p[0])
-                    }),
-                );
+                // a name the barrel exports itself wins over `export *`,
+                // which passes on neither the default nor the module itself
+                found.extend(paths.into_iter().filter(|p| {
+                    p.first().is_some_and(|first| {
+                        first != "default" && !names.iter().any(|(name, _)| name == first)
+                    })
+                }));
             }
         }
         found
@@ -574,7 +587,7 @@ impl<'g> Pass<'g, '_> {
         let before = self.out.mocked.len();
         if let Some(object) = factory_object(call) {
             for (key, span) in written_keys(object).0 {
-                if paths.iter().any(|p| p[0] == key) {
+                if paths.iter().any(|p| p.first() == Some(&key)) {
                     // a key named otherwise (a member's class, a renamed
                     // export) says its name
                     let other = self.tail.last() != Some(&key);
@@ -886,6 +899,22 @@ fn follow_node(
     uses: &mut Vec<SymbolUse>,
     out: &mut SymbolUses,
 ) {
+    let nodes = read.semantic.nodes();
+    let parent = nodes.parent_node(id);
+    // `const m = require('m')` binds the module as an import does, the
+    // symbol itself where the module is it (`module.exports = logger`);
+    // `const n = m` is an alias, which is data flow
+    if let AstKind::VariableDeclarator(d) = parent.kind() {
+        let init = d.init.as_ref().is_some_and(|init| init.span() == span);
+        if let (BindingPattern::BindingIdentifier(binding), true) = (&d.id, init) {
+            if written.is_empty() {
+                if let Some(symbol) = binding.symbol_id.get() {
+                    follow_binding(read, symbol, &binding.name, rests, destructured, uses, out);
+                }
+                return;
+            }
+        }
+    }
     if rests.iter().any(Vec::is_empty) {
         if let Some(role) = role_at(read, id, span) {
             let binding = (!written.is_empty()).then(|| written.to_owned());
@@ -899,8 +928,6 @@ fn follow_node(
             out.escapes.push(evidence_at(read, span));
         }
     };
-    let nodes = read.semantic.nodes();
-    let parent = nodes.parent_node(id);
     let member = |name: &str, at: Span, uses: &mut Vec<SymbolUse>, out: &mut SymbolUses| {
         let next: Vec<Vec<String>> = rests
             .iter()
@@ -982,17 +1009,9 @@ fn follow_node(
         AstKind::VariableDeclarator(d)
             if d.init.as_ref().is_some_and(|init| init.span() == span) =>
         {
-            let pattern = match &d.id {
-                BindingPattern::ObjectPattern(pattern) => pattern,
-                // `const m = require('m')` binds the module as an import does;
-                // `const n = m` is an alias, which is data flow
-                BindingPattern::BindingIdentifier(binding) if written.is_empty() => {
-                    if let Some(symbol) = binding.symbol_id.get() {
-                        follow_binding(read, symbol, &binding.name, rests, destructured, uses, out);
-                    }
-                    return;
-                }
-                _ => return escape(out),
+            // a binding of the module itself was followed above
+            let BindingPattern::ObjectPattern(pattern) = &d.id else {
+                return escape(out);
             };
             if destructured >= MAX_DESTRUCTURINGS || pattern.rest.is_some() {
                 escape(out);

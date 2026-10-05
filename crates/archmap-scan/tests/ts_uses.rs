@@ -141,7 +141,12 @@ fn a_function_is_used_through_every_binding_that_reaches_it() {
 
 #[test]
 fn every_statement_read_ends_in_one_of_the_lists() {
-    for name in ["ts-uses", "ts-reexports", "simple-ts-project"] {
+    for name in [
+        "ts-uses",
+        "ts-reexports",
+        "simple-ts-project",
+        "ts-module-value",
+    ] {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures")
             .join(name);
@@ -419,4 +424,44 @@ fn the_type_of_a_module_whole_takes_every_symbol_of_it() {
         .map(|e| format!("{}:{}", e.file, e.line.unwrap_or(0)))
         .collect();
     assert_eq!(unused, ["src/rates.ts:1", "src/unused.ts:1"]);
+}
+
+#[test]
+fn a_module_that_is_one_declaration_gives_it_to_require() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/ts-module-value");
+    let report = scan(&root, &ScanOptions::default()).unwrap();
+    // `module.exports = logger`: `require` binds the symbol itself, so a
+    // member read through the binding is a use, and a destructuring takes
+    // the symbol
+    let logger = uses_of(&report, "logger");
+    assert_eq!(
+        shown(&logger),
+        [
+            "src/app.js:2:1 read via 1",
+            "src/held.js:1:18 read via 1",
+            "src/logger.js:6:18 read",
+        ],
+        "{:#?}",
+        shown(&logger)
+    );
+    // a binding nothing reads still never names it
+    assert_eq!(places(&logger.unused), ["src/idle.js:1"]);
+    // `module.exports = slugify`: called through the binding and directly
+    let slugify = uses_of(&report, "slugify");
+    assert_eq!(
+        shown(&slugify),
+        [
+            "src/slug.js:4:18 read",
+            "src/use.js:2:23 call via 1",
+            "src/use.js:2:40 call via 2",
+            "src/use2.js:2:23 read as slug via 1",
+        ],
+        "{:#?}",
+        shown(&slugify)
+    );
+    assert!(slugify.unused.is_empty() && slugify.escapes.is_empty());
+    // `export = Engine`: `import x = require()` binds the class
+    let boot = uses_of(&report, "Engine.boot");
+    assert_eq!(shown(&boot), ["src/car.ts:2:25 call via 1"]);
+    assert!(boot.unused.is_empty(), "{:?}", places(&boot.unused));
 }
