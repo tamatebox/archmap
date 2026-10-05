@@ -65,22 +65,32 @@ pub(crate) fn section<'a>(
     }
 }
 
-/// HEAD's paths under `component`'s path that it or a component inside it
-/// owns: its code, and the configuration and data beside it.
+/// HEAD's paths under the path of `component` or of a component inside it
+/// (a Rust module's path is its file, its submodules' files are beside it)
+/// that one of them owns: its code, and the configuration and data beside
+/// it.
 fn component_files(
     history: &History,
     full: &ArchitectureGraph,
     component: &Component,
 ) -> BTreeSet<String> {
-    let Some(path) = component.path.as_deref() else {
+    if component.path.is_none() {
         return BTreeSet::new();
-    };
-    let dir = path.trim_start_matches("./").trim_end_matches('/');
-    let whole = dir.is_empty() || dir == ".";
+    }
+    let dirs: Vec<&str> = full
+        .components
+        .values()
+        .filter(|c| c.id == component.id || full.containment_path(&c.id).contains(&component.id))
+        .filter_map(|c| c.path.as_deref())
+        .map(|path| path.trim_start_matches("./").trim_end_matches('/'))
+        .collect();
+    let whole = dirs.iter().any(|dir| dir.is_empty() || *dir == ".");
     let under = history.head_files.keys().map(String::as_str).filter(|p| {
         whole
-            || p.strip_prefix(dir)
-                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+            || dirs.iter().any(|dir| {
+                p.strip_prefix(dir)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+            })
     });
     let mut inside: BTreeMap<&ComponentId, bool> = BTreeMap::new();
     full.components_for_paths(under)

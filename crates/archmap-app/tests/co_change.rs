@@ -290,6 +290,33 @@ fn a_component_counts_each_commit_once_for_its_files() {
 }
 
 #[test]
+fn a_rust_module_counts_the_files_of_its_submodules_as_its_own() {
+    // outer's path is its file, outer/mod.rs; inner.rs is a module of it
+    let mut repo = Repo::new("rust-module");
+    repo.write(
+        "Cargo.toml",
+        "[package]\nname = \"p\"\nversion = \"0.1.0\"\n",
+    );
+    repo.write("src/lib.rs", "pub mod outer;\n");
+    repo.write("src/outer/mod.rs", "pub mod inner;\npub fn a() {}\n");
+    repo.write("src/outer/inner.rs", "pub fn b() {}\n");
+    repo.write("notes.md", "one\n");
+    repo.commit();
+    repo.write("src/outer/inner.rs", "pub fn b() {}\npub fn c() {}\n");
+    repo.write("notes.md", "two\n");
+    repo.commit();
+    let text = impact(&repo.dir, "p::outer", Format::Text);
+    let lines = section(&text);
+    assert!(
+        lines[0].ends_with(&format!(
+            "in the 2 commits that changed p::outer's 2 files{PER_FILE}"
+        )),
+        "{text}"
+    );
+    assert!(!lines.iter().any(|l| l.contains("inner.rs")), "{text}");
+}
+
+#[test]
 fn a_symbol_reads_the_commits_of_its_file() {
     let (repo, _) = shop("symbol");
     let text = impact(&repo.dir, "price", Format::Text);
