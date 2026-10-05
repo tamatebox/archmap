@@ -365,7 +365,9 @@ builds (`names reached dynamically`), and a file over 4 MB (`file too
 large`). A name a
 module-level import binds in a package's `__init__.py`, or that a
 module's literal `__all__` lists, is offered to whoever imports the
-module, so its statement is `passed_on`, never `never used`. A module bound
+module, and so is a name a module-level star import binds, in a module
+that some statement imports and whose star import takes the name too, so
+its statement is `passed_on`, never `never used`. A module bound
 whole that the code passes as a value or reads a dunder of
 (`charge.__dict__`) is a `whole module` place in `Not traced`, and a string
 that names the symbol by its module's dotted path

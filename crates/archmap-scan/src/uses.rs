@@ -64,10 +64,18 @@ pub fn symbol_uses(report: &ScanReport, symbol: &Symbol) -> SymbolUses {
             crate::rust::uses::read(index, root, symbol, &statements, &mut found);
         }
         (Some("python"), _) => {
+            // a star import passes its names on to what imports its file
+            let imported = graph
+                .edges
+                .iter()
+                .flat_map(|edge| &edge.evidence)
+                .filter_map(|e| e.target.as_deref().filter(|t| *t != e.file))
+                .collect();
             let request = crate::python::uses::Request {
                 root,
                 symbol,
                 statements,
+                imported,
             };
             crate::python::uses::read(&request, &mut found);
         }

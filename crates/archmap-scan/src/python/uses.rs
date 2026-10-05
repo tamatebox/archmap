@@ -41,6 +41,8 @@ pub(crate) struct Request<'g> {
     /// The statements `query` lists for it, and the others on their lines
     /// that load the same file.
     pub statements: Vec<&'g Evidence>,
+    /// The files some statement of the scan imports.
+    pub imported: BTreeSet<&'g str>,
 }
 
 /// What a use must reach.
@@ -131,6 +133,7 @@ pub(crate) fn read(request: &Request, out: &mut SymbolUses) {
     let pass = Pass {
         root: request.root,
         target: &target,
+        imported: &request.imported,
     };
     for (&file, statements) in &files {
         let defining = file == target.file;
@@ -158,6 +161,7 @@ pub(crate) fn read(request: &Request, out: &mut SymbolUses) {
 struct Pass<'t> {
     root: &'t Path,
     target: &'t Target,
+    imported: &'t BTreeSet<&'t str>,
 }
 
 impl Pass<'_> {
@@ -223,10 +227,16 @@ impl Pass<'_> {
                 reason,
             };
             // a module-level name its `__all__` lists, or that a package's
-            // `__init__.py` binds, is offered to whoever imports the module
+            // `__init__.py` binds, is offered to whoever imports the module,
+            // and one a star import binds, to a module that imports it
             let package = read.path == "__init__.py" || read.path.ends_with("/__init__.py");
+            let imported = self.imported.contains(read.path.as_str());
             let offers = walker.bindings.iter().any(|b| {
-                b.line == Some(line) && b.scope.is_none() && (package || read.lists(&b.name))
+                b.line == Some(line)
+                    && b.scope.is_none()
+                    && (package
+                        || read.lists(&b.name)
+                        || b.star && imported && read.exports(&b.name))
             });
             if offers || evidence.iter().any(|e| e.passes_on()) {
                 out.passed_on.push(first.clone());
@@ -525,6 +535,15 @@ impl File {
     /// Whether its `__all__` lists `name`, which it then passes on.
     fn lists(&self, name: &str) -> bool {
         matches!(&self.all, Some(DunderAll::Listed(names)) if names.iter().any(|n| n == name))
+    }
+
+    /// Whether a star import of the module binds `name`: its `__all__`
+    /// lists it, or without a literal one, it is public.
+    fn exports(&self, name: &str) -> bool {
+        match &self.all {
+            Some(DunderAll::Listed(_)) => self.lists(name),
+            Some(DunderAll::Built) | None => !name.starts_with('_'),
+        }
     }
 }
 

@@ -688,6 +688,42 @@ fn a_rust_file_of_methods_reaches_what_takes_their_type() {
 }
 
 #[test]
+fn a_python_star_import_outside_a_package_entry_passes_its_names_on() {
+    // api.py offers what its star import binds to whatever star-imports it
+    let files: Vec<(String, String)> = [
+        ("pyproject.toml", "[project]\nname = \"stars\"\n"),
+        ("pkg/__init__.py", "from .api import *\n"),
+        ("pkg/api.py", "from ._impl import *\n"),
+        ("pkg/_impl.py", "def refund(x):\n    return x\n"),
+        (
+            "app/star_user.py",
+            "from pkg import *\n\n\ndef go():\n    return refund(1)\n",
+        ),
+        (
+            "tests/test_star.py",
+            "from pkg import *\n\n\ndef test_refund():\n    assert refund(1) == 1\n",
+        ),
+    ]
+    .into_iter()
+    .map(|(file, text)| (file.to_owned(), text.to_owned()))
+    .collect();
+    let repo = Repo::new("star-chain", &files);
+    let ws = scan(&repo.0);
+    let out = text(&ws, "refund");
+    assert_eq!(
+        section(&out, "Transitive dependents: 1"),
+        ["  app  3 steps, through pkg/__init__.py"],
+        "{out}"
+    );
+    assert_eq!(
+        section(&out, "Tests to run again: 1"),
+        ["  tests/test_star.py (through pkg/__init__.py)"],
+        "{out}"
+    );
+    assert!(!out.contains("never named"), "{out}");
+}
+
+#[test]
 fn a_component_that_holds_the_target_names_the_files_of_it_reached() {
     let ws = scan(&fixture("simple-ts-project"));
     // the package re-exports the symbol from its own barrel: not the whole
