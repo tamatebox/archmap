@@ -37,7 +37,7 @@ pub use test_code::{is_test_code, TestKind};
 pub use typescript::is_mock_call;
 pub use uses::symbol_uses;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use archmap_core::{ArchitectureGraph, GraphMeta, LanguageCoverage};
@@ -53,6 +53,9 @@ pub struct ScanReport {
     pub warnings: Vec<String>,
     /// What the Rust analyzer read, for the passes that run on demand.
     pub(crate) rust: Option<rust::Index>,
+    /// The route directories the TS/JS analyzer found, for
+    /// [`route_files`].
+    pub(crate) routes: Option<typescript::Routes>,
 }
 
 /// The analyzers archmap ships with, in the order they run.
@@ -88,19 +91,18 @@ pub fn scan_with(
     let mut read: BTreeMap<String, usize> = BTreeMap::new();
     let mut scripts: BTreeMap<String, usize> = BTreeMap::new();
     let mut contributed = ids::ContributedIds::default();
-    let mut rust = None;
+    let (mut rust, mut routes) = (None, None);
 
     for analyzer in analyzers {
         if !analyzer.detect(&ctx) {
             continue;
         }
         let mut output = analyzer.analyze(&ctx)?;
-        if let Some(index) = output
-            .kept
-            .take()
-            .and_then(|k| k.downcast::<rust::Index>().ok())
-        {
-            rust = Some(*index);
+        if let Some(kept) = output.kept.take() {
+            match kept.downcast::<rust::Index>() {
+                Ok(index) => rust = Some(*index),
+                Err(kept) => routes = kept.downcast::<typescript::Routes>().ok().map(|r| *r),
+            }
         }
         warnings.extend(contributed.separate(analyzer.name(), &mut output.fragment));
         graph.meta.analyzers.push(analyzer.name().to_owned());
@@ -121,6 +123,7 @@ pub fn scan_with(
         root: ctx.root().to_path_buf(),
         warnings,
         rust,
+        routes,
     })
 }
 
@@ -148,6 +151,39 @@ fn coverage(
         coverage.entry(language).or_default().scripts = n;
     }
     coverage
+}
+
+/// The files among `paths` that a framework runs before the requests of
+/// every URL they match, so a test of any URL may reach them: Next.js's
+/// `middleware.ts`, or `proxy.ts` since Next.js 16, in the directory of a
+/// package whose manifest declares `next` or in its `src/`.
+pub fn before_routes<'a>(
+    report: &ScanReport,
+    paths: impl IntoIterator<Item = &'a str>,
+) -> BTreeSet<&'a str> {
+    report
+        .routes
+        .as_ref()
+        .map(|routes| routes.before(paths))
+        .unwrap_or_default()
+}
+
+/// The files among `paths` that a framework loads for a URL, so a test may
+/// reach them through it: in a package whose manifest declares `next`, the
+/// route files below `app/` or `src/app/` outside private folders
+/// (`_name`), and every file below `pages/` or `src/pages/`, `pages/api/`
+/// included. Test code is none, by the rule the scan reads it with, nor are
+/// the files Next.js loads by name for every request (`middleware.ts`,
+/// `instrumentation.ts`).
+pub fn route_files<'a>(
+    report: &ScanReport,
+    paths: impl IntoIterator<Item = &'a str>,
+) -> BTreeSet<&'a str> {
+    report
+        .routes
+        .as_ref()
+        .map(|routes| routes.files(paths))
+        .unwrap_or_default()
 }
 
 /// What each of `paths`, files of test code, is to a test runner: for

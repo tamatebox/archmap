@@ -1593,3 +1593,75 @@ fn a_line_that_takes_a_module_both_as_a_type_and_by_value_runs_it() {
         "{out}"
     );
 }
+
+#[test]
+fn a_change_that_reaches_a_route_file_says_tests_may_reach_it_by_its_url() {
+    let files = |next: bool| -> Vec<(String, String)> {
+        let deps = if next {
+            "{ \"name\": \"web\", \"dependencies\": { \"next\": \"16.0.0\" } }"
+        } else {
+            "{ \"name\": \"web\" }"
+        };
+        [
+            ("package.json", deps),
+            // a page in the component of the file it reaches through another
+            (
+                "app/shelf/[id]/page.tsx",
+                "import { Editor } from '../../../components/editor';\nexport default function Page() { return Editor; }\n",
+            ),
+            (
+                "app/shelf/actions.ts",
+                "export async function save() {}\n",
+            ),
+            (
+                "components/editor.ts",
+                "import { save } from '../app/shelf/actions';\nimport type { Shelf } from '../types/shelf';\nexport const Editor = save;\nexport type View = Shelf;\n",
+            ),
+            // a page that only a statement of types reaches
+            ("types/shelf.ts", "export type Shelf = { id: string };\n"),
+            // what runs before every request
+            ("src/proxy.ts", "import { save } from '../app/shelf/actions';\nexport const proxy = save;\n"),
+        ]
+        .into_iter()
+        .map(|(f, t)| (f.to_owned(), t.to_owned()))
+        .collect()
+    };
+    let repo = Repo::new("routes", &files(true));
+    let ws = scan(&repo.0);
+    let answer = text(&ws, "app/shelf/actions.ts");
+    assert!(
+        answer.contains(
+            "\n  routes: 1 file a framework loads for a URL; tests that reach it through a URL \
+             (an end-to-end test's goto) are not listed, so search the tests for the URLs it \
+             serves: app/shelf/[id]/page.tsx\n"
+        ),
+        "{answer}"
+    );
+    let json = ws
+        .impact(&ImpactRequest {
+            target: "components/editor.ts",
+            depth: DEFAULT_DEPTH,
+            format: Format::Json,
+            verbose: false,
+        })
+        .unwrap()
+        .output;
+    assert!(json.contains("\"routes\": {"), "{json}");
+    assert!(json.contains("\"app/shelf/[id]/page.tsx\""), "{json}");
+    assert!(
+        answer.contains(
+            "\n  middleware: 1 file runs before every request its matcher covers, so tests of any \
+             URL may reach the change through it: src/proxy.ts\n"
+        ),
+        "{answer}"
+    );
+    // a change that reaches the page only through types runs in none of it
+    let types = text(&ws, "types/shelf.ts");
+    assert!(!types.contains("routes:"), "{types}");
+
+    // without Next.js no file is a route
+    let repo = Repo::new("no-routes", &files(false));
+    let ws = scan(&repo.0);
+    let answer = text(&ws, "app/shelf/actions.ts");
+    assert!(!answer.contains("routes:"), "{answer}");
+}

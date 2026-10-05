@@ -1589,6 +1589,39 @@ pub(crate) fn not_traced(
             with_more(&places, b.total)
         ));
     }
+    if let Some(r) = &found.routes {
+        let shown: Vec<String> = r.shown.iter().take(cap).cloned().collect();
+        truncated |= shown.len() < r.total;
+        let (what, them, serve) = match r.total {
+            1 => (
+                "1 file a framework loads for a URL".to_owned(),
+                "it",
+                "it serves",
+            ),
+            n => (
+                format!("{n} files a framework loads for a URL"),
+                "them",
+                "they serve",
+            ),
+        };
+        lines.push(format!(
+            "  routes: {what}; tests that reach {them} through a URL (an end-to-end test's \
+             goto) are not listed, so search the tests for the URLs {serve}: {}",
+            with_more(&shown, r.total)
+        ));
+    }
+    if let Some(m) = &found.middleware {
+        let shown: Vec<String> = m.shown.iter().take(cap).cloned().collect();
+        truncated |= shown.len() < m.total;
+        let what = match m.total {
+            1 => "1 file runs before every request its matcher covers".to_owned(),
+            n => format!("{n} files run before every request their matcher covers"),
+        };
+        lines.push(format!(
+            "  middleware: {what}, so tests of any URL may reach the change through it: {}",
+            with_more(&shown, m.total)
+        ));
+    }
     if let Some(h) = &found.history {
         lines.push(format!(
             "  history: files changed in the same commits may be missing: {}",

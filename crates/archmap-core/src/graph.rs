@@ -1136,6 +1136,16 @@ impl ArchitectureGraph {
                 };
             }
         }
+        // the files a change reaches when the program runs
+        reach.reached = runs
+            .iter()
+            .filter_map(|node| match node {
+                Node::File(f) | Node::Passes(f) | Node::Relays(f) => Some(*f),
+                Node::Component(_) => None,
+            })
+            .chain(seeds.iter().copied())
+            .map(str::to_owned)
+            .collect();
         // how each test file reaches the change, in the walk its mocks give:
         // every way at its fewest steps, by precedence, then where none of
         // those takes values, the nearest that do
@@ -2168,6 +2178,11 @@ pub struct Reach {
     /// For each component of `transitive`, its files the walk reached,
     /// nearest first.
     pub files: BTreeMap<ComponentId, Vec<String>>,
+    /// Every file the change starts from, and every file the walk reached
+    /// through production code along statements that run (none that takes
+    /// types only), whatever component holds it, the target's own included:
+    /// what roll-up leaves out of `files`.
+    pub reached: BTreeSet<String>,
     /// For each file of `tests`, how it reaches the change.
     pub test_ways: BTreeMap<String, TestReach>,
     /// The files the walk reached only through the names they pass on (a

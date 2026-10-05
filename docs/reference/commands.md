@@ -876,6 +876,24 @@ target's own imports without an edge stay under `Not mapped`.
 - `history`: for `impact`, what in the history read may hide files changed
   in the same commits as the target (see
   [history.md](history.md#files-changed-in-the-same-commits)).
+- `routes`: for `impact`, the files the change starts from or reaches
+  through statements that run (none that takes types only), in any
+  component, that a framework loads for a URL: in a package whose manifest
+  declares `next`, the route files below `app/` or `src/app/` (`page`,
+  `layout`, `loading`, `route`, metadata routes such as `sitemap` and the
+  rest of Next.js's file conventions) outside private `_folders`, and every
+  file below `pages/` or `src/pages/`, apart from test code as the scan
+  reads it there. A test that loads one through a URL, such as an
+  end-to-end test's `goto`, imports nothing of it, so it is not among the
+  tests to run again; search the tests for the URLs it serves. JSON gives
+  them as `files`.
+- `middleware`: for `impact`, the files among those that run before the
+  requests of every URL they match, in such a package's directory or its
+  `src/`: Next.js's `middleware.ts`, and `proxy.ts` where the version the
+  manifest declares may be Next.js 16 or later, which renamed it (a range
+  whose leading major is 16 or more, one open upwards, or a tag such as
+  `latest`): tests of any URL may reach the change through them. JSON gives
+  them as `files`.
 
 In JSON each kind gives every place as `locations`, with their `total`.
 Gaps that no analyzer records yet are not counted: imports in a Rust crate's

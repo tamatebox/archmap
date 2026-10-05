@@ -13,8 +13,8 @@ use archmap_scan::ScanReport;
 
 use crate::co_change::{self, Changed};
 use crate::not_traced::{
-    barrels, declares_global, holds_global, not_traced, with_uses, Narrowed, NotTraced, Own, Place,
-    Subject,
+    barrels, declares_global, holds_global, not_traced, routes, with_uses, Narrowed, NotTraced,
+    Own, Place, Subject,
 };
 use crate::query::{instance_method, uses_of};
 use crate::resolve::{imports_subpath, resolve, Resolved};
@@ -420,6 +420,12 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
     if let Some(found) = barrels(full, narrowed, &reach.barrels, &reach.tests, usize::MAX) {
         not_traced.get_or_insert_with(NotTraced::default).barrels = Some(found);
     }
+    // the files a URL reaches, which tests may load through it
+    let (routes, middleware) = routes(&ws.report, &reach.reached);
+    if routes.is_some() || middleware.is_some() {
+        let found = not_traced.get_or_insert_with(NotTraced::default);
+        (found.routes, found.middleware) = (routes, middleware);
+    }
 
     // the files changed in the same commits, from the committed history
     let changed = match &traced {
@@ -810,11 +816,15 @@ fn importers_impact<'a>(
     let mut left_out = std::mem::take(&mut reach.left_out);
     left_out.retain(|file, _| !tests.contains(file));
     // the barrels past which the reach went on by names only
-    let not_traced =
-        barrels(full, None, &reach.barrels, &tests, usize::MAX).map(|found| NotTraced {
-            barrels: Some(found),
-            ..NotTraced::default()
-        });
+    let barrels = barrels(full, None, &reach.barrels, &tests, usize::MAX);
+    let (routes, middleware) = routes(report, &reach.reached);
+    let found = barrels.is_some() || routes.is_some() || middleware.is_some();
+    let not_traced = found.then(|| NotTraced {
+        barrels,
+        routes,
+        middleware,
+        ..NotTraced::default()
+    });
     let importers = sites(full, depth, statements.iter().copied(), true, caps.sites);
     let counted = counts(importers.shown.iter());
     let (direct, transitive) = dependents(full, &reach, &counted, &BTreeSet::new(), 1);

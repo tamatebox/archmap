@@ -35,6 +35,40 @@ pub(crate) struct Declaration {
     pub path: Option<String>,
     /// A `workspace:` version: the package is one of the repository.
     pub workspace: bool,
+    /// The version as written (`^15.0.0`, `latest`), when it is a string.
+    pub version: Option<String>,
+}
+
+/// Whether `range`, a version as `package.json` writes it, admits a
+/// release of `major` or later: one of its `||` alternatives does, by its
+/// leading major (the upper end of a hyphen range), by an upper bound above
+/// it (`<16.1`, `<=16`), by being open upwards (`>=15`), or by naming no
+/// number (`latest`, `canary`, `*`, a URL).
+pub(crate) fn admits_major(range: &str, major: u64) -> bool {
+    range.split("||").any(|alternative| {
+        let alternative = alternative.trim();
+        let part = alternative.rsplit(" - ").next().unwrap_or(alternative);
+        let first = part.split_whitespace().next().unwrap_or("");
+        let version: Vec<u64> = first
+            .trim_start_matches(['^', '~', '>', '<', '=', 'v'])
+            .split('.')
+            .map_while(|n| n.parse().ok())
+            .collect();
+        let Some(&leading) = version.first() else {
+            return true;
+        };
+        if let Some(bound) = first.strip_prefix('<') {
+            // an upper bound: `<16` admits 15.x only, `<=16` and `<16.1` 16
+            return match bound.starts_with('=') {
+                true => leading >= major,
+                false => {
+                    leading > major || (leading == major && version[1..].iter().any(|n| *n > 0))
+                }
+            };
+        }
+        let open = first.starts_with('>') && !alternative.contains('<');
+        leading >= major || open
+    })
 }
 
 /// The dependency sections of `package.json`.
@@ -116,6 +150,7 @@ pub(crate) fn parse(text: &str) -> Result<PackageJson, String> {
                 workspace: version
                     .as_str()
                     .is_some_and(|v| v.starts_with("workspace:")),
+                version: version.as_str().map(str::to_owned),
             });
         }
     }
@@ -209,6 +244,31 @@ fn key_lines(text: &str) -> BTreeMap<(String, String), u32> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_range_admits_a_major_by_its_leading_number_or_an_open_end() {
+        for range in [
+            "^16.0.0",
+            "16",
+            ">=15",
+            "15.x || 16.x",
+            "15 - 16",
+            "latest",
+            "canary",
+            "*",
+            "workspace:*",
+        ] {
+            assert!(super::admits_major(range, 16), "{range}");
+        }
+        for range in ["<=16", "<16.1"] {
+            assert!(super::admits_major(range, 16), "{range}");
+        }
+        for range in [
+            "^15.2.0", "~14.1", "15.x", ">=14 <16", "15.0.0", "<16", "<16.0.0",
+        ] {
+            assert!(!super::admits_major(range, 16), "{range}");
+        }
+    }
+
     use super::*;
 
     const PACKAGE: &str = r#"{

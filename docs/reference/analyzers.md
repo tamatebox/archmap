@@ -512,7 +512,11 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
 
 - Routes are read for Next.js only: in the route directories of Remix (`app/routes/`), SvelteKit
   (`src/routes/`), Nuxt and Astro (`pages/`), a directory named `test` or `tests` is test code by the
-  rule above, so its imports carry `test`.
+  rule above, so its imports carry `test`, and `impact` names no route files a URL reaches there.
+  A test that reaches a route through a URL (an end-to-end test's `goto`) is not linked to the
+  route file: `impact` names the route files and the middleware it reaches under `Not traced`
+  instead. Those go by Next.js's default names: `pageExtensions` in `next.config` is not read, which
+  narrows them (`*.page.tsx`) or adds `md` and `mdx` pages.
 - The names that a `require` or an `import()` takes later (`import('./m').then((m) => m.a)`, a result
   kept in a variable and read afterwards, an assignment that destructures it, `({ a } = require('m'))`)
   and the names of a mock that loads the real module are not read: such calls take the whole module,

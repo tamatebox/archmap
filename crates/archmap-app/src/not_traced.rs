@@ -11,6 +11,8 @@ use archmap_core::{
 };
 use serde::Serialize;
 
+use archmap_scan::ScanReport;
+
 use crate::target::test_files;
 
 /// What could not be traced to a target.
@@ -77,6 +79,43 @@ pub struct NotTraced {
     /// the same commits as the target.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) history: Option<HistoryGaps>,
+    /// For `impact`: the files changed or reached that a framework loads
+    /// for a URL: tests that reach them through it are not listed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) routes: Option<Routes>,
+    /// For `impact`: the files changed or reached that a framework runs
+    /// before the requests of every URL they match, which tests of any URL
+    /// may reach.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) middleware: Option<Routes>,
+}
+
+/// Files a framework loads by their path, by path.
+#[derive(Debug, Serialize)]
+pub(crate) struct Routes {
+    pub(crate) total: usize,
+    #[serde(rename = "files")]
+    pub(crate) shown: Vec<String>,
+}
+
+/// The route files among `files`, those the change starts from or reaches,
+/// and the files run before every request, when there are any.
+pub(crate) fn routes(
+    report: &ScanReport,
+    files: &BTreeSet<String>,
+) -> (Option<Routes>, Option<Routes>) {
+    let listed = |found: BTreeSet<&str>| {
+        let total = found.len();
+        (total > 0).then(|| Routes {
+            total,
+            shown: found.into_iter().map(str::to_owned).collect(),
+        })
+    };
+    let paths = || files.iter().map(String::as_str);
+    (
+        listed(archmap_scan::route_files(report, paths())),
+        listed(archmap_scan::before_routes(report, paths())),
+    )
 }
 
 /// Each in words: `the clone is shallow, so the history ends at its depth`.

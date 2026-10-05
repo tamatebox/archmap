@@ -2032,3 +2032,90 @@ fn a_package_import_notes_the_import_name_after_its_kind() {
         assert_eq!(written, Some("kit/sub"), "{file}: {note}");
     }
 }
+
+#[test]
+fn route_files_are_those_of_packages_that_require_next() {
+    let root = temp_repo(
+        "routes",
+        &[
+            (
+                "web/package.json",
+                "{ \"name\": \"web\", \"dependencies\": { \"next\": \"^16.0.0\" } }",
+            ),
+            ("web/app/page.tsx", "export default function Page() {}\n"),
+            (
+                "web/app/_parts/page.tsx",
+                "export default function P() {}\n",
+            ),
+            ("web/app/card.tsx", "export function Card() {}\n"),
+            (
+                "web/app/page.test.tsx",
+                "import Page from './page';\nPage();\n",
+            ),
+            (
+                "web/pages/api/ping.ts",
+                "export default function ping() {}\n",
+            ),
+            ("web/middleware.ts", "export function middleware() {}\n"),
+            (
+                "old/package.json",
+                "{ \"name\": \"old\", \"dependencies\": { \"next\": \"^15.1.0\" } }",
+            ),
+            ("old/src/proxy.ts", "export function proxy() {}\n"),
+            ("old/middleware.ts", "export function middleware() {}\n"),
+            ("web/app/test/page.tsx", "export default function T() {}\n"),
+            (
+                "dev/package.json",
+                "{ \"name\": \"dev\", \"devDependencies\": { \"next\": \"15.0.0\" } }",
+            ),
+            ("dev/app/page.tsx", "export default function D() {}\n"),
+            ("docs/package.json", "{ \"name\": \"docs\" }"),
+            ("docs/app/page.tsx", "export default function Docs() {}\n"),
+        ],
+    );
+    let report = scan(&root, &ScanOptions::default()).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    let files = [
+        "web/app/page.tsx",
+        "web/app/_parts/page.tsx",
+        "web/app/card.tsx",
+        "web/app/page.test.tsx",
+        "web/pages/api/ping.ts",
+        "web/middleware.ts",
+        "web/app/test/page.tsx",
+        "docs/app/page.tsx",
+        "dev/app/page.tsx",
+    ];
+    let routes: Vec<&str> = archmap_scan::route_files(&report, files)
+        .into_iter()
+        .collect();
+    let before: Vec<&str> = archmap_scan::before_routes(
+        &report,
+        [
+            "web/middleware.ts",
+            "web/src/proxy.ts",
+            "web/lib/proxy.ts",
+            "docs/middleware.ts",
+            "old/src/proxy.ts",
+            "old/middleware.ts",
+        ],
+    )
+    .into_iter()
+    .collect();
+    // `proxy` only where the declared version may be Next.js 16 or later
+    assert_eq!(
+        before,
+        ["old/middleware.ts", "web/middleware.ts", "web/src/proxy.ts"]
+    );
+    // `test` below the routes is a URL segment, and a declaration as a dev
+    // dependency counts
+    assert_eq!(
+        routes,
+        [
+            "dev/app/page.tsx",
+            "web/app/page.tsx",
+            "web/app/test/page.tsx",
+            "web/pages/api/ping.ts"
+        ]
+    );
+}

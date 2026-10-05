@@ -54,6 +54,7 @@ mod language;
 mod layout;
 mod package;
 mod resolve;
+mod routes;
 mod source;
 pub(crate) mod uses;
 mod workspace;
@@ -77,6 +78,7 @@ use source::{ExportedSymbol, ImportStatement, ParsedFile};
 
 use language::{is_code, language_of};
 pub use language::{JAVASCRIPT, LANGUAGE};
+pub(crate) use routes::Routes;
 pub use source::is_mock_call;
 
 /// Prefix of the component ids of npm packages outside the repository.
@@ -153,6 +155,12 @@ impl Analyzer for TypeScriptAnalyzer {
                 .collect(),
         };
         emit_components(&layout, &manifests, &linked, &mut output);
+        output.kept = Some(Box::new(routes::Routes::of(
+            layout
+                .packages
+                .iter()
+                .filter_map(|p| Some((p.dir.as_path(), next_sixteen(p, &manifests)?))),
+        )));
         for file in &code {
             if let Some(language) = language_of(file) {
                 output.read.entry(language.to_owned()).or_insert(0);
@@ -441,42 +449,43 @@ fn replaced<'a>(imports: &[ImportStatement], resolved: &'a [Resolved]) -> BTreeS
         .collect()
 }
 
-/// The directories of a Next.js package whose subdirectories are URL
-/// segments.
-const NEXT_ROUTES: [&str; 4] = ["app", "pages", "src/app", "src/pages"];
+/// Whether `package`'s manifest declares `next`, in any section: then the
+/// directories of [`routes::NEXT_ROUTES`] in it hold its routes.
+fn declares_next(package: &Package, manifests: &BTreeMap<PathBuf, PackageJson>) -> bool {
+    next_sixteen(package, manifests).is_some()
+}
 
-/// Whether `file`, a file of `package`, is test code: by the rule every
-/// analyzer shares, except that below the routes of a package that declares
-/// `next`, a directory named `test` or `tests` is the URL `/test`
-/// (`app/test/page.tsx`), while test file names, `__tests__` and
-/// `__mocks__` keep their meaning there.
-fn test_code(file: &Path, package: &Package, manifests: &BTreeMap<PathBuf, PackageJson>) -> bool {
-    let next = package
+/// For a package whose manifest declares `next`: whether the version it
+/// declares admits Next.js 16 or later, which reads `proxy.ts`.
+fn next_sixteen(package: &Package, manifests: &BTreeMap<PathBuf, PackageJson>) -> Option<bool> {
+    let declared = package
         .manifest
         .as_ref()
-        .and_then(|dir| manifests.get(dir))
-        .is_some_and(|m| m.declarations.iter().any(|d| d.name == "next"));
-    let routes = NEXT_ROUTES
+        .and_then(|dir| manifests.get(dir))?
+        .declarations
+        .iter()
+        .find(|d| d.name == "next")?;
+    Some(
+        declared
+            .version
+            .as_deref()
+            .is_none_or(|v| package::admits_major(v, 16)),
+    )
+}
+
+/// Whether `file`, a file of `package`, is test code: by the rule every
+/// analyzer shares, except below the routes of a package that declares
+/// `next` (see [`routes::test_code_below`]).
+fn test_code(file: &Path, package: &Package, manifests: &BTreeMap<PathBuf, PackageJson>) -> bool {
+    let next = declares_next(package, manifests);
+    let routes = routes::NEXT_ROUTES
         .iter()
         .map(|r| package.dir.join(r))
         .find(|r| next && file.starts_with(r));
-    let Some(routes) = routes else {
-        return is_test_code(file);
-    };
-    // the directories below the routes, as segments the rule never reads
-    let mut segments = routes;
-    let below = file.strip_prefix(&segments).unwrap_or(file).to_path_buf();
-    let mut parts = below.components().peekable();
-    while let Some(part) = parts.next() {
-        let name = part.as_os_str();
-        let is_dir = parts.peek().is_some();
-        segments.push(if is_dir && (name == "test" || name == "tests") {
-            std::ffi::OsStr::new("route")
-        } else {
-            name
-        });
+    match routes {
+        Some(routes) => routes::test_code_below(&routes, file),
+        None => is_test_code(file),
     }
-    is_test_code(&segments)
 }
 
 /// Whether TypeScript reads `file`, which has no module syntax, as a script,

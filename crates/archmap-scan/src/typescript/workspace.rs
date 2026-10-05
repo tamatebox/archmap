@@ -180,6 +180,7 @@ mod tests {
             line: Some(3),
             path: Some("../../libs/local".into()),
             workspace: false,
+            version: None,
         });
         let manifests: BTreeMap<PathBuf, PackageJson> = [
             ("", root),
@@ -227,6 +228,7 @@ mod tests {
             // `shared/` beside the checkout, not the one inside it
             path: Some("../../../shared".into()),
             workspace: false,
+            version: None,
         });
         let manifests: BTreeMap<PathBuf, PackageJson> =
             [("apps/web", web), ("shared", named("shared"))]
