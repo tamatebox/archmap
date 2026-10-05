@@ -702,8 +702,15 @@ fn import_name_impact<'a>(
     // what reaches them is one step further
     reach.transitive.extend(direct.iter().cloned());
     reach.direct = direct;
-    // a test that imports the name takes it, before any other way
+    // the walk counts from the importers, one step from the name; a test
+    // that imports the name takes it, before any other way
     let mut ways = std::mem::take(&mut reach.test_ways);
+    for test in ways.values_mut() {
+        test.ways.retain(|r| r.way != TestWay::Target);
+        for route in &mut test.ways {
+            route.steps += 1;
+        }
+    }
     for file in &tests {
         let way = ways.entry(file.clone()).or_default();
         let takes = TestRoute {

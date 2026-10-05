@@ -1172,7 +1172,8 @@ fn an_import_name_reaches_the_tests_that_load_a_helper_importing_it() {
     .map(|(file, text)| (file.to_owned(), text.to_owned()))
     .collect();
     let repo = Repo::new("dev-dependency", &files);
-    let out = text(&scan(&repo.0), "tempfile");
+    let ws = scan(&repo.0);
+    let out = text(&ws, "tempfile");
     assert_eq!(
         section(&out, "Tests to run again: 1"),
         [
@@ -1180,6 +1181,25 @@ fn an_import_name_reaches_the_tests_that_load_a_helper_importing_it() {
             "  not tests: tests/common/mod.rs (helper, for 1 test listed)"
         ],
         "{out}"
+    );
+    // the steps count from the name, as the dependents' distances do
+    let json = ws
+        .impact(&ImpactRequest {
+            target: "tempfile",
+            depth: DEFAULT_DEPTH,
+            format: Format::Json,
+            verbose: false,
+        })
+        .unwrap()
+        .output;
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        value["tests"]["files"][0]["ways"],
+        serde_json::json!([{"kind": "through", "file": "tests/common/mod.rs", "steps": 2}])
+    );
+    assert_eq!(
+        value["tests"]["not_tests"][0]["ways"],
+        serde_json::json!([{"kind": "takes", "steps": 1}])
     );
 }
 
