@@ -1764,6 +1764,18 @@ fn a_symbol_reaches_a_file_that_several_crates_compile_in_the_crates_that_take_i
 }
 
 #[test]
+fn a_test_that_calls_a_function_a_module_shares_its_name_with_takes_the_function() {
+    // `mod parse; pub use parse::parse;`: the test calls the function
+    let ws = scan(&fixture("rust-namespaces"));
+    let answer = text(&ws, "bakery::parse::parse");
+    assert_eq!(
+        section(&answer, "Tests to run again: 1"),
+        ["  tests/t.rs (takes it, via src/lib.rs:4)"],
+        "{answer}"
+    );
+}
+
+#[test]
 fn a_test_reaches_a_change_through_the_types_a_mocked_module_exposes_from_it() {
     let files = |runner: &str| -> Vec<(String, String)> {
         [

@@ -55,6 +55,12 @@ into the model in [graph.md](graph.md); how the commands present it is in
   names the first `use` in another file the path went through that is an import of its own, else
   the first such `use` (a re-export of a module's own subtree is none, see below), usually a
   re-export (`use via crates/archmap-core/src/lib.rs:22`); an external crate is an edge without a file
+- names are looked up as the compiler keeps them, types apart from values: a module is only a type,
+  and a private one (`mod parse;`) is a name only inside the module that declares it, so beside
+  `mod parse; pub use parse::parse;` both `use shop::parse;` in another crate and a path in an
+  expression (`crate::parse(..)`) reach the function, a path that goes on (`parse::helper()`) the
+  module, and a `use` of a name that is both a module it can see and a value takes both (`*` and the
+  value's name)
 - a module path written in code, in a signature, a type, a pattern, an expression,
   `#[derive(..)]` or the arguments of a macro call that are expressions, an expression and a
   pattern, or items (`vec![Box::new(rust::RustAnalyzer)]`, `write!(out, "{}", crate::x::y(..))`,

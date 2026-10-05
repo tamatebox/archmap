@@ -53,7 +53,7 @@ use crate::analyzer::AnalyzerOutput;
 use crate::context::display_path;
 use crate::{Analyzer, RepoContext, ScanError};
 use source::UseDecl;
-use tree::{Resolved, ResolvedPackage, SourceFile, Target};
+use tree::{Ns, Resolved, ResolvedPackage, SourceFile, Target};
 
 pub use manifest::{
     CargoDependency, CargoPackage, CargoTarget, CargoWorkspace, DeclaredTargets, DependencyKind,
@@ -373,24 +373,34 @@ fn source_pass(
                 .in_scope(decl.scope)
                 .in_test(in_test);
             let note = |via| note(decl.note, via, &files);
-            match resolver.resolve(n, decl) {
+            let found = resolver.resolve(n, decl);
+            // a module and a value of one name (`mod parse; pub use
+            // parse::parse;`): the declaration takes both
+            if let Resolved::Module { name: None, .. } = found {
+                let value = resolver.resolve_value(n, decl);
+                if let Some(Resolved::Module {
+                    node: target,
+                    via,
+                    name: Some(name),
+                }) = value
+                {
+                    if records(&forest, n, decl, target) {
+                        let target_file = forest.nodes[target].file;
+                        let key = (decl.line, decl.scope, note(via), in_test, target_file);
+                        taken.entry(key).or_default().insert(name);
+                    }
+                }
+            }
+            match found {
                 Resolved::Module {
                     node: target,
                     via,
                     name,
                 } => {
-                    let target_file = forest.nodes[target].file;
-                    let within_file = target_file == node.file;
-                    // what the file's module re-exports from its own subtree
-                    let reexport =
-                        decl.reexport && forest.is_descendant(target, forest.file_module(n));
-                    // a crate's unit tests are no dependency of the crate on
-                    // itself; a test target is a crate of its own
-                    let test =
-                        (node.test || decl.test) && !test_target && same_crate(&forest, n, target);
-                    if within_file || reexport || test {
+                    if !records(&forest, n, decl, target) {
                         continue;
                     }
+                    let target_file = forest.nodes[target].file;
                     let key = (decl.line, decl.scope, note(via), in_test, target_file);
                     if let (None, Some(binds)) = (&name, decl.binds.as_deref()) {
                         // one at module scope over one inside a function
@@ -441,13 +451,16 @@ fn source_pass(
             if rest.is_empty() || ((node.test || path.test) && !in_test) {
                 continue;
             }
-            // the whole path, else its first item (`Node` of `graph::Node::new`)
+            // the whole path, else its first item (`Node` of `graph::Node::new`);
+            // an expression's whole path names a value last
             let reached = [rest, &rest[..1]].into_iter().find_map(|tail| {
                 let leaf = UseDecl {
                     path: decl.path.iter().chain(tail).cloned().collect(),
                     ..decl.clone()
                 };
-                match resolver.resolve(n, &leaf) {
+                let whole = path.value && tail.len() == rest.len();
+                let ns = if whole { Ns::Value } else { Ns::Type };
+                match resolver.resolve_in(n, &leaf, ns) {
                     Resolved::Module {
                         node: target,
                         via,
@@ -590,6 +603,19 @@ fn dev_note(kind: &str, module: &str, package: &ResolvedPackage) -> String {
         Some(declared) => format!("{kind} {module}, {declared}"),
         None => kind.to_owned(),
     }
+}
+
+/// Whether `decl`, written in module `node`, takes from module `target` as
+/// an import the graph records: not a name of its own file, not a re-export
+/// from its file module's own subtree, which shapes what the module offers,
+/// and not a crate's unit tests taking from the crate, which are no
+/// dependency of the crate on itself (a test target is a crate of its own).
+fn records(forest: &tree::Forest, node: usize, decl: &UseDecl, target: usize) -> bool {
+    let (at, to) = (&forest.nodes[node], &forest.nodes[target]);
+    let reexport = decl.reexport && forest.is_descendant(target, forest.file_module(node));
+    let unit_test =
+        (at.test || decl.test) && !forest.in_test_target(node) && same_crate(forest, node, target);
+    to.file != at.file && !reexport && !unit_test
 }
 
 /// Whether module `target` is in the crate of module `node`: the same root

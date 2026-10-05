@@ -15,7 +15,7 @@ use archmap_core::{
 use syn::visit::{self, Visit};
 
 use super::source::{cfg_test, name, use_decls, visit_arguments, NOT_CODE};
-use super::tree::{Resolved, Resolver};
+use super::tree::{Ns, Resolved, Resolver};
 use super::{text_hash, Index};
 use crate::context::display_path;
 
@@ -110,6 +110,16 @@ pub(crate) fn read(
         if found.binding.as_deref() == Some(symbol.name.as_str()) {
             found.binding = None;
         }
+    }
+}
+
+/// The namespace a path's last name is read in: a value for an
+/// expression's or a pattern's path, else a type.
+fn namespace(value: bool) -> Ns {
+    if value {
+        Ns::Value
+    } else {
+        Ns::Type
     }
 }
 
@@ -329,15 +339,15 @@ impl Walker<'_> {
     }
 
     /// Where `segments`, written here, start: in the value namespace when
-    /// `value` (a path of one segment in an expression or a pattern), else
-    /// in the type namespace. A block's names come before the module's; a
-    /// glob counts when the path reaches an item through it.
+    /// `value` (an expression's or a pattern's path) and the path has one
+    /// segment, else in the type namespace. A block's names come before the
+    /// module's; a glob counts when the path reaches an item through it.
     fn origin(&self, segments: &[String], value: bool) -> Origin {
         let Some((first, rest)) = segments.split_first() else {
             return Origin::Hidden;
         };
         for frame in self.frames.iter().rev() {
-            let hidden = match value {
+            let hidden = match value && rest.is_empty() {
                 true => frame.locals.contains(first) || frame.values.contains(first),
                 false => frame.types.contains(first),
             };
@@ -352,7 +362,7 @@ impl Walker<'_> {
                     }
                     Some((module, None)) if !rest.is_empty() => self
                         .resolver
-                        .resolve_type(*module, rest, false)
+                        .resolve_item(*module, rest, false, namespace(value))
                         .into_iter()
                         .collect(),
                     _ => Vec::new(),
@@ -363,7 +373,10 @@ impl Walker<'_> {
                 };
             }
             for &(module, line) in &frame.globs {
-                if let Some(found) = self.resolver.resolve_type(module, segments, false) {
+                let found = self
+                    .resolver
+                    .resolve_item(module, segments, false, namespace(value));
+                if let Some(found) = found {
                     return Origin::Block {
                         reached: vec![found],
                         line,
@@ -391,7 +404,10 @@ impl Walker<'_> {
             Origin::Module => self
                 .nodes
                 .iter()
-                .filter_map(|&node| self.resolver.resolve_type(node, segments, leading_colon))
+                .filter_map(|&node| {
+                    self.resolver
+                        .resolve_item(node, segments, leading_colon, namespace(value))
+                })
                 .collect(),
         }
     }
@@ -453,7 +469,7 @@ impl Walker<'_> {
                 let path: Vec<String> = d.path.iter().chain(named).cloned().collect();
                 self.nodes.iter().any(|&node| {
                     self.resolver
-                        .resolve_type(node, &path, d.leading_colon)
+                        .resolve_item(node, &path, d.leading_colon, namespace(value))
                         .is_some_and(|(file, name)| self.is_target(file, &name))
                 })
             })
@@ -481,7 +497,6 @@ impl Walker<'_> {
         let Some(first) = segments.first() else {
             return false;
         };
-        let value = value && segments.len() == 1;
         let leading_colon = path.leading_colon.is_some();
         let named = match first == "Self" {
             true => self

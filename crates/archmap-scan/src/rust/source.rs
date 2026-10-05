@@ -51,6 +51,9 @@ pub(super) struct ModuleFacts {
     /// module, and for an inline module when it and every inline module
     /// around it are `pub`.
     pub public: bool,
+    /// An inline module visible outside the module that declares it (`pub`,
+    /// `pub(crate)`, ..), so that paths from elsewhere can name it.
+    pub visible: bool,
     /// An inline module marked `#[cfg(test)]`.
     pub test: bool,
     /// Inline modules declared here: name -> index in [`RustFile::modules`].
@@ -156,6 +159,10 @@ fn path_names(tokens: proc_macro2::TokenStream, names: &mut BTreeSet<String>) {
 pub(super) struct PathRef {
     pub segments: Vec<String>,
     pub leading_colon: bool,
+    /// Written in an expression (`crate::parse(..)`), whose last name is a
+    /// value, which a module of the same name does not hide; elsewhere it is
+    /// a type or a module.
+    pub value: bool,
     pub line: u32,
     /// `Local` inside a function body, `Module` elsewhere (signatures, types).
     pub scope: Scope,
@@ -167,6 +174,8 @@ pub(super) struct PathRef {
 pub(super) struct ModDecl {
     pub name: String,
     pub line: u32,
+    /// Visible outside the declaring module (`pub`, `pub(crate)`, ..).
+    pub visible: bool,
     /// Has a `#[path]` attribute (or a `#[cfg_attr]` with one) naming the
     /// file explicitly.
     pub path_attr: bool,
@@ -245,6 +254,7 @@ fn collect(items: &[Item], module: usize, file: &mut RustFile) {
                 unread: &mut facts.unread_macros,
                 scope: Scope::Module,
                 test,
+                value: false,
             }
             .visit_item(item);
         }
@@ -352,6 +362,7 @@ fn collect(items: &[Item], module: usize, file: &mut RustFile) {
                     None => facts.module.declared.push(ModDecl {
                         name: mod_name,
                         line: line_of(m.ident.span()),
+                        visible: visible_outside(&m.vis),
                         path_attr: m.attrs.iter().any(is_path_attr),
                         test,
                     }),
@@ -360,6 +371,7 @@ fn collect(items: &[Item], module: usize, file: &mut RustFile) {
                         file.modules[module].inline.insert(mod_name, index);
                         file.modules.push(ModuleFacts {
                             public: public && is_pub(&m.vis),
+                            visible: visible_outside(&m.vis),
                             test,
                             ..ModuleFacts::default()
                         });
@@ -463,6 +475,8 @@ struct Paths<'a> {
     unread: &'a mut Vec<MacroCall>,
     scope: Scope,
     test: bool,
+    /// The next path is an expression's, whose last name is a value.
+    value: bool,
 }
 
 impl<'ast> Visit<'ast> for Paths<'_> {
@@ -477,6 +491,7 @@ impl<'ast> Visit<'ast> for Paths<'_> {
             unread: &mut *self.unread,
             scope: self.scope,
             test: self.test,
+            value: false,
         };
         let last = mac.path.segments.last();
         let code = last.is_none_or(|s| !NOT_CODE.contains(&s.ident.to_string().as_str()));
@@ -500,11 +515,22 @@ impl<'ast> Visit<'ast> for Paths<'_> {
         }
     }
 
+    /// An expression's path (a path pattern's too) names a value last,
+    /// unless a qualified self type (`<T as Trait>::m`) comes first.
+    fn visit_expr_path(&mut self, p: &'ast syn::ExprPath) {
+        let outer = std::mem::replace(&mut self.value, p.qself.is_none());
+        syn::visit::visit_expr_path(self, p);
+        self.value = outer;
+    }
+
     fn visit_path(&mut self, path: &'ast Path) {
+        // the paths in its generic arguments are types
+        let value = std::mem::take(&mut self.value);
         if let Some(segments) = module_path(path) {
             self.out.push(PathRef {
                 segments,
                 leading_colon: path.leading_colon.is_some(),
+                value,
                 line: line_of(path.segments[0].ident.span()),
                 scope: self.scope,
                 test: self.test,

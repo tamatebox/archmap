@@ -389,7 +389,10 @@ module that encloses it, by the resolver the scan built (inline modules,
 scan resolves them), so a call through a name a re-export gives it
 (`make()` for `pub use graph::build as make`), through a glob, and
 `crate::`, `super::`, full and `<Type>::` paths count, each going through
-the `use` declaration that brings its first name in. A parameter or a
+the `use` declaration that brings its first name in. A path in an
+expression or a pattern names a value last, so a call reaches the function
+a module shares its name with (`parse(..)` beside `mod parse; pub use
+parse::parse;`). A parameter or a
 pattern's binding hides the name only where the language binds it (an
 `if let`, `while let`, match arm or `for` binding in its branch, a `let`
 binding after the statement), and so do a block's own items and a

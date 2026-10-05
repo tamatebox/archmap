@@ -21,7 +21,10 @@
 //! module reached, and to nothing through a `mod` whose file was not read.
 //! A glob only brings in what the importing module can see, as in the
 //! compiler; globs that disagree and cycles of declarations stop the walk
-//! rather than guess.
+//! rather than guess. Names are looked up by namespace, as in the compiler:
+//! a module is a type, and a private one a name only inside its parent, so
+//! a path in an expression reaches the function a module shares its name
+//! with.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -271,6 +274,10 @@ pub(super) struct Node {
     /// Compiled only for tests: marked `#[cfg(test)]`, or inside such a
     /// module.
     pub test: bool,
+    /// Visible outside its parent (`pub mod`, `pub(crate) mod`, ..); a
+    /// private module is seen only from its parent and the modules inside
+    /// that. Every crate root is.
+    pub visible: bool,
     /// Child modules by name, inline or in files of their own.
     pub children: BTreeMap<String, usize>,
     /// `mod name;` declarations whose file was not read.
@@ -356,7 +363,7 @@ impl Forest {
         name: &str,
         file: usize,
         module: usize,
-        test: bool,
+        (test, visible): (bool, bool),
     ) -> usize {
         let p = &self.nodes[parent];
         let mut path = p.path.clone();
@@ -369,6 +376,7 @@ impl Forest {
             file,
             module,
             test: p.test || test,
+            visible,
             children: BTreeMap::new(),
             unloaded: BTreeSet::new(),
         };
@@ -426,6 +434,7 @@ pub(super) fn build(
                 file,
                 module: 0,
                 test: false,
+                visible: true,
                 children: BTreeMap::new(),
                 unloaded: BTreeSet::new(),
             });
@@ -481,6 +490,7 @@ pub(super) fn build(
             file: f,
             module: 0,
             test: false,
+            visible: true,
             children: BTreeMap::new(),
             unloaded: BTreeSet::new(),
         });
@@ -544,8 +554,9 @@ impl Grower<'_> {
         let (file, module) = (self.forest.nodes[node].file, self.forest.nodes[node].module);
         let facts = &files[file].parsed.modules[module];
         for (name, &inline) in &facts.inline {
-            let test = files[file].parsed.modules[inline].test;
-            let child = self.forest.add_child(node, name, file, inline, test);
+            let inner = &files[file].parsed.modules[inline];
+            let marks = (inner.test, inner.visible);
+            let child = self.forest.add_child(node, name, file, inline, marks);
             self.grow(child, follow);
         }
         for decl in &facts.declared {
@@ -558,9 +569,9 @@ impl Grower<'_> {
                 continue;
             }
 
-            let child = self
-                .forest
-                .add_child(node, &decl.name, loaded, 0, decl.test);
+            let child =
+                self.forest
+                    .add_child(node, &decl.name, loaded, 0, (decl.test, decl.visible));
             // a root that another root loads (an old-style `tests/common.rs`)
             // stays its package's file
             if !self.root_files.contains(&loaded) {
@@ -718,6 +729,17 @@ pub(super) enum Resolved {
 /// index and line.
 pub(super) type Via = (usize, u32);
 
+/// The namespace a path's last name is looked up in. The compiler keeps
+/// types apart from values, so a module and a function may share a name
+/// (`mod parse; pub use parse::parse;`): a module is only a type, and a
+/// path in an expression names a value. Every name before the last is a
+/// module or a type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Ns {
+    Type,
+    Value,
+}
+
 /// The `use` declarations in other files a path went through: the first,
 /// and the first that is an import of its own, as the graph records it (a
 /// re-export of the module's own subtree is none).
@@ -748,7 +770,7 @@ impl Ways {
 struct Walk {
     origin: usize,
     active: Vec<(usize, String)>,
-    globs: BTreeMap<(usize, String, bool), GlobLookup>,
+    globs: BTreeMap<(usize, String, bool, Ns), GlobLookup>,
 }
 
 #[derive(Debug, Clone)]
@@ -796,12 +818,61 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Resolve `decl`, written in module `node`.
+    /// Resolve `decl`, written in module `node`: to a module of its name
+    /// first, which [`Self::resolve_value`] completes.
     pub fn resolve(&self, node: usize, decl: &UseDecl) -> Resolved {
+        self.resolve_in(node, decl, Ns::Type)
+    }
+
+    /// Resolve `decl`, written in module `node`, looking its last name up in
+    /// `ns`.
+    pub fn resolve_in(&self, node: usize, decl: &UseDecl, ns: Ns) -> Resolved {
         let mut walk = self.walk(node);
         let mut via = Ways::default();
-        let pos = self.path(node, &decl.path, decl.leading_colon, &mut via, &mut walk);
+        let pos = self.path(
+            node,
+            &decl.path,
+            decl.leading_colon,
+            ns,
+            &mut via,
+            &mut walk,
+        );
         resolved(pos, via.named())
+    }
+
+    /// What `decl`, written in module `node`, takes besides the module it
+    /// names: the value its parent offers under the same name (`pub use
+    /// parse::parse` beside `mod parse`), as a `use` takes every namespace a
+    /// name has. `None` when the name is no value there.
+    pub fn resolve_value(&self, node: usize, decl: &UseDecl) -> Option<Resolved> {
+        let (last, prefix) = decl.path.split_last()?;
+        if decl.glob || prefix.is_empty() {
+            return None;
+        }
+        let mut walk = self.walk(node);
+        let mut via = Ways::default();
+        let parent = self.path(
+            node,
+            prefix,
+            decl.leading_colon,
+            Ns::Type,
+            &mut via,
+            &mut walk,
+        );
+        let Pos::Module(m) = parent else {
+            return None;
+        };
+        let mut types = Ways::default();
+        if !matches!(
+            self.find(m, last, node, Ns::Type, &mut types, &mut walk),
+            Some(Pos::Module(_))
+        ) {
+            return None;
+        }
+        match self.find(m, last, node, Ns::Value, &mut via, &mut walk)? {
+            pos @ Pos::Item(..) => Some(resolved(pos, via.named())),
+            _ => None,
+        }
     }
 
     /// Resolve a module path written in code in module `node`. It counts only
@@ -819,7 +890,8 @@ impl<'a> Resolver<'a> {
         } else {
             self.first_direct(node, first, &mut walk)
         };
-        let pos = self.rest(pos, rest, node, &mut via, &mut walk);
+        let ns = if path.value { Ns::Value } else { Ns::Type };
+        let pos = self.rest(pos, rest, node, ns, &mut via, &mut walk);
         resolved(pos, via.named())
     }
 
@@ -832,9 +904,22 @@ impl<'a> Resolver<'a> {
         segments: &[String],
         leading_colon: bool,
     ) -> Option<(usize, String)> {
+        self.resolve_item(node, segments, leading_colon, Ns::Type)
+    }
+
+    /// The item a path written in module `node` reaches, its last name
+    /// looked up in `ns`, as the file that defines it and its name there.
+    /// `None` when the path reaches no item of the repository.
+    pub fn resolve_item(
+        &self,
+        node: usize,
+        segments: &[String],
+        leading_colon: bool,
+        ns: Ns,
+    ) -> Option<(usize, String)> {
         let mut walk = self.walk(node);
         let mut via = Ways::default();
-        match self.path(node, segments, leading_colon, &mut via, &mut walk) {
+        match self.path(node, segments, leading_colon, ns, &mut via, &mut walk) {
             Pos::Item(m, name) => Some((self.forest.nodes[m].file, name)),
             _ => None,
         }
@@ -853,12 +938,14 @@ impl<'a> Resolver<'a> {
         &self.files[n.file].parsed.modules[n.module]
     }
 
-    /// Resolve `segments`, written in module `at`.
+    /// Resolve `segments`, written in module `at`, the last looked up in
+    /// `ns`.
     fn path(
         &self,
         at: usize,
         segments: &[String],
         leading_colon: bool,
+        ns: Ns,
         via: &mut Ways,
         walk: &mut Walk,
     ) -> Pos {
@@ -868,24 +955,31 @@ impl<'a> Resolver<'a> {
         let pos = if leading_colon {
             self.crate_named(at, first)
         } else {
-            self.first(at, first, via, walk)
+            let first_ns = if rest.is_empty() { ns } else { Ns::Type };
+            self.first(at, first, first_ns, via, walk)
         };
-        self.rest(pos, rest, at, via, walk)
+        self.rest(pos, rest, at, ns, via, walk)
     }
 
     /// Follow the segments after the first from `pos`, for a path written in
-    /// module `at`.
+    /// module `at`, the last looked up in `ns`.
     fn rest(
         &self,
         mut pos: Pos,
         segments: &[String],
         at: usize,
+        ns: Ns,
         via: &mut Ways,
         walk: &mut Walk,
     ) -> Pos {
-        for segment in segments {
+        for (i, segment) in segments.iter().enumerate() {
+            let ns = if i + 1 == segments.len() {
+                ns
+            } else {
+                Ns::Type
+            };
             pos = match pos {
-                Pos::Module(m) => self.step(m, segment, at, via, walk),
+                Pos::Module(m) => self.step(m, segment, at, ns, via, walk),
                 other => return other,
             };
         }
@@ -924,7 +1018,7 @@ impl<'a> Resolver<'a> {
             return pos;
         }
         if self
-            .glob(at, name, at, &mut Ways::default(), walk)
+            .glob(at, name, at, Ns::Type, &mut Ways::default(), walk)
             .is_some()
         {
             return Pos::Nothing;
@@ -933,35 +1027,65 @@ impl<'a> Resolver<'a> {
             .unwrap_or_else(|| self.unknown_crate(at, name))
     }
 
-    fn first(&self, at: usize, name: &str, via: &mut Ways, walk: &mut Walk) -> Pos {
+    fn first(&self, at: usize, name: &str, ns: Ns, via: &mut Ways, walk: &mut Walk) -> Pos {
         let node = &self.forest.nodes[at];
-        match name {
-            "crate" => node.root.map_or(Pos::Nothing, Pos::Module),
-            "self" => Pos::Module(at),
-            "super" => node.parent.map_or(Pos::Nothing, Pos::Module),
+        match (name, ns) {
+            ("crate", _) => node.root.map_or(Pos::Nothing, Pos::Module),
+            ("self", _) => Pos::Module(at),
+            ("super", _) => node.parent.map_or(Pos::Nothing, Pos::Module),
+            // a crate is no value
+            (_, Ns::Value) => self
+                .local(at, name, at, ns, via, walk)
+                .or_else(|| self.glob(at, name, at, ns, via, walk))
+                .unwrap_or(Pos::Nothing),
             // A name both a glob and a declared crate provide is an error in
             // the compiler, so the order of those two does not matter.
-            _ => self
-                .local(at, name, at, via, walk)
+            (_, Ns::Type) => self
+                .local(at, name, at, ns, via, walk)
                 .or_else(|| self.extern_crate(at, name))
                 .or_else(|| STANDARD.contains(&name).then_some(Pos::Nothing))
-                .or_else(|| self.glob(at, name, at, via, walk))
+                .or_else(|| self.glob(at, name, at, ns, via, walk))
                 .or_else(|| self.other_package(at, name))
                 .unwrap_or_else(|| self.unknown_crate(at, name)),
         }
     }
 
-    /// Look `name` up in module `m` for a path written in module `from`.
-    fn step(&self, m: usize, name: &str, from: usize, via: &mut Ways, walk: &mut Walk) -> Pos {
+    /// Look `name` up in `ns` of module `m` for a path written in module
+    /// `from`; a name `m` does not have is an item of `m` all the same.
+    fn step(
+        &self,
+        m: usize,
+        name: &str,
+        from: usize,
+        ns: Ns,
+        via: &mut Ways,
+        walk: &mut Walk,
+    ) -> Pos {
+        self.find(m, name, from, ns, via, walk)
+            .unwrap_or_else(|| Pos::Item(m, name.to_owned()))
+    }
+
+    /// Look `name` up in `ns` of module `m` for a path written in module
+    /// `from`: `None` when `m` has no such name.
+    fn find(
+        &self,
+        m: usize,
+        name: &str,
+        from: usize,
+        ns: Ns,
+        via: &mut Ways,
+        walk: &mut Walk,
+    ) -> Option<Pos> {
         match name {
-            "super" => self.forest.nodes[m]
-                .parent
-                .map_or(Pos::Nothing, Pos::Module),
-            "self" => Pos::Module(m),
+            "super" => Some(
+                self.forest.nodes[m]
+                    .parent
+                    .map_or(Pos::Nothing, Pos::Module),
+            ),
+            "self" => Some(Pos::Module(m)),
             _ => self
-                .local(m, name, from, via, walk)
-                .or_else(|| self.glob(m, name, from, via, walk))
-                .unwrap_or_else(|| Pos::Item(m, name.to_owned())),
+                .local(m, name, from, ns, via, walk)
+                .or_else(|| self.glob(m, name, from, ns, via, walk)),
         }
     }
 
@@ -971,25 +1095,30 @@ impl<'a> Resolver<'a> {
         from == m || self.forest.is_descendant(from, m)
     }
 
-    /// A name that module `m` declares itself: a child module, a `use`, an
+    /// A name that module `m` declares itself, in `ns`: a child module
+    /// (a type, and only from inside `m` when it is private), a `use`, an
     /// item, or at a crate root a `#[macro_export]` macro.
     fn local(
         &self,
         m: usize,
         name: &str,
         from: usize,
+        ns: Ns,
         via: &mut Ways,
         walk: &mut Walk,
     ) -> Option<Pos> {
         let node = &self.forest.nodes[m];
-        if let Some(&child) = node.children.get(name) {
-            return Some(Pos::Module(child));
-        }
-        if node.unloaded.contains(name) {
-            return Some(Pos::Nothing);
+        let open = self.sees_private(from, m);
+        if ns == Ns::Type {
+            let child = node.children.get(name);
+            if let Some(&child) = child.filter(|&&c| open || self.forest.nodes[c].visible) {
+                return Some(Pos::Module(child));
+            }
+            if node.unloaded.contains(name) {
+                return Some(Pos::Nothing);
+            }
         }
         let facts = self.facts(m);
-        let open = self.sees_private(from, m);
         let alias = facts.uses.iter().find(|u| {
             u.scope == Scope::Module && (open || u.reexport) && u.binds.as_deref() == Some(name)
         });
@@ -1000,7 +1129,7 @@ impl<'a> Resolver<'a> {
             let here = (node.file != walk.origin).then_some((node.file, decl.line));
             let mut inner = Ways::default();
             walk.active.push(key);
-            let pos = self.path(m, &decl.path, decl.leading_colon, &mut inner, walk);
+            let pos = self.path(m, &decl.path, decl.leading_colon, ns, &mut inner, walk);
             walk.active.pop();
             via.then(Ways {
                 first: here.or(inner.first),
@@ -1022,23 +1151,25 @@ impl<'a> Resolver<'a> {
             .map(|&defined| Pos::Item(defined, name.to_owned()))
     }
 
-    /// A name that a glob import in `m` brings in, for a path written in
-    /// `from`. `None` when no glob has it; `m` itself when globs disagree.
+    /// A name that a glob import in `m` brings in, in `ns`, for a path
+    /// written in `from`. `None` when no glob has it; `m` itself when globs
+    /// disagree.
     fn glob(
         &self,
         m: usize,
         name: &str,
         from: usize,
+        ns: Ns,
         via: &mut Ways,
         walk: &mut Walk,
     ) -> Option<Pos> {
-        let key = (m, name.to_owned(), self.sees_private(from, m));
+        let key = (m, name.to_owned(), self.sees_private(from, m), ns);
         let found = match walk.globs.get(&key) {
             Some(GlobLookup::Pending) => return None,
             Some(GlobLookup::Done(found)) => found.clone(),
             None => {
                 walk.globs.insert(key.clone(), GlobLookup::Pending);
-                let found = self.glob_lookup(m, name, key.2, walk);
+                let found = self.glob_lookup(m, name, key.2, ns, walk);
                 walk.globs.insert(key, GlobLookup::Done(found.clone()));
                 found
             }
@@ -1053,6 +1184,7 @@ impl<'a> Resolver<'a> {
         m: usize,
         name: &str,
         open: bool,
+        ns: Ns,
         walk: &mut Walk,
     ) -> Option<(Pos, Ways)> {
         let file = self.forest.nodes[m].file;
@@ -1064,11 +1196,18 @@ impl<'a> Resolver<'a> {
                 continue;
             }
             let mut inner = Ways::default();
-            let globbed = self.path(m, &decl.path, decl.leading_colon, &mut inner, walk);
+            let globbed = self.path(
+                m,
+                &decl.path,
+                decl.leading_colon,
+                Ns::Type,
+                &mut inner,
+                walk,
+            );
             let hit = match globbed {
                 Pos::Module(g) if g != m => self
-                    .local(g, name, m, &mut inner, walk)
-                    .or_else(|| self.glob(g, name, m, &mut inner, walk)),
+                    .local(g, name, m, ns, &mut inner, walk)
+                    .or_else(|| self.glob(g, name, m, ns, &mut inner, walk)),
                 _ => None,
             };
             let Some(pos) = hit else {
@@ -1697,6 +1836,79 @@ pub use self::Loop2 as Loop;
             .resolve_type(root, &["model".into(), "Renamed".into()], false)
             .map(|(file, name)| (display_path(&files[file].rel), name));
         assert_eq!(ty, Some(("a/src/model.rs".to_owned(), "Real".to_owned())));
+    }
+
+    #[test]
+    fn a_module_and_a_value_of_one_name_resolve_by_namespace() {
+        let packages = [package("shop", "", &[])];
+        let files = files(
+            &[
+                (
+                    "src/lib.rs",
+                    "mod parse;\npub mod split;\npub use parse::parse;\npub use split::split;\nmod user;\n",
+                ),
+                ("src/parse.rs", "pub fn parse() {}\n"),
+                ("src/split.rs", "pub fn split() {}\npub fn helper() {}\n"),
+                (
+                    "src/user.rs",
+                    "pub fn f() {\n    crate::parse();\n    crate::split::helper();\n}\n",
+                ),
+                (
+                    "tests/t.rs",
+                    "use shop::parse;\nuse shop::split;\nfn f() {\n    shop::split();\n}\n",
+                ),
+            ],
+            &packages,
+        );
+        let forest = forest(&files, &packages);
+        let resolver = Resolver::new(&forest, &files, &packages);
+        let node = |file: &str| {
+            forest
+                .nodes
+                .iter()
+                .position(|n| files[n.file].rel == Path::new(file) && n.module == 0)
+                .unwrap()
+        };
+        let test = node("tests/t.rs");
+        let uses = &files[forest.nodes[test].file].parsed.modules[0].uses;
+        let to = |resolved| describe(&forest, &files, resolved);
+        let value = |decl| resolver.resolve_value(test, decl).map(to);
+        // the private module is no name outside its crate: the function is
+        assert_eq!(
+            to(resolver.resolve(test, &uses[0])),
+            "src/parse.rs via src/lib.rs:3"
+        );
+        assert_eq!(value(&uses[0]), None);
+        // a public module and a function: the `use` takes both
+        assert_eq!(to(resolver.resolve(test, &uses[1])), "src/split.rs");
+        assert_eq!(
+            value(&uses[1]).as_deref(),
+            Some("src/split.rs via src/lib.rs:4")
+        );
+        // in an expression the last name is a value; before it, a module
+        let paths = &files[forest.nodes[test].file].parsed.modules[0].paths;
+        assert!(paths[0].value);
+        let names = |resolved| match resolved {
+            Resolved::Module { name, .. } => name,
+            _ => None,
+        };
+        assert_eq!(
+            names(resolver.resolve_path(test, &paths[0])).as_deref(),
+            Some("split")
+        );
+        let user = node("src/user.rs");
+        let user_paths = &files[forest.nodes[user].file].parsed.modules[0].paths;
+        let reached: Vec<Option<String>> = user_paths
+            .iter()
+            .map(|p| names(resolver.resolve_path(user, p)))
+            .collect();
+        assert_eq!(reached, [Some("parse".into()), Some("helper".into())]);
+        // a lone name in an expression reaches the function through the
+        // re-export, never the module
+        let lib = node("src/lib.rs");
+        let parse = |ns| resolver.resolve_item(lib, &["parse".into()], false, ns);
+        assert_eq!(parse(Ns::Value), Some((1, "parse".to_owned())));
+        assert_eq!(parse(Ns::Type), None);
     }
 
     #[test]
