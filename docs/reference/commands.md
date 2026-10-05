@@ -431,9 +431,9 @@ reach follows names only: not the imports of a module below the package,
 which run the `__init__.py` first. Nor are they followed past one reached
 only through what it re-exports from a file that did not change, since none
 of its own code is affected. `Not traced` names the files the reach went on
-from by names only, for a file or a symbol target, each at its re-export
-on the nearest way: of the target, or for a package's entry file reached
-that way, of the nearest file the reach came from (`barrels: 1 file passes
+from by names only, and never from as files, for any target, each at its
+re-export on the nearest way: of the target, else of the nearest file the
+reach came from (`barrels: 1 file passes
 on what may change, and only what takes it from there is followed; a
 rename, a removal or an error on load also breaks whatever else loads that
 file:
@@ -441,7 +441,8 @@ src/shop/__init__.py:2 (runs first; 2 test files that load it or a module
 below it are not listed)`), with how many more re-exports of each are on a
 way (`+2 more re-exports on the way`), which the JSON lists as `lines`, and
 the test files that load each, and for a package's entry file a module
-below it, that the tests to run again leave out. For a symbol, the
+below it, that the tests to run again leave out, apart from those that load
+it for types only or replace it with a mock. For a symbol, the
 re-exports that pass on its whole module (`export *`) count too. A test file whose mock replaces a module for its
 whole run (marked `(mock)`) reaches the change only along a way that passes
 none of the modules it replaces, since every module its run loads gets the
@@ -504,7 +505,7 @@ Marks: (via file:line) reached through that re-export; (export) a re-export, pas
 
 Not traced (what this answer may miss):
   dynamic: 2 calls load modules by computed names, which may be this: scripts/report.cjs:4, src/app/lazy.tsx:7
-  barrels: 1 file passes on what may change, and only what takes it from there is followed; a rename, a removal or an error on load also breaks whatever else loads that file: src/index.ts:8
+  barrels: 1 file passes on what may change, and only what takes it from there is followed; a rename, a removal or an error on load also breaks whatever else loads that file: src/index.ts:8 (+2 more re-exports on the way)
 
 Lists are capped; verbose lists every entry, and JSON every entry with all evidence.
 ```

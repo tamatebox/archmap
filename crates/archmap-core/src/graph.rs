@@ -287,8 +287,8 @@ impl ArchitectureGraph {
         let (through_tests, with_tests, seeds) = self.reach(seed, depth, true, &test_code);
         reach.left_out = through_tests.left_out;
         let mut test_ways = through_tests.test_ways;
-        for (entry, from) in through_tests.relayed {
-            let known = reach.relayed.entry(entry).or_default();
+        for (entry, from) in through_tests.barrels {
+            let known = reach.barrels.entry(entry).or_default();
             for file in from {
                 if !known.contains(&file) {
                     known.push(file);
@@ -1065,16 +1065,19 @@ impl ArchitectureGraph {
                 );
             }
         }
-        // package entry files reached only through their re-exports, whose
-        // modules below them were not followed, each with the files whose
-        // names it passed on, nearest first
-        reach.relayed = runs_first
-            .keys()
-            .filter(|entry| {
-                let only = |node: Node| distance.get(&node).is_some_and(|d| *d > 0);
-                !distance.contains_key(&Node::File(entry))
-                    && (only(Node::Relays(entry)) || only(Node::Passes(entry)))
+        // the files reached only through the names they pass on, whose
+        // other importers were not followed, each with the files whose names
+        // it passed on, nearest first
+        let barrel_files: BTreeSet<&str> = distance
+            .iter()
+            .filter_map(|(node, d)| match node {
+                Node::Passes(f) | Node::Relays(f) if *d > 0 => Some(*f),
+                _ => None,
             })
+            .filter(|f| !distance.contains_key(&Node::File(f)))
+            .collect();
+        reach.barrels = barrel_files
+            .into_iter()
             .map(|entry| {
                 let mut from: Vec<(usize, &str)> = feeds
                     .get(entry)
@@ -1993,12 +1996,13 @@ pub struct Reach {
     pub files: BTreeMap<ComponentId, Vec<String>>,
     /// For each file of `tests`, how it reaches the change.
     pub test_ways: BTreeMap<String, TestReach>,
-    /// Package entry files (a Python `__init__.py`) the walk reached only
-    /// through their re-exports, each with the files whose names it passed
-    /// on, nearest first: what imports a module below them, which runs them
-    /// first, was not followed. One the walk starts from, which takes a
-    /// symbol's name, has none.
-    pub relayed: BTreeMap<String, Vec<String>>,
+    /// The files the walk reached only through the names they pass on (a
+    /// TS/JS barrel, a package's `__init__.py`), each with the files whose
+    /// names it passed on, nearest first: their other importers, and for a
+    /// package's entry file what imports a module below it, were not
+    /// followed. One the walk starts from, which takes a symbol's name, has
+    /// none.
+    pub barrels: BTreeMap<String, Vec<String>>,
 }
 
 /// How a test file reaches the change, in the walk its mocks leave: every

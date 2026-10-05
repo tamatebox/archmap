@@ -122,18 +122,18 @@ pub(crate) enum Narrowed<'a> {
     Symbol(&'a Symbol),
 }
 
-/// The re-exports that pass the names of `target` on: for a file, the
-/// statements that re-export from it; for a symbol, those that re-export
-/// its name or its whole module; and for the package entry files in `relayed`, which the reach
-/// went on from only through their re-exports, those that re-export the
-/// files it came from, nearest first, or with none of those, its first
-/// unless a statement of it is listed already. Each counts the test files
-/// that load its file (or, for a package's entry file, a module below it)
-/// that `listed` does not hold.
+/// The re-exports of the files in `barrels`, which the reach went on from
+/// only through the names they pass on: in each, the statements that
+/// re-export the target (for a file, from it; for a symbol, its name or its
+/// whole module) come nearest, then those that re-export the files it came
+/// from, nearest first, and with none of those, all of its re-exports. Each
+/// counts the test files that load its file (or, for a package's entry
+/// file, a module below it) that `listed` does not hold, apart from those
+/// that load it for types only or replace it with a mock.
 pub(crate) fn barrels(
     full: &ArchitectureGraph,
-    target: Narrowed,
-    relayed: &BTreeMap<String, Vec<String>>,
+    target: Option<Narrowed>,
+    barrels: &BTreeMap<String, Vec<String>>,
     listed: &BTreeSet<String>,
     cap: usize,
 ) -> Option<Barrels> {
@@ -143,46 +143,53 @@ pub(crate) fn barrels(
             .filter(|e| e.kind == EdgeKind::Import)
             .flat_map(|e| &e.evidence)
     };
-    let mut statements: Vec<&Evidence> = match target {
-        Narrowed::File(file) => imports()
+    // the statements that re-export the target itself
+    let own: BTreeSet<(&str, Option<u32>)> = match target {
+        Some(Narrowed::File(file)) => imports()
             .filter(|e| e.passes_on() && e.target.as_deref() == Some(file) && e.file != file)
+            .map(|e| (e.file.as_str(), e.line))
             .collect(),
-        Narrowed::Symbol(symbol) => {
-            let found = full.symbol_importers(symbol)?;
-            found
-                .by_name
-                .into_iter()
-                .chain(found.may_use)
-                .map(|(_, e)| e)
-                .filter(|e| e.passes_on())
-                .collect()
-        }
+        Some(Narrowed::Symbol(symbol)) => full
+            .symbol_importers(symbol)
+            .into_iter()
+            .flat_map(|found| found.by_name.into_iter().chain(found.may_use))
+            .map(|(_, e)| e)
+            .filter(|e| e.passes_on())
+            .map(|e| (e.file.as_str(), e.line))
+            .collect(),
+        None => BTreeSet::new(),
     };
     // how near the way a statement is on: what re-exports the target is
-    // nearest, then a relayed entry's statement by the file it re-exports
-    let mut rank: BTreeMap<(&str, Option<u32>), usize> = statements
-        .iter()
-        .map(|e| ((e.file.as_str(), e.line), 0))
-        .collect();
-    for (entry, from) in relayed {
-        let re_exports = || {
-            imports().filter(move |e| {
-                e.passes_on() && e.file == *entry && e.target.as_deref() != Some(entry.as_str())
+    // nearest, then a statement by the file it re-exports
+    let mut rank: BTreeMap<(&str, Option<u32>), usize> = BTreeMap::new();
+    let mut statements: Vec<&Evidence> = Vec::new();
+    for (barrel, from) in barrels {
+        let re_exports: Vec<&Evidence> = imports()
+            .filter(|e| {
+                e.passes_on() && e.file == *barrel && e.target.as_deref() != Some(barrel.as_str())
             })
-        };
-        let near = |e: &Evidence| from.iter().position(|f| e.target.as_deref() == Some(f));
-        let on_way: Vec<&Evidence> = re_exports().filter(|e| near(e).is_some()).collect();
-        if on_way.is_empty() {
-            // no file it came from is known: its first, unless listed
-            if !statements.iter().any(|e| e.file == *entry) {
-                statements.extend(re_exports());
+            .collect();
+        let near = |e: &Evidence| {
+            if own.contains(&(e.file.as_str(), e.line)) {
+                return Some(0);
             }
-            continue;
-        }
-        for e in on_way {
-            // a statement that re-exports the target itself stays nearest
-            let at = near(e).map_or(0, |at| at + 1);
-            rank.entry((e.file.as_str(), e.line)).or_insert(at);
+            let at = from.iter().position(|f| e.target.as_deref() == Some(f))?;
+            Some(at + 1)
+        };
+        let on_way: Vec<&Evidence> = re_exports
+            .iter()
+            .copied()
+            .filter(|e| near(e).is_some())
+            .collect();
+        // no file it came from is known: all of its re-exports
+        let shown = if on_way.is_empty() {
+            re_exports
+        } else {
+            on_way
+        };
+        for e in shown {
+            rank.entry((e.file.as_str(), e.line))
+                .or_insert(near(e).unwrap_or(usize::MAX));
             statements.push(e);
         }
     }
@@ -226,7 +233,7 @@ pub(crate) fn barrels(
             let loading: BTreeSet<&str> = imports()
                 .filter(|i| i.target.as_deref() == Some(barrel) && i.via().is_none())
                 .chain(below.iter().map(|(_, i)| *i))
-                .filter(|i| i.test && !listed.contains(&i.file))
+                .filter(|i| i.test && !i.type_only && !i.replaces && !listed.contains(&i.file))
                 .map(|i| i.file.as_str())
                 .collect();
             Barrel {
@@ -911,7 +918,7 @@ mod tests {
             )]);
             let found = barrels(
                 &full,
-                Narrowed::File("pkg/z.py"),
+                Some(Narrowed::File("pkg/z.py")),
                 &relayed,
                 &BTreeSet::new(),
                 usize::MAX,
@@ -932,7 +939,7 @@ mod tests {
         )]);
         let found = barrels(
             &full,
-            Narrowed::File("pkg/c.py"),
+            Some(Narrowed::File("pkg/c.py")),
             &relayed,
             &BTreeSet::new(),
             usize::MAX,

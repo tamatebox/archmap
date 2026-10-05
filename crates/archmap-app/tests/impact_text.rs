@@ -153,7 +153,7 @@ fn a_file_answers_with_its_dependents_statements_tests_and_blind_spots() {
            scripts/report.cjs:4, src/app/lazy.tsx:7\n  \
            barrels: 1 file passes on what may change, and only what takes it from there is followed; a \
            rename, a removal or an error on load also breaks whatever else loads that file: \
-           src/index.ts:8\n\
+           src/index.ts:8 (+2 more re-exports on the way)\n\
          \n\
          Lists are capped; verbose lists every entry, and JSON every entry with all evidence.\n"
     );
@@ -660,6 +660,21 @@ fn a_package_entry_is_named_at_the_re_export_the_reach_came_through() {
         value["not_traced"]["barrels"]["locations"][0]["lines"],
         serde_json::json!([2, 3, 6])
     );
+}
+
+#[test]
+fn not_traced_names_every_barrel_the_reach_stopped_at() {
+    let ws = scan(&fixture("ts-reexports"));
+    // src/shop/index.ts passes money.ts on, and src/index.ts what
+    // src/shop/index.ts passes on
+    let out = text(&ws, "src/money.ts");
+    assert!(
+        out.contains("loads them: src/index.ts:1, src/shop/index.ts:1 ("),
+        "{out}"
+    );
+    // a component's barrels too
+    let out = text(&ws, "ts-reexports::src/shop");
+    assert!(out.contains("loads that file: src/index.ts:1\n"), "{out}");
 }
 
 #[test]
