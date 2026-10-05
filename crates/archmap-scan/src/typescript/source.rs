@@ -61,6 +61,11 @@ pub(crate) struct ImportStatement {
     /// where TypeScript reads a type (see [`Positions`]): a compiler drops
     /// them as it drops what `type` marks, unless the tsconfig keeps values.
     pub type_uses: BTreeSet<String>,
+    /// `type` marks the whole statement (`import type`, `export type ..
+    /// from`, an `import()` type), which every compiler erases; one whose
+    /// names `type` marks one by one still loads its module where the
+    /// tsconfig keeps loads.
+    pub type_statement: bool,
 }
 
 /// A call that loads a module by a name computed at runtime.
@@ -221,7 +226,8 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
         let load = |specifier: String,
                     note: &'static str,
                     names: Vec<String>,
-                    types: BTreeSet<String>| ImportStatement {
+                    types: BTreeSet<String>,
+                    type_statement: bool| ImportStatement {
             specifier,
             line,
             note,
@@ -230,6 +236,7 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
             local: false,
             replaces: false,
             type_uses: BTreeSet::new(),
+            type_statement,
         };
         let whole = || vec![WHOLE_MODULE.to_owned()];
         let whole_if = |types: bool| match types {
@@ -269,8 +276,14 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
                 }
                 // a name taken as a value and as a type is loaded
                 types.retain(|name| !values.contains(name));
-                file.imports
-                    .push(load(d.source.value.to_string(), "import", names, types));
+                let whole_type = d.import_kind.is_type();
+                file.imports.push(load(
+                    d.source.value.to_string(),
+                    "import",
+                    names,
+                    types,
+                    whole_type,
+                ));
             }
             Statement::ExportFromDeclaration(d) => {
                 let mut names = Vec::new();
@@ -296,8 +309,14 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
                     names.push(local);
                 }
                 types.retain(|name| !values.contains(name));
-                file.imports
-                    .push(load(d.source.value.to_string(), "export", names, types));
+                let whole_type = d.export_kind.is_type();
+                file.imports.push(load(
+                    d.source.value.to_string(),
+                    "export",
+                    names,
+                    types,
+                    whole_type,
+                ));
             }
             Statement::ExportAllDeclaration(d) => {
                 let type_only = d.export_kind.is_type();
@@ -319,6 +338,7 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
                     "export",
                     whole(),
                     whole_if(type_only),
+                    type_only,
                 ));
             }
             Statement::TSImportEqualsDeclaration(d) => {
@@ -326,8 +346,9 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
                     file.module_syntax = true;
                     let type_only = d.import_kind.is_type();
                     bindings.insert(d.id.name.to_string(), (index, None, type_only));
+                    let types = whole_if(type_only);
                     file.imports
-                        .push(load(specifier, "import", whole(), whole_if(type_only)));
+                        .push(load(specifier, "import", whole(), types, type_only));
                 }
             }
             Statement::ExportDeclaration(d) => {
@@ -341,8 +362,9 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
                                 type_only,
                             },
                         );
+                        let types = whole_if(type_only);
                         file.imports
-                            .push(load(specifier, "import", whole(), whole_if(type_only)));
+                            .push(load(specifier, "import", whole(), types, type_only));
                     }
                 }
                 for symbols in source.declared(&d.declaration, start) {
@@ -762,6 +784,7 @@ impl Calls<'_> {
             local,
             replaces: false,
             type_uses: BTreeSet::new(),
+            type_statement: type_only,
         });
     }
 

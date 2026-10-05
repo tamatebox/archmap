@@ -42,6 +42,23 @@ pub(crate) struct ModuleOptions {
     /// `verbatimModuleSyntax` or `preserveValueImports`: an imported value
     /// stays however the file uses it, so only `type` makes it a type.
     pub keeps_values: bool,
+    /// `verbatimModuleSyntax`, or `importsNotUsedAsValues` set to
+    /// `preserve` or `error`: an import that `type` does not mark whole
+    /// still loads its module when the compiler erases all its names.
+    pub keeps_loads: bool,
+    /// `verbatimModuleSyntax`: a re-export too (`export {} from`).
+    pub keeps_reexports: bool,
+}
+
+impl ModuleOptions {
+    /// Whether the compiler keeps the load of `import` when it erases all
+    /// its names: `importsNotUsedAsValues` governs imports only.
+    pub(crate) fn keeps(&self, import: &super::source::ImportStatement) -> bool {
+        match import.note {
+            "export" => self.keeps_reexports,
+            _ => self.keeps_loads,
+        }
+    }
 }
 
 pub(crate) struct ImportResolver {
@@ -228,6 +245,13 @@ impl ImportResolver {
             force: self.view.module_detection_forced(tsconfig.path()),
             keeps_values: options.verbatim_module_syntax == Some(true)
                 || set("preserveValueImports"),
+            keeps_loads: options.verbatim_module_syntax == Some(true)
+                || self
+                    .view
+                    .setting(tsconfig.path(), "/compilerOptions/importsNotUsedAsValues")
+                    .and_then(|(value, _)| value.as_str().map(str::to_ascii_lowercase))
+                    .is_some_and(|v| v == "preserve" || v == "error"),
+            keeps_reexports: options.verbatim_module_syntax == Some(true),
         }
     }
 
@@ -538,6 +562,8 @@ mod tests {
                 jsx_runtime: true,
                 force: true,
                 keeps_values: false,
+                keeps_loads: false,
+                keeps_reexports: false,
             }
         );
         // the last entry of `extends` wins

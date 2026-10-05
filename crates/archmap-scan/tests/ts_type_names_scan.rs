@@ -210,3 +210,42 @@ fn a_declaration_file_runs_nothing_and_ambient_heritage_counts_as_a_value() {
         rows(&[(&["*"], false, "import")])
     );
 }
+
+#[test]
+fn options_that_keep_a_load_keep_a_statement_of_types_running() {
+    let graph = scan_fixture();
+    let account = "src/account.ts";
+    // `verbatimModuleSyntax` writes `import {} from` for `{ type A }`, and
+    // erases `import type`
+    assert_eq!(
+        evidence(&graph, "verbatim/inline.ts:1", account),
+        rows(&[(&["Account"], true, "import"), (&[], false, "import")])
+    );
+    assert_eq!(
+        evidence(&graph, "verbatim/inline.ts:2", account),
+        rows(&[(&["Account"], true, "import")])
+    );
+    assert_eq!(
+        evidence(&graph, "verbatim/inline.ts:5", account),
+        rows(&[(&["Account"], true, "export"), (&[], false, "export")])
+    );
+    // `importsNotUsedAsValues: preserve` keeps the load of an import it
+    // erases, not of a re-export
+    assert_eq!(
+        evidence(&graph, "preserve/used.ts:1", account),
+        rows(&[(&["Account"], true, "import"), (&[], false, "import")])
+    );
+    assert_eq!(
+        evidence(&graph, "preserve/used.ts:4", account),
+        rows(&[(&["Account"], true, "export")])
+    );
+    // `preserveValueImports` keeps a value, and drops `{ type A }` whole
+    assert_eq!(
+        evidence(&graph, "values/kept.ts:1", account),
+        rows(&[(&["Account"], false, "import")])
+    );
+    assert_eq!(
+        evidence(&graph, "values/kept.ts:2", account),
+        rows(&[(&["Account"], true, "import")])
+    );
+}

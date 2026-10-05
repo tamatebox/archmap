@@ -397,6 +397,11 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   `verbatimModuleSyntax` or `preserveValueImports` keeps the values a file imports, so there only
   `type` and names that can only be types count; every import and re-export of a declaration file
   (`.d.ts`, `.d.mts`, `.d.cts`), which is never emitted, is types only
+- where the tsconfig sets `verbatimModuleSyntax`, a statement whose names are all erased still
+  loads its module (the compiler writes `import {} from 'm'` or `export {} from 'm'`), and where it
+  sets `importsNotUsedAsValues` to `preserve` or `error`, such an import does (`import 'm'`), unless
+  `type` marks the statement whole (`import type`, `export type .. from`): it also gives evidence
+  that takes no names and runs, as a side-effect import does
 - the packages an install links by name are linked in the resolver's view as `node_modules/<name>`: the members
   of a workspace (`workspaces` in a `package.json`, an array or `{ "packages": [..] }`, and
   `pnpm-workspace.yaml`; `!` patterns leave members out) in its root's `node_modules`, and the directories of
@@ -527,9 +532,7 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   options of other compilers that keep imports (Babel's `onlyRemoveTypeImports`, SWC's
   `jsc.transform.verbatimModuleSyntax`) are not read. A `const enum` and a namespace that holds
   only types count as values, though the compiler without `isolatedModules` erases the first and
-  never emits the second, and `importsNotUsedAsValues: preserve` (removed in TypeScript 5.5),
-  which keeps a statement of types only as a load, is not read. Under `verbatimModuleSyntax`,
-  `import { type A } from 'm'` still loads `m`, which archmap counts as types only.
+  never emits the second.
 - A JavaScript file that Node runs is a module of its own even without `require` or exports;
   archmap follows how TypeScript reads it, so such a file is a script, and so is a TypeScript file
   whose only module code is `require`.

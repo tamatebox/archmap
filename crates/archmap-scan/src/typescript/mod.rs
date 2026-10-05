@@ -303,7 +303,8 @@ impl Analyzer for TypeScriptAnalyzer {
             // and of names the file uses only as types unless its tsconfig
             // keeps values; a JavaScript file keeps whatever it writes
             let typescript = language_of(read.file) == Some(language::LANGUAGE);
-            let by_use = typescript && !resolver.module_options(read.file).keeps_values;
+            let options = resolver.module_options(read.file);
+            let by_use = typescript && !options.keeps_values;
             // a declaration file is never emitted: nothing it imports runs
             let declarations = is_declaration_file(read.file);
             for (index, (import, resolved)) in read.imports.iter().zip(&read.resolved).enumerate() {
@@ -348,11 +349,25 @@ impl Analyzer for TypeScriptAnalyzer {
                         if !types.is_empty() {
                             imports.emit(import, resolved, &types, &exported_as, true, &mut output);
                         }
+                        // the compiler writes `import {} from` or `import 'm'`
+                        // for what it erases, where the tsconfig keeps loads
+                        let kept = typescript
+                            && options.keeps(import)
+                            && !import.type_statement
+                            && !declarations
+                            && values.is_empty()
+                            && !types.is_empty();
+                        if kept {
+                            let none = BTreeSet::new();
+                            imports.emit(import, resolved, &none, &exported_as, false, &mut output);
+                        }
                     }
                     _ => {
-                        let all_types = declarations
-                            || !import.names.is_empty()
-                                && import.names.iter().all(|n| import.types.contains(n));
+                        let erased = !import.names.is_empty()
+                            && import.names.iter().all(|n| import.types.contains(n));
+                        // a load the tsconfig keeps runs, as above
+                        let kept = typescript && options.keeps(import) && !import.type_statement;
+                        let all_types = declarations || erased && !kept;
                         imports.emit(
                             import,
                             resolved,
