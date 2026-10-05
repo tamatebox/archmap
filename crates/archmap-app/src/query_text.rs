@@ -965,13 +965,20 @@ pub(crate) fn used_at(out: &mut String, view: &UsedAt, use_files: usize, locatio
             .into_iter()
             .map(|(role, n)| role_count(role, n))
             .collect();
-        let showing = match shown < files.len() {
-            true => format!(", showing {shown}"),
-            false => String::new(),
+        let showing = if shown < files.len() {
+            format!(", showing {shown}")
+        } else {
+            String::new()
+        };
+        // the uses in test code, which only rows mark
+        let tests = match uses.uses.iter().filter(|u| u.evidence.test).count() {
+            0 => String::new(),
+            n if n == uses.uses.len() => ", all in tests".to_owned(),
+            n => format!(", {n} in tests"),
         };
         let _ = writeln!(
             out,
-            "\nUsed at: {lead}{} in {}{showing} ({})",
+            "\nUsed at: {lead}{} in {}{tests}{showing} ({})",
             uses.uses.len(),
             plural(files.len(), "file"),
             roles.join(", ")

@@ -321,10 +321,11 @@ in comments and strings are no uses, nor is an export specifier, which
 passes a name on. Each use is marked by what it does:
 `(call)`, `(new)`, `(jsx)` for a JSX element's name, `(type)`, or `(read)`
 for any other (passed as a value, assigned, compared), then `(test)`; it
-ends in `as <name>` when the code names it otherwise:
+ends in `as <name>` when the code names it otherwise. The heading counts the
+uses in test code apart (`5 in tests`, or `all in tests`):
 
 ```text
-Used at: 21 in 14 files, showing 10 (20 calls, 1 type)
+Used at: 24 in 16 files, 5 in tests, showing 10 (20 calls, 4 types)
   src/app.ts:11 (call) as fp, src/app.ts:11:20 (call) as m.formatPrice, src/app.ts:11:38 (call) as m.formatPrice, +1 more in this file
   src/view.tsx:9 (call) as money.formatPrice, src/view.tsx:10 (call), src/view.tsx:11 (call) as all.money.formatPrice
   ...

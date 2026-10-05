@@ -193,7 +193,7 @@ async fn query_answers_where_a_symbol_is_used_as_the_app_does() {
     )
     .await);
     assert!(
-        text.contains("\nUsed at: 24 in 16 files, showing 10 (20 calls, 4 types)\n"),
+        text.contains("\nUsed at: 24 in 16 files, 5 in tests, showing 10 (20 calls, 4 types)\n"),
         "{text}"
     );
     client.cancel().await.unwrap();

@@ -1027,6 +1027,30 @@ fn a_file_by_symbol_says_who_takes_each_symbol_and_where_it_is_used() {
 }
 
 #[test]
+fn used_at_counts_the_uses_in_tests_apart() {
+    let repo = Repo::new(
+        "used-in-tests",
+        &[
+            ("package.json", "{\"name\": \"web\"}\n"),
+            ("src/m.ts", "export function onlyTested() { return 1; }\n"),
+            (
+                "tests/m.test.ts",
+                "import { onlyTested } from '../src/m';\nonlyTested();\nonlyTested();\n",
+            ),
+        ],
+    );
+    let ws = scan(&repo.0);
+    let answer = query(&ws, "onlyTested");
+    assert!(
+        answer
+            .output
+            .contains("\nUsed at: 2 in 1 file, all in tests (2 calls)\n"),
+        "{}",
+        answer.output
+    );
+}
+
+#[test]
 fn names_of_test_code_that_contain_a_word_come_after_production_ones() {
     let repo = Repo::new(
         "contains-tests",

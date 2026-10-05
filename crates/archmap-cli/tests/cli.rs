@@ -2826,7 +2826,7 @@ fn query_on_a_ts_symbol_lists_where_it_is_used() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/ts-uses");
     let text = query_text(&root, &["formatPrice"]);
     // two uses that would read alike say their columns
-    let used_at = "\nUsed at: 24 in 16 files, showing 10 (20 calls, 4 types)\n\
+    let used_at = "\nUsed at: 24 in 16 files, 5 in tests, showing 10 (20 calls, 4 types)\n\
          \x20 src/app.ts:11 (call) as fp, src/app.ts:11:20 (call) as m.formatPrice, \
          src/app.ts:11:38 (call) as m.formatPrice, +1 more in this file\n\
          \x20 src/view.tsx:9 (call) as money.formatPrice, src/view.tsx:10 (call), \
@@ -2855,7 +2855,7 @@ fn query_on_a_ts_symbol_lists_where_it_is_used() {
     let rates = query_text(&root, &["RATES"]);
     assert!(
         rates.contains(
-            "\nUsed at: 5 in 5 files (3 types, 2 read)\n  src/importtype.ts:1 (type)\n  \
+            "\nUsed at: 5 in 5 files, 1 in tests (3 types, 2 read)\n  src/importtype.ts:1 (type)\n  \
              src/money.ts:29 (read) as rates\n  src/rates.ts:3 (read) as money.RATES\n  \
              src/typeof.ts:3 (type) as m\n  tests/actual.test.ts:2 (type) (test)\n  \
              never named (6 imports of the whole module): scripts/cjs.cjs:2, src/aliased.ts:1, \
@@ -2867,7 +2867,7 @@ fn query_on_a_ts_symbol_lists_where_it_is_used() {
     let method = query_text(&root, &["Wallet.pay"]);
     assert!(
         method.contains(
-            "\nUsed at: through the class and this only: 5 in 4 files (2 calls, 3 types)\n\
+            "\nUsed at: through the class and this only: 5 in 4 files, 1 in tests (2 calls, 3 types)\n\
              \x20 src/money.ts:13 (call) as this.pay, src/money.ts:17 (call) as this.pay\n"
         ),
         "{method}"
