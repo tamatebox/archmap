@@ -346,6 +346,58 @@ fn a_module_level_import_that_another_file_takes_the_name_from_passes_it_on() {
 }
 
 #[test]
+fn an_import_under_global_binds_in_the_module_and_one_under_nonlocal_binds_again() {
+    let project = Project::new(
+        "declared",
+        &[
+            ("till/__init__.py", ""),
+            ("till/wallet.py", "def pay(amount):\n    return amount\n"),
+            (
+                "till/lazy.py",
+                "def setup():\n    global pay\n    from till.wallet import pay\n    pay(2)\n\n\n\
+                 def run():\n    return pay(1)\n",
+            ),
+            (
+                "till/loaded.py",
+                "from importlib import import_module\n\n\n\
+                 def load():\n    global wallet\n    wallet = import_module(\"till.wallet\")\n\n\n\
+                 def run():\n    return wallet.pay(3)\n",
+            ),
+            // the module binds it as well: no telling which code reads
+            (
+                "till/preset.py",
+                "pay = None\n\n\n\
+                 def setup():\n    global pay\n    from till.wallet import pay\n\n\n\
+                 def run():\n    return pay(1)\n",
+            ),
+            // Python requires a function around to bind it too
+            (
+                "till/inner.py",
+                "def outer():\n    pay = None\n\n    def inner():\n        nonlocal pay\n        \
+                 from till.wallet import pay\n\n    inner()\n    return pay(1)\n",
+            ),
+        ],
+    );
+    let pay = uses_of(&project.report, "pay");
+    assert_eq!(
+        shown(&pay),
+        [
+            "till/lazy.py:4:5 call via 3",
+            "till/lazy.py:8:12 call via 3",
+            "till/loaded.py:10:19 call as wallet.pay via 6",
+        ]
+    );
+    assert!(pay.unused.is_empty(), "{:#?}", pay.unused);
+    assert_eq!(
+        unread(&pay),
+        [
+            ("till/inner.py".into(), Some(6), UnreadReason::Rebound),
+            ("till/preset.py".into(), Some(6), UnreadReason::Rebound),
+        ]
+    );
+}
+
+#[test]
 fn every_statement_read_ends_in_one_of_the_lists() {
     for name in [
         "python-uses",

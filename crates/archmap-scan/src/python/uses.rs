@@ -25,7 +25,7 @@ use archmap_core::{
 use ruff_python_ast::visitor::{self, Visitor};
 use ruff_python_ast::{self as ast, Expr, ExprContext, ModModule, PySourceType, Stmt};
 use ruff_python_parser::{parse_string_annotation, parse_unchecked_source, Parsed};
-use ruff_text_size::{Ranged, TextRange};
+use ruff_text_size::{Ranged, TextRange, TextSize};
 
 use super::source::{scan_source, DunderAll};
 use crate::lines::Lines;
@@ -106,6 +106,9 @@ struct Bound {
     may_bind: bool,
     /// The calls that load the module by a literal name.
     calls: Vec<LoadCall>,
+    /// It binds a name its scope declares `nonlocal`, which a function
+    /// around binds too.
+    rebound: bool,
 }
 
 /// A call that loads a module by a literal name (`import_module("a.b")`),
@@ -200,11 +203,15 @@ impl Pass<'_> {
         let mut calls = Vec::new();
         let mut ended: BTreeSet<u32> = BTreeSet::new();
         let mut may_bind: BTreeSet<u32> = BTreeSet::new();
+        let mut nonlocal: BTreeSet<u32> = BTreeSet::new();
         for (&line, evidence) in statements {
             match self.bindings(read, line, evidence) {
                 Ok(bound) => {
                     if bound.may_bind {
                         may_bind.insert(line);
+                    }
+                    if bound.rebound {
+                        nonlocal.insert(line);
                     }
                     bindings.extend(bound.bindings);
                     calls.extend(bound.calls);
@@ -233,6 +240,7 @@ impl Pass<'_> {
         }
         let mut walker = Walker::new(read, target, bindings, calls);
         walker.module(read.module());
+        walker.rebound.extend(nonlocal);
         // every statement ends in one list
         for (&line, evidence) in statements {
             if ended.contains(&line)
@@ -298,7 +306,7 @@ impl Pass<'_> {
         let mut statements = Vec::new();
         find_imports(
             &read.module().body,
-            None,
+            &Scope::default(),
             &read.lines,
             line,
             &mut statements,
@@ -319,6 +327,12 @@ impl Pass<'_> {
         let mut bound = Bound::default();
         let mut star = false;
         for (statement, scope) in statements {
+            // a name binds where its scope's declarations say
+            let bind = |bound: &mut Bound, name: &str, path: Vec<String>, modules: usize| {
+                bound.rebound |= scope.nonlocals.contains(name);
+                let binding = Binding::new(line, name, scope.binds(name), path, modules);
+                bound.bindings.push(binding);
+            };
             match statement {
                 Stmt::ImportFrom(from) => {
                     let named = from.names.iter().filter(|a| &a.name != "*").count();
@@ -333,25 +347,16 @@ impl Pass<'_> {
                         for &e in &evidence {
                             let offered = self.offered(e);
                             if offered.as_deref() == Some(taken) {
-                                let path = rest.to_vec();
-                                bound
-                                    .bindings
-                                    .push(Binding::new(line, name, scope, path, 0));
+                                bind(&mut bound, name, rest.to_vec(), 0);
                             } else if module_name(loaded(e)).as_deref() == Some(taken) {
                                 // a submodule
                                 if let Some(offered) = offered {
-                                    let path = [&[offered], rest].concat();
-                                    bound
-                                        .bindings
-                                        .push(Binding::new(line, name, scope, path, 1));
+                                    bind(&mut bound, name, [&[offered], rest].concat(), 1);
                                 }
                             } else if offered.is_none() && named == 1 {
                                 // the one name it takes leads to the symbol
                                 // under a name given on the way
-                                let path = rest.to_vec();
-                                bound
-                                    .bindings
-                                    .push(Binding::new(line, name, scope, path, 0));
+                                bind(&mut bound, name, rest.to_vec(), 0);
                             }
                         }
                     }
@@ -376,9 +381,7 @@ impl Pass<'_> {
                             let modules = path.len() + 1;
                             path.push(offered);
                             path.extend(rest.iter().cloned());
-                            bound
-                                .bindings
-                                .push(Binding::new(line, name, scope, path, modules));
+                            bind(&mut bound, name, path, modules);
                         }
                     }
                 }
@@ -409,6 +412,7 @@ impl Pass<'_> {
                     Holder::Dropped | Holder::Nothing => "",
                 };
                 let binding = Binding::new(line, name, found.scope, path, modules);
+                bound.rebound |= found.nonlocal;
                 if !name.is_empty() {
                     bound.bindings.push(binding.clone());
                 }
@@ -619,26 +623,60 @@ impl File {
     }
 }
 
+/// The scope a statement is in, which its names bind in unless it declares
+/// them `global` or `nonlocal`.
+#[derive(Debug, Clone, Default)]
+struct Scope {
+    /// `None` for the module, else where the function or class whose body
+    /// it is starts.
+    id: Option<u32>,
+    globals: BTreeSet<String>,
+    /// Names a function around binds, which Python requires of them.
+    nonlocals: BTreeSet<String>,
+}
+
+impl Scope {
+    /// The scope of the body of a function or class that starts at `id`.
+    fn of(id: TextSize, body: &[Stmt]) -> Scope {
+        let mut binder = Binder::default();
+        binder.visit_body(body);
+        Scope {
+            id: Some(id.to_u32()),
+            globals: binder.globals,
+            nonlocals: binder.nonlocals,
+        }
+    }
+
+    /// Where a statement in it binds `name`: the module for a name it
+    /// declares `global`.
+    fn binds(&self, name: &str) -> Option<u32> {
+        match self.globals.contains(name) {
+            true => None,
+            false => self.id,
+        }
+    }
+}
+
 /// The import statements in `body` that start on `line`, each with the
-/// scope it binds in: `None` for the module, else where the function or
-/// class around it starts.
+/// scope it is in.
 fn find_imports<'a>(
     body: &'a [Stmt],
-    scope: Option<u32>,
+    scope: &Scope,
     lines: &Lines,
     line: u32,
-    out: &mut Vec<(&'a Stmt, Option<u32>)>,
+    out: &mut Vec<(&'a Stmt, Scope)>,
 ) {
     for statement in body {
-        let mut inner = |body: &'a [Stmt], scope| find_imports(body, scope, lines, line, out);
+        let mut inner =
+            |body: &'a [Stmt], scope: &Scope| find_imports(body, scope, lines, line, out);
         match statement {
             Stmt::Import(_) | Stmt::ImportFrom(_) => {
                 if lines.of(statement.start().to_usize()) == line {
-                    out.push((statement, scope));
+                    out.push((statement, scope.clone()));
                 }
             }
-            Stmt::FunctionDef(f) => inner(&f.body, Some(f.range.start().to_u32())),
-            Stmt::ClassDef(c) => inner(&c.body, Some(c.range.start().to_u32())),
+            Stmt::FunctionDef(f) => inner(&f.body, &Scope::of(f.range.start(), &f.body)),
+            Stmt::ClassDef(c) => inner(&c.body, &Scope::of(c.range.start(), &c.body)),
             Stmt::If(s) => {
                 inner(&s.body, scope);
                 for clause in &s.elif_else_clauses {
@@ -690,8 +728,10 @@ struct FoundCall<'a> {
     module: String,
     /// It returns the package the name starts with (`__import__`).
     top: bool,
-    /// The scope of the statement it is in, as for an import.
+    /// Where the name that holds it binds, as for an import.
     scope: Option<u32>,
+    /// That name is declared `nonlocal`.
+    nonlocal: bool,
     holder: Holder<'a>,
 }
 
@@ -700,7 +740,7 @@ struct FoundCall<'a> {
 struct CallFinder<'a, 'l> {
     lines: &'l Lines,
     line: u32,
-    scope: Option<u32>,
+    scope: Scope,
     held: Vec<(TextRange, Holder<'a>)>,
     found: Vec<FoundCall<'a>>,
 }
@@ -710,7 +750,7 @@ impl<'l> CallFinder<'_, 'l> {
         CallFinder {
             lines,
             line,
-            scope: None,
+            scope: Scope::default(),
             held: Vec::new(),
             found: Vec::new(),
         }
@@ -741,30 +781,40 @@ impl<'a> Visitor<'a> for CallFinder<'a, '_> {
             _ => {}
         }
         let inner = match statement {
-            Stmt::FunctionDef(f) => Some(f.range.start().to_u32()),
-            Stmt::ClassDef(c) => Some(c.range.start().to_u32()),
+            Stmt::FunctionDef(f) => Some(Scope::of(f.range.start(), &f.body)),
+            Stmt::ClassDef(c) => Some(Scope::of(c.range.start(), &c.body)),
             _ => None,
         };
-        let outer = self.scope;
-        self.scope = inner.or(outer);
-        visitor::walk_stmt(self, statement);
-        self.scope = outer;
+        match inner {
+            Some(inner) => {
+                let outer = std::mem::replace(&mut self.scope, inner);
+                visitor::walk_stmt(self, statement);
+                self.scope = outer;
+            }
+            None => visitor::walk_stmt(self, statement),
+        }
     }
 
     fn visit_expr(&mut self, expr: &'a Expr) {
         if let Expr::Call(call) = expr {
             if let Some((module, top, at)) = loads_by_name(call) {
                 if self.lines.of(at) == self.line {
+                    let holder = self
+                        .held
+                        .iter()
+                        .find(|(range, _)| *range == call.range())
+                        .map_or(Holder::Nothing, |(_, holder)| *holder);
+                    let name = match holder {
+                        Holder::Name(name) => name,
+                        Holder::Dropped | Holder::Nothing => "",
+                    };
                     self.found.push(FoundCall {
                         range: call.range(),
                         module,
                         top,
-                        scope: self.scope,
-                        holder: self
-                            .held
-                            .iter()
-                            .find(|(range, _)| *range == call.range())
-                            .map_or(Holder::Nothing, |(_, holder)| *holder),
+                        scope: self.scope.binds(name),
+                        nonlocal: self.scope.nonlocals.contains(name),
+                        holder,
                     });
                 }
             }
