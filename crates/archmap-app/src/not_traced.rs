@@ -6,8 +6,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use archmap_core::{
-    ArchitectureGraph, ComponentId, ComponentKind, DynamicImport, EdgeKind, Evidence, ImportPlace,
-    Symbol, SymbolUses, UnmappedImport, UnmappedReason, UnreadMacro, UnreadReason,
+    ArchitectureGraph, Component, ComponentId, ComponentKind, DynamicImport, EdgeKind, Evidence,
+    ImportPlace, Symbol, SymbolUses, UnmappedImport, UnmappedReason, UnreadMacro, UnreadReason,
 };
 use serde::Serialize;
 
@@ -687,6 +687,20 @@ pub(crate) fn not_traced(
 
 /// One analyzer reads TypeScript and JavaScript, and either can load the
 /// other.
+/// Whether a file at or below `component` holds a declaration in a
+/// module's `declare global`.
+pub(crate) fn holds_global(full: &ArchitectureGraph, component: &Component) -> bool {
+    let below = |file: &str| match component.path.as_deref() {
+        None => false,
+        Some("" | ".") => true,
+        Some(dir) => file.starts_with(&format!("{}/", dir.trim_end_matches('/'))) || file == dir,
+    };
+    full.symbols
+        .values()
+        .filter_map(Symbol::location)
+        .any(|e| e.declares_global() && below(&e.file))
+}
+
 /// Whether `file` holds a declaration in a module's `declare global`.
 pub(crate) fn declares_global(full: &ArchitectureGraph, file: &str) -> bool {
     full.symbols

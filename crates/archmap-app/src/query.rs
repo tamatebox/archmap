@@ -9,7 +9,7 @@ use archmap_core::{
     UnreadReason,
 };
 
-use crate::not_traced::{not_traced, with_uses, Own, Place, Subject};
+use crate::not_traced::{holds_global, not_traced, with_uses, Own, Place, Subject};
 use crate::resolve::{resolve, Resolved};
 use crate::target::{component_file, fold, namesakes, reject_outside, unquote, AtDepth};
 use crate::views::{ComponentView, FileView, Importer, QueryResult, SymbolView, UnmappedView};
@@ -359,9 +359,7 @@ fn component_view<'a>(
             place: component.path.as_deref().map(Place::Directory),
             own: Own::Component(&component.id, depth),
             script: component.kind == ComponentKind::Script,
-            global: full
-                .symbols_of(&component.id)
-                .any(|s| s.location().is_some_and(Evidence::declares_global)),
+            global: holds_global(full, component),
             unreached: false,
         },
         usize::MAX,

@@ -619,34 +619,39 @@ fn importers(
         );
         return false;
     }
-    let (Some(by_name), Some(may_use)) = (&view.imported_by, &view.may_use) else {
-        let language = rolled
-            .component(&view.symbol.component)
-            .and_then(|c| c.language.as_deref())
-            .unwrap_or("this language");
-        let _ = writeln!(
-            out,
-            "\nImported by: unknown (no evidence names imported files for {language})"
-        );
-        return false;
-    };
-    let mut truncated = false;
     // the component that declares it, before roll-up folds it away
     let script = full
         .symbol(&view.symbol.id)
         .and_then(|s| full.component(&s.component))
         .is_some_and(|c| c.kind == ComponentKind::Script);
+    let global = view
+        .symbol
+        .location()
+        .is_some_and(Evidence::declares_global);
+    let (Some(by_name), Some(may_use)) = (&view.imported_by, &view.may_use) else {
+        let language = rolled
+            .component(&view.symbol.component)
+            .and_then(|c| c.language.as_deref())
+            .unwrap_or("this language");
+        // no import names a global, whatever the language records
+        let why = match (script, global) {
+            (true, _) => "; a script declares it globally: what uses it is not traced",
+            (_, true) => "; `declare global` declares it: what uses it is not traced",
+            _ => "",
+        };
+        let _ = writeln!(
+            out,
+            "\nImported by: unknown (no evidence names imported files for {language}{why})"
+        );
+        return false;
+    };
+    let mut truncated = false;
     if by_name.is_empty() && script {
         let _ = writeln!(
             out,
             "\nImported by: none (a script declares it globally: what uses it is not traced)"
         );
-    } else if by_name.is_empty()
-        && view
-            .symbol
-            .location()
-            .is_some_and(Evidence::declares_global)
-    {
+    } else if by_name.is_empty() && global {
         let _ = writeln!(
             out,
             "\nImported by: none (`declare global` declares it: what uses it is not traced)"

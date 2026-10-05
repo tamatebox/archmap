@@ -500,7 +500,8 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   which file a statement loads is the scan's evidence, found again by its line, and nothing of this
   enters the graph; for a declaration in a module's `declare global`, which the analysis keeps apart
   from the rest of the file, its file is read for the identifiers of its name that resolve to no
-  declaration and for the members of that name of `globalThis`, `window` and `self`
+  declaration, and for that one and a script's declaration, for the members of that name of
+  `globalThis`, `window` and `self`
 
 ### TypeScript and JavaScript known gaps
 
@@ -526,6 +527,8 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   (`jest.unstable_mockModule`) are not read, and a mocked path that only a test runner's own
   aliases resolve (those of a `vitest.config.*`, Jest's `moduleNameMapper`) maps to no file, so
   neither hides a module.
+- A declaration of a script or of a module's `declare global` is used anywhere without an
+  import, and `Used at` reads only its own file (`in its own file only:`); `Not traced` says so.
 - `Used at` does not read a method called through a value of its type (`wallet.pay()`), a member
   reached through a subclass (`Rich.open()`, `super.m()`; `Not traced` names the classes that extend it),
   `this.m()` in a subclass that only inherits `m`, what an `import()` or a `vi.importActual()` that is

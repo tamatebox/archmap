@@ -59,6 +59,8 @@ pub(crate) struct Request<'g> {
     /// The symbol is declared in the file's `declare global`, which code
     /// reaches as a global rather than through the binding.
     pub global: bool,
+    /// The defining file is a script, whose declarations are global too.
+    pub script: bool,
     /// The statements that import the symbol, with their evidence.
     pub statements: Vec<&'g Evidence>,
 }
@@ -82,7 +84,7 @@ pub(crate) fn read(request: &Request, out: &mut SymbolUses) {
     };
     // a member whose declaration says nothing stays a possible instance one
     pass.instance_member = pass.tail.len() == 2;
-    pass.defining_file(request.test, request.global);
+    pass.defining_file(request.test, request.global, request.script);
     // one statement per line and kind: a line can hold an import and a
     // call that loads a module
     let mut by_file: BTreeMap<&str, BTreeMap<(u32, &str), &Evidence>> = BTreeMap::new();
@@ -299,7 +301,7 @@ impl<'g> Pass<'g, '_> {
         found
     }
 
-    fn defining_file(&mut self, test: bool, global: bool) {
+    fn defining_file(&mut self, test: bool, global: bool, script: bool) {
         let file = self.defining;
         let path = self.root.join(file);
         let Ok(text) = std::fs::read_to_string(&path) else {
@@ -318,6 +320,10 @@ impl<'g> Pass<'g, '_> {
         let scoping = read.semantic.scoping();
         let rests = vec![self.tail[1..].to_vec()];
         let mut uses = Vec::new();
+        // a global is also a member of the global object
+        if global || script {
+            global_members(&read, &local, &mut uses);
+        }
         let symbol = match global {
             true => {
                 global_uses(&read, &local, &rests, &mut uses, self.out);
@@ -772,9 +778,8 @@ fn in_declare_global(read: &Read, name: &str) -> Option<SymbolId> {
 }
 
 /// The uses of a name the file's `declare global` declares outside the
-/// block: the analysis leaves them unresolved, as it does a member of the
-/// global object (`globalThis.registry`, `window.`, `self.`). A local of
-/// the name hides it.
+/// block, which the analysis leaves unresolved. A local of the name hides
+/// it.
 fn global_uses(
     read: &Read,
     name: &str,
@@ -794,6 +799,14 @@ fn global_uses(
         let span = nodes.get_node(id).kind().span();
         follow_node(read, id, span, name, rests, 0, uses, out);
     }
+}
+
+/// The uses of a global `name` as a member of the global object
+/// (`globalThis.registry`, `window.`, `self.`), where no local hides that
+/// object.
+fn global_members(read: &Read, name: &str, uses: &mut Vec<SymbolUse>) {
+    let scoping = read.semantic.scoping();
+    let nodes = read.semantic.nodes();
     let unresolved = |object: &IdentifierReference| {
         object
             .reference_id

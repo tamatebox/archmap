@@ -316,6 +316,39 @@ fn what_declare_global_declares_says_that_no_import_names_its_uses() {
     // a module that only exports declares nothing global
     let plain = impact(&ws, "src/main.ts");
     assert!(plain["not_traced"].get("global").is_none(), "{plain}");
+    // the package that holds them
+    let package = impact(&ws, "ts-globals");
+    assert_eq!(package["not_traced"]["global"], GLOBAL, "{package}");
+    let text = query(&ws, "ts-globals", Format::Text);
+    assert!(text.contains(&format!("\n  {GLOBAL}\n")), "{text}");
+}
+
+#[test]
+fn a_global_says_so_where_importers_are_unknown() {
+    // no import of this language names a file, so importers are unknown
+    let root = std::env::temp_dir().join(format!("archmap-globals-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("package.json"),
+        "{ \"name\": \"g\", \"private\": true }",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/env.d.ts"),
+        "export {};\ndeclare global {\n  var CONFIG: string;\n}\n",
+    )
+    .unwrap();
+    let ws = scan(&root);
+    let text = query(&ws, "CONFIG", Format::Text);
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(
+        text.contains(
+            "\nImported by: unknown (no evidence names imported files for typescript; \
+             `declare global` declares it: what uses it is not traced)\n"
+        ),
+        "{text}"
+    );
 }
 
 #[test]

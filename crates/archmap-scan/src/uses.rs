@@ -134,6 +134,9 @@ pub fn symbol_uses(report: &ScanReport, symbol: &Symbol) -> SymbolUses {
                 name: &symbol.name,
                 test: location.test,
                 global: location.declares_global(),
+                script: graph
+                    .component(&symbol.component)
+                    .is_some_and(|c| c.kind == archmap_core::ComponentKind::Script),
                 statements,
             };
             ts::read(&request, &mut found);

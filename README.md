@@ -157,7 +157,9 @@ The gaps behind the marks:
   through the names imports bind and, for a method, through its class or
   type and `this` or `self`; a call through a value of a type
   (`wallet.pay()`) is not read, nor in Python a name its scope binds again
-  or the uses in a file that reaches names by computed ones (`globals()`).
+  or the uses in a file that reaches names by computed ones (`globals()`),
+  and the uses of a TS/JS script's or `declare global` declaration are read
+  in its own file only.
 
 The commands read one merged graph, so a gap in what an analyzer reads
 shows in all of them: an import that is not read is missing from `query`,

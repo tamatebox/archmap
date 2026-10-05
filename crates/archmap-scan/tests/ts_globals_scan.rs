@@ -52,6 +52,21 @@ fn declarations_in_declare_global_are_global_symbols_of_their_file() {
     assert_eq!(
         symbols(&graph),
         BTreeSet::from([
+            // a script's globals
+            symbol(
+                "ts-globals::src/boot.js::APP_NAME",
+                SymbolKind::Other,
+                "var APP_NAME: string",
+                "src/boot.js:1",
+                false,
+            ),
+            symbol(
+                "ts-globals::src/boot.js::appName",
+                SymbolKind::Function,
+                "function appName()",
+                "src/boot.js:3",
+                false,
+            ),
             // a name the file exports keeps the export
             symbol(
                 "ts-globals::src/env.ts::buildMode",
@@ -160,6 +175,11 @@ fn a_global_is_used_in_its_own_file_by_its_name_and_through_global_this() {
     assert_eq!(
         uses("registry"),
         ["src/setup.ts:5 read as globalThis.registry"]
+    );
+    // a script's global too
+    assert_eq!(
+        uses("APP_NAME"),
+        ["src/boot.js:4 read as globalThis.APP_NAME"]
     );
     // the uses inside the block resolve to it
     assert_eq!(uses("Flags"), ["src/global.d.ts:6 type"]);

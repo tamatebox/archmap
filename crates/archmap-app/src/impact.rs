@@ -13,7 +13,8 @@ use archmap_scan::ScanReport;
 
 use crate::co_change::{self, Changed};
 use crate::not_traced::{
-    barrels, declares_global, not_traced, with_uses, Narrowed, NotTraced, Own, Place, Subject,
+    barrels, declares_global, holds_global, not_traced, with_uses, Narrowed, NotTraced, Own, Place,
+    Subject,
 };
 use crate::query::{instance_method, uses_of};
 use crate::resolve::{resolve, Resolved};
@@ -336,9 +337,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
             place: component.path.as_deref().map(Place::Directory),
             own: Own::Component(&at.id, depth),
             script: component.kind == ComponentKind::Script,
-            global: full
-                .symbols_of(&component.id)
-                .any(|s| s.location().is_some_and(Evidence::declares_global)),
+            global: holds_global(full, component),
             unreached: false,
         },
         Traced::File(file, owner) => Subject {
