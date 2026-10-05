@@ -437,6 +437,10 @@ pub struct ImportSite<'a> {
     /// that passes it on, when the statement takes that file.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub through: Option<&'a str>,
+    /// For a Rust file of methods of a type another file defines: the type
+    /// the statement takes from that file, which reaches the methods.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub takes_type: Option<&'a str>,
     /// The statement's evidence, every field of it in JSON.
     #[serde(flatten)]
     pub(crate) evidence: &'a Evidence,

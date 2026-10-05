@@ -30,6 +30,9 @@ enum Traced<'g> {
     Symbol(&'g Symbol),
 }
 
+/// The statements that import `file`, and for a Rust file of methods of a
+/// type another file defines, those that take the type, which may call
+/// them.
 fn import_sites<'a>(
     full: &'a ArchitectureGraph,
     depth: usize,
@@ -37,7 +40,18 @@ fn import_sites<'a>(
     cap: usize,
 ) -> ImportSites<'a> {
     let facts = full.file_facts(file);
-    sites_of(full, depth, &facts.importers, facts.importers_recorded, cap)
+    let takers = full.method_takers().remove(file).unwrap_or_default();
+    let mut statements = facts.importers;
+    statements.extend(takers.iter().map(|(edge, e, _)| (*edge, *e)));
+    let recorded = facts.importers_recorded || !takers.is_empty();
+    let mut sites = sites_of(full, depth, &statements, recorded, cap);
+    for site in &mut sites.shown {
+        site.takes_type = takers
+            .iter()
+            .find(|(_, e, _)| std::ptr::eq(*e, site.evidence))
+            .map(|(_, _, name)| *name);
+    }
+    sites
 }
 
 /// The statements outside a package that import a module below `file`,
@@ -108,6 +122,7 @@ fn sites<'a>(
                 component: full.ancestor_at(from, depth),
                 test: e.test,
                 through: None,
+                takes_type: None,
                 evidence: e,
             }),
         }

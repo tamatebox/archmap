@@ -271,6 +271,9 @@ fn statements(
         if let Some(barrel) = site.through {
             let _ = write!(line, " ({taken} {barrel}, which passes it on)");
         }
+        if let Some(name) = site.takes_type {
+            let _ = write!(line, " (takes {name}, whose methods the target holds)");
+        }
         let path = rolled
             .component(&site.component)
             .and_then(|c| c.path.as_deref());

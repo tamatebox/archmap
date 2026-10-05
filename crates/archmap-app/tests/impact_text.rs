@@ -618,6 +618,76 @@ fn a_package_entry_is_named_at_the_re_export_the_reach_came_through() {
 }
 
 #[test]
+fn a_changed_barrel_is_no_dependent_of_the_change_nor_a_barrel_it_passes() {
+    // the package's barrels change with it: none of its files is a
+    // dependent of the package
+    let ws = scan(&fixture("ts-reexports"));
+    let out = text(&ws, "ts-reexports");
+    assert!(out.contains("\nDirect dependents: none"), "{out}");
+    // a changed `__init__.py` is the target, not a barrel on the way
+    let ws = scan(&fixture("python-bindings"));
+    let out = text(&ws, "store/billing/__init__.py");
+    assert!(!out.contains("barrels:"), "{out}");
+}
+
+#[test]
+fn a_rust_file_of_methods_reaches_what_takes_their_type() {
+    // ops.rs holds the methods of a type lib.rs defines: what takes the
+    // type uses them
+    let manifest = |name: &str, dependency: &str| {
+        format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n[dependencies]\n{dependency}")
+    };
+    let files = [
+        (
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"p\", \"q\"]\n".to_owned(),
+        ),
+        ("p/Cargo.toml", manifest("p", "")),
+        ("p/src/lib.rs", "mod ops;\n\npub struct Calc;\n".to_owned()),
+        (
+            "p/src/ops.rs",
+            "use crate::Calc;\n\nimpl Calc {\n    pub fn add(&self, a: u32, b: u32) -> u32 {\n        a + b\n    }\n}\n"
+                .to_owned(),
+        ),
+        (
+            "p/tests/add.rs",
+            "use p::Calc;\n\n#[test]\nfn adds() {\n    assert_eq!(Calc.add(1, 2), 3);\n}\n".to_owned(),
+        ),
+        ("q/Cargo.toml", manifest("q", "p = { path = \"../p\" }")),
+        (
+            "q/src/main.rs",
+            "use p::Calc;\n\nfn main() {\n    println!(\"{}\", Calc.add(1, 2));\n}\n".to_owned(),
+        ),
+    ];
+    let files: Vec<(String, String)> = files
+        .into_iter()
+        .map(|(file, text)| (file.to_owned(), text))
+        .collect();
+    let repo = Repo::new("impl-file", &files);
+    let ws = scan(&repo.0);
+    let out = text(&ws, "p/src/ops.rs");
+    assert_eq!(
+        section(&out, "Direct dependents: 1"),
+        ["  q  1 import"],
+        "{out}"
+    );
+    assert_eq!(
+        section(&out, "Imported by: 2"),
+        [
+            "  q/src/main.rs:1 (takes Calc, whose methods the target holds)  in q",
+            "  p/tests/add.rs:1 (test) (takes Calc, whose methods the target holds)  in p",
+        ],
+        "{out}"
+    );
+    assert!(!out.contains("no importers"), "{out}");
+    assert_eq!(
+        section(&out, "Tests to run again: 1"),
+        ["  p/tests/add.rs (takes it)"],
+        "{out}"
+    );
+}
+
+#[test]
 fn a_component_that_holds_the_target_names_the_files_of_it_reached() {
     let ws = scan(&fixture("simple-ts-project"));
     // the package re-exports the symbol from its own barrel: not the whole

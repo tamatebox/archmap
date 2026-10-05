@@ -507,9 +507,13 @@ never one of them: when none is left, the heading says whether the target's
 importers are all inside its own component or all in test code. `Imported by` lists the
 statements that import a file, or a component that is one file, and for a
 symbol those that take its name, with `May use` for those that take its file
-whole: one statement per line, production code first, located and marked as
-`query` marks them, and followed by the component it is in unless that
-component is the file itself. They include the statements inside the
+whole. A Rust file that holds methods of a type another file defines is
+reached through the type: the statements that take the type from that file
+count as importing it, marked `(takes Calc, whose methods the target
+holds)`, since they may call the methods. One statement per line,
+production code first, located and marked as `query` marks them, and
+followed by the component it is in unless that component is the file
+itself. They include the statements inside the
 target's own component. For a symbol, `Used at` follows, as `query` gives
 it for Rust, Python and TS/JS, the uses in the file that defines it
 included, which no import list shows, and the first step leaves out the statements that take the symbol's

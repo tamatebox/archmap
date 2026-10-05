@@ -437,6 +437,18 @@ impl ArchitectureGraph {
                 depend(Node::Component(&edge.to), Node::Component(&edge.from), link);
             }
         }
+        // a Rust method whose type another file defines is reached through
+        // the type: what takes the type from its file may call it
+        for (methods, takers) in self.method_takers() {
+            for (_, e, _) in takers.into_iter().filter(|(_, e, _)| tests || !e.test) {
+                files.insert(methods);
+                depend(
+                    Node::File(methods),
+                    Node::File(e.file.as_str()),
+                    Link::of(e),
+                );
+            }
+        }
         let index = PathIndex::new(self);
         // an entry file that runs first is reached from what loads a file
         // below it from outside, and from the files below it, which need it
@@ -934,8 +946,14 @@ impl ArchitectureGraph {
             left_out,
             ..Reach::default()
         };
+        // a changed file that passes names on is reached again as a barrel:
+        // it changed itself, so it is none of what the change reaches
+        let changed_barrel = |node: &Node| match node {
+            Node::Passes(f) | Node::Relays(f) => distance.get(&Node::File(f)) == Some(&0),
+            _ => false,
+        };
         let (mut files, mut seeds) = (BTreeSet::new(), BTreeSet::new());
-        for (node, d) in &distance {
+        for (node, d) in distance.iter().filter(|(node, _)| !changed_barrel(node)) {
             if let Node::File(f) | Node::Passes(f) | Node::Relays(f) = node {
                 match d {
                     0 => seeds.insert(*f),
@@ -1038,7 +1056,8 @@ impl ArchitectureGraph {
             .keys()
             .filter(|entry| {
                 let only = |node: Node| distance.get(&node).is_some_and(|d| *d > 0);
-                !only(Node::File(entry)) && (only(Node::Relays(entry)) || only(Node::Passes(entry)))
+                !distance.contains_key(&Node::File(entry))
+                    && (only(Node::Relays(entry)) || only(Node::Passes(entry)))
             })
             .map(|entry| {
                 let mut from: Vec<(usize, &str)> = feeds
@@ -1095,7 +1114,7 @@ impl ArchitectureGraph {
         };
         // the files of each component the walk reached, at their distances
         let mut reached: BTreeMap<ComponentId, BTreeMap<&str, usize>> = BTreeMap::new();
-        for (node, d) in &distance {
+        for (node, d) in distance.iter().filter(|(node, _)| !changed_barrel(node)) {
             let Some(folded) = folded_of(node) else {
                 continue;
             };
@@ -1736,6 +1755,48 @@ impl ArchitectureGraph {
     /// Everything the graph records about `file`: its public symbols, the
     /// imports it writes, the imports elsewhere that load it, and the imports
     /// in it that map to no component.
+    /// For each file that holds Rust methods of a type another file defines
+    /// (a symbol's `impl` evidence), the statements that take that type from
+    /// its file, which may call them, each with the type's name.
+    pub fn method_takers(&self) -> BTreeMap<&str, Vec<(&Edge, &Evidence, &str)>> {
+        let mut types: BTreeMap<&str, BTreeSet<(&str, &str)>> = BTreeMap::new();
+        for e in self
+            .symbols
+            .values()
+            .flat_map(|s| &s.evidence)
+            .filter(|e| e.note.as_deref() == Some("impl"))
+        {
+            if let Some(type_file) = e.target.as_deref() {
+                for name in &e.names {
+                    types
+                        .entry(type_file)
+                        .or_default()
+                        .insert((e.file.as_str(), name.as_str()));
+                }
+            }
+        }
+        let mut takers: BTreeMap<&str, Vec<(&Edge, &Evidence, &str)>> = BTreeMap::new();
+        if types.is_empty() {
+            return takers;
+        }
+        for edge in self.edges.iter().filter(|e| e.kind == EdgeKind::Import) {
+            for e in &edge.evidence {
+                let Some(methods) = e.target.as_deref().and_then(|t| types.get(t)) else {
+                    continue;
+                };
+                let whole = e.names.is_empty() || e.names.contains(WHOLE_MODULE);
+                // one entry per file of methods, by the first type it takes
+                let mut seen: BTreeSet<&str> = BTreeSet::new();
+                for (file, name) in methods {
+                    if *file != e.file && (whole || e.names.contains(*name)) && seen.insert(file) {
+                        takers.entry(file).or_default().push((edge, e, name));
+                    }
+                }
+            }
+        }
+        takers
+    }
+
     pub fn file_facts(&self, file: &str) -> FileFacts<'_> {
         let file = file.trim_start_matches("./");
         let component = self.component_for_path(file);
