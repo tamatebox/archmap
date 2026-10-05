@@ -461,6 +461,7 @@ impl ArchitectureGraph {
         for (entry, importer, test) in statements.chain(self.files_below_entries(&index)) {
             if tests || !test {
                 files.insert(entry);
+                files.insert(importer);
                 if entry != importer {
                     runs_first
                         .entry(entry)

@@ -922,6 +922,33 @@ fn a_mocked_module_still_passes_types_on() {
 }
 
 #[test]
+fn a_package_manifest_changes_every_file_of_its_package() {
+    let ws = scan(&fixture("rust-cargo-targets"));
+    let out = text(&ws, "kiosk/Cargo.toml");
+    assert_eq!(section(&out, "Direct dependents: 1"), ["  depot"], "{out}");
+    assert_eq!(
+        section(&out, "Tests to run again: 3"),
+        [
+            "  kiosk/tests/shared.rs (in its package)",
+            "  kiosk/tests/stock.rs (in its package)",
+            "  kiosk/tests/total.rs (in its package)",
+            "  not tests: kiosk/benches/speed.rs (bench, in its package), kiosk/examples/demo.rs \
+             (example, in its package), kiosk/tests/common/mod.rs (helper, in its package, for 2 \
+             tests listed)"
+        ],
+        "{out}"
+    );
+    assert!(!out.contains("no importers"), "{out}");
+    // a file below a package entry that imports nothing is the package's
+    // own too, no dependent of it
+    let ws = scan(&fixture("python-bindings"));
+    for target in ["store", "pyproject.toml"] {
+        let out = text(&ws, target);
+        assert!(out.contains("\nDirect dependents: none"), "{target}: {out}");
+    }
+}
+
+#[test]
 fn small_lists_say_what_they_hold() {
     // a component's bench, example and helper are in the target
     let ws = scan(&fixture("rust-cargo-targets"));

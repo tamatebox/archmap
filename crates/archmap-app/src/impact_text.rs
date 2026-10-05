@@ -419,7 +419,7 @@ fn tests(out: &mut String, result: &ImpactResult, caps: &Caps) -> bool {
                     "  {dir} (conftest.py: pytest loads it for every test below)"
                 );
             }
-            None => match way_text(&test.ways, test.types_only, &result.about) {
+            None => match way_text(&test.ways, test.types_only, &result.about, &test.file) {
                 Some(how) => {
                     let _ = writeln!(out, "  {} ({how})", test.file);
                 }
@@ -439,8 +439,9 @@ fn tests(out: &mut String, result: &ImpactResult, caps: &Caps) -> bool {
             .map(|other| {
                 let mut notes = vec![other.kind.to_owned()];
                 if let Some(TestWayView::Target) = other.ways.first().map(|r| &r.way) {
-                    notes.push(match result.about {
+                    notes.push(match &result.about {
                         About::Component => "in the target".to_owned(),
+                        About::File(target) if *target != other.file => "in its package".to_owned(),
                         _ => "the target itself".to_owned(),
                     });
                 }
@@ -481,13 +482,15 @@ fn tests(out: &mut String, result: &ImpactResult, caps: &Caps) -> bool {
 
 /// How a test reaches the target, as its line says it: its nearest way
 /// that takes values, or where none does, its nearest.
-fn way_text(ways: &[TestRouteView], types_only: bool, about: &About) -> Option<String> {
+fn way_text(ways: &[TestRouteView], types_only: bool, about: &About, file: &str) -> Option<String> {
     let route = ways.iter().find(|r| !r.types_only).or(ways.first());
     let mock = route.is_some_and(|r| r.mock);
     let mut how = match route.map(|r| &r.way)? {
         TestWayView::Target => match about {
             About::Component => "in the target".to_owned(),
             About::Symbol(_) => "defines it".to_owned(),
+            // a package's manifest changes the files of its package
+            About::File(target) if target != file => "in its package".to_owned(),
             _ => "the target itself".to_owned(),
         },
         // a call that puts a mock in its place, and nothing else

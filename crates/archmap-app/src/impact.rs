@@ -222,7 +222,21 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
             let owner = full
                 .component_for_path(&file)
                 .with_context(|| format!("no component contains `{target}`"))?;
-            let reach = full.change_impact(ChangeSeed::File(&file), depth);
+            // a package's manifest, which no code is in, changes how every
+            // file of the package builds
+            let facts = full.file_facts(&file);
+            let manifest = owner.kind == ComponentKind::Package
+                && owner
+                    .evidence
+                    .iter()
+                    .any(|e| e.file == file && !e.is_entry())
+                && facts.imports.is_empty()
+                && facts.symbols.is_empty();
+            let seed = match manifest {
+                true => ChangeSeed::Component(&owner.id),
+                false => ChangeSeed::File(&file),
+            };
+            let reach = full.change_impact(seed, depth);
             importers = Some(import_sites(full, depth, &file, caps.sites));
             imports_below = below_sites(full, depth, &file, caps.sites);
             let at = fold(full, depth, &owner.id);

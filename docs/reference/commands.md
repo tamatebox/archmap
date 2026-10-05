@@ -571,7 +571,10 @@ calls load ends `, by its mock` (`(through src/orders.ts, by its mock)`).
 `types only` follows when no way runs what changed: running the test runs
 none of the change, though its type checks may break. A test file that is
 the target is marked `(the target itself)`, and one of a changed component
-`(in the target)`. The list holds what a test runner runs by its defaults:
+`(in the target)`. A package's manifest (`Cargo.toml`, `package.json`,
+`pyproject.toml`), which holds no code, changes how every file of its
+package builds, so `impact` on it reaches as far as the package does, and
+the package's tests read `(in its package)`. The list holds what a test runner runs by its defaults:
 pytest's `test_*.py` and `*_test.py` and the `tests.py` of Django and
 unittest (not unittest's wider `test*.py`), TS/JS `*.test.*` and `*.spec.*`
 files and those below `__tests__` (Jest's default; Vitest collects only
