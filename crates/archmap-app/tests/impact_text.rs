@@ -881,6 +881,56 @@ fn a_test_that_takes_what_changed_from_a_module_it_mocks_runs_again() {
 }
 
 #[test]
+fn a_mock_of_any_barrel_on_the_way_hides_the_change_from_what_goes_through_it() {
+    // user.ts takes core through top.ts, which passes on what mid.ts passes
+    // on: a test that mocks mid.ts and only loads user.ts runs none of core
+    let files: Vec<(String, String)> = [
+        (
+            "package.json",
+            r#"{"name": "chain", "devDependencies": {"vitest": "1.0.0"}}"#,
+        ),
+        (
+            "src/core.ts",
+            "export function core(): number {\n  return 1;\n}\n",
+        ),
+        ("src/mid.ts", "export * from './core';\n"),
+        ("src/top.ts", "export * from './mid';\n"),
+        (
+            "src/user.ts",
+            "import { core } from './top';\n\nexport const used = (): number => core();\n",
+        ),
+        (
+            "tests/user.test.ts",
+            "import { it, vi } from 'vitest';\nimport { used } from '../src/user';\n\n\
+             vi.mock('../src/mid', () => ({ unrelated: vi.fn() }));\n\nit('uses', () => used());\n",
+        ),
+        (
+            // a test that takes core by name type-checks against them all
+            "tests/named.test.ts",
+            "import { it, vi } from 'vitest';\nimport { core } from '../src/top';\n\n\
+             vi.mock('../src/mid', () => ({ unrelated: vi.fn() }));\n\nit('runs', () => core());\n",
+        ),
+    ]
+    .into_iter()
+    .map(|(file, text)| (file.to_owned(), text.to_owned()))
+    .collect();
+    let repo = Repo::new("barrel-chain", &files);
+    let ws = scan(&repo.0);
+    for target in ["src/core.ts", "core"] {
+        let out = text(&ws, target);
+        assert_eq!(
+            section(&out, "Tests to run again: 1"),
+            [
+                "  tests/named.test.ts (takes it, via src/top.ts:1)",
+                "  left out: 1 test file reaches it only through a module its mock replaces: \
+                 tests/user.test.ts:4 (mocks src/mid.ts)"
+            ],
+            "{target}: {out}"
+        );
+    }
+}
+
+#[test]
 fn a_mocked_module_still_passes_types_on() {
     // a test that takes a type through a module its mock replaces: a mock
     // replaces no type, for the file and for the symbol alike

@@ -362,10 +362,66 @@ impl ArchitectureGraph {
         // the statements that a walk through re-exports led to a file, by
         // that file, with the files they load: a mock that replaces one of
         // those hides the file from them
-        let mut walked: BTreeMap<&str, BTreeMap<&str, BTreeMap<&str, Link>>> = BTreeMap::new();
+        let mut walked: BTreeMap<&str, BTreeMap<&str, BTreeMap<Vec<&str>, Link>>> = BTreeMap::new();
         // the first re-export on the way of each such statement, by the file
         // it leads to and its own file
         let mut via_at: BTreeMap<(&str, &str), &str> = BTreeMap::new();
+        // the files a statement loads on its way to what it takes: through
+        // re-exports, every barrel on a way from the first to the file that
+        // defines it, a mock of any of which replaces what it takes
+        let mut re_exports: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        for e in self
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == EdgeKind::Import)
+            .flat_map(|edge| &edge.evidence)
+            .filter(|e| e.passes_on())
+        {
+            if let Some(target) = e.target.as_deref() {
+                re_exports
+                    .entry(e.file.as_str())
+                    .or_default()
+                    .insert(target);
+            }
+        }
+        let on_way = |e: &'s Evidence| -> Vec<&'s str> {
+            let Some(target) = e.target.as_deref() else {
+                return Vec::new();
+            };
+            let Some(first) = e.via().and_then(|at| Some(at.rsplit_once(':')?.0)) else {
+                return vec![target];
+            };
+            // what the first re-export leads to, then what of it leads on
+            // to the target
+            let mut ahead: BTreeSet<&str> = BTreeSet::from([first]);
+            let mut queue = vec![first];
+            while let Some(file) = queue.pop() {
+                for next in re_exports.get(file).into_iter().flatten() {
+                    if ahead.len() < 64 && ahead.insert(next) {
+                        queue.push(next);
+                    }
+                }
+            }
+            let mut leads: BTreeSet<&str> = BTreeSet::from([target]);
+            loop {
+                let more: Vec<&str> = ahead
+                    .iter()
+                    .filter(|f| !leads.contains(*f))
+                    .filter(|f| {
+                        re_exports
+                            .get(*f)
+                            .is_some_and(|to| to.iter().any(|t| leads.contains(t)))
+                    })
+                    .copied()
+                    .collect();
+                if more.is_empty() {
+                    break;
+                }
+                leads.extend(more);
+            }
+            leads.insert(first);
+            leads.into_iter().collect()
+        };
         // a declaration says a package is installed, not that a symbol of it
         // is used
         let symbol = matches!(seed, ChangeSeed::Symbol(..));
@@ -407,7 +463,7 @@ impl ArchitectureGraph {
                 }
                 let loaded = e.via().and_then(|place| Some(place.rsplit_once(':')?.0));
                 match (target, loaded) {
-                    (Node::File(t), Some(loaded)) => {
+                    (Node::File(t), Some(_)) => {
                         if let Some(place) = e.via() {
                             let at = via_at.entry((t, e.file.as_str())).or_insert(place);
                             *at = (*at).min(place);
@@ -417,7 +473,7 @@ impl ArchitectureGraph {
                             .or_default()
                             .entry(e.file.as_str())
                             .or_default()
-                            .entry(loaded)
+                            .entry(on_way(e))
                             .or_default()
                             .add(Link::of(e));
                     }
@@ -563,13 +619,26 @@ impl ArchitectureGraph {
                         .map(|(_, e)| *e)
                         .filter(names)
                         .collect();
+                    // test code that takes it by name type-checks against
+                    // the real modules on its way, whatever its mocks replace
+                    let by_name: BTreeSet<(&str, Option<u32>)> = found
+                        .by_name
+                        .iter()
+                        .map(|(_, e)| (e.file.as_str(), e.line))
+                        .collect();
+                    let way_of = |e: &'s Evidence| match test_code.contains(e.file.as_str())
+                        && by_name.contains(&(e.file.as_str(), e.line))
+                    {
+                        true => Vec::new(),
+                        false => on_way(e),
+                    };
                     let by_name = found.by_name.iter().map(|(_, e)| (Way::Takes(e.via()), *e));
                     let whole = may_use.iter().map(|e| (Way::Whole, *e));
                     for (way, e) in by_name.chain(whole).filter(|(_, e)| tests || !e.test) {
                         start_ways.entry(e.file.as_str()).or_default().push((
                             way,
                             e.type_only,
-                            e.target.as_deref(),
+                            way_of(e),
                         ));
                     }
                     let statements: Vec<&Evidence> = found
@@ -622,12 +691,12 @@ impl ArchitectureGraph {
                         if e.file == barrel {
                             continue;
                         }
-                        let loads = Some((barrel, e.type_only));
+                        let loads = Some((vec![barrel], e.type_only));
                         start.push((Node::File(e.file.as_str()), 2, loads));
                         start_ways.entry(e.file.as_str()).or_default().push((
                             Way::Through(barrel),
                             e.type_only,
-                            Some(barrel),
+                            vec![barrel],
                         ));
                         if !e.test {
                             production.insert(Node::File(e.file.as_str()));
@@ -638,7 +707,7 @@ impl ArchitectureGraph {
                         false => Node::File(e.file.as_str()),
                     };
                     start.extend(statements.iter().map(|e| {
-                        let loads = e.target.as_deref().map(|t| (t, e.type_only));
+                        let loads = e.target.is_some().then(|| (way_of(e), e.type_only));
                         (node(e), 1, loads)
                     }));
                     production.extend(statements.iter().filter(|e| !e.test).map(node));
@@ -647,10 +716,11 @@ impl ArchitectureGraph {
                     let test = test_code.contains(user);
                     if tests || !test {
                         start.push((Node::File(user), 1, None));
-                        start_ways
-                            .entry(user)
-                            .or_default()
-                            .push((Way::Takes(None), false, None));
+                        start_ways.entry(user).or_default().push((
+                            Way::Takes(None),
+                            false,
+                            Vec::new(),
+                        ));
                     }
                     if !test {
                         production.insert(Node::File(user));
@@ -743,10 +813,12 @@ impl ArchitectureGraph {
                 .iter()
                 .filter(|(node, _, loads)| {
                     (taken || !blocked(node))
-                        && loads.is_none_or(|(loaded, types)| types || !cut.contains(loaded))
+                        && loads.as_ref().is_none_or(|(loaded, types)| {
+                            *types || !loaded.iter().any(|l| cut.contains(l))
+                        })
                 })
                 .map(|(node, d, loads)| {
-                    let running = *d == 0 || loads.is_none_or(|(_, t)| !t);
+                    let running = *d == 0 || loads.as_ref().is_none_or(|(_, t)| !t);
                     (*node, *d, running && !blocked(node))
                 })
                 .collect();
@@ -816,10 +888,18 @@ impl ArchitectureGraph {
                         // a barrel of a changed file passes its names on, and
                         // any other barrel the names of what it loads
                         {
+                            // a mock of a barrel on the way replaces what the
+                            // statement takes, unless test code takes a name of
+                            // a changed file by it, which type-checks against
+                            // the real ones
                             for (importer, through) in walked.get(f).into_iter().flatten() {
+                                let named =
+                                    taken && test_code.contains(importer) && changed.contains(f);
                                 let mut open = through
                                     .iter()
-                                    .filter(|(loaded, link)| link.types || !cut.contains(*loaded))
+                                    .filter(|(way, link)| {
+                                        link.types || named || !way.iter().any(|l| cut.contains(l))
+                                    })
                                     .map(|(_, link)| *link);
                                 if let Some(mut link) = open.next() {
                                     open.for_each(|other| link.add(other));
@@ -1105,7 +1185,7 @@ impl ArchitectureGraph {
                     }
                 };
                 for (way, types, loads) in start_ways.get(t).into_iter().flatten() {
-                    let open = loads.is_none_or(|l| *types || cut.is_none_or(|c| !c.contains(l)));
+                    let open = *types || cut.is_none_or(|c| !loads.iter().any(|l| c.contains(l)));
                     if open {
                         keep(*way, 1, !types);
                     }
@@ -2189,12 +2269,12 @@ struct Walk<'a> {
 }
 
 /// How a statement that takes a symbol takes it, whether it takes types
-/// only, and the file it loads.
-type StartWay<'a> = (Way<'a>, bool, Option<&'a str>);
+/// only, and the files it loads on its way to the symbol.
+type StartWay<'a> = (Way<'a>, bool, Vec<&'a str>);
 
 /// Where a walk starts, at what distance, and for a statement that takes a
-/// symbol, the file it loads and whether it takes types only.
-type Start<'a> = (Node<'a>, usize, Option<(&'a str, bool)>);
+/// symbol, the files it loads on its way and whether it takes types only.
+type Start<'a> = (Node<'a>, usize, Option<(Vec<&'a str>, bool)>);
 
 /// How an importer depends on what it loads: through production code,
 /// through a statement that takes types only, of which a mock replaces
