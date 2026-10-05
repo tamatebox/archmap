@@ -1752,14 +1752,12 @@ impl ArchitectureGraph {
         found
     }
 
-    /// Everything the graph records about `file`: its public symbols, the
-    /// imports it writes, the imports elsewhere that load it, and the imports
-    /// in it that map to no component.
     /// For each file that holds Rust methods of a type another file defines
     /// (a symbol's `impl` evidence), the statements that take that type from
-    /// its file, which may call them, each with the type's name.
+    /// its file, which may call them, each with the type's name. Only test
+    /// code can call a method test code defines (`#[cfg(test)]`).
     pub fn method_takers(&self) -> BTreeMap<&str, Vec<(&Edge, &Evidence, &str)>> {
-        let mut types: BTreeMap<&str, BTreeSet<(&str, &str)>> = BTreeMap::new();
+        let mut types: BTreeMap<&str, BTreeSet<(&str, &str, bool)>> = BTreeMap::new();
         for e in self
             .symbols
             .values()
@@ -1768,10 +1766,11 @@ impl ArchitectureGraph {
         {
             if let Some(type_file) = e.target.as_deref() {
                 for name in &e.names {
-                    types
-                        .entry(type_file)
-                        .or_default()
-                        .insert((e.file.as_str(), name.as_str()));
+                    types.entry(type_file).or_default().insert((
+                        e.file.as_str(),
+                        name.as_str(),
+                        e.test,
+                    ));
                 }
             }
         }
@@ -1787,8 +1786,13 @@ impl ArchitectureGraph {
                 let whole = e.names.is_empty() || e.names.contains(WHOLE_MODULE);
                 // one entry per file of methods, by the first type it takes
                 let mut seen: BTreeSet<&str> = BTreeSet::new();
-                for (file, name) in methods {
-                    if *file != e.file && (whole || e.names.contains(*name)) && seen.insert(file) {
+                for (file, name, test) in methods {
+                    let callable = !test || e.test;
+                    if *file != e.file
+                        && callable
+                        && (whole || e.names.contains(*name))
+                        && seen.insert(file)
+                    {
                         takers.entry(file).or_default().push((edge, e, name));
                     }
                 }
@@ -1797,6 +1801,9 @@ impl ArchitectureGraph {
         takers
     }
 
+    /// Everything the graph records about `file`: its public symbols, the
+    /// imports it writes, the imports elsewhere that load it, and the imports
+    /// in it that map to no component.
     pub fn file_facts(&self, file: &str) -> FileFacts<'_> {
         let file = file.trim_start_matches("./");
         let component = self.component_for_path(file);

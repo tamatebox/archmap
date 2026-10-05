@@ -76,6 +76,11 @@ pub struct FileView<'a> {
     /// component. `None` when no evidence names imported files for the
     /// file's language, so importers are unknown rather than absent.
     pub importers: Option<Vec<Edge>>,
+    /// For a Rust file of methods of a type another file defines: the
+    /// statements that take the type from that file, which may call them,
+    /// one edge per importing component.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub method_takers: Vec<Edge>,
     /// For the entry file of a package that runs before its modules: the
     /// statements outside the package that import a module below it, which
     /// run it first, one edge per importing component.

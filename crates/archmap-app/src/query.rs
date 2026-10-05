@@ -71,6 +71,26 @@ fn file_view<'a>(
             },
         )
     });
+    // a Rust file of methods is reached through their type
+    let takers: Vec<(&Edge, &Evidence)> = full
+        .method_takers()
+        .remove(facts.file.as_str())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(edge, e, _)| (edge, e))
+        .collect();
+    let method_takers = edges_at_depth(
+        full,
+        depth,
+        &takers,
+        |e| &e.from,
+        |from, evidence| Edge {
+            from,
+            to: here.clone(),
+            kind: EdgeKind::Import,
+            evidence,
+        },
+    );
     let below = full.imports_below(&facts.file);
     let imports_below = edges_at_depth(
         full,
@@ -96,7 +116,9 @@ fn file_view<'a>(
             own: Own::File(&facts.file),
             script,
             // a package's entry file runs before the modules below it
-            unreached: importers.as_ref().is_some_and(Vec::is_empty) && below.is_empty(),
+            unreached: importers.as_ref().is_some_and(Vec::is_empty)
+                && below.is_empty()
+                && takers.is_empty(),
         },
         usize::MAX,
     );
@@ -110,6 +132,7 @@ fn file_view<'a>(
         symbols: facts.symbols,
         imports,
         importers,
+        method_takers,
         imports_below,
         not_mapped: facts.unmapped_imports,
         dynamic_imports: facts.dynamic_imports,

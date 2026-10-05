@@ -420,6 +420,11 @@ fn file(
             );
         }
     }
+    if !view.method_takers.is_empty() {
+        let takers = view.method_takers.iter().map(|e| (&e.from, e));
+        let title = "Take the type of its methods";
+        truncated |= neighbors(out, title, takers, rolled, pairs, false, caps);
+    }
     if !view.imports_below.is_empty() {
         let statements: BTreeSet<(&str, Option<u32>)> = view
             .imports_below

@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use archmap_app::{Format, ImpactRequest, ScanMode, Workspace, DEFAULT_DEPTH};
+use archmap_app::{Format, ImpactRequest, QueryRequest, ScanMode, Workspace, DEFAULT_DEPTH};
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -643,7 +643,15 @@ fn a_rust_file_of_methods_reaches_what_takes_their_type() {
             "[workspace]\nmembers = [\"p\", \"q\"]\n".to_owned(),
         ),
         ("p/Cargo.toml", manifest("p", "")),
-        ("p/src/lib.rs", "mod ops;\n\npub struct Calc;\n".to_owned()),
+        (
+            "p/src/lib.rs",
+            "mod fixtures;\nmod ops;\n\npub struct Calc;\n".to_owned(),
+        ),
+        (
+            "p/src/fixtures.rs",
+            "#[cfg(test)]\nimpl crate::Calc {\n    pub fn sample() -> crate::Calc {\n        crate::Calc\n    }\n}\n"
+                .to_owned(),
+        ),
         (
             "p/src/ops.rs",
             "use crate::Calc;\n\nimpl Calc {\n    pub fn add(&self, a: u32, b: u32) -> u32 {\n        a + b\n    }\n}\n"
@@ -685,6 +693,29 @@ fn a_rust_file_of_methods_reaches_what_takes_their_type() {
         ["  p/tests/add.rs (takes it)"],
         "{out}"
     );
+    // query lists them apart from the statements that import the file
+    let query = ws
+        .query(&QueryRequest {
+            target: "p/src/ops.rs",
+            depth: DEFAULT_DEPTH,
+            format: Format::Text,
+            verbose: false,
+        })
+        .unwrap()
+        .output;
+    assert!(query.contains("\nImported by: none\n"), "{query}");
+    assert_eq!(
+        section(&query, "Take the type of its methods: 2"),
+        [
+            "  q  1 import: q/src/main.rs:1",
+            "  p  1 import in tests: p/tests/add.rs:1 (test)"
+        ],
+        "{query}"
+    );
+    assert!(!query.contains("no importers"), "{query}");
+    // production code cannot call what a `#[cfg(test)]` impl defines
+    let out = text(&ws, "p/src/fixtures.rs");
+    assert!(out.contains("\nDirect dependents: none"), "{out}");
 }
 
 #[test]

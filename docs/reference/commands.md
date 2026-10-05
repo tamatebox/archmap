@@ -203,7 +203,11 @@ with a factory that never loads the real module) is marked `(mock)`.
 For a Python package's `__init__.py`, which runs before any module below it
 is loaded, a line counts the statements outside the package that import a
 module below it and names the `impact` that lists them (`Imports below: 5
-(they run it first): ...`); JSON lists them as `imports_below`.
+(they run it first): ...`); JSON lists them as `imports_below`. For a
+Rust file that holds methods of a type another file defines, `Take the type
+of its methods` lists the statements that take the type from that file,
+which may call the methods, as `Imported by` lists its importers; JSON lists
+them as `method_takers`.
 
 `query` on a symbol (by name, `Class.method` / `Type::method`, or by id)
 lists the statements that import it, from the names their evidence records
@@ -616,7 +620,8 @@ declaration or an import that names no file was the way, `declared_in` or
 "statements"}`, each statement its evidence (`file`, `line`, `note`,
 `target`, `scope`, `names`, `test`, `type_only`, `replaces`) with the
 `component` it is in and, for a symbol, the barrel it went through as
-`through`, `recorded` being false when no evidence names imported files for
+`through`, for a Rust file of methods the type a statement takes as
+`takes_type`, `recorded` being false when no evidence names imported files for
 the language; for a symbol, `used_at` as `query` gives it and `unnamed`,
 the statements that take its file whole and never name it, by `file` and
 `line`; `tests` as `{"total", "files"}` with every file by path, each
