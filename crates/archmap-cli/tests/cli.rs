@@ -1149,7 +1149,7 @@ fn query_a_rust_file_lists_the_statements_that_import_it() {
         "\nImports: 1\n  ext:cargo:serde  1 import: crates/lib_core/src/lib.rs:2\n",
         "\nImported by: 4\n",
         // a `use`, a module path in a function body, and a `use` in a test module
-        "\n  app::config                 2 imports, 1 in tests: crates/app/src/config.rs:1 (names User), crates/app/src/config.rs:12 (names greet) (local), crates/app/src/config.rs:17 (names User) (test)\n",
+        "\n  app::config                 2 imports, 1 in tests:\n    crates/app/src/config.rs:1 (names User)\n    crates/app/src/config.rs:12 (names greet) (local)\n    crates/app/src/config.rs:17 (names User) (test)\n",
         "\n  lib_core::billing::invoice  1 import: crates/lib_core/src/billing/invoice.rs:3 (names User)\n",
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
@@ -2289,7 +2289,7 @@ fn summary_and_query_count_a_pair_alike() {
     );
     let query = ts_stdout(&["query", "src/app/checkout.ts"]);
     assert!(
-        query.contains("ts-shop                3 imports, 2 through re-exports: "),
+        query.contains("ts-shop                3 imports, 2 through re-exports:\n    "),
         "{query}"
     );
     // a package's entry file into its own submodules: left out of the count,
@@ -2769,7 +2769,7 @@ fn a_statement_counts_for_a_barrel_unless_every_name_passes_through() {
         "{summary}"
     );
     assert!(
-        query.contains("\n  ui            2 imports, 1 through re-exports: "),
+        query.contains("\n  ui            2 imports, 1 through re-exports:\n    "),
         "{query}"
     );
 }

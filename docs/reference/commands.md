@@ -206,7 +206,9 @@ the function is called; the others run when their file loads. In a file's
 a location says which names the statement takes, as its
 evidence records them, in their order ignoring case: `(names formatPrice,
 Money, +2 more)`, three at most and every one with `--verbose`, or `(whole
-module)` for a namespace import, a module bound whole or `export *`. `(type)` marks
+module)` for a namespace import, a module bound whole or `export *`; a
+neighbor with more than one such statement lists them one to a line below
+it. `(type)` marks
 a statement that takes types only, so it never runs (a TS/JS `import type`,
 which the compiler erases, or a Python import under `if TYPE_CHECKING:`),
 `(server reference)` a statement in a `"use client"` file that takes server

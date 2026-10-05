@@ -378,6 +378,9 @@ fn neighbors<'a>(
     let width = names.iter().map(|n| n.chars().count()).max().unwrap_or(0);
     for ((_, n), name) in list.iter().take(shown).zip(&names) {
         let mut parts = Vec::new();
+        // statements that show their names go one to a line below the
+        // neighbor, which keeps lines short
+        let mut stacked: Vec<String> = Vec::new();
         if !n.imports.is_empty() {
             let locations: Vec<String> = n
                 .imports
@@ -408,11 +411,19 @@ fn neighbors<'a>(
                     counts.push(format!("{k} {what}"));
                 }
             }
-            let mut part = format!("{}: {}", counts.join(", "), locations.join(", "));
-            if more > 0 {
-                let _ = write!(part, ", +{more} more");
+            if show.names && locations.len() > 1 {
+                parts.push(counts.join(", "));
+                stacked = locations;
+                if more > 0 {
+                    stacked.push(format!("+{more} more"));
+                }
+            } else {
+                let mut part = format!("{}: {}", counts.join(", "), locations.join(", "));
+                if more > 0 {
+                    let _ = write!(part, ", +{more} more");
+                }
+                parts.push(part);
             }
-            parts.push(part);
         }
         if !n.declared.is_empty() {
             let places: Vec<String> = n
@@ -428,7 +439,14 @@ fn neighbors<'a>(
         for (kind, n) in &n.other {
             parts.push(format!("{n} {kind}"));
         }
-        let _ = writeln!(out, "  {name:<width$}  {}", parts.join("; "));
+        if stacked.is_empty() {
+            let _ = writeln!(out, "  {name:<width$}  {}", parts.join("; "));
+        } else {
+            let _ = writeln!(out, "  {name:<width$}  {}:", parts.join("; "));
+            for at in &stacked {
+                let _ = writeln!(out, "    {at}");
+            }
+        }
     }
     truncated
 }
