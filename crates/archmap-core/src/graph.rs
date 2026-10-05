@@ -913,8 +913,8 @@ impl ArchitectureGraph {
         // passes none of those modules, apart from one whose mock gives it a
         // name the change may alter (of a changed file, of a barrel that
         // passes a changed file's names on, the symbol), which the test
-        // depends on. One that a statement taking a symbol starts from
-        // depends on the symbol's name the same way.
+        // depends on, or from which the test's own statements take such a
+        // name by name, which it type-checks against the real module.
         let mut out: Vec<(&str, Vec<&Evidence>)> = Vec::new();
         // the walks with replaced modules cut, and the set each test's mocks
         // cut
@@ -994,16 +994,9 @@ impl ArchitectureGraph {
                     mocks.entry(e.file.as_str()).or_default().push(e);
                 }
             }
-            let starts: BTreeSet<&str> = start
-                .iter()
-                .filter_map(|(node, _, _)| match node {
-                    Node::File(f) | Node::Passes(f) | Node::Relays(f) => Some(*f),
-                    Node::Component(_) => None,
-                })
-                .collect();
             // one walk per set of replaced modules
             for (file, mocks) in mocks {
-                if starts.contains(file) || !distance.contains_key(&Node::File(file)) {
+                if !distance.contains_key(&Node::File(file)) {
                     continue;
                 }
                 let cut: BTreeSet<&str> =
