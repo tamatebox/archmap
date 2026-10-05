@@ -1094,6 +1094,31 @@ fn used_at_counts_the_uses_in_tests_apart() {
 }
 
 #[test]
+fn a_static_member_after_other_modifiers_is_no_member_of_values() {
+    let repo = Repo::new(
+        "static-modifiers",
+        &[
+            ("package.json", "{\"name\": \"web\"}\n"),
+            (
+                "src/wallet.ts",
+                "export class Wallet {\n  public static open(): Wallet { return new Wallet(); }\n  public pay(): void {}\n}\n",
+            ),
+            (
+                "src/use.ts",
+                "import { Wallet } from './wallet';\nexport const w: Wallet | null = null;\n",
+            ),
+        ],
+    );
+    let ws = scan(&repo.0);
+    let open = query(&ws, "Wallet.open").output;
+    assert!(!open.contains("through the class and this only"), "{open}");
+    assert!(!open.contains("values:"), "{open}");
+    // a member without `static` is still one of values
+    let pay = query(&ws, "Wallet.pay").output;
+    assert!(pay.contains("through the class and this only"), "{pay}");
+}
+
+#[test]
 fn names_of_test_code_that_contain_a_word_come_after_production_ones() {
     let repo = Repo::new(
         "contains-tests",

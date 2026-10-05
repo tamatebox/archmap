@@ -487,18 +487,36 @@ pub(crate) fn uses_of(
 }
 
 /// A method called through values of its type: a TS/JS class member that
-/// is not static (`Wallet.pay`, not `static open()`), or a Rust method that
-/// takes `self` (`Edge::weight`, not `Edge::new`).
+/// is not static (`Wallet.pay`, not `static open()` or `public static
+/// open()`), or a Rust method that takes `self` (`Edge::weight`, not
+/// `Edge::new`).
 pub(crate) fn instance_method(symbol: &Symbol) -> bool {
     let signature = symbol.signature.as_deref().unwrap_or("");
     match (symbol.name.contains('.'), symbol.name.contains("::")) {
-        // TS/JS `Class.method`, not `static`
-        (true, _) => !signature.starts_with("static "),
+        // TS/JS `Class.method` whose modifiers hold no `static`
+        (true, _) => !signature
+            .split_whitespace()
+            .take_while(|word| MODIFIERS.contains(word))
+            .any(|word| word == "static"),
         // Rust `Type::method` whose first parameter is `self`
         (_, true) => archmap_scan::takes_self(signature),
         _ => false,
     }
 }
+
+/// The words a TS/JS class member's signature may start with.
+const MODIFIERS: [&str; 10] = [
+    "public",
+    "private",
+    "protected",
+    "static",
+    "readonly",
+    "abstract",
+    "override",
+    "declare",
+    "async",
+    "accessor",
+];
 
 /// The component `at` points to, as `query` shows it.
 fn component_view<'a>(
