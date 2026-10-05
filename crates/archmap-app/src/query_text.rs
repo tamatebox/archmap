@@ -1610,6 +1610,30 @@ pub(crate) fn not_traced(
             with_more(&places, w.total)
         ));
     }
+    if let Some(c) = &found.class_values {
+        let what = match c.total {
+            1 => "1 place uses the class as a value".to_owned(),
+            n => format!("{n} places use the class as a value"),
+        };
+        let places: Vec<String> = c
+            .shown
+            .iter()
+            .take(cap)
+            .map(|s| {
+                let at = place(&s.file, s.line);
+                if s.test {
+                    format!("{at} (test)")
+                } else {
+                    at
+                }
+            })
+            .collect();
+        truncated |= places.len() < c.total;
+        lines.push(format!(
+            "  class values: {what}, which may call this: {}",
+            with_more(&places, c.total)
+        ));
+    }
     if let Some(n) = &found.strings {
         let what = match n.total {
             1 => "1 string names it by its dotted path".to_owned(),

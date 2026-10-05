@@ -590,9 +590,11 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
 - `Used at` does not read a method called through a value of its type (`wallet.pay()`), a member
   reached through a subclass (`Rich.open()`, `super.m()`; `Not traced` names the classes that extend it),
   `this.m()` in a subclass that only inherits `m`, what an `import()` or a `vi.importActual()` that is
-  not awaited gives (`import('./m').then((m) => m.f())`, named as a `whole module` place), or a member
+  not awaited gives (`import('./m').then((m) => m.f())`, named as a `whole module` place), a member
   kept under another name (`const fp = ns.formatPrice` is one use, and the uses of `fp` are not
-  followed). `this.m()` names the class's `m`, which a subclass may override.
+  followed), or a static member called through its class held as a value (`const W = Wallet;
+  W.open()`, `make(Wallet)`, named as a `class values` place). `this.m()` names the class's `m`, which
+  a subclass may override.
 - At a barrel, a statement whose walk found the name it takes defined in another file is no importer
   of the symbol the barrel also passes on; `via` evidence records the names as the defining file
   declares them, so a barrel whose own renaming re-export shadows that name (`export { x as

@@ -20,7 +20,7 @@ use archmap_core::{
 };
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    BindingIdentifier, BindingPattern, CallExpression, ClassElement, Expression,
+    BinaryOperator, BindingIdentifier, BindingPattern, CallExpression, ClassElement, Expression,
     IdentifierReference, ImportDeclarationSpecifier, ModuleExportName, Program, Statement,
     TSImportTypeQualifier, TSModuleReference,
 };
@@ -45,6 +45,10 @@ const FACTORY_MOCKS: [&str; 4] = ["vi.mock", "vi.doMock", "jest.mock", "jest.doM
 
 /// Test helpers that return a promise of the module, as `import()` does.
 const PROMISING_HELPERS: [&str; 2] = ["vi.importActual", "vi.importMock"];
+
+/// The note of an escape where a static member's class, not its module, is
+/// used as a value.
+const CLASS_ESCAPE: &str = "class";
 
 /// What the pass reads for one symbol.
 pub(crate) struct Request<'g> {
@@ -193,6 +197,9 @@ struct Read<'a> {
     /// The length of the path from the defining file's namespace to the
     /// symbol: a path at least that long starts at a module whole.
     tail: usize,
+    /// The symbol is a static member, which code reaches through its class
+    /// held as a value (`make(Wallet)`, `const W = Wallet`) unseen.
+    static_member: bool,
 }
 
 impl Read<'_> {
@@ -201,6 +208,13 @@ impl Read<'_> {
     /// symbol: neither the symbol itself nor the class of a member.
     fn holds_module(&self, rests: &[Vec<String>]) -> bool {
         rests.iter().any(|r| r.len() >= self.tail)
+    }
+
+    /// Whether a node that leads to the symbol along `rests` holds the
+    /// class of a static member, through which a use other than by a
+    /// static name may reach it.
+    fn holds_class(&self, rests: &[Vec<String>]) -> bool {
+        self.static_member && rests.iter().any(|r| r.len() + 1 == self.tail)
     }
 }
 
@@ -339,7 +353,8 @@ impl<'g> Pass<'g, '_> {
             return;
         };
         let allocator = Allocator::default();
-        let Some(read) = read_file(&allocator, &path, file, &text, test, self.tail.len()) else {
+        let Some(mut read) = read_file(&allocator, &path, file, &text, test, self.tail.len())
+        else {
             self.unread(file, None, UnreadReason::ParseError);
             return;
         };
@@ -347,28 +362,30 @@ impl<'g> Pass<'g, '_> {
         let exported = self.tail[0].clone();
         let local = local_name(&read.program.body, &exported).unwrap_or(exported);
         self.aliases = aliases(&read.program.body, &local, &self.tail[0]);
-        let scoping = read.semantic.scoping();
         let rests = vec![self.tail[1..].to_vec()];
         let mut uses = Vec::new();
+        let symbol = match global {
+            true => in_declare_global(&read, &local),
+            false => read
+                .semantic
+                .scoping()
+                .get_root_binding(local.as_str().into()),
+        };
+        // whether a member is static, before its class is followed
+        if let (Some(symbol), [_, member]) = (symbol, self.tail.as_slice()) {
+            let is_static = this_member(&read, symbol, member, &mut uses);
+            self.instance_member = is_static != Some(true);
+        }
+        read.static_member = self.tail.len() == 2 && !self.instance_member;
         // a global is also a member of the global object
         if global || script {
             global_members(&read, &local, &mut uses);
         }
-        let symbol = match global {
-            true => {
-                global_uses(&read, &local, &rests, &mut uses, self.out);
-                in_declare_global(&read, &local)
-            }
-            false => scoping.get_root_binding(local.as_str().into()),
-        };
-        let Some(symbol) = symbol else {
-            self.out.uses.extend(uses);
-            return;
-        };
-        follow_binding(&read, symbol, &local, &rests, 0, &mut uses, self.out);
-        if let [_, member] = self.tail.as_slice() {
-            let is_static = this_member(&read, symbol, member, &mut uses);
-            self.instance_member = is_static != Some(true);
+        if global {
+            global_uses(&read, &local, &rests, &mut uses, self.out);
+        }
+        if let Some(symbol) = symbol {
+            follow_binding(&read, symbol, &local, &rests, 0, &mut uses, self.out);
         }
         self.out.uses.extend(uses);
     }
@@ -385,6 +402,7 @@ impl<'g> Pass<'g, '_> {
             self.unread(file, None, UnreadReason::ParseError);
             return;
         };
+        read.static_member = tail == 2 && !self.instance_member;
         let by_line = loading_nodes(&read);
         for (&(line, _), evidence) in statements {
             read.test = evidence.test;
@@ -630,6 +648,7 @@ fn read_file<'a>(
         test,
         statement: None,
         tail,
+        static_member: false,
     })
 }
 
@@ -923,9 +942,13 @@ fn follow_node(
         return;
     }
     let module = read.holds_module(rests);
+    let class = !module && read.holds_class(rests);
     let escape = |out: &mut SymbolUses| {
         if module {
             out.escapes.push(evidence_at(read, span));
+        } else if class {
+            out.escapes
+                .push(evidence_at(read, span).with_note(CLASS_ESCAPE));
         }
     };
     let member = |name: &str, at: Span, uses: &mut Vec<SymbolUse>, out: &mut SymbolUses| {
@@ -1069,6 +1092,9 @@ fn follow_node(
         AstKind::ExportSpecifier(_)
         | AstKind::ExportDefaultDeclaration(_)
         | AstKind::JSXClosingElement(_) => {}
+        // a class constructed, compared or named in a type calls none of
+        // its static members
+        _ if class && !class_as_value(read, id, span) => {}
         _ => escape(out),
     }
 }
@@ -1121,6 +1147,20 @@ fn role_at(read: &Read, id: NodeId, span: Span) -> Option<UseRole> {
             _ => UseRole::Read,
         };
         return Some(role);
+    }
+}
+
+/// Whether a class at node `id` is used as a value, which may reach its
+/// static members (passed, kept, returned, rendered): not constructed
+/// (`new Wallet()`), compared by `instanceof`, or named in a type.
+fn class_as_value(read: &Read, id: NodeId, span: Span) -> bool {
+    match role_at(read, id, span) {
+        Some(UseRole::New | UseRole::Type) | None => false,
+        Some(_) => !matches!(
+            read.semantic.nodes().parent_kind(id),
+            AstKind::BinaryExpression(b)
+                if b.operator == BinaryOperator::Instanceof && b.right.span() == span
+        ),
     }
 }
 

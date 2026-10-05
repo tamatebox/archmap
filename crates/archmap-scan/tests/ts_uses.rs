@@ -146,6 +146,7 @@ fn every_statement_read_ends_in_one_of_the_lists() {
         "ts-reexports",
         "simple-ts-project",
         "ts-module-value",
+        "ts-static-members",
     ] {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures")
@@ -464,4 +465,35 @@ fn a_module_that_is_one_declaration_gives_it_to_require() {
     let boot = uses_of(&report, "Engine.boot");
     assert_eq!(shown(&boot), ["src/car.ts:2:25 call via 1"]);
     assert!(boot.unused.is_empty(), "{:?}", places(&boot.unused));
+}
+
+#[test]
+fn a_static_member_may_be_called_where_its_class_is_used_as_a_value() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/ts-static-members");
+    let report = scan(&root, &ScanOptions::default()).unwrap();
+    let open = uses_of(&report, "Wallet.open");
+    assert!(open.uses.is_empty(), "{:#?}", shown(&open));
+    // the class passed, kept in a variable, or reached through its module
+    // and passed: code there may call it, so no statement of them is a
+    // negative fact
+    let class: Vec<String> = open
+        .escapes
+        .iter()
+        .map(|e| format!("{}:{} {:?}", e.file, e.line.unwrap_or(0), e.note))
+        .collect();
+    assert_eq!(
+        class,
+        [
+            "src/alias.ts:3 Some(\"class\")",
+            "src/boot.ts:4 Some(\"class\")",
+            "src/registry.ts:7 Some(\"class\")",
+        ]
+    );
+    // constructed, compared by `instanceof` and named in a type: never
+    // the static member
+    assert_eq!(places(&open.unused), ["src/plain.ts:1"]);
+    // a member that is not static goes by `values` instead
+    let pay = uses_of(&report, "Wallet.pay");
+    assert!(pay.escapes.is_empty(), "{:?}", places(&pay.escapes));
+    assert!(pay.unused.is_empty(), "{:?}", places(&pay.unused));
 }

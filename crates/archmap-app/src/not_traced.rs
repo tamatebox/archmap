@@ -54,6 +54,11 @@ pub struct NotTraced {
     /// the symbol unseen.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) whole_module: Option<Spots>,
+    /// Places where the class of a static member is used as a value
+    /// (passed, kept in a variable, `C[key]`): that code may call the
+    /// member unseen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) class_values: Option<Spots>,
     /// Strings that name a symbol by its dotted path
     /// (`mock.patch("shop.charge.pay")`): code that looks the name up there
     /// may use the symbol unseen.
@@ -433,14 +438,21 @@ pub(crate) fn with_uses(
     instance_method: bool,
 ) -> Option<NotTraced> {
     let mut found = found.unwrap_or_default();
-    // a string that names the symbol, apart from a module used as a value
-    let (strings, values): (Vec<&Evidence>, Vec<&Evidence>) = uses
-        .escapes
-        .iter()
-        .partition(|e| e.note.as_deref() == Some("string"));
+    // a string that names the symbol, or a static member's class used as
+    // a value, apart from a module used as a value
+    let noted = |note: &str| -> Vec<&Evidence> {
+        uses.escapes
+            .iter()
+            .filter(|e| match e.note.as_deref() {
+                Some(n @ ("class" | "string")) => n == note,
+                _ => note.is_empty(),
+            })
+            .collect()
+    };
     for (list, into) in [
-        (values, &mut found.whole_module),
-        (strings, &mut found.strings),
+        (noted(""), &mut found.whole_module),
+        (noted("class"), &mut found.class_values),
+        (noted("string"), &mut found.strings),
     ] {
         if list.is_empty() {
             continue;
@@ -518,6 +530,7 @@ pub(crate) fn with_uses(
         && found.global.is_none()
         && found.no_importers.is_none()
         && found.whole_module.is_none()
+        && found.class_values.is_none()
         && found.strings.is_none()
         && found.uses.is_none()
         && found.values.is_none()

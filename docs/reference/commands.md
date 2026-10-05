@@ -372,7 +372,12 @@ too (`as globalThis.registry`). For any
 member, `Not traced` names the places that extend its class
 (`subclasses`): a subclass reaches its members, statics included
 (`Rich.open()`, `super.open()`), and the pass does not read those calls, so
-a file that extends the class is never `never used` either. `Not traced` also names the
+a file that extends the class is never `never used` either. For a static
+member, it names the places that use its class as a value (`class values`:
+`make(Wallet)`, `const W = Wallet`, `Wallet[key]`, `make(m.Wallet)`), where
+code may call the member through it unseen; constructing the class, an
+`instanceof` and a type name call no static member and count for nothing,
+and a statement whose class is used that way is never `never used`. `Not traced` also names the
 places that use the symbol's module as a value (`whole module`: passed as an
 argument, `ns[key]`, the promise of an `import()` not awaited), which may use
 it unseen; and the statements whose
@@ -383,7 +388,8 @@ a module that offers no path to the symbol the pass can follow, a parse
 error, or a file gone. `--format json` gives everything under `used_at`:
 every use with its column, its role, the name it goes by and the import
 statement it goes through (`uses`), and the statements that end otherwise:
-`unused`, `escapes`, `renamed` (passed on under another name), `passed_on`
+`unused`, `escapes` (noted `class` where a static member's class is used
+as a value), `renamed` (passed on under another name), `passed_on`
 (only re-exported), `values` (a
 member's class bound, which values or subclasses may reach it through),
 `subclasses`, `mocked` and `unread`.
@@ -943,6 +949,9 @@ target's own imports without an edge stay under `Not mapped`.
 - `whole_module`: for a symbol, places where a binding of its module whole
   is used other than by a static name (passed as a value, `ns[key]`), where
   code may use it unseen (see `Used at` under [query](#query)).
+- `class_values`: for a static member, places where its class is used as a
+  value (passed, kept in a variable, `C[key]`), where code may call it
+  unseen.
 - `strings`: for a symbol, strings that name it by its dotted path
   (`mock.patch("shop.charge.pay")`), where code that looks the name up may
   use it.

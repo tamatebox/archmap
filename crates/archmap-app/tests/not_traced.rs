@@ -557,3 +557,31 @@ fn an_alias_is_named_like_files_of_its_own_package_only() {
         "{text}"
     );
 }
+
+#[test]
+fn a_static_member_names_where_its_class_is_used_as_a_value() {
+    // `make(Wallet)`, `const W = Wallet`, `make(w.Wallet)`: code there may
+    // call `Wallet.open` unseen, so their statements are no negative fact
+    let ws = scan(&fixture("ts-static-members"));
+    let text = query(&ws, "Wallet.open", Format::Text);
+    assert!(
+        text.ends_with(
+            "\nNot traced (what this answer may miss):\n  \
+             class values: 3 places use the class as a value, which may call this: \
+             src/alias.ts:3, src/boot.ts:4, src/registry.ts:7\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("\n  never used (1 import): src/plain.ts:1\n"),
+        "{text}"
+    );
+    // the statement that takes the module whole stays in the reach
+    let impact = impact(&ws, "Wallet.open");
+    assert_eq!(impact["not_traced"]["class_values"]["total"], 3, "{impact}");
+    assert!(impact.get("unnamed").is_none(), "{impact}");
+    assert_eq!(
+        impact["tests"]["files"][0]["file"], "tests/boot.test.ts",
+        "{impact}"
+    );
+}
