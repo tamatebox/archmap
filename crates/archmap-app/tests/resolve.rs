@@ -618,6 +618,57 @@ fn names_that_contain_a_word_that_names_nothing_are_candidates() {
 }
 
 #[test]
+fn statements_say_which_names_they_take() {
+    let repo = Repo::new(
+        "taken-names",
+        &[
+            ("package.json", "{\"name\": \"web\"}\n"),
+            (
+                "src/m.ts",
+                "export const a = 1, b = 2, c = 3, d = 4, e = 5;\n",
+            ),
+            (
+                "src/u.ts",
+                "import { a, b, c, d, e } from './m';\nexport const u = a + b + c + d + e;\n",
+            ),
+            (
+                "src/w.ts",
+                "import * as m from './m';\nexport const w = m.a;\n",
+            ),
+            (
+                "src/one.ts",
+                "import { a } from './m';\nexport const one = a;\n",
+            ),
+        ],
+    );
+    let ws = scan(&repo.0);
+    let answer = query(&ws, "src/m.ts");
+    for line in [
+        "src/u.ts:1 (names a, b, c, +2 more)",
+        "src/w.ts:1 (whole module)",
+        "src/one.ts:1 (names a)",
+        "Marks: (names a, b) the names it takes; (whole module) takes the module whole",
+    ] {
+        assert!(answer.output.contains(line), "{line}: {}", answer.output);
+    }
+    let answer = query(&ws, "src/one.ts");
+    assert!(
+        answer.output.contains("src/one.ts:1 -> src/m.ts (names a)"),
+        "{}",
+        answer.output
+    );
+    let answer = impact_as(&ws, "src/m.ts", Format::Text);
+    assert!(
+        answer.output.contains("  src/one.ts:1 (names a)"),
+        "{}",
+        answer.output
+    );
+    // a symbol's importers take it: no names
+    let answer = impact_as(&ws, "web::src/m.ts::e", Format::Text);
+    assert!(!answer.output.contains("(names"), "{}", answer.output);
+}
+
+#[test]
 fn names_of_test_code_that_contain_a_word_come_after_production_ones() {
     let repo = Repo::new(
         "contains-tests",

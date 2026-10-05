@@ -158,8 +158,24 @@ fn component(
 
     let outgoing = view.outgoing.iter().map(|e| (&e.to, *e));
     let incoming = view.incoming.iter().map(|e| (&e.from, e.as_ref()));
-    truncated |= neighbors(out, "Depends on", outgoing, rolled, pairs, true, caps);
-    truncated |= neighbors(out, "Used by", incoming, rolled, pairs, true, caps);
+    truncated |= neighbors(
+        out,
+        "Depends on",
+        outgoing,
+        rolled,
+        pairs,
+        Shown::TARGETS,
+        caps,
+    );
+    truncated |= neighbors(
+        out,
+        "Used by",
+        incoming,
+        rolled,
+        pairs,
+        Shown::TARGETS,
+        caps,
+    );
     if c.kind != ComponentKind::External {
         truncated |= not_mapped(out, &view.not_mapped, &view.dynamic_imports, caps);
     }
@@ -211,7 +227,7 @@ fn not_mapped(
         let locations: Vec<String> = evidence
             .iter()
             .take(caps.locations)
-            .map(|e| import_location(e, 0, false))
+            .map(|e| import_location(e, 0, false, false))
             .collect();
         let more = evidence.len().saturating_sub(caps.locations);
         truncated |= more > 0;
@@ -249,6 +265,33 @@ struct Neighbor<'a> {
     other: BTreeMap<&'static str, usize>,
 }
 
+/// What a neighbor's statements show besides their place: the file each
+/// points at, and the names it takes.
+#[derive(Clone, Copy)]
+struct Shown {
+    targets: bool,
+    names: bool,
+}
+
+impl Shown {
+    const NONE: Shown = Shown {
+        targets: false,
+        names: false,
+    };
+    const TARGETS: Shown = Shown {
+        targets: true,
+        names: false,
+    };
+    const NAMES: Shown = Shown {
+        targets: false,
+        names: true,
+    };
+    const BOTH: Shown = Shown {
+        targets: true,
+        names: true,
+    };
+}
+
 /// One line per neighboring component: import statements (count and a few
 /// locations), manifest declarations, other edge kinds. Returns whether
 /// anything was left out.
@@ -258,7 +301,7 @@ fn neighbors<'a>(
     edges: impl Iterator<Item = (&'a ComponentId, &'a Edge)>,
     rolled: &ArchitectureGraph,
     pairs: &Pairs,
-    show_targets: bool,
+    show: Shown,
     caps: &Caps,
 ) -> bool {
     let mut by_id: BTreeMap<&ComponentId, Neighbor> = BTreeMap::new();
@@ -333,7 +376,7 @@ fn neighbors<'a>(
                 .iter()
                 .take(caps.locations)
                 .map(|(e, more, c)| {
-                    let mut at = import_location(e, more.len(), show_targets);
+                    let mut at = import_location(e, more.len(), show.targets, show.names);
                     if *c == Counted::Through {
                         at.push_str(" (through)");
                     }
@@ -405,7 +448,7 @@ fn file(
     }
 
     let imports = view.imports.iter().map(|e| (&e.to, e));
-    truncated |= neighbors(out, "Imports", imports, rolled, pairs, true, caps);
+    truncated |= neighbors(out, "Imports", imports, rolled, pairs, Shown::BOTH, caps);
     match &view.importers {
         // a side-effect import can still load a script
         Some(edges) if view.script && edges.is_empty() => {
@@ -417,7 +460,15 @@ fn file(
         }
         Some(edges) => {
             let importers = edges.iter().map(|e| (&e.from, e));
-            truncated |= neighbors(out, "Imported by", importers, rolled, pairs, false, caps);
+            truncated |= neighbors(
+                out,
+                "Imported by",
+                importers,
+                rolled,
+                pairs,
+                Shown::NAMES,
+                caps,
+            );
         }
         None => {
             let language = component
@@ -432,7 +483,7 @@ fn file(
     if !view.method_takers.is_empty() {
         let takers = view.method_takers.iter().map(|e| (&e.from, e));
         let title = "Take the type of its methods";
-        truncated |= neighbors(out, title, takers, rolled, pairs, false, caps);
+        truncated |= neighbors(out, title, takers, rolled, pairs, Shown::NONE, caps);
     }
     if !view.imports_below.is_empty() {
         let statements: BTreeSet<(&str, Option<u32>)> = view
@@ -829,7 +880,7 @@ pub(crate) fn used_at(out: &mut String, view: &UsedAt, use_files: usize, locatio
             .iter()
             .take(locations)
             .map(|e| {
-                let mut place = import_location(e, 0, false);
+                let mut place = import_location(e, 0, false, false);
                 for name in &e.names {
                     let _ = write!(place, " as {name}");
                 }
@@ -899,7 +950,7 @@ fn sites(
         statements_title(title, note, list.len(), shown, exports)
     );
     for importer in list.iter().take(shown) {
-        let mut line = import_location(importer.evidence, 0, false);
+        let mut line = import_location(importer.evidence, 0, false, false);
         if let Some(barrel) = importer.through {
             let _ = write!(line, " ({taken} {barrel}, which passes it on)");
         }
@@ -1052,7 +1103,12 @@ pub(crate) fn display<'a>(graph: &'a ArchitectureGraph, id: &'a ComponentId) -> 
 /// the re-export it went through when its note says so, and `(local)` when
 /// it sits inside a function body, so it runs only when the function is
 /// called.
-pub(crate) fn import_location(evidence: &Evidence, more_files: usize, show_target: bool) -> String {
+pub(crate) fn import_location(
+    evidence: &Evidence,
+    more_files: usize,
+    show_target: bool,
+    show_names: bool,
+) -> String {
     let mut out = location(evidence);
     if let Some(target) = evidence.target.as_ref().filter(|_| show_target) {
         let _ = write!(out, " -> {target}");
@@ -1062,6 +1118,9 @@ pub(crate) fn import_location(evidence: &Evidence, more_files: usize, show_targe
     }
     if let Some(place) = evidence.note.as_deref().and_then(crate::pairs::via_place) {
         let _ = write!(out, " (via {place})");
+    }
+    if show_names {
+        out.push_str(&taken_names(evidence));
     }
     // a re-export statement passes names on: not a use of them
     if evidence.note.as_deref() == Some("export") {
@@ -1084,16 +1143,47 @@ pub(crate) fn import_location(evidence: &Evidence, more_files: usize, show_targe
     out
 }
 
+/// How many of the names a statement takes its line shows.
+const SHOWN_NAMES: usize = 3;
+
+/// ` (names formatPrice, Money, +2 more)`, or ` (whole module)`: the names
+/// a statement takes from what it imports, as its evidence records them;
+/// nothing for one that records none.
+fn taken_names(evidence: &Evidence) -> String {
+    if evidence.names.is_empty() {
+        return String::new();
+    }
+    if evidence.names.contains(WHOLE_MODULE) {
+        return " (whole module)".to_owned();
+    }
+    let names: Vec<&str> = evidence.names.iter().map(String::as_str).collect();
+    let mut out = format!(
+        " (names {}",
+        names[..names.len().min(SHOWN_NAMES)].join(", ")
+    );
+    if names.len() > SHOWN_NAMES {
+        let _ = write!(out, ", +{} more", names.len() - SHOWN_NAMES);
+    }
+    out.push(')');
+    out
+}
+
 /// Every mark an answer writes, as written after a space, as the `Marks`
 /// line names it, and what it means, in the order that line lists them: a
 /// statement's marks as `import_location` writes them, the one a neighbor's
 /// statement adds, the roles of a use, then a path's in the history. A new
 /// mark gets its entry here.
-const MARKS: [(&str, &str, &str); 13] = [
+const MARKS: [(&str, &str, &str); 15] = [
     (
         " (via ",
         "(via file:line)",
         "reached through that re-export",
+    ),
+    (" (names ", "(names a, b)", "the names it takes"),
+    (
+        " (whole module)",
+        "(whole module)",
+        "takes the module whole",
     ),
     (" (export)", "(export)", "a re-export, passes names on"),
     (" (mock)", "(mock)", "a test's mock replaces the module"),

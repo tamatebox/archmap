@@ -72,19 +72,23 @@ pub(crate) fn render(
     truncated |= importers(&mut out, result, full, rolled, &caps);
     if let Some(below) = &result.imports_below {
         let note = Some("they run it first");
-        truncated |= statements(
-            &mut out,
-            "Imports below",
+        let list = List {
+            title: "Imports below",
             note,
-            "from",
-            below,
-            rolled,
-            &caps,
-        );
+            taken: "from",
+            names: false,
+        };
+        truncated |= statements(&mut out, list, below, rolled, &caps);
     }
     if let Some(may_use) = result.may_use.as_ref().filter(|s| s.total > 0) {
         let note = Some("imports the whole module");
-        truncated |= statements(&mut out, "May use", note, "whole", may_use, rolled, &caps);
+        let list = List {
+            title: "May use",
+            note,
+            taken: "whole",
+            names: false,
+        };
+        truncated |= statements(&mut out, list, may_use, rolled, &caps);
     }
     if let (Some(uses), About::Symbol(symbol)) = (&result.used_at, &result.about) {
         let language = full
@@ -240,7 +244,14 @@ fn importers(
             false
         }
         (Some(sites), _) if sites.recorded => {
-            statements(out, "Imported by", None, "from", sites, rolled, caps)
+            let list = List {
+                title: "Imported by",
+                note: None,
+                taken: "from",
+                // a symbol's importers take it: the names say nothing more
+                names: !matches!(result.about, About::Symbol(_)),
+            };
+            statements(out, list, sites, rolled, caps)
         }
         // not recorded for the language, or a symbol whose importers are
         // unknown
@@ -255,24 +266,40 @@ fn importers(
     }
 }
 
+/// A list of statements as `statements` writes it.
+struct List<'a> {
+    title: &'a str,
+    note: Option<&'a str>,
+    /// How a statement through a barrel takes it: `from` for the name,
+    /// `whole`.
+    taken: &'a str,
+    /// Whether a line says which names its statement takes.
+    names: bool,
+}
+
 /// One statement per line, as `query` locates it, with the barrel it went
-/// through (`taken`: `from` for the name, `whole`) and the component it is
-/// in unless that component is its file.
+/// through and the component it is in unless that component is its file.
 fn statements(
     out: &mut String,
-    title: &str,
-    note: Option<&str>,
-    taken: &str,
+    list: List,
     sites: &ImportSites,
     rolled: &ArchitectureGraph,
     caps: &Caps,
 ) -> bool {
+    let List {
+        title,
+        note,
+        taken,
+        names: show_names,
+    } = list;
     let shown = sites.shown.len().min(caps.statements);
     let heading = statements_title(title, note, sites.total, shown, sites.exports);
     let _ = writeln!(out, "\n{heading}");
     let rest = &sites.shown[shown..];
     for site in &sites.shown[..shown] {
-        let mut line = import_location(site.evidence, 0, false);
+        // a type's taker names the type below
+        let names = show_names && site.takes_type.is_none();
+        let mut line = import_location(site.evidence, 0, false, names);
         if let Some(barrel) = site.through {
             let _ = write!(line, " ({taken} {barrel}, which passes it on)");
         }

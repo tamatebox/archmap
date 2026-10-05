@@ -165,7 +165,12 @@ and each neighboring component with its import count and a few example
 locations. A location names the file the statement loads when archmap knows
 it, as in `src/shop/billing/charge.py:5 -> src/shop/users.py`, and ends in
 `(local)` when the import sits inside a function body and so runs only when
-the function is called; the others run when their file loads. `(type)` marks
+the function is called; the others run when their file loads. In a file's
+`Imports` and `Imported by`, and in `impact`'s `Imported by` for a target
+that is no symbol, a location says which names the statement takes, as its
+evidence records them: `(names formatPrice, Money, +2 more)`, three at
+most, or `(whole module)` for a namespace import, a module bound whole or
+`export *`. `(type)` marks
 a statement that takes types only, so it never runs (a TS/JS `import type`,
 which the compiler erases, or a Python import under `if TYPE_CHECKING:`),
 and `(test)` a statement in test code. An answer that shows marks says
@@ -494,11 +499,11 @@ Direct dependents: 4
   ts-shop (src/index.ts)  1 import
 
 Imported by: 6, showing 5 (1 re-export)
-  src/app/checkout.ts:8 (via src/index.ts:8) (type)
-  src/app/checkout.ts:9 (via src/index.ts:8) (type)
-  src/app/page.tsx:2 (type)
-  src/index.ts:8 (export) (type)  in ts-shop
-  src/lib/money.ts:4 (type)
+  src/app/checkout.ts:8 (via src/index.ts:8) (names Money) (type)
+  src/app/checkout.ts:9 (via src/index.ts:8) (names Money) (type)
+  src/app/page.tsx:2 (names Money) (type)
+  src/index.ts:8 (names Money) (export) (type)  in ts-shop
+  src/lib/money.ts:4 (names Money) (type)
   1 more in: tests/money.test.ts 1
 
 Transitive dependents: 2 more (6 in all)
@@ -509,7 +514,7 @@ Tests to run again: 1
   tests/money.test.ts (mocks it)
   not tests: tests/helpers.ts (helper, for 1 test listed)
 
-Marks: (via file:line) reached through that re-export; (export) a re-export, passes names on; (type) types only, never runs
+Marks: (via file:line) reached through that re-export; (names a, b) the names it takes; (export) a re-export, passes names on; (type) types only, never runs
 
 Not traced (what this answer may miss):
   dynamic: 1 call loads a module by a computed name, which may be this: scripts/report.cjs:4

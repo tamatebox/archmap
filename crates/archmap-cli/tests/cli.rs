@@ -1096,7 +1096,7 @@ fn query_a_file_shows_its_symbols_imports_and_importers() {
         "id: mixed::app.utils\n",
         "Public symbols: 1\n  def get_logger()  app/utils/log.py:1\n",
         "Imports: none\n",
-        "Imported by: 2\n  app.core    1 import: app/core/__init__.py:1\n  app.models  1 import: app/models/__init__.py:1\n",
+        "Imported by: 2\n  app.core    1 import: app/core/__init__.py:1 (names get_logger)\n  app.models  1 import: app/models/__init__.py:1 (names get_logger)\n",
         "Not mapped: none\n",
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
@@ -1104,14 +1104,16 @@ fn query_a_file_shows_its_symbols_imports_and_importers() {
     // a dotted module name reaches the same file
     let dotted = query_text(&mixed_fixture(), &["app.utils.log"]);
     assert!(
-        dotted.contains("Imported by: 2\n  app.core    1 import: app/core/__init__.py:1\n"),
+        dotted.contains(
+            "Imported by: 2\n  app.core    1 import: app/core/__init__.py:1 (names get_logger)\n"
+        ),
         "{dotted}"
     );
     // what a file imports names the loaded file and marks local imports
     let b = query_text(&mixed_fixture(), &["app/b/__init__.py"]);
     assert!(
         b.contains(
-            "Imports: 1\n  app.a  1 import: app/b/__init__.py:2 -> app/a/__init__.py (local)\n"
+            "Imports: 1\n  app.a  1 import: app/b/__init__.py:2 -> app/a/__init__.py (names run) (local)\n"
         ),
         "{b}"
     );
@@ -1125,7 +1127,9 @@ fn a_file_imported_by_bare_name_from_its_own_directory_has_that_importer() {
     // scripts/report.py runs as a script and writes `import helpers`
     let text = query_text(&python_fixture(), &["scripts/helpers.py"]);
     assert!(
-        text.contains("\nImported by: 1\n  scripts  1 import: scripts/report.py:3\n"),
+        text.contains(
+            "\nImported by: 1\n  scripts  1 import: scripts/report.py:3 (whole module)\n"
+        ),
         "{text}"
     );
     let impact = fixture_json(&["impact", "scripts/helpers.py", "--format", "json"]);
@@ -1145,8 +1149,8 @@ fn query_a_rust_file_lists_the_statements_that_import_it() {
         "\nImports: 1\n  ext:cargo:serde  1 import: crates/lib_core/src/lib.rs:2\n",
         "\nImported by: 4\n",
         // a `use`, a module path in a function body, and a `use` in a test module
-        "\n  app::config                 2 imports, 1 in tests: crates/app/src/config.rs:1, crates/app/src/config.rs:12 (local), crates/app/src/config.rs:17 (test)\n",
-        "\n  lib_core::billing::invoice  1 import: crates/lib_core/src/billing/invoice.rs:3\n",
+        "\n  app::config                 2 imports, 1 in tests: crates/app/src/config.rs:1 (names User), crates/app/src/config.rs:12 (names greet) (local), crates/app/src/config.rs:17 (names User) (test)\n",
+        "\n  lib_core::billing::invoice  1 import: crates/lib_core/src/billing/invoice.rs:3 (names User)\n",
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
     }
@@ -1155,7 +1159,7 @@ fn query_a_rust_file_lists_the_statements_that_import_it() {
     assert!(
         invoice.contains(
             "\nImported by: 1\n  app::config  1 import: crates/app/src/config.rs:1 \
-             (via crates/lib_core/src/lib.rs:7)\n"
+             (via crates/lib_core/src/lib.rs:7) (names Invoice)\n"
         ),
         "{invoice}"
     );
@@ -1585,7 +1589,7 @@ fn a_folded_ts_file_is_queried_as_its_file() {
     let text = ts_stdout(&["query", "tests/helpers.ts", "--depth", "1"]);
     for expected in [
         "tests/helpers.ts (file) in tests (module, typescript), depth 1\n",
-        "\nImported by: 1\n  tests  1 import in tests: tests/money.test.ts:3 (test)\n",
+        "\nImported by: 1\n  tests  1 import in tests: tests/money.test.ts:3 (names makeWallet) (test)\n",
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
     }
@@ -1969,7 +1973,10 @@ fn a_rust_module_symbol_points_at_its_component() {
 fn re_export_statements_are_marked_among_importers() {
     // a file query: `export { default as limitOf } from` beside an import
     let file = ts_stdout(&["query", "src/lib/limits.ts"]);
-    assert!(file.contains("src/index.ts:3 (export)"), "{file}");
+    assert!(
+        file.contains("src/index.ts:3 (names limitOf) (export)"),
+        "{file}"
+    );
     assert!(!file.contains("src/index.ts:5 (export)"), "{file}");
     // a symbol query counts them apart
     let symbol = ts_stdout(&["query", "limitOf"]);
@@ -2043,9 +2050,9 @@ fn ids_that_the_shell_would_expand_are_quoted() {
 fn imports_of_types_only_are_marked_in_query() {
     let text = ts_stdout(&["query", "src/lib/types.ts"]);
     for expected in [
-        "src/app/page.tsx:2 (type)",
+        "src/app/page.tsx:2 (names Money) (type)",
         // a re-export of a type only
-        "src/index.ts:8 (export) (type)",
+        "src/index.ts:8 (names Money) (export) (type)",
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
     }
@@ -2090,16 +2097,16 @@ fn imports_written_as_calls_show_where_they_run() {
     let text = ts_stdout(&["query", "src/app/lazy.tsx"]);
     for expected in [
         // `lazy(() => import(..))` runs when the component first renders
-        "src/app/lazy.tsx:3 -> src/components/button.tsx (local)",
+        "src/app/lazy.tsx:3 -> src/components/button.tsx (whole module) (local)",
         // `typeof import(..)` never runs
-        "src/app/lazy.tsx:4 -> src/lib/limits.ts (type)",
+        "src/app/lazy.tsx:4 -> src/lib/limits.ts (whole module) (type)",
         "import()  dynamic  1 call: src/app/lazy.tsx:7 (local)",
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
     }
     let text = ts_stdout(&["query", "scripts/report.cjs"]);
     for expected in [
-        "scripts/report.cjs:1 -> scripts/format.cjs\n",
+        "scripts/report.cjs:1 -> scripts/format.cjs (names pad)\n",
         "require  dynamic  1 call: scripts/report.cjs:4 (local)",
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
@@ -2135,8 +2142,8 @@ fn test_code_is_marked_and_listed_apart() {
     let text = ts_stdout(&["query", "src/lib/money.ts"]);
     for expected in [
         // production importers first; a test file's import is marked
-        "tests/money.test.ts  1 import in tests: tests/money.test.ts:2 (test)",
-        "tests/helpers.ts     1 import in tests: tests/helpers.ts:1 (test)",
+        "tests/money.test.ts  1 import in tests: tests/money.test.ts:2 (names formatPrice) (test)",
+        "tests/helpers.ts     1 import in tests: tests/helpers.ts:1 (names Wallet) (test)",
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
     }
@@ -2713,7 +2720,7 @@ fn only_a_walked_note_reads_as_via() {
     std::fs::remove_dir_all(&repo).unwrap();
     for expected in [
         "1 import: web/src/m.ts:2\n",
-        "1 import: web/src/m.ts:3 -> web/src/zz.ts (via web/src/z.ts:1)\n",
+        "1 import: web/src/m.ts:3 -> web/src/zz.ts (via web/src/z.ts:1) (names z)\n",
         "unresolved  1 import: web/src/m.ts:1\n",
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");

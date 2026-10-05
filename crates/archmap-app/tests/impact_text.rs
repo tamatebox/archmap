@@ -129,11 +129,11 @@ fn a_file_answers_with_its_dependents_statements_tests_and_blind_spots() {
            ts-shop (src/index.ts)  1 import\n\
          \n\
          Imported by: 6, showing 5 (1 re-export)\n  \
-           src/app/checkout.ts:8 (via src/index.ts:8) (type)\n  \
-           src/app/checkout.ts:9 (via src/index.ts:8) (type)\n  \
-           src/app/page.tsx:2 (type)\n  \
-           src/index.ts:8 (export) (type)  in ts-shop\n  \
-           src/lib/money.ts:4 (type)\n  \
+           src/app/checkout.ts:8 (via src/index.ts:8) (names Money) (type)\n  \
+           src/app/checkout.ts:9 (via src/index.ts:8) (names Money) (type)\n  \
+           src/app/page.tsx:2 (names Money) (type)\n  \
+           src/index.ts:8 (names Money) (export) (type)  in ts-shop\n  \
+           src/lib/money.ts:4 (names Money) (type)\n  \
            1 more in: tests/money.test.ts 1\n\
          \n\
          Transitive dependents: 2 more (6 in all)\n  \
@@ -146,8 +146,8 @@ fn a_file_answers_with_its_dependents_statements_tests_and_blind_spots() {
          \n\
          Changed in the same commits: not read (not a git repository)\n\
          \n\
-         Marks: (via file:line) reached through that re-export; (export) a re-export, passes \
-         names on; (type) types only, never runs\n\
+         Marks: (via file:line) reached through that re-export; (names a, b) the names it takes; \
+         (export) a re-export, passes names on; (type) types only, never runs\n\
          \n\
          Not traced (what this answer may miss):\n  \
            dynamic: 1 call loads a module by a computed name, which may be this: \
@@ -551,7 +551,7 @@ fn a_test_whose_mock_replaces_a_module_on_the_way_is_left_out() {
     assert!(!orders.contains("left out"), "{orders}");
     let every = impact(&ws, "src/orders.ts", DEFAULT_DEPTH, true);
     assert!(
-        every.contains("\n  tests/replaced.test.ts:4 (mock) (test)\n"),
+        every.contains("\n  tests/replaced.test.ts:4 (names placeOrder) (mock) (test)\n"),
         "{every}"
     );
 }
