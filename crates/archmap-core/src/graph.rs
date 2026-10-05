@@ -955,6 +955,26 @@ impl ArchitectureGraph {
                     .or_default()
                     .extend(e.names.iter().cloned());
             }
+            // the names each file's own statements take by name from each
+            // file they load as values, apart from its mocks: a statement of
+            // types only passes a replaced module anyway, and one that takes
+            // it whole names nothing the change alters
+            let mut taken: BTreeMap<(&str, &str), BTreeSet<String>> = BTreeMap::new();
+            for e in self
+                .edges
+                .iter()
+                .filter(|e| e.kind == EdgeKind::Import)
+                .flat_map(|e| &e.evidence)
+                .filter(|e| !e.replaces && !e.type_only && e.via().is_none())
+            {
+                if let Some(target) = e.target.as_deref() {
+                    taken
+                        .entry((e.file.as_str(), target))
+                        .or_default()
+                        .extend(e.names.iter().filter(|n| *n != WHOLE_MODULE).cloned());
+                }
+            }
+            let none = BTreeSet::new();
             let mut mocks: BTreeMap<&str, Vec<&Evidence>> = BTreeMap::new();
             for e in self
                 .edges
@@ -964,7 +984,13 @@ impl ArchitectureGraph {
                 .filter(|e| e.replaces)
             {
                 let names = &given[&(e.file.as_str(), e.line)];
-                if e.target.as_deref().is_some_and(|t| !alters(t, names)) {
+                // a test that takes a name the change may alter from the
+                // module its mock replaces type-checks against the real one
+                let takes = |t: &str| alters(t, taken.get(&(e.file.as_str(), t)).unwrap_or(&none));
+                if e.target
+                    .as_deref()
+                    .is_some_and(|t| !alters(t, names) && !takes(t))
+                {
                     mocks.entry(e.file.as_str()).or_default().push(e);
                 }
             }

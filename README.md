@@ -153,6 +153,8 @@ What works today, by the [roadmap](#roadmap) phase it belongs to:
 
 The gaps behind the marks:
 
+- TS/JS imports: React Native platform files (`Badge.ios.tsx`), SvelteKit and
+  Nuxt aliases, Jest's `moduleNameMapper` and Deno import maps are not read.
 - Callers and references: `query` and `impact` list where a symbol is used
   through the names imports bind and, for a method, through its class or
   type and `this` or `self`; a call through a value of a type

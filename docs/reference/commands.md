@@ -455,7 +455,9 @@ replace: tests/replaced.test.ts:4 (mocks src/orders.ts), ...`). A mock that
 gives a module a name the change may alter does not hide it, as the test
 depends on that name: one that a changed file exports, one a barrel passes
 on from such a file, the symbol's name, a default by the name the module
-declares for it. A test that
+declares for it. Nor does the mock of a module from which the test itself
+takes such a name by name: the test type-checks against the real module, so
+a rename or a new signature breaks it. A test that
 another test imports, and a mock in a setup file, are not followed this way.
 An `export * as ns` reads like `export *` there,
 and a named re-export of a package like one of all its names, so such a

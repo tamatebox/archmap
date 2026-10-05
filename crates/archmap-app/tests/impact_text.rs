@@ -827,6 +827,50 @@ fn a_python_name_a_barrel_renames_reaches_its_star_importers() {
 }
 
 #[test]
+fn a_test_that_takes_what_changed_from_a_module_it_mocks_runs_again() {
+    // names.test.ts takes `core` from the module its mock replaces, which
+    // it type-checks against; through.test.ts takes nothing of it
+    let files: Vec<(String, String)> = [
+        (
+            "package.json",
+            r#"{"name": "mock-names", "devDependencies": {"vitest": "1.0.0"}}"#,
+        ),
+        ("src/core.ts", "export function core() {\n  return 1;\n}\n"),
+        (
+            "src/service.ts",
+            "import { core } from './core';\n\nexport const serve = () => core();\n",
+        ),
+        (
+            "tests/names.test.ts",
+            "import { vi } from 'vitest';\nimport { core } from '../src/core';\n\n\
+             vi.mock('../src/core', () => ({ unrelated: vi.fn() }));\n\ncore();\n",
+        ),
+        (
+            "tests/through.test.ts",
+            "import { vi } from 'vitest';\nimport { serve } from '../src/service';\n\n\
+             vi.mock('../src/core', () => ({ unrelated: vi.fn() }));\n\nserve();\n",
+        ),
+    ]
+    .into_iter()
+    .map(|(file, text)| (file.to_owned(), text.to_owned()))
+    .collect();
+    let repo = Repo::new("mock-names", &files);
+    let ws = scan(&repo.0);
+    for target in ["src/core.ts", "core"] {
+        let out = text(&ws, target);
+        assert_eq!(
+            section(&out, "Tests to run again: 1"),
+            [
+                "  tests/names.test.ts (takes it)",
+                "  left out: 1 test file reaches it only through a module its mock replaces: \
+                 tests/through.test.ts:4 (mocks src/core.ts)"
+            ],
+            "{target}: {out}"
+        );
+    }
+}
+
+#[test]
 fn a_mocked_module_still_passes_types_on() {
     // a test that takes a type through a module its mock replaces: a mock
     // replaces no type, for the file and for the symbol alike
@@ -928,9 +972,14 @@ fn a_helper_whose_mock_cuts_its_way_is_no_test_left_out() {
     .collect();
     let repo = Repo::new("helper-mock", &files);
     let out = text(&scan(&repo.0), "src/wrap.ts");
+    // the helper takes `wrap` from the module its mock replaces, so it
+    // type-checks against the real one: no test left out
     assert_eq!(
         section(&out, "Tests to run again: 1"),
-        ["  tests/a.test.ts (through tests/util.ts)"],
+        [
+            "  tests/a.test.ts (through tests/util.ts)",
+            "  not tests: tests/util.ts (helper, for 1 test listed)"
+        ],
         "{out}"
     );
 }
