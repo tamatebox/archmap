@@ -33,11 +33,13 @@
 //!   importing file (`import helpers` beside `helpers.py`) loads that file,
 //!   as it does when the directory is on `sys.path` for a script run
 //!   directly or a function deployed from it; the evidence note says so
+//! - failing that, it resolves against the directories a `conftest.py`
+//!   above the importing file adds to `sys.path` (see [`sys_path`])
 //! - an absolute import that maps to no component and is not in the standard
 //!   library is recorded as an [`UnmappedImport`], never as an edge, with
 //!   its reason: declared only as an extra, group or dev dependency; a file
 //!   or directory name in the project (tests and scripts often extend
-//!   `sys.path` at runtime, which a static scan cannot see); or undeclared,
+//!   `sys.path` at runtime in ways a static scan mostly cannot see); or undeclared,
 //!   which `check` can report. A name imported from a package that an
 //!   installed distribution provides as a module of its own (`from
 //!   google.cloud import bigquery`) is recorded as that module
@@ -52,7 +54,7 @@
 //!   helper below `tests/` does
 //!
 //! Source files are scanned structurally (see [`source`]); bodies are not
-//! parsed.
+//! parsed. A `conftest.py` is also parsed, for what it adds to `sys.path`.
 
 mod manifest;
 mod reads;
@@ -60,6 +62,7 @@ mod reexports;
 mod resolve;
 mod source;
 mod stdlib;
+mod sys_path;
 pub(crate) mod uses;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -157,6 +160,19 @@ impl Analyzer for PythonAnalyzer {
             return Ok(output);
         }
 
+        // what each conftest.py adds to sys.path before pytest loads the
+        // files below its directory
+        let added: BTreeMap<&Path, sys_path::Added> = py_files
+            .iter()
+            .filter(|f| f.file_name().is_some_and(|n| n == "conftest.py"))
+            .filter_map(|f| Some((*f, sys_path::added_by(f, &ctx.read_to_string(f).ok()?))))
+            .collect();
+        let owner_of = |file: &Path| {
+            owning_module(&modules_by_dir, file)
+                .map(|m| m.id.clone())
+                .or_else(|| owning_project(&projects, file).map(|(_, p)| p.id.clone()))
+        };
+
         // What each project declares anywhere, to say where an import that
         // is undeclared for its own file is declared instead.
         let declared_anywhere: Vec<BTreeSet<String>> = projects
@@ -252,6 +268,8 @@ impl Analyzer for PythonAnalyzer {
                 installed: &installed[project_idx],
                 local_names: &local_names[project_idx],
                 known_files: &known_files,
+                search: &search_paths(&added, file),
+                owner_of: &owner_of,
             };
             let resolved = emit_imports(
                 &owner,
@@ -771,6 +789,96 @@ struct ImportScope<'a> {
     local_names: &'a BTreeSet<String>,
     /// Every Python file in the repository, for resolving import targets.
     known_files: &'a BTreeSet<&'a Path>,
+    /// The directories conftest.py files add to `sys.path` for the file, in
+    /// the order `sys.path` holds them.
+    search: &'a [OnPath<'a>],
+    /// The component that owns a file.
+    owner_of: &'a dyn Fn(&Path) -> Option<ComponentId>,
+}
+
+/// A directory a `conftest.py` adds to `sys.path`.
+struct OnPath<'a> {
+    dir: &'a Path,
+    conftest: &'a Path,
+    line: u32,
+}
+
+/// The directories the conftest.py files above `file` add to `sys.path`
+/// before pytest loads it, in the order `sys.path` holds them: pytest loads
+/// the one nearest the root first, so a nearer one inserts before it and
+/// appends after it.
+fn search_paths<'a>(
+    added: &'a BTreeMap<&'a Path, sys_path::Added>,
+    file: &Path,
+) -> Vec<OnPath<'a>> {
+    let above: Vec<(&Path, &sys_path::Added)> = file
+        .parent()
+        .into_iter()
+        .flat_map(Path::ancestors)
+        .filter_map(|dir| added.get_key_value(dir.join("conftest.py").as_path()))
+        .map(|(conftest, added)| (*conftest, added))
+        .collect();
+    let entry = |conftest: &'a Path, path: &'a sys_path::SearchPath| OnPath {
+        dir: &path.dir,
+        conftest,
+        line: path.line,
+    };
+    let front = above
+        .iter()
+        .flat_map(|(conftest, added)| added.front.iter().map(|p| entry(conftest, p)));
+    let back = above
+        .iter()
+        .rev()
+        .flat_map(|(conftest, added)| added.back.iter().map(|p| entry(conftest, p)));
+    front.chain(back).collect()
+}
+
+/// Where Python finds an import's top name on the `sys.path` entries that
+/// conftest.py files add, as its path finder looks: a regular package or
+/// module in the first entry that holds one, else a namespace package made
+/// of the directories of that name in every entry.
+struct OnSysPath<'s> {
+    entries: Vec<&'s OnPath<'s>>,
+    known: &'s BTreeSet<&'s Path>,
+}
+
+impl<'s> OnSysPath<'s> {
+    fn find(search: &'s [OnPath<'s>], top: &str, known: &'s BTreeSet<&'s Path>) -> Option<Self> {
+        let regular = search
+            .iter()
+            .find(|e| module_file(e.dir, top, known).is_some());
+        let entries: Vec<&OnPath> = match regular {
+            Some(entry) => vec![entry],
+            None => search
+                .iter()
+                .filter(|e| {
+                    let below = e.dir.join(top);
+                    known
+                        .range::<&Path, _>(below.as_path()..)
+                        .next()
+                        .is_some_and(|f| f.starts_with(&below))
+                })
+                .collect(),
+        };
+        (!entries.is_empty()).then_some(OnSysPath { entries, known })
+    }
+
+    /// The file of the module `dotted` names, with the entry it is found in.
+    fn file(&self, dotted: &str) -> Option<(String, &'s OnPath<'s>)> {
+        self.entries.iter().find_map(|entry| {
+            let file = module_file(entry.dir, dotted, self.known)?;
+            Some((display_path(&file), *entry))
+        })
+    }
+}
+
+/// The file of the module `dotted` below `dir`: its package's
+/// `__init__.py`, else its `.py` file.
+fn module_file(dir: &Path, dotted: &str, known: &BTreeSet<&Path>) -> Option<PathBuf> {
+    let path = dir.join(dotted.replace('.', "/"));
+    [path.join("__init__.py"), path.with_extension("py")]
+        .into_iter()
+        .find(|f| known.contains(f.as_path()))
 }
 
 /// Where each name of one import statement comes from, as `emit_imports`
@@ -1036,6 +1144,99 @@ fn emit_imports(
                         ),
                     );
                     continue;
+                }
+                if let Some(found) = OnSysPath::find(ctx.search, top, ctx.known_files) {
+                    // as for a module of the scan: a named submodule, else
+                    // a name of the module's file, and for `import m` what
+                    // the file reads through it
+                    let own = found.file(&full);
+                    let mut files: BTreeMap<String, (&OnPath, BTreeSet<String>)> = BTreeMap::new();
+                    let mut placed: Vec<Option<(String, String)>> = vec![None; named.len()];
+                    let mut read: Vec<(String, String)> = Vec::new();
+                    // the names the file reads through a module the
+                    // statement binds, else all of it
+                    let mut through = |file: &str, taken: Option<&BTreeSet<String>>| match taken {
+                        Some(taken) => {
+                            read.extend(taken.iter().map(|n| (file.to_owned(), n.clone())));
+                            taken.clone()
+                        }
+                        None => BTreeSet::from([WHOLE_MODULE.to_owned()]),
+                    };
+                    if let Some((file, entry)) = &own {
+                        let taken = if import.names.is_empty() {
+                            Some(through(file, import.reads.first().and_then(Option::as_ref)))
+                        } else {
+                            star.then(|| through(file, None))
+                        };
+                        if let Some(taken) = taken {
+                            files
+                                .entry(file.clone())
+                                .or_insert((entry, BTreeSet::new()))
+                                .1
+                                .extend(taken);
+                        }
+                    }
+                    for (i, name) in named.iter().enumerate() {
+                        let (file, entry, taken) = match found.file(&format!("{full}.{name}")) {
+                            Some((sub, entry)) => {
+                                let taken = through(&sub, reads_of(i));
+                                placed[i] = Some((sub.clone(), WHOLE_MODULE.to_owned()));
+                                (sub, entry, taken)
+                            }
+                            None => {
+                                let Some((file, entry)) = &own else {
+                                    continue;
+                                };
+                                placed[i] = Some((file.clone(), (*name).clone()));
+                                (file.clone(), *entry, BTreeSet::from([(*name).clone()]))
+                            }
+                        };
+                        files
+                            .entry(file)
+                            .or_insert((entry, BTreeSet::new()))
+                            .1
+                            .extend(taken);
+                    }
+                    if !files.is_empty() {
+                        let symbols = !placed.is_empty()
+                            && placed
+                                .iter()
+                                .all(|p| p.as_ref().is_some_and(|(_, name)| name != WHOLE_MODULE));
+                        if let Some(last) = resolved.last_mut() {
+                            *last = Resolved {
+                                names: placed,
+                                own: own.map(|(file, _)| file),
+                                read,
+                            };
+                        }
+                        for (target_file, (entry, names)) in files {
+                            let Some(target) = (ctx.owner_of)(Path::new(&target_file)) else {
+                                continue;
+                            };
+                            let note = if import.relays && symbols {
+                                "export".to_owned()
+                            } else {
+                                let dir = match display_path(entry.dir) {
+                                    dir if dir.is_empty() => ".".to_owned(),
+                                    dir => dir,
+                                };
+                                format!(
+                                    "import {top}, in {dir}, which {}:{} adds to sys.path",
+                                    display_path(entry.conftest),
+                                    entry.line
+                                )
+                            };
+                            output.fragment.push_edge(
+                                Edge::new(owner.clone(), target, EdgeKind::Import).with_evidence(
+                                    evidence()
+                                        .with_note(note)
+                                        .pointing_at(target_file)
+                                        .taking(names),
+                                ),
+                            );
+                        }
+                        continue;
+                    }
                 }
             }
             let (provided_by, note) = match reason {

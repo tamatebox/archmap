@@ -201,16 +201,30 @@ into the model in [graph.md](graph.md); how the commands present it is in
 - a bare import that matches no module but a `.py` file next to the importing file (`import helpers`
   beside `helpers.py`) loads that file, as it does when the directory is on `sys.path` for a script run
   directly or a function deployed from it; its evidence note says so
+- otherwise such an import resolves against the directories a `conftest.py` above the importing file
+  adds to `sys.path`, which pytest does before it loads the files below the conftest's directory,
+  production code included when the conftest sits at the top of the project: `sys.path.insert(i, X)`
+  and `sys.path.append(X)` at module level (inside `if`, `try` and `with` too) where `X` is computed
+  from `__file__` by `pathlib.Path(...)`, `.resolve()`, `.parent`, `.parents[N]`, `/ "dir"`,
+  `.joinpath("dir")`, `str(...)`, `os.fspath`, `os.path.dirname`, `abspath`, `realpath`, `normpath`
+  and `join` with literals, each function by the module the conftest imports it from, directly or
+  through module-level names, and stays inside the root. As Python's path finder does, a regular
+  package or module in the first directory that holds one gives the file (`a/b/__init__.py`, else
+  `a/b.py`, for `a.b`), else the directories of that name in every entry make a namespace package;
+  a name the statement takes as a submodule gives that file, and the names it takes and reads, the
+  walk through re-exports and the `export` note follow as for any module of the scan. The evidence
+  note names the directory and the call that adds it (`import report, in scripts, which
+  tests/conftest.py:7 adds to sys.path`)
 - import names are matched to declared distributions by name (`pandas_gbq`), by dotted name
   (`google.cloud.bigquery`), through installed `RECORD` files in a `.venv`, and finally through a small
   table of well-known names (`sklearn`, `yaml`); the evidence note of each import says which one matched
 - an import that maps to no component, standard library aside, is recorded without an edge and with
   its reason: `undeclared` (no manifest declares it), `declared_not_required` (declared only as an
   extra, a dependency group or a dev dependency; the evidence note says where) or `local_name` (a
-  file or directory of that name exists, but not as a file next to the importer, probably reached
-  through a `sys.path` entry added at runtime); a name imported from a package that an installed
-  distribution provides as a module of its own (`from google.cloud import bigquery`) is recorded as
-  that module, each name on its own
+  file or directory of that name exists, but not as a file next to the importer nor in a directory a
+  `conftest.py` adds, probably reached through a `sys.path` entry added at runtime); a name imported
+  from a package that an installed distribution provides as a module of its own (`from google.cloud
+  import bigquery`) is recorded as that module, each name on its own
 - the imports and dynamic imports of test code, by the rule [graph.md](graph.md) gives for Python and
   TS/JS alike, carry `test` in their evidence
 - a call to `import_module` or `__import__` that names its module with one string literal on its line
@@ -225,7 +239,8 @@ into the model in [graph.md](graph.md); how the commands present it is in
   used from it; test files (`test_*.py`, `*_test.py`, `tests.py`, `conftest.py`) give none, while a helper below
   `tests/` does, as for TS/JS; in a signature a parameter's default value reads `…`, since a default
   can hold a secret
-- source files are scanned structurally line by line, not parsed; function bodies are read only for imports
+- source files are scanned structurally line by line, not parsed; function bodies are read only for
+  imports; a `conftest.py` is also parsed with Ruff's parser (below) to read what it adds to `sys.path`
 - on demand, for the one symbol that `query` asks about, the file that defines it and the files of the
   statements that import it are parsed with Ruff's parser (`ruff_python_parser`, pinned to an exact
   version, since it is published as an internal component of Ruff), and each name in them is resolved
@@ -234,8 +249,14 @@ into the model in [graph.md](graph.md); how the commands present it is in
 
 ### Python known gaps
 
-- Dynamic imports are recorded but not followed, and `sys.path` changes made at runtime are not
-  seen.
+- Dynamic imports are recorded but not followed. Of the `sys.path` changes made at runtime only a
+  `conftest.py`'s are seen, for the files below its directory: a path added elsewhere, inside a
+  function (a `pytest_configure` hook), by `sys.path.extend`, slicing or `site.addsitedir`, or
+  computed in a way the scan does not evaluate (an environment variable, an f-string, the working
+  directory) is not, nor pytest's `pythonpath` setting; a file outside the conftest's directory that a
+  test session imports after it, which depends on the order pytest loads files in, does not resolve
+  against it, and the paths are taken as written, not through the symbolic links `.resolve()`
+  follows.
 - `Used at` does not read a method called through a value of its class (`wallet.open()`) or
   `super().open()`, a name read through another name its module is assigned to, a string that names the
   symbol where a file imported it (`mock.patch("shop.web.views.pay")`) rather than by its own module's
@@ -265,8 +286,8 @@ into the model in [graph.md](graph.md); how the commands present it is in
   a public name: one that imports only the standard library, or nothing, and defines no public name is
   not among them.
 - A file outside any regular package tree that no import resolves to gives no symbols: a script run
-  directly, a helper reached only through a `sys.path` entry added at runtime (pytest's
-  `pythonpath`), or a module loaded by name (`pytest_plugins`).
+  directly, a helper reached only through a `sys.path` entry added at runtime that the scan does not
+  read (pytest's `pythonpath`), or a module loaded by name (`pytest_plugins`).
 - `from pkg import name` where `pkg/name.py` exists takes that submodule whole, even when
   `pkg/__init__.py` has `from .name import name`, which makes `pkg.name` the object it imports.
 - Only `if TYPE_CHECKING:` and `if <module>.TYPE_CHECKING:` mark imports as types only: an import
