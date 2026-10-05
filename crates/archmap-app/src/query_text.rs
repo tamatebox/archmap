@@ -440,6 +440,9 @@ fn file(
 ) -> bool {
     let component = view.component.as_ref().and_then(|id| rolled.component(id));
     file_head(out, &view.file, component, view.depth);
+    if let Some(directive) = view.directive {
+        let _ = writeln!(out, "directive: \"{directive}\"");
+    }
     let mut truncated = namesakes(out, &view.also_named, &view.also_at_path, caps.neighbors);
 
     let total = view.symbols.len();
@@ -1140,6 +1143,10 @@ pub(crate) fn import_location(
     if evidence.type_only {
         out.push_str(" (type)");
     }
+    // a client's import of server functions, which call the server
+    if evidence.server_reference {
+        out.push_str(" (server reference)");
+    }
     if evidence.test {
         out.push_str(" (test)");
     }
@@ -1183,7 +1190,7 @@ pub(crate) fn names_capped(evidence: &Evidence, cap: usize) -> bool {
 /// statement's marks as `import_location` writes them, the one a neighbor's
 /// statement adds, the roles of a use, then a path's in the history. A new
 /// mark gets its entry here.
-const MARKS: [(&str, &str, &str); 15] = [
+const MARKS: [(&str, &str, &str); 16] = [
     (
         " (via ",
         "(via file:line)",
@@ -1198,6 +1205,11 @@ const MARKS: [(&str, &str, &str); 15] = [
     (" (export)", "(export)", "a re-export, passes names on"),
     (" (mock)", "(mock)", "a test's mock replaces the module"),
     (" (type)", "(type)", "types only, never runs"),
+    (
+        " (server reference)",
+        "(server reference)",
+        "calls server functions, loads no code",
+    ),
     (" (test)", "(test)", "in test code"),
     (" (local)", "(local)", "inside a function, runs when called"),
     (" (through)", "(through)", "takes it through re-exports"),

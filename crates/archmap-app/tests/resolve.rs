@@ -704,6 +704,36 @@ fn statements_say_which_names_they_take() {
 }
 
 #[test]
+fn a_file_says_its_react_directive_and_a_client_s_import_of_server_functions() {
+    let repo = Repo::new(
+        "directives",
+        &[
+            ("package.json", "{\"name\": \"web\"}\n"),
+            (
+                "app/actions.ts",
+                "'use server';\nexport async function save() {}\n",
+            ),
+            (
+                "components/editor.tsx",
+                "'use client';\nimport { save } from '../app/actions';\nexport const editor = save;\n",
+            ),
+        ],
+    );
+    let ws = scan(&repo.0);
+    let answer = query(&ws, "app/actions.ts");
+    for line in [
+        "\ndirective: \"use server\"\n",
+        "components/editor.tsx:2 (names save) (server reference)",
+        "(server reference) calls server functions, loads no code",
+    ] {
+        assert!(answer.output.contains(line), "{line}: {}", answer.output);
+    }
+    let json = query_as(&ws, "components/editor.tsx", Format::Json).output;
+    assert!(json.contains("\"directive\": \"use client\""), "{json}");
+    assert!(json.contains("\"server_reference\": true"), "{json}");
+}
+
+#[test]
 fn names_of_test_code_that_contain_a_word_come_after_production_ones() {
     let repo = Repo::new(
         "contains-tests",

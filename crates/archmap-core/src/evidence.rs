@@ -60,6 +60,11 @@ pub struct Evidence {
     /// that reaches it only through `target` runs for it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub replaces: bool,
+    /// The statement, in a file React runs on the client (`"use client"`),
+    /// imports a file of server functions (`"use server"`): it gets
+    /// references that call the server, not the file's code.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub server_reference: bool,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -91,6 +96,7 @@ impl Evidence {
             test: false,
             type_only: false,
             replaces: false,
+            server_reference: false,
         }
     }
 
@@ -129,10 +135,26 @@ impl Evidence {
         self
     }
 
-    /// The statement runs when the program does: production code that
-    /// takes more than types.
+    /// Mark the statement as a client's import of server functions.
+    pub fn referencing_server(mut self, server_reference: bool) -> Self {
+        self.server_reference = server_reference;
+        self
+    }
+
+    /// The statement runs when the program does and loads what it names:
+    /// production code that takes more than types, and no server functions
+    /// by reference.
     pub fn runs_in_production(&self) -> bool {
-        !self.type_only && !self.test
+        !self.type_only && !self.test && !self.server_reference
+    }
+
+    /// The React directive a component's evidence names for a file of it, a
+    /// graph convention: the note `use client` (the file runs on the
+    /// client) or `use server` (it exports server functions).
+    pub fn directive(&self) -> Option<&str> {
+        self.note
+            .as_deref()
+            .filter(|note| matches!(*note, "use client" | "use server"))
     }
 
     /// The statement passes the names it takes on, as a re-export does: a

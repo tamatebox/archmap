@@ -15,7 +15,7 @@ ArchitectureGraph
 ├── dynamic_imports:  [ DynamicImport { from, call, prefix?: { written, path?, first? }, evidence } ]
 └── unread_macros:    [ UnreadMacro { from, name, names?, evidence } ]
 
-Evidence { file, line?, note?, target?, scope?: module | local, names?, test?, type_only?, replaces? }
+Evidence { file, line?, note?, target?, scope?: module | local, names?, test?, type_only?, replaces?, server_reference? }
 ```
 
 `line` is the line a statement or a declaration is written on: a manifest's
@@ -82,7 +82,10 @@ among the scanned files (a build output, Node's default `index.js` where a
 `package.json` names none): of the files such a
 component owns directly, only those its evidence names (its entries, its
 manifest) stand for it in `impact`, so a binary, a build script or a
-configuration file reaches none of the packages that declare it.
+configuration file reaches none of the packages that declare it. Evidence
+noted `use client` or `use server` names a TS/JS file of the component
+whose prologue holds that React directive: the file runs on the client, or
+exports server functions.
 
 `test` marks a statement in test code, which runs only for tests: for
 Python and TS/JS a file named `*.test.*`, `*.spec.*` (Vitest's type tests
@@ -113,7 +116,16 @@ only types. An edge is a dependency however
 it is taken, so `deny`, `layers`, `allow`, `query` and `impact` count every
 import, but cycles and signals count only imports that run in production:
 an edge closes a cycle only through evidence that is neither `type_only` nor
-`test`. Only the TS/JS and Python analyzers set it.
+`test` nor `server_reference`. Only the TS/JS and Python analyzers set it.
+
+`server_reference` marks a statement in a TS/JS file whose directive is
+`use client` that takes values from a file whose directive is `use server`:
+it gets references that call the server, not that file's code, so like an
+import of types only it closes no cycle and counts toward no signal, while
+`deny`, `layers`, `allow`, `query` and `impact` count it. A `use client`
+file's `export ... from` such a file is one too, as it passes the
+references on. An import of such a file from any other file, a server
+component's included, loads it.
 
 `replaces` marks a test's mock that puts a stand-in in place of `target` for
 every module its file's run loads, so that file never runs the target's code

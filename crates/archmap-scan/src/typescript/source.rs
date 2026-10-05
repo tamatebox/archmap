@@ -154,7 +154,14 @@ pub(crate) struct ParsedFile {
     /// which a module adds to the global scope, the first of a name and none
     /// that the file also exports.
     pub declared_global: Vec<ExportedSymbol>,
+    /// The file's React directive in its prologue, `use client` or `use
+    /// server`, with its line: where the file runs, or that it exports
+    /// server functions.
+    pub directive: Option<(&'static str, u32)>,
 }
+
+/// The directives React reads in a file's prologue.
+const DIRECTIVES: [&str; 2] = ["use client", "use server"];
 
 /// Characters of a signature kept; a longer one ends in `...`.
 const MAX_SIGNATURE: usize = 200;
@@ -214,7 +221,14 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
         }
     }
 
-    let mut file = ParsedFile::default();
+    let mut file = ParsedFile {
+        directive: parsed.program.directives.iter().find_map(|d| {
+            let value = d.expression.value.as_str();
+            let known = DIRECTIVES.iter().find(|known| **known == value)?;
+            Some((*known, lines.line(d.span.start)))
+        }),
+        ..ParsedFile::default()
+    };
     // Names that import declarations bind (imports are hoisted, so one after
     // the export still counts): the statement, the export taken (`None` for
     // a namespace), and whether it is taken as a type only.

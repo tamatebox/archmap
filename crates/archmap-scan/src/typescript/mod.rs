@@ -182,6 +182,8 @@ impl Analyzer for TypeScriptAnalyzer {
         // Scripts by their owner, with the file's path: a script that is a
         // component of its own is of kind `Script`.
         let mut scripts: BTreeMap<ComponentId, String> = BTreeMap::new();
+        // the files with a React directive, `use client` or `use server`
+        let mut directives: BTreeMap<PathBuf, &'static str> = BTreeMap::new();
         for file in &code {
             let Some(owner) = layout.owners.get(*file) else {
                 continue;
@@ -206,6 +208,21 @@ impl Analyzer for TypeScriptAnalyzer {
             };
             if let Some(language) = language_of(file) {
                 *output.read.entry(language.to_owned()).or_default() += 1;
+            }
+            // where React runs the file: its component's evidence says so
+            if let Some((directive, line)) = parsed.directive {
+                directives.insert(file.to_path_buf(), directive);
+                let evidence = Evidence::new(display_path(file))
+                    .at_line(line)
+                    .with_note(directive);
+                if let Some(c) = output
+                    .fragment
+                    .components
+                    .iter_mut()
+                    .find(|c| c.id == owner.component)
+                {
+                    c.evidence.push(evidence);
+                }
             }
             // classic JSX calls the factories its tsconfig names, which no
             // identifier of the file writes
@@ -292,6 +309,11 @@ impl Analyzer for TypeScriptAnalyzer {
             })
             .collect();
         let mut definitions = exports::Definitions::new(&modules);
+        let servers: BTreeSet<PathBuf> = directives
+            .iter()
+            .filter(|(_, d)| **d == "use server")
+            .map(|(f, _)| f.clone())
+            .collect();
         for read in &files {
             let package = &layout.packages[read.owner.package];
             let imports = Imports {
@@ -316,6 +338,7 @@ impl Analyzer for TypeScriptAnalyzer {
                 file: read.file,
                 test: test_code(read.file, package, &manifests),
                 replaced: replaced(&read.imports, &read.resolved),
+                servers: (directives.get(read.file) == Some(&"use client")).then_some(&servers),
             };
             // what the file passes on under other names, by statement
             let renames = modules
@@ -847,9 +870,19 @@ struct Imports<'a> {
     test: bool,
     /// The files a mock in the file replaces for its whole run.
     replaced: BTreeSet<&'a Path>,
+    /// The files that export server functions (`"use server"`), when the
+    /// file runs on the client (`"use client"`): what it imports of them
+    /// are references.
+    servers: Option<&'a BTreeSet<PathBuf>>,
 }
 
 impl Imports<'_> {
+    /// Whether the file imports server functions by reference from
+    /// `target`.
+    fn references(&self, target: &Path) -> bool {
+        self.servers.is_some_and(|servers| servers.contains(target))
+    }
+
     /// Where `declaration` sits, in the `package.json` of `dir`: `the
     /// enclosing package.json:6` for one above the package's own, which
     /// declares it for every package below.
@@ -961,7 +994,8 @@ impl Imports<'_> {
                     .with_note(import.note)
                     .pointing_at(display_path(target))
                     .taking(names.iter().cloned())
-                    .replacing(replaces);
+                    .replacing(replaces)
+                    .referencing_server(!type_only && self.references(target));
                 for (taken, exported) in exported_as.iter().filter(|(t, _)| names.contains(*t)) {
                     for name in exported {
                         evidence = evidence.exporting(taken.clone(), name.clone());
@@ -1194,7 +1228,8 @@ impl Imports<'_> {
                         .type_only(type_only)
                         .with_note(note)
                         .pointing_at(display_path(&file))
-                        .taking(names),
+                        .taking(names)
+                        .referencing_server(!type_only && self.references(&file)),
                 ),
             );
         }

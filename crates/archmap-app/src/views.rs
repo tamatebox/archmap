@@ -95,6 +95,9 @@ pub struct FileView<'a> {
     /// shows what uses them.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub script: bool,
+    /// The file's React directive: `use client` or `use server`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub directive: Option<&'a str>,
     /// What could reach the target unseen, from what analyzers record.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub not_traced: Option<NotTraced>,

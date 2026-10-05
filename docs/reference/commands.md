@@ -173,7 +173,11 @@ Money, +2 more)`, three at most and every one with `--verbose`, or `(whole
 module)` for a namespace import, a module bound whole or `export *`. `(type)` marks
 a statement that takes types only, so it never runs (a TS/JS `import type`,
 which the compiler erases, or a Python import under `if TYPE_CHECKING:`),
-and `(test)` a statement in test code. An answer that shows marks says
+`(server reference)` a statement in a `"use client"` file that takes server
+functions from a `"use server"` file, which calls the server and loads none
+of its code, and `(test)` a statement in test code. A file's query says its
+React directive under its head (`directive: "use server"`; JSON
+`directive`). An answer that shows marks says
 what they mean in a `Marks` line before `Not traced`, naming only the marks
 it shows, always in the same order (`Marks: (type) types only, never runs;
 (test) in test code`); `impact` and `check` do the same. Each

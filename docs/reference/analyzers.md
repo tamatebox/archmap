@@ -392,6 +392,10 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   namespace import, `import x = require()` and
   `export *`, none for a side-effect import; `via` evidence records the names as the defining file
   declares them, one evidence per defining file and re-export, and re-export statements are not walked
+- a file whose prologue holds React's `"use client"` or `"use server"` directive gives its component
+  evidence noted with it, and a statement of a `"use client"` file that takes values from a `"use
+  server"` file, `via` evidence of a name such a file defines included, is a `server_reference`
+  (see [graph.md](graph.md)): it calls the server and loads none of that file's code
 - a statement that takes types only is `type_only` (see [graph.md](graph.md)): `import type`,
   `export type ... from`, `export type *`, `import type x = require()` and `import()` types, and a statement whose names
   all carry `type` (`import { type A }`); one that takes values and types from a file
@@ -510,6 +514,9 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
 
 ### TypeScript and JavaScript known gaps
 
+- Where a file runs is read from its own directive only: a file without one that only client code
+  loads runs on the client too, but its import of a `"use server"` file reads as one that loads it,
+  and what the client loads of the program (its bundle) is not traced.
 - Routes are read for Next.js only: in the route directories of Remix (`app/routes/`), SvelteKit
   (`src/routes/`), Nuxt and Astro (`pages/`), a directory named `test` or `tests` is test code by the
   rule above, so its imports carry `test`, and `impact` names no route files a URL reaches there.

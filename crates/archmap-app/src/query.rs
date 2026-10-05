@@ -111,6 +111,12 @@ fn file_view<'a>(
     let own = facts.component.and_then(|c| full.component(c));
     let (also_named, also_at_path) = own.map(|c| namesakes(full, c)).unwrap_or_default();
     let script = own.is_some_and(|c| c.kind == ComponentKind::Script);
+    let directive = own.and_then(|c| {
+        c.evidence
+            .iter()
+            .filter(|e| e.file == facts.file)
+            .find_map(Evidence::directive)
+    });
     let not_traced = not_traced(
         full,
         &Subject {
@@ -144,6 +150,7 @@ fn file_view<'a>(
         not_mapped: facts.unmapped_imports,
         dynamic_imports: facts.dynamic_imports,
         script,
+        directive,
         not_traced,
     }
 }

@@ -2119,3 +2119,100 @@ fn route_files_are_those_of_packages_that_require_next() {
         ]
     );
 }
+
+#[test]
+fn a_client_file_takes_server_functions_by_reference() {
+    let root = temp_repo(
+        "directives",
+        &[
+            (
+                "package.json",
+                "{ \"name\": \"web\", \"dependencies\": { \"next\": \"16.0.0\" } }",
+            ),
+            // a page uses a client component, which calls an action beside
+            // the page: a reference, not the action's code
+            (
+                "app/shelf/page.tsx",
+                "import { Editor } from '../../components/editor';\nexport default function Page() { return Editor; }\n",
+            ),
+            (
+                "app/shelf/actions.ts",
+                "// actions\n'use server';\nexport async function save() {}\nexport type Saved = { id: string };\n",
+            ),
+            (
+                "components/editor.tsx",
+                "\"use client\";\nimport { save } from '../app/shelf/actions';\nimport type { Saved } from '../app/shelf/actions';\nexport const Editor = [save] as unknown as Saved;\n",
+            ),
+            // a server component's import loads the file
+            (
+                "app/form/page.tsx",
+                "import { save } from '../shelf/actions';\nexport default function Form() { return save; }\n",
+            ),
+        ],
+    );
+    let report = scan(&root, &ScanOptions::default()).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    let graph = &report.graph;
+    // the directive is component evidence of the file
+    let directives: Vec<(String, Option<u32>, String)> = graph
+        .components
+        .values()
+        .flat_map(|c| &c.evidence)
+        .filter_map(|e| Some((e.file.clone(), e.line, e.directive()?.to_owned())))
+        .collect();
+    assert_eq!(
+        directives,
+        [
+            (
+                "app/shelf/actions.ts".to_owned(),
+                Some(2),
+                "use server".to_owned()
+            ),
+            (
+                "components/editor.tsx".to_owned(),
+                Some(1),
+                "use client".to_owned()
+            ),
+        ]
+    );
+    // which statements into the actions take references
+    let references: Vec<(String, u32, bool)> = graph
+        .edges
+        .iter()
+        .flat_map(|e| &e.evidence)
+        .filter(|e| e.target.as_deref() == Some("app/shelf/actions.ts"))
+        .map(|e| (e.file.clone(), e.line.unwrap_or(0), e.server_reference))
+        .collect();
+    assert_eq!(
+        references,
+        [
+            ("app/form/page.tsx".to_owned(), 1, false),
+            ("components/editor.tsx".to_owned(), 2, true),
+            ("components/editor.tsx".to_owned(), 3, false),
+        ]
+    );
+    // a reference closes no dependency in two directions, an import does
+    assert!(
+        archmap_core::signals::signals(graph, 1).is_empty(),
+        "{:?}",
+        archmap_core::signals::signals(graph, 1)
+    );
+    let root = temp_repo(
+        "no-directives",
+        &[
+            ("package.json", "{ \"name\": \"web\" }"),
+            (
+                "app/shelf/page.tsx",
+                "import { Editor } from '../../components/editor';\nexport default function Page() { return Editor; }\n",
+            ),
+            ("app/shelf/actions.ts", "export async function save() {}\n"),
+            (
+                "components/editor.tsx",
+                "import { save } from '../app/shelf/actions';\nexport const Editor = save;\n",
+            ),
+        ],
+    );
+    let report = scan(&root, &ScanOptions::default()).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    assert_eq!(archmap_core::signals::signals(&report.graph, 1).len(), 1);
+}
