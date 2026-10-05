@@ -253,7 +253,11 @@ into the model in [graph.md](graph.md); how the commands present it is in
   statements that import it are parsed with Ruff's parser (`ruff_python_parser`, pinned to an exact
   version, since it is published as an internal component of Ruff), and each name in them is resolved
   with Python's scope rules (`Used at`, see [commands.md](commands.md#query)); a file over 4 MB is not
-  parsed
+  parsed. A call that names its module with a literal binds that module as an import does: to the
+  name a statement assigns its value to (`m = import_module("shop.mail")`), or as the call itself
+  (`import_module("shop.mail").send()`), `__import__` the package its name starts with; one whose
+  value goes on (returned, an argument) uses the module as a value, and one standing alone names
+  nothing
 
 ### Python known gaps
 

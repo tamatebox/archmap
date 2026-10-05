@@ -159,6 +159,39 @@ fn a_dotted_string_that_names_the_symbol_is_an_escape_noted_string() {
 }
 
 #[test]
+fn a_call_that_loads_a_module_by_a_literal_name_binds_it_as_an_import_does() {
+    let report = scan(&fixture("python-bindings"), &ScanOptions::default()).unwrap();
+    let rate = uses_of(&report, "rate");
+    let loader = |list: Vec<String>| -> Vec<String> {
+        list.into_iter()
+            .filter(|s| s.starts_with("store/loader.py"))
+            .collect()
+    };
+    assert_eq!(
+        loader(shown(&rate)),
+        [
+            // through the name a statement binds it to
+            "store/loader.py:22:19 call as module.rate via 21",
+            // an attribute of the call itself
+            r#"store/loader.py:26:59 call as importlib.import_module("store.billing.rates").rate via 26"#,
+            // `__import__` returns the package the name starts with
+            "store/loader.py:31:34 call as package.billing.rates.rate via 30",
+        ]
+    );
+    // returned, the module goes on as a value; dropped, it names nothing
+    assert_eq!(
+        loader(places(&rate.escapes)),
+        ["store/loader.py:5", "store/loader.py:9"]
+    );
+    assert_eq!(loader(places(&rate.unused)), ["store/loader.py:35"]);
+    assert!(
+        !rate.unread.iter().any(|u| u.file == "store/loader.py"),
+        "{:#?}",
+        rate.unread
+    );
+}
+
+#[test]
 fn a_class_is_made_by_a_call_and_named_in_annotations_and_string_annotations() {
     let report = report();
     let wallet = uses_of(&report, "Wallet");

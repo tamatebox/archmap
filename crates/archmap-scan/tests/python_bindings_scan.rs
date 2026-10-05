@@ -59,6 +59,10 @@ fn a_module_binding_takes_the_names_its_file_reads_through_it() {
             r#"store/formatted.py import -> store/billing/charge.py ["pay", "refund"]"#,
             // a call that names its module with a literal, absolute or
             // relative to its package
+            r#"store/loader.py __import__ -> store/billing/rates.py ["*"]"#,
+            r#"store/loader.py import_module -> store/billing/rates.py ["*"]"#,
+            r#"store/loader.py import_module -> store/billing/rates.py ["*"]"#,
+            r#"store/loader.py import_module -> store/billing/rates.py ["*"]"#,
             r#"store/loader.py import_module -> store/billing/rates.py ["*"]"#,
             r#"store/loader.py import_module -> store/billing/rates.py ["*"]"#,
             r#"store/other.py import -> store/billing/charge.py ["pay"]"#,

@@ -102,6 +102,19 @@ struct Bound {
     /// A star of a module whose `__all__` code builds: it may bind the
     /// name.
     may_bind: bool,
+    /// The calls that load the module by a literal name.
+    calls: Vec<LoadCall>,
+}
+
+/// A call that loads a module by a literal name (`import_module("a.b")`),
+/// whose value leads to the symbol as `binding` says.
+#[derive(Debug, Clone)]
+struct LoadCall {
+    range: TextRange,
+    binding: Binding,
+    /// A statement binds its value to a name or drops it, so the value goes
+    /// nowhere else.
+    held: bool,
 }
 
 /// Read the uses of the Python symbol `request` names into `out`.
@@ -182,6 +195,7 @@ impl Pass<'_> {
     ) {
         let target = self.target;
         let mut bindings = Vec::new();
+        let mut calls = Vec::new();
         let mut ended: BTreeSet<u32> = BTreeSet::new();
         let mut may_bind: BTreeSet<u32> = BTreeSet::new();
         for (&line, evidence) in statements {
@@ -191,6 +205,7 @@ impl Pass<'_> {
                         may_bind.insert(line);
                     }
                     bindings.extend(bound.bindings);
+                    calls.extend(bound.calls);
                 }
                 Err(reason) => {
                     ended.insert(line);
@@ -214,7 +229,7 @@ impl Pass<'_> {
             });
             bindings.extend(instance_bindings(read.module(), target));
         }
-        let mut walker = Walker::new(read, target, bindings);
+        let mut walker = Walker::new(read, target, bindings, calls);
         walker.module(read.module());
         // every statement ends in one list
         for (&line, evidence) in statements {
@@ -281,7 +296,9 @@ impl Pass<'_> {
             line,
             &mut statements,
         );
-        if statements.is_empty() {
+        let mut finder = CallFinder::new(&read.lines, line);
+        finder.visit_body(&read.module().body);
+        if statements.is_empty() && finder.found.is_empty() {
             return Err(UnreadReason::StatementNotFound);
         }
         let rest = &target.tail[1..];
@@ -361,9 +378,43 @@ impl Pass<'_> {
                 _ => {}
             }
         }
+        // a call returns the module it names (`import_module`), or the
+        // package its name starts with, as `import a.b` binds `a`
+        // (`__import__`)
+        for found in &finder.found {
+            let parts: Vec<&str> = found.module.split('.').collect();
+            for &e in &evidence {
+                if module_name(loaded(e)).as_deref() != parts.last().copied() {
+                    continue;
+                }
+                let Some(offered) = self.offered(e) else {
+                    continue;
+                };
+                let mut path: Vec<String> = match found.top {
+                    true => parts[1..].iter().map(|p| (*p).to_owned()).collect(),
+                    false => Vec::new(),
+                };
+                let modules = path.len() + 1;
+                path.push(offered);
+                path.extend(rest.iter().cloned());
+                let name = match found.holder {
+                    Holder::Name(name) => name,
+                    Holder::Dropped | Holder::Nothing => "",
+                };
+                let binding = Binding::new(line, name, found.scope, path, modules);
+                if !name.is_empty() {
+                    bound.bindings.push(binding.clone());
+                }
+                bound.calls.push(LoadCall {
+                    range: found.range,
+                    binding,
+                    held: found.holder != Holder::Nothing,
+                });
+            }
+        }
         bound.bindings.sort();
         bound.bindings.dedup();
-        if bound.bindings.is_empty() && !star {
+        if bound.bindings.is_empty() && bound.calls.is_empty() && !star {
             return Err(UnreadReason::NoPath);
         }
         Ok(bound)
@@ -614,6 +665,150 @@ fn find_imports<'a>(
     }
 }
 
+/// What holds the value of a call that loads a module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Holder<'a> {
+    /// A statement binds it to one name (`m = import_module("a")`).
+    Name(&'a str),
+    /// A statement drops it: the call stands alone.
+    Dropped,
+    /// Code uses it as a value: an attribute, an argument, a return.
+    Nothing,
+}
+
+/// A call that loads a module by a literal name, as the scan reads one.
+struct FoundCall<'a> {
+    range: TextRange,
+    /// The module's absolute dotted name.
+    module: String,
+    /// It returns the package the name starts with (`__import__`).
+    top: bool,
+    /// The scope of the statement it is in, as for an import.
+    scope: Option<u32>,
+    holder: Holder<'a>,
+}
+
+/// The calls whose function name (`import_module`, `__import__`) starts on
+/// `line` and that name a module by one string literal.
+struct CallFinder<'a, 'l> {
+    lines: &'l Lines,
+    line: u32,
+    scope: Option<u32>,
+    held: Vec<(TextRange, Holder<'a>)>,
+    found: Vec<FoundCall<'a>>,
+}
+
+impl<'l> CallFinder<'_, 'l> {
+    fn new(lines: &'l Lines, line: u32) -> Self {
+        CallFinder {
+            lines,
+            line,
+            scope: None,
+            held: Vec::new(),
+            found: Vec::new(),
+        }
+    }
+}
+
+impl<'a> Visitor<'a> for CallFinder<'a, '_> {
+    fn visit_stmt(&mut self, statement: &'a Stmt) {
+        match statement {
+            Stmt::Assign(a) => {
+                if let ([Expr::Name(name)], Expr::Call(call)) = (a.targets.as_slice(), &*a.value) {
+                    self.held
+                        .push((call.range(), Holder::Name(name.id.as_str())));
+                }
+            }
+            Stmt::AnnAssign(a) => {
+                if let (Expr::Name(name), Some(Expr::Call(call))) = (&*a.target, a.value.as_deref())
+                {
+                    self.held
+                        .push((call.range(), Holder::Name(name.id.as_str())));
+                }
+            }
+            Stmt::Expr(e) => {
+                if let Expr::Call(call) = &*e.value {
+                    self.held.push((call.range(), Holder::Dropped));
+                }
+            }
+            _ => {}
+        }
+        let inner = match statement {
+            Stmt::FunctionDef(f) => Some(f.range.start().to_u32()),
+            Stmt::ClassDef(c) => Some(c.range.start().to_u32()),
+            _ => None,
+        };
+        let outer = self.scope;
+        self.scope = inner.or(outer);
+        visitor::walk_stmt(self, statement);
+        self.scope = outer;
+    }
+
+    fn visit_expr(&mut self, expr: &'a Expr) {
+        if let Expr::Call(call) = expr {
+            if let Some((module, top, at)) = loads_by_name(call) {
+                if self.lines.of(at) == self.line {
+                    self.found.push(FoundCall {
+                        range: call.range(),
+                        module,
+                        top,
+                        scope: self.scope,
+                        holder: self
+                            .held
+                            .iter()
+                            .find(|(range, _)| *range == call.range())
+                            .map_or(Holder::Nothing, |(_, holder)| *holder),
+                    });
+                }
+            }
+        }
+        visitor::walk_expr(self, expr);
+    }
+}
+
+/// The module a call loads by one string literal, as the scan reads it:
+/// `import_module("a.b")`, `import_module(".b", package="a")` or
+/// `import_module(".b", "a")`, and `__import__("a.b")` with no other
+/// argument, which returns `a`; with where its function's name starts.
+fn loads_by_name(call: &ast::ExprCall) -> Option<(String, bool, usize)> {
+    let (callee, at) = match &*call.func {
+        Expr::Name(name) => (name.id.as_str(), name.range.start()),
+        Expr::Attribute(attribute) => (attribute.attr.as_str(), attribute.attr.range.start()),
+        _ => return None,
+    };
+    let literal = |expr: &Expr| match expr {
+        Expr::StringLiteral(string) => Some(string.value.to_str().to_owned()),
+        _ => None,
+    };
+    let arguments = &call.arguments;
+    let module = literal(arguments.args.first()?)?;
+    let level = module.chars().take_while(|c| *c == '.').count();
+    let package = match (callee, arguments.args.len(), &*arguments.keywords) {
+        ("__import__", 1, []) if level == 0 => return Some((module, true, at.to_usize())),
+        ("import_module", 1, []) => None,
+        ("import_module", 2, []) => Some(literal(&arguments.args[1])?),
+        ("import_module", 1, [keyword])
+            if keyword.arg.as_ref().map(|a| a.as_str()) == Some("package") =>
+        {
+            Some(literal(&keyword.value)?)
+        }
+        _ => return None,
+    };
+    if level == 0 {
+        return Some((module, false, at.to_usize()));
+    }
+    // a relative name, from the package: one dot is the package itself
+    let package = package?;
+    let mut parts: Vec<&str> = package.split('.').collect();
+    for _ in 1..level {
+        parts.pop()?;
+    }
+    if level < module.len() {
+        parts.push(&module[level..]);
+    }
+    (!parts.is_empty()).then(|| (parts.join("."), false, at.to_usize()))
+}
+
 /// The names one scope binds, with how many places bind each, and its
 /// `global` and `nonlocal` names. The bodies of the functions, classes,
 /// lambdas and comprehensions inside it are scopes of their own, apart
@@ -759,6 +954,8 @@ struct Walker<'r> {
     read: &'r File,
     target: &'r Target,
     bindings: Vec<Binding>,
+    /// The calls that load a module on the way to the symbol.
+    calls: Vec<LoadCall>,
     frames: Vec<Frame>,
     in_annotation: bool,
     /// The callee being walked: a use that is all of it is a call.
@@ -781,11 +978,17 @@ struct Walker<'r> {
 }
 
 impl<'r> Walker<'r> {
-    fn new(read: &'r File, target: &'r Target, bindings: Vec<Binding>) -> Self {
+    fn new(
+        read: &'r File,
+        target: &'r Target,
+        bindings: Vec<Binding>,
+        calls: Vec<LoadCall>,
+    ) -> Self {
         Walker {
             read,
             target,
             bindings,
+            calls,
             frames: Vec::new(),
             in_annotation: false,
             callee: None,
@@ -935,9 +1138,15 @@ impl<'r> Walker<'r> {
         }
     }
 
-    /// An attribute chain from a name: a use when it follows a binding's
-    /// path to the symbol; an escape when it stops at, or reads a dunder
-    /// of, a module on the way. Returns whether the chain was read.
+    /// The call at `range` that loads a module on the way to the symbol.
+    fn load_call(&self, range: TextRange) -> Option<&LoadCall> {
+        self.calls.iter().find(|c| c.range == range)
+    }
+
+    /// An attribute chain from a name, or from a call that loads a module:
+    /// a use when it follows a binding's path to the symbol; an escape when
+    /// it stops at, or reads a dunder of, a module on the way. Returns
+    /// whether the chain was read.
     fn attribute(&mut self, attribute: &ast::ExprAttribute) -> bool {
         let mut chain = vec![attribute];
         let mut base = &*attribute.value;
@@ -946,10 +1155,19 @@ impl<'r> Walker<'r> {
             base = &inner.value;
         }
         chain.reverse();
-        let Expr::Name(name) = base else {
-            return false;
+        let read = self.read;
+        let (bindings, base_range, written_base) = match base {
+            Expr::Name(name) => (self.bindings_of(&name.id), name.range, name.id.as_str()),
+            Expr::Call(call) => match self.load_call(call.range()) {
+                Some(found) => (
+                    vec![found.binding.clone()],
+                    call.range(),
+                    &read.text[call.range().start().to_usize()..call.range().end().to_usize()],
+                ),
+                None => return false,
+            },
+            _ => return false,
         };
-        let bindings = self.bindings_of(&name.id);
         if bindings.is_empty() {
             return false;
         }
@@ -965,10 +1183,10 @@ impl<'r> Walker<'r> {
             // shown where the chain names the symbol
             let n = binding.path.len();
             let (at, whole) = match n {
-                0 => (name.range, name.range),
+                0 => (base_range, base_range),
                 n => (chain[n - 1].attr.range, chain[n - 1].range),
             };
-            let written = std::iter::once(name.id.as_str())
+            let written = std::iter::once(written_base)
                 .chain(attrs[..n].iter().copied())
                 .collect::<Vec<_>>()
                 .join(".");
@@ -1221,6 +1439,11 @@ impl<'a> Visitor<'a> for Walker<'_> {
             }
             Expr::Call(call) => {
                 self.dynamic |= self.reads_namespace(call);
+                // a module that a call loads goes on as a value
+                if let Some(found) = self.load_call(call.range()).filter(|c| !c.held) {
+                    let line = found.binding.line;
+                    self.escape(call.range(), line);
+                }
                 let outer = self.callee.replace(call.func.range());
                 self.visit_expr(&call.func);
                 self.callee = outer;
@@ -1243,5 +1466,41 @@ impl<'a> Visitor<'a> for Walker<'_> {
             }
             _ => visitor::walk_expr(self, expr),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ruff_python_parser::parse_expression;
+
+    #[test]
+    fn a_call_names_its_module_as_the_scan_reads_it() {
+        let named = |code: &str| {
+            let parsed = parse_expression(code).unwrap();
+            match parsed.expr() {
+                Expr::Call(call) => loads_by_name(call).map(|(module, top, _)| (module, top)),
+                _ => None,
+            }
+        };
+        let module = |name: &str, top: bool| Some((name.to_owned(), top));
+        assert_eq!(
+            named("importlib.import_module('a.b')"),
+            module("a.b", false)
+        );
+        assert_eq!(
+            named("import_module('.b', package='a')"),
+            module("a.b", false)
+        );
+        assert_eq!(named("import_module('..c', 'a.b')"), module("a.c", false));
+        assert_eq!(named("import_module('.', 'a.b')"), module("a.b", false));
+        assert_eq!(named("__import__('a.b')"), module("a.b", true));
+        // a computed name, a relative one without its package, and
+        // `__import__` with a `fromlist`, which returns another module
+        assert_eq!(named("import_module(name)"), None);
+        assert_eq!(named("import_module(f'a.{name}')"), None);
+        assert_eq!(named("import_module('.b')"), None);
+        assert_eq!(named("__import__('a.b', fromlist=['c'])"), None);
+        assert_eq!(named("load('a.b')"), None);
     }
 }
