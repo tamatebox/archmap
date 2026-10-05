@@ -138,6 +138,7 @@ pub fn symbol_uses(report: &ScanReport, symbol: &Symbol) -> SymbolUses {
                     .component(&symbol.component)
                     .is_some_and(|c| c.kind == archmap_core::ComponentKind::Script),
                 statements,
+                package: false,
             };
             ts::read(&request, &mut found);
         }
@@ -155,6 +156,35 @@ pub fn symbol_uses(report: &ScanReport, symbol: &Symbol) -> SymbolUses {
                 .collect();
         }
     }
+    found.normalize();
+    found
+}
+
+/// Where `name`, which `statements` take from the package `package` (a
+/// component id, `ext:npm:next`), is used in the files of those
+/// statements, read as for a symbol whose defining file is the package.
+/// Only TS/JS statements record the names they take from a package.
+pub fn package_name_uses(
+    report: &ScanReport,
+    package: &str,
+    name: &str,
+    statements: Vec<&Evidence>,
+) -> SymbolUses {
+    let mut found = SymbolUses::default();
+    // no scanned path holds a NUL
+    let defining = format!("\0{package}");
+    let request = ts::Request {
+        root: report.root.as_path(),
+        graph: &report.graph,
+        defining: &defining,
+        name,
+        test: false,
+        global: false,
+        script: false,
+        statements,
+        package: true,
+    };
+    ts::read(&request, &mut found);
     found.normalize();
     found
 }

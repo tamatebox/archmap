@@ -63,6 +63,9 @@ pub(crate) struct Request<'g> {
     pub script: bool,
     /// The statements that import the symbol, with their evidence.
     pub statements: Vec<&'g Evidence>,
+    /// `defining` names a package, not a file: the statements load it and
+    /// take the name from it, and no file defines it.
+    pub package: bool,
 }
 
 /// Read the uses of the symbol `request` names into `out`.
@@ -71,11 +74,23 @@ pub(crate) fn read(request: &Request, out: &mut SymbolUses) {
         Some((class, member)) => vec![class.to_owned(), member.to_owned()],
         None => vec![request.name.to_owned()],
     };
+    let mut loads = loads(request.graph);
+    // a package's statements load it by its name
+    if request.package {
+        for evidence in &request.statements {
+            if let Some(line) = evidence.line {
+                loads
+                    .entry((evidence.file.as_str(), line))
+                    .or_default()
+                    .insert(request.defining);
+            }
+        }
+    }
     let mut pass = Pass {
         root: request.root,
         defining: request.defining,
         tail,
-        loads: loads(request.graph),
+        loads,
         parsed: BTreeMap::new(),
         paths: BTreeMap::new(),
         aliases: Vec::new(),
@@ -84,7 +99,9 @@ pub(crate) fn read(request: &Request, out: &mut SymbolUses) {
     };
     // a member whose declaration says nothing stays a possible instance one
     pass.instance_member = pass.tail.len() == 2;
-    pass.defining_file(request.test, request.global, request.script);
+    if !request.package {
+        pass.defining_file(request.test, request.global, request.script);
+    }
     // one statement per line and kind: a line can hold an import and a
     // call that loads a module
     let mut by_file: BTreeMap<&str, BTreeMap<(u32, &str), &Evidence>> = BTreeMap::new();

@@ -12,8 +12,8 @@ use archmap_core::{ArchitectureGraph, ComponentId};
 
 use crate::query_text::{
     component_head, count, display, file_head, import_counts, import_location, marks, names_capped,
-    namesakes, not_traced, place, plural, shell_word, statements_title, symbol_line, used_at,
-    with_more, UsedAt, MAX_USE_FILES, SHOWN_NAMES,
+    namesakes, not_traced, package_name_head, place, plural, shell_word, statements_title,
+    symbol_line, used_at, with_more, UsedAt, MAX_USE_FILES, SHOWN_NAMES,
 };
 use crate::views::{
     About, Dependent, ImpactResult, ImportSites, TestRouteView, TestWayView, MAX_IMPORT_SITES,
@@ -164,6 +164,7 @@ fn head(
             let module = result.module.as_deref().unwrap_or(result.requested);
             let _ = writeln!(out, "{module}: imports without an edge, depth {depth}");
         }
+        (About::PackageName(package, name), _) => package_name_head(out, package, name, depth),
         (About::Component, None) => {
             let _ = writeln!(out, "{}, depth {depth}", result.requested);
         }
@@ -253,7 +254,7 @@ fn importers(
                 note: None,
                 taken: "from",
                 // a symbol's importers take it: the names say nothing more
-                names: !matches!(result.about, About::Symbol(_)),
+                names: !matches!(result.about, About::Symbol(_) | About::PackageName(..)),
             };
             statements(out, list, sites, rolled, caps)
         }

@@ -7,8 +7,8 @@ use std::path::Path;
 
 use anyhow::{bail, Result};
 use archmap_core::{
-    ArchitectureGraph, Component, ComponentId, ComponentKind, Evidence, Symbol, SymbolId,
-    SymbolKind,
+    ArchitectureGraph, Component, ComponentId, ComponentKind, EdgeKind, Evidence, Symbol, SymbolId,
+    SymbolKind, WHOLE_MODULE,
 };
 use serde::Serialize;
 
@@ -31,6 +31,12 @@ pub(crate) enum Resolved<'g> {
     },
     /// An import name that no component carries.
     ImportName(String),
+    /// A name statements take from a package (`revalidatePath` from
+    /// `ext:npm:next`).
+    PackageName {
+        package: &'g Component,
+        name: String,
+    },
     Candidates(Candidates<'g>),
 }
 
@@ -47,6 +53,8 @@ pub(crate) struct Candidates<'g> {
     /// Names that contain the target, ignoring case, best first, for a
     /// target that names nothing.
     contains: Vec<Near<'g>>,
+    /// Packages that statements take a name of the target's from.
+    taken: Vec<&'g Component>,
 }
 
 /// A name that contains a target which names nothing, and how.
@@ -59,6 +67,8 @@ enum Thing<'g> {
     Component(&'g Component),
     Symbol(&'g Symbol),
     File(String),
+    /// A name statements take from a package.
+    Taken(&'g Component, String),
 }
 
 /// How a name contains the target, best first: equal to it ignoring case,
@@ -114,6 +124,18 @@ pub(crate) fn resolve<'g>(
         (Some(component), None) => return Ok(Resolved::Component(component)),
         (None, Some(symbol)) => return Ok(Resolved::Symbol(symbol)),
         (None, None) => {}
+    }
+    // a name taken from a package, by its id: `ext:npm:next::revalidatePath`
+    if let Some((id, name)) = target.rsplit_once("::") {
+        if let Some(package) = full
+            .component(&ComponentId::new(id))
+            .filter(|c| c.kind == ComponentKind::External && !name.is_empty())
+        {
+            return Ok(Resolved::PackageName {
+                package,
+                name: name.to_owned(),
+            });
+        }
     }
 
     let named: Vec<&Component> = full.components_named(target).collect();
@@ -192,6 +214,24 @@ pub(crate) fn resolve<'g>(
         _ => return Ok(Resolved::Candidates(every_match(full, root, target)?)),
     }
 
+    // a name statements take from a package
+    let taken = packages_taking(full, target);
+    match taken.as_slice() {
+        [] => {}
+        [package] => {
+            return Ok(Resolved::PackageName {
+                package,
+                name: target.to_owned(),
+            })
+        }
+        _ => {
+            return Ok(Resolved::Candidates(Candidates {
+                taken,
+                ..Candidates::default()
+            }))
+        }
+    }
+
     // a word that names nothing: the names that contain it
     if target.contains('/') {
         bail!(
@@ -217,6 +257,37 @@ pub(crate) fn resolve<'g>(
         contains,
         ..Candidates::default()
     }))
+}
+
+/// The names statements take from packages, each with its package: a
+/// TS/JS statement into a package records them as it writes them, apart
+/// from a default import (`default`) and a module taken whole (`*`), which
+/// only a package name's id reaches.
+fn package_names(full: &ArchitectureGraph) -> BTreeSet<(&ComponentId, &str)> {
+    full.edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Import)
+        .filter(|e| {
+            full.component(&e.to)
+                .is_some_and(|c| c.kind == ComponentKind::External)
+        })
+        .flat_map(|e| {
+            e.evidence
+                .iter()
+                .flat_map(|ev| &ev.names)
+                .filter(|n| *n != "default" && *n != WHOLE_MODULE)
+                .map(move |n| (&e.to, n.as_str()))
+        })
+        .collect()
+}
+
+/// The packages that statements take `name` from.
+fn packages_taking<'g>(full: &'g ArchitectureGraph, name: &str) -> Vec<&'g Component> {
+    package_names(full)
+        .into_iter()
+        .filter(|(_, n)| *n == name)
+        .filter_map(|(id, _)| full.component(id))
+        .collect()
 }
 
 /// The last segment of a component's name: after its last `/` for a name
@@ -280,7 +351,8 @@ fn rank(name: &str, target: &str, squashed: &str) -> Option<Rank> {
 }
 
 /// What near matches sort by: rank, in test code, external, the name's
-/// length, the kind (component, symbol, file), then the id or path.
+/// length, the kind (component, symbol, file, a name taken from a package),
+/// then the id or path.
 type NearKey = (Rank, bool, bool, usize, u8, String);
 
 /// The components, symbols and files whose names contain `target`,
@@ -354,6 +426,13 @@ fn containing<'g>(full: &'g ArchitectureGraph, root: &Path, target: &str) -> Vec
             found.push((key, Thing::File(f.to_owned())));
         }
     }
+    for (id, name) in package_names(full) {
+        let (Some(rank), Some(package)) = (best(&[name]), full.component(id)) else {
+            continue;
+        };
+        let key = (rank, false, true, name.len(), 3, format!("{id}::{name}"));
+        found.push((key, Thing::Taken(package, name.to_owned())));
+    }
     found.sort_by(|a, b| a.0.cmp(&b.0));
     found
         .into_iter()
@@ -425,17 +504,10 @@ fn takes_subpaths(component: &Component) -> bool {
 /// the import name after the statement's kind (`import react-dom/client`,
 /// `export react-dom/client, declared in packages/web/package.json:4`).
 pub(crate) fn imports_subpath(evidence: &Evidence, spec: &str) -> bool {
-    let Some(written) = evidence
-        .note
-        .as_deref()
-        .and_then(|note| note.split_whitespace().nth(1))
-    else {
+    let Some(written) = evidence.import_name() else {
         return false;
     };
-    let (written, spec) = (
-        module_path(written.trim_end_matches([',', ':'])),
-        module_path(spec),
-    );
+    let (written, spec) = (module_path(written), module_path(spec));
     written == spec
         || written
             .strip_prefix(spec)
@@ -520,6 +592,7 @@ fn every_match<'g>(
         files,
         directories: directory.into_iter().collect(),
         contains: Vec::new(),
+        taken: Vec::new(),
     })
 }
 
@@ -534,6 +607,7 @@ impl Candidates<'_> {
             + self.files.len()
             + self.directories.len()
             + self.contains.len()
+            + self.taken.len()
     }
 
     /// The candidates, in text or JSON, the same for `query` and `impact`.
@@ -547,7 +621,7 @@ impl Candidates<'_> {
             Format::Json => crate::json(&CandidatesView {
                 requested: target,
                 total: self.total(),
-                candidates: self.views(full),
+                candidates: self.views(full, target),
             }),
             Format::Text if self.contains.is_empty() => Ok(self.text(full, target)),
             Format::Text => Ok(self.contains_text(full, target)),
@@ -565,6 +639,11 @@ impl Candidates<'_> {
             (self.symbols.len(), "a symbol", "symbols"),
             (self.files.len(), "a file", "files"),
             (self.directories.len(), "a directory", "directories"),
+            (
+                self.taken.len(),
+                "a name taken from a package",
+                "names taken from packages",
+            ),
         ] {
             match n {
                 0 => {}
@@ -591,6 +670,9 @@ impl Candidates<'_> {
         for d in &self.directories {
             lines.push(format!("  {}  directory", shell_word(&format!("./{d}"))));
         }
+        for package in &self.taken {
+            lines.push(taken_row(package, target));
+        }
         for line in lines.iter().take(MAX_CANDIDATES) {
             let _ = writeln!(out, "{line}");
         }
@@ -613,6 +695,7 @@ impl Candidates<'_> {
                 Thing::Component(c) => component_row(c),
                 Thing::Symbol(s) => symbol_row(full, s),
                 Thing::File(f) => file_row(f),
+                Thing::Taken(package, name) => taken_row(package, name),
             };
             let _ = writeln!(out, "{row}");
         }
@@ -624,7 +707,7 @@ impl Candidates<'_> {
         out
     }
 
-    fn views(&self, full: &ArchitectureGraph) -> Vec<CandidateView<'_>> {
+    fn views<'a>(&'a self, full: &ArchitectureGraph, target: &'a str) -> Vec<CandidateView<'a>> {
         let components = self.components.iter().map(|c| component_view(c, "exact"));
         let segments = self.segments.iter().map(|c| component_view(c, "segment"));
         let symbols = self.symbols.iter().map(|s| symbol_view(full, s, "exact"));
@@ -651,13 +734,19 @@ impl Candidates<'_> {
                     path: Some(f.clone()),
                     ..CandidateView::of(matched)
                 },
+                Thing::Taken(package, name) => taken_view(package, name, matched),
             }
         });
+        let taken = self
+            .taken
+            .iter()
+            .map(|package| taken_view(package, target, "exact"));
         components
             .chain(segments)
             .chain(symbols)
             .chain(files)
             .chain(directories)
+            .chain(taken)
             .chain(contains)
             .collect()
     }
@@ -696,6 +785,28 @@ fn symbol_row(full: &ArchitectureGraph, s: &Symbol) -> String {
 
 fn file_row(f: &str) -> String {
     format!("  {}  file", shell_word(f))
+}
+
+/// A name taken from a package as a candidate row: the id to retry with.
+fn taken_row(package: &Component, name: &str) -> String {
+    format!(
+        "  {}  a name taken from {}",
+        shell_word(&format!("{}::{name}", package.id)),
+        package.name
+    )
+}
+
+fn taken_view<'a>(
+    package: &'a Component,
+    name: &'a str,
+    matched: &'static str,
+) -> CandidateView<'a> {
+    CandidateView {
+        kind: "package name",
+        id: Some(package.id.as_str()),
+        name: Some(name),
+        ..CandidateView::of(matched)
+    }
 }
 
 fn component_view<'a>(c: &'a Component, matched: &'static str) -> CandidateView<'a> {
@@ -746,6 +857,10 @@ struct CandidateView<'a> {
     symbol_kind: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     id: Option<&'a str>,
+    /// For a name taken from a package: that name, `id` being the
+    /// package's; retry with `<id>::<name>`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<&'a str>,
     /// A component's path, or a file or directory as written to retry
     /// with (`./helper` for a directory).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -769,6 +884,7 @@ impl CandidateView<'_> {
             matched,
             symbol_kind: None,
             id: None,
+            name: None,
             path: None,
             file: None,
             line: None,

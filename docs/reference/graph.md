@@ -40,7 +40,10 @@ the whole module (a namespace import, `export *`), and no names with a
 `target` means the statement only loads the file (a side-effect import). A
 Python statement that binds a module (`import pkg.sub`, `from pkg import
 sub`) takes the names its file reads through it (`sub.pay`), and `*` when
-the file may take anything of it.
+the file may take anything of it. A TS/JS statement into a package, which
+has no `target`, records the names as it writes them, `default` for a
+default import and `*` for the module whole; `query` and `impact` take such
+a name as a target (see [commands.md](commands.md)).
 Through re-exports (for Python, a file that binds a name by importing it
 from another), evidence noted `<note> via <file>:<line>` (one word,
 `import via src/index.ts:2`, `use via src/shapes/mod.rs:2`) names what the

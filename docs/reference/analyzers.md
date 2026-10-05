@@ -392,6 +392,11 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   namespace import, `import x = require()` and
   `export *`, none for a side-effect import; `via` evidence records the names as the defining file
   declares them, one evidence per defining file and re-export, and re-export statements are not walked
+- a statement into a package records the names it writes (`default`, `*` for a namespace import, a
+  `require`'s module whole), as one for a file does, so a name taken from a package is a target of
+  `query` and `impact`; what imports it from a file that re-exports it (`export { x } from 'pkg'`)
+  is not followed, and a destructuring `require` (`const { x } = require('pkg')`) takes the module
+  whole
 - a file whose prologue holds React's `"use client"` or `"use server"` directive gives its component
   evidence noted with it, and a statement of a `"use client"` file that takes values from a `"use
   server"` file, `via` evidence of a name such a file defines included, is a `server_reference`

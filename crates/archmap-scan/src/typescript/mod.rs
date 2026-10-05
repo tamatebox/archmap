@@ -917,7 +917,11 @@ impl Imports<'_> {
             module: import.specifier.clone(),
             reason,
             provided_by: Vec::new(),
-            evidence: self.evidence(import).type_only(type_only).with_note(note),
+            evidence: self
+                .evidence(import)
+                .type_only(type_only)
+                .with_note(note)
+                .taking(import.names.iter().cloned()),
         }
     }
 
@@ -1131,7 +1135,10 @@ impl Imports<'_> {
                         output.fragment.push_edge(
                             Edge::new(from.clone(), external_id(&d.name), EdgeKind::Import)
                                 .with_evidence(
-                                    self.evidence(import).type_only(type_only).with_note(note),
+                                    self.evidence(import)
+                                        .type_only(type_only)
+                                        .with_note(note)
+                                        .taking(import.names.iter().cloned()),
                                 ),
                         );
                     }

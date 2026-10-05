@@ -2216,3 +2216,46 @@ fn a_client_file_takes_server_functions_by_reference() {
     std::fs::remove_dir_all(&root).unwrap();
     assert_eq!(archmap_core::signals::signals(&report.graph, 1).len(), 1);
 }
+
+#[test]
+fn a_statement_into_a_package_records_the_names_it_takes() {
+    let root = temp_repo(
+        "package-names",
+        &[
+            (
+                "package.json",
+                "{ \"name\": \"web\", \"dependencies\": { \"kit\": \"1.0.0\" }, \"devDependencies\": { \"tool\": \"1.0.0\" } }",
+            ),
+            (
+                "src/a.ts",
+                "import Link, { refresh as r } from 'kit/cache';\nimport * as all from 'kit';\nimport { run } from 'tool';\nexport const a = [Link, r, all, run];\n",
+            ),
+        ],
+    );
+    let report = scan(&root, &ScanOptions::default()).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    let names: BTreeMap<u32, Vec<String>> = report
+        .graph
+        .edges
+        .iter()
+        .filter(|e| e.to == id("ext:npm:kit"))
+        .flat_map(|e| &e.evidence)
+        .map(|e| (e.line.unwrap_or(0), e.names.iter().cloned().collect()))
+        .collect();
+    assert_eq!(
+        names,
+        BTreeMap::from([
+            (1, vec!["default".to_owned(), "refresh".to_owned()]),
+            (2, vec!["*".to_owned()]),
+        ])
+    );
+    // an import without an edge records them too
+    let unmapped: Vec<&str> = report
+        .graph
+        .unmapped_imports
+        .iter()
+        .flat_map(|i| &i.evidence.names)
+        .map(String::as_str)
+        .collect();
+    assert_eq!(unmapped, ["run"]);
+}

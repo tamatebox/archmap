@@ -6,14 +6,18 @@ use std::collections::BTreeSet;
 
 use anyhow::{Context, Result};
 use archmap_core::{
-    ArchitectureGraph, ComponentId, ComponentKind, Edge, EdgeKind, Evidence, Symbol, SymbolUses,
-    UnreadReason,
+    ArchitectureGraph, Component, ComponentId, ComponentKind, Edge, EdgeKind, Evidence, Symbol,
+    SymbolUses, UnreadReason, WHOLE_MODULE,
 };
 
-use crate::not_traced::{holds_global, not_traced, with_uses, Own, Place, Subject};
+use crate::not_traced::{
+    holds_global, not_traced, with_uses, NotTraced, Own, Place, Spot, Spots, Subject,
+};
 use crate::resolve::{imports_subpath, resolve, Resolved};
 use crate::target::{component_file, fold, namesakes, reject_outside, unquote, AtDepth};
-use crate::views::{ComponentView, FileView, Importer, QueryResult, SymbolView, UnmappedView};
+use crate::views::{
+    ComponentView, FileView, Importer, PackageNameView, QueryResult, SymbolView, UnmappedView,
+};
 use archmap_scan::ScanReport;
 
 use crate::{Answer, Format, Found, QueryRequest, Workspace};
@@ -207,6 +211,9 @@ fn query(ws: &Workspace, request: &QueryRequest) -> Result<Answer> {
             let symbol = rolled.symbol(&symbol.id).unwrap_or(symbol);
             QueryResult::Symbols(vec![symbol_view(full, &ws.report, symbol)])
         }
+        Resolved::PackageName { package, name } => {
+            QueryResult::PackageName(package_name_view(ws, depth, target, package, name))
+        }
         // an import name that no component carries, such as an extra
         Resolved::ImportName(_) => QueryResult::NotMapped(UnmappedView {
             requested: target,
@@ -224,6 +231,99 @@ fn query(ws: &Workspace, request: &QueryRequest) -> Result<Answer> {
         output,
         found: Found::One,
     })
+}
+
+/// The statements that take `name` from `package` by name, and those that
+/// take its module whole, each production code first, then by place.
+pub(crate) fn package_name_statements<'g>(
+    full: &'g ArchitectureGraph,
+    package: &ComponentId,
+    name: &str,
+) -> (Vec<Importer<'g>>, Vec<Importer<'g>>) {
+    let (mut by_name, mut whole): (Vec<Importer>, Vec<Importer>) = (Vec::new(), Vec::new());
+    for edge in full
+        .incoming(package)
+        .filter(|e| e.kind == EdgeKind::Import)
+    {
+        for evidence in &edge.evidence {
+            let importer = Importer {
+                from: &edge.from,
+                evidence,
+                through: None,
+            };
+            if evidence.names.contains(name) {
+                by_name.push(importer);
+            } else if evidence.names.contains(WHOLE_MODULE) {
+                whole.push(importer);
+            }
+        }
+    }
+    // a module taken whole gives the name where it is the one the name is
+    // taken from
+    let modules: BTreeSet<&str> = by_name
+        .iter()
+        .map(|i| i.evidence.import_name().unwrap_or(""))
+        .collect();
+    if !modules.is_empty() {
+        whole.retain(|i| modules.contains(i.evidence.import_name().unwrap_or("")));
+    }
+    for list in [&mut by_name, &mut whole] {
+        list.sort_by(|a, b| {
+            (a.evidence.test, &a.evidence.file, a.evidence.line).cmp(&(
+                b.evidence.test,
+                &b.evidence.file,
+                b.evidence.line,
+            ))
+        });
+    }
+    (by_name, whole)
+}
+
+/// A name statements take from a package, with where their files use it.
+fn package_name_view<'a>(
+    ws: &'a Workspace,
+    depth: usize,
+    requested: &'a str,
+    package: &'a Component,
+    name: String,
+) -> PackageNameView<'a> {
+    let full = ws.graph();
+    let (imported_by, may_use) = package_name_statements(full, &package.id, &name);
+    let statements: Vec<&Evidence> = imported_by
+        .iter()
+        .chain(&may_use)
+        .map(|i| i.evidence)
+        .collect();
+    let used_at =
+        archmap_scan::package_name_uses(&ws.report, package.id.as_str(), &name, statements);
+    // the statements that pass it on, whose importers are not read
+    let relays: Vec<Spot> = imported_by
+        .iter()
+        .filter(|i| i.evidence.re_exports())
+        .map(|i| Spot {
+            file: i.evidence.file.clone(),
+            line: i.evidence.line,
+            test: i.evidence.test,
+        })
+        .collect();
+    let mut not_traced = (!relays.is_empty()).then(|| NotTraced {
+        relays: Some(Spots {
+            total: relays.len(),
+            shown: relays,
+        }),
+        ..NotTraced::default()
+    });
+    not_traced = with_uses(not_traced, &used_at, false);
+    PackageNameView {
+        requested,
+        depth,
+        package: &package.id,
+        name,
+        imported_by,
+        may_use,
+        used_at,
+        not_traced,
+    }
 }
 
 /// `edge` with the evidence of the statements that import `spec`, a

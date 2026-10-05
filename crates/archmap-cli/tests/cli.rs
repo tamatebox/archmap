@@ -2719,7 +2719,7 @@ fn only_a_walked_note_reads_as_via() {
     let text = query_text(&repo, &["web/src/m.ts"]);
     std::fs::remove_dir_all(&repo).unwrap();
     for expected in [
-        "1 import: web/src/m.ts:2\n",
+        "1 import: web/src/m.ts:2 (names default)\n",
         "1 import: web/src/m.ts:3 -> web/src/zz.ts (via web/src/z.ts:1) (names z)\n",
         "unresolved  1 import: web/src/m.ts:1\n",
     ] {

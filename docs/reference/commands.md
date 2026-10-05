@@ -136,7 +136,14 @@ archmap query acme/shop#123 --snapshot ../shop-github.json
 ```
 
 `query` works on top of the rolled-up graph, for a component, a symbol or a
-single file, including the imports no edge shows. It also takes a directory
+single file, including the imports no edge shows. For a name taken from a
+package it lists the statements that take it, under `Imported by` by the
+import name each writes (`(from next/cache)`), those that take that module
+whole under `May use`, and `Used at` as for a symbol, read from their files;
+a statement that passes the name on (`export { x } from 'pkg'`) is marked
+`(export)`, and `Not traced` says its file's importers are not read
+(`relays`). `impact` starts from the same statements, as from those of an
+import name. It also takes a directory
 for the component that owns it, a package subpath for its package with
 the statements that import that subpath (`react-dom/client`), and an
 import name that no component carries (`torch` declared as an extra) for
@@ -763,6 +770,10 @@ matches decides:
     or `::` (`pantry` for `components/pantry`, `billing` for
     `shop.billing`), unless that component is one file, which its stem
     finds
+11. a name that TS/JS statements take from a package (`revalidatePath`),
+    apart from `default` and `*`, which only its id reaches: the package's
+    id, `::` and the name (`ext:npm:next::revalidatePath`, also at step 2);
+    a default import goes by its package subpath instead (`next/link`)
 
 A directory that no component has for its path answers for the component
 whose files it holds: a Rust module whose `mod.rs` sits in it with its
@@ -796,7 +807,8 @@ start with it, hold it from the start of a word (after `_`, `-`, `.`, `/`,
 `_` and `-` left out of both (`hold_until` for `holdUntil`); among them
 production code before tests, the repository's components before external
 ones, shorter names first. A component that is one file is listed as its
-file. JSON gives these candidates `match` `case` or `contains`. When nothing
+file, and a name taken from a package as its id, after the repository's
+names. JSON gives these candidates `match` `case` or `contains`. When nothing
 contains the word either, the error says so, with what to do next.
 
 Both commands exit 0 with an answer, 1 with candidates, and 2 when they
@@ -877,6 +889,9 @@ target's own imports without an edge stay under `Not mapped`.
   calls through a subclass are not read.
 - `barrels`: for `impact`, the re-exports past which it follows only what
   takes the changed names (see [impact](#impact)).
+- `relays`: for a name taken from a package, the statements that pass it
+  on (`export { x } from 'pkg'`): what imports it from their files is not
+  read.
 - `history`: for `impact`, what in the history read may hide files changed
   in the same commits as the target (see
   [history.md](history.md#files-changed-in-the-same-commits)).

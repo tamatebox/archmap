@@ -161,7 +161,8 @@ The gaps behind the marks:
   (`wallet.pay()`) is not read, nor in Python a name its scope binds again
   or the uses in a file that reaches names by computed ones (`globals()`),
   and the uses of a TS/JS script's or `declare global` declaration are read
-  in its own file only.
+  in its own file only. The uses of a name taken from a package
+  (`revalidatePath` from `next/cache`) are read for TS/JS only.
 
 The commands read one merged graph, so a gap in what an analyzer reads
 shows in all of them: an import that is not read is missing from `query`,

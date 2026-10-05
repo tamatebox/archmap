@@ -733,6 +733,103 @@ fn a_file_says_its_react_directive_and_a_client_s_import_of_server_functions() {
     assert!(json.contains("\"server_reference\": true"), "{json}");
 }
 
+/// A package `kit` whose subpaths give `refresh` and `route`, and a second
+/// package `other` that gives `route` too.
+fn packages_repo(name: &str) -> Repo {
+    Repo::new(
+        name,
+        &[
+            (
+                "package.json",
+                "{\"name\": \"web\", \"dependencies\": {\"kit\": \"1.0.0\", \"other\": \"1.0.0\"}}\n",
+            ),
+            (
+                "src/save.ts",
+                "import { refresh } from 'kit/cache';\nimport Link from 'kit/link';\nexport function save() { refresh('/'); return Link; }\n",
+            ),
+            (
+                "src/bust.js",
+                "const cache = require('kit/cache');\nconst nav = require('kit/nav');\nmodule.exports = () => cache.refresh('/');\n",
+            ),
+            ("src/relay.ts", "export { refresh } from 'kit/cache';\n"),
+            ("src/a.ts", "import { route } from 'kit/nav';\nexport const a = route;\n"),
+            ("src/b.ts", "import { route } from 'other';\nexport const b = route;\n"),
+        ],
+    )
+}
+
+#[test]
+fn a_name_taken_from_a_package_answers_with_its_statements_and_uses() {
+    let repo = packages_repo("package-names");
+    let ws = scan(&repo.0);
+    let answer = query(&ws, "refresh");
+    assert_eq!(answer.found, Found::One, "{}", answer.output);
+    for line in [
+        "refresh (a name taken from kit), depth 2\nid: ext:npm:kit::refresh\n",
+        "\nImported by: 2 (from kit/cache; 1 re-export)\n  src/relay.ts:1 (export)\n  src/save.ts:1\n",
+        // a module taken whole, of the subpath the name comes from only
+        "\nMay use: 1 (imports the whole module)\n  src/bust.js:1\n",
+        "src/save.ts:3 (call)",
+        "src/bust.js:3 (call) as cache.refresh",
+        "relays: 1 statement passes the name on from the package, and what imports it from \
+         their files is not read: src/relay.ts:1",
+    ] {
+        assert!(answer.output.contains(line), "{line}: {}", answer.output);
+    }
+    // the id form gives the same, a default import only through it
+    let by_id = query(&ws, "ext:npm:kit::refresh");
+    assert_eq!(by_id.output, answer.output);
+    assert!(
+        query(&ws, "ext:npm:kit::default")
+            .output
+            .contains("src/save.ts:2"),
+        "default by id"
+    );
+    let default = ws.query(&QueryRequest {
+        target: "default",
+        depth: DEFAULT_DEPTH,
+        format: Format::Text,
+        verbose: false,
+    });
+    assert!(
+        default.map_or(true, |a| !a.output.contains("a name taken from")),
+        "a bare `default` is no package name"
+    );
+    // two packages give it: candidates to retry by id
+    let answer = query(&ws, "route");
+    assert_eq!(answer.found, Found::Candidates, "{}", answer.output);
+    assert!(
+        answer
+            .output
+            .contains("\n  ext:npm:kit::route  a name taken from kit\n"),
+        "{}",
+        answer.output
+    );
+    // a word that only part of it holds finds it too
+    let answer = query(&ws, "refre");
+    assert!(
+        answer
+            .output
+            .contains("ext:npm:kit::refresh  a name taken from kit"),
+        "{}",
+        answer.output
+    );
+    // impact follows the statements as for an import name
+    let answer = impact_as(&ws, "refresh", Format::Text);
+    assert!(
+        answer
+            .output
+            .starts_with("refresh (a name taken from kit), depth 2\n"),
+        "{}",
+        answer.output
+    );
+    assert!(
+        answer.output.contains("\n  src/save.ts:1\n"),
+        "{}",
+        answer.output
+    );
+}
+
 #[test]
 fn names_of_test_code_that_contain_a_word_come_after_production_ones() {
     let repo = Repo::new(

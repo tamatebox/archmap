@@ -148,6 +148,18 @@ impl Evidence {
         !self.type_only && !self.test && !self.server_reference
     }
 
+    /// The import name a statement into a package writes after its kind,
+    /// a graph convention (`next/cache` of the note `import next/cache`,
+    /// up to a comma or a colon); `None` for a note of one word, which a
+    /// statement that names the package alone has, and for `via` evidence.
+    pub fn import_name(&self) -> Option<&str> {
+        if self.via().is_some() {
+            return None;
+        }
+        let written = self.note.as_deref()?.split_whitespace().nth(1)?;
+        Some(written.trim_end_matches([',', ':']))
+    }
+
     /// The React directive a component's evidence names for a file of it, a
     /// graph convention: the note `use client` (the file runs on the
     /// client) or `use server` (it exports server functions).
@@ -247,6 +259,18 @@ pub fn via_place(note: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_statement_into_a_package_writes_its_import_name_second() {
+        let noted = |note: &str| Evidence::new("a.ts").with_note(note);
+        assert_eq!(noted("import next/cache").import_name(), Some("next/cache"));
+        assert_eq!(
+            noted("export kit, declared in web/package.json:4").import_name(),
+            Some("kit")
+        );
+        assert_eq!(noted("import").import_name(), None);
+        assert_eq!(noted("import via src/index.ts:2").import_name(), None);
+    }
+
     use super::*;
 
     #[test]

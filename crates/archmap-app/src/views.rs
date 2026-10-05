@@ -124,6 +124,31 @@ pub enum QueryResult<'a> {
     File(FileView<'a>),
     Symbols(Vec<SymbolView<'a>>),
     NotMapped(UnmappedView<'a>),
+    PackageName(PackageNameView<'a>),
+}
+
+/// What `archmap query` returns for a name statements take from a package
+/// (`revalidatePath` from `ext:npm:next`): those statements and where their
+/// files use it.
+#[derive(Debug, Serialize)]
+pub struct PackageNameView<'a> {
+    /// The target as given on the command line.
+    pub requested: &'a str,
+    pub depth: usize,
+    /// The package's component.
+    pub package: &'a ComponentId,
+    pub name: String,
+    /// The statements that take the name, production code first, each
+    /// with the import name it writes (`next/cache`).
+    pub imported_by: Vec<Importer<'a>>,
+    /// The statements that take the package's module whole (`import * as`,
+    /// `require`), which may use it.
+    pub may_use: Vec<Importer<'a>>,
+    /// Where those files use it.
+    pub used_at: SymbolUses,
+    /// What could reach the name unseen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub not_traced: Option<NotTraced>,
 }
 
 /// A symbol `query` found, with the statements that import it.
@@ -250,6 +275,8 @@ pub(crate) enum About<'a> {
     Symbol(&'a Symbol),
     /// An import name that no component carries, given in `module`.
     ImportName,
+    /// A name statements take from a package: the package, and the name.
+    PackageName(&'a Component, String),
 }
 
 /// How many import statements `impact` shows of each list, in text and

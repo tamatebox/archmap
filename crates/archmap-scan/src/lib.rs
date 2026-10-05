@@ -35,7 +35,7 @@ pub use rust::uses::takes_self;
 pub use stamp::{stamp, Stamp};
 pub use test_code::{is_test_code, TestKind};
 pub use typescript::is_mock_call;
-pub use uses::symbol_uses;
+pub use uses::{package_name_uses, symbol_uses};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

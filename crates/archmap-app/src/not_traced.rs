@@ -79,6 +79,10 @@ pub struct NotTraced {
     /// the same commits as the target.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) history: Option<HistoryGaps>,
+    /// For a name taken from a package: the statements that pass it on
+    /// (`export { x } from 'pkg'`), whose files' importers are not read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) relays: Option<Spots>,
     /// For `impact`: the files changed or reached that a framework loads
     /// for a URL: tests that reach them through it are not listed.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -458,7 +462,8 @@ pub(crate) fn with_uses(
         && found.uses.is_none()
         && found.values.is_none()
         && found.subclasses.is_none()
-        && found.barrels.is_none();
+        && found.barrels.is_none()
+        && found.relays.is_none();
     (!empty).then_some(found)
 }
 

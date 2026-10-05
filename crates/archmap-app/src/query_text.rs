@@ -17,7 +17,9 @@ use archmap_core::{
 use crate::not_traced::NotTraced;
 use crate::pairs::{Counted, Pairs};
 
-use crate::views::{ComponentView, FileView, Importer, QueryResult, SymbolView, UnmappedView};
+use crate::views::{
+    ComponentView, FileView, Importer, PackageNameView, QueryResult, SymbolView, UnmappedView,
+};
 
 /// Default caps, lifted by `--verbose`.
 const MAX_SYMBOLS: usize = 30;
@@ -77,6 +79,7 @@ pub fn render(
             symbol_list(&mut out, symbols, target, full, rolled, &caps)
         }
         QueryResult::NotMapped(view) => unmapped_name(&mut out, view, full, rolled, &caps),
+        QueryResult::PackageName(view) => package_name(&mut out, view, full, &caps),
     };
     // a file's text says "Imported by: none" without why; a symbol's says
     // it, and that a script or `declare global` declares it; a script's
@@ -94,6 +97,7 @@ pub fn render(
             false,
         ),
         QueryResult::NotMapped(_) => (None, false, false, false),
+        QueryResult::PackageName(view) => (view.not_traced.as_ref(), false, false, false),
     };
     let mut tail = String::new();
     if let Some(found) = not_traced {
@@ -659,6 +663,67 @@ fn symbol_list(
     truncated
 }
 
+/// `revalidatePath (a name taken from next), depth 2` and its id.
+pub(crate) fn package_name_head(out: &mut String, package: &Component, name: &str, depth: usize) {
+    let _ = writeln!(
+        out,
+        "{name} (a name taken from {}), depth {depth}",
+        package.name
+    );
+    let _ = writeln!(out, "id: {}::{name}", package.id);
+}
+
+/// A name taken from a package: the statements that take it, by the import
+/// name each writes, those that take the package's module whole, and where
+/// their files use it.
+fn package_name(
+    out: &mut String,
+    view: &PackageNameView,
+    full: &ArchitectureGraph,
+    caps: &Caps,
+) -> bool {
+    let Some(package) = full.component(view.package) else {
+        return false;
+    };
+    package_name_head(out, package, &view.name, view.depth);
+    let mut truncated = false;
+    // by the import name each statement writes
+    let mut by_import: BTreeMap<&str, Vec<Importer>> = BTreeMap::new();
+    for i in &view.imported_by {
+        let written = i.evidence.import_name().unwrap_or(&package.name);
+        by_import.entry(written).or_default().push(Importer {
+            from: i.from,
+            evidence: i.evidence,
+            through: None,
+        });
+    }
+    if by_import.is_empty() {
+        let _ = writeln!(out, "\nImported by: none");
+    }
+    for (written, list) in &by_import {
+        let note = format!("from {written}");
+        truncated |= sites(out, "Imported by", Some(&note), "from", list, caps);
+    }
+    if !view.may_use.is_empty() {
+        let note = Some("imports the whole module");
+        truncated |= sites(out, "May use", note, "whole", &view.may_use, caps);
+    }
+    let language = package.language.as_deref();
+    truncated |= used_at(
+        out,
+        &UsedAt {
+            uses: &view.used_at,
+            instance_method: false,
+            global: false,
+            language,
+            left_out: None,
+        },
+        caps.use_files,
+        caps.locations,
+    );
+    truncated
+}
+
 /// The statements that import one symbol: those that take its name, then
 /// those that take its file whole.
 fn importers(
@@ -949,10 +1014,7 @@ fn sites(
     caps: &Caps,
 ) -> bool {
     let shown = list.len().min(caps.importers);
-    let exports = list
-        .iter()
-        .filter(|i| i.evidence.note.as_deref() == Some("export"))
-        .count();
+    let exports = list.iter().filter(|i| i.evidence.re_exports()).count();
     let _ = writeln!(
         out,
         "\n{}",
@@ -1132,7 +1194,7 @@ pub(crate) fn import_location(
         out.push_str(&taken_names(evidence, names));
     }
     // a re-export statement passes names on: not a use of them
-    if evidence.note.as_deref() == Some("export") {
+    if evidence.re_exports() {
         out.push_str(" (export)");
     }
     // a mock that replaces the module for its file's whole run
@@ -1599,6 +1661,23 @@ pub(crate) fn not_traced(
             "  barrels: {what}, and only what takes it from {from} is followed; a rename, a \
              removal or an error on load also breaks whatever else loads {them}: {}",
             with_more(&places, b.total)
+        ));
+    }
+    if let Some(r) = &found.relays {
+        let what = match r.total {
+            1 => "1 statement passes the name on from the package".to_owned(),
+            n => format!("{n} statements pass the name on from the package"),
+        };
+        let places: Vec<String> = r
+            .shown
+            .iter()
+            .take(cap)
+            .map(|s| place(&s.file, s.line))
+            .collect();
+        truncated |= places.len() < r.total;
+        lines.push(format!(
+            "  relays: {what}, and what imports it from their files is not read: {}",
+            with_more(&places, r.total)
         ));
     }
     if let Some(r) = &found.routes {

@@ -16,7 +16,7 @@ use crate::not_traced::{
     barrels, declares_global, holds_global, not_traced, routes, with_uses, Narrowed, NotTraced,
     Own, Place, Subject,
 };
-use crate::query::{instance_method, uses_of};
+use crate::query::{instance_method, package_name_statements, uses_of};
 use crate::resolve::{imports_subpath, resolve, Resolved};
 use crate::target::{component_file, fold, namesakes, reject_outside, unquote};
 use crate::views::{
@@ -133,10 +133,7 @@ fn sites<'a>(
     // production code first
     sites.sort_by(|a, b| (a.test, &a.file, a.line).cmp(&(b.test, &b.file, b.line)));
     let total = sites.len();
-    let exports = sites
-        .iter()
-        .filter(|s| s.evidence.note.as_deref() == Some("export"))
-        .count();
+    let exports = sites.iter().filter(|s| s.evidence.re_exports()).count();
     sites.truncate(cap);
     ImportSites {
         recorded,
@@ -208,6 +205,20 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
                 None => Traced::Component(component),
             };
             (fold(full, depth, &component.id), reach)
+        }
+        Resolved::PackageName { package, name } => {
+            let (by_name, whole) = package_name_statements(full, &package.id, &name);
+            let statements: Vec<(&ComponentId, &Evidence)> = by_name
+                .iter()
+                .chain(&whole)
+                .map(|i| (i.from, i.evidence))
+                .collect();
+            let mut result = importers_impact(full, &ws.report, depth, target, &statements, caps);
+            result.about = About::PackageName(package, name);
+            return Ok(Answer {
+                output: render(&result, format, full, &rolled, verbose)?,
+                found: Found::One,
+            });
         }
         Resolved::Package { component, subpath } => {
             let result = subpath_impact(full, &ws.report, depth, target, component, subpath, caps);
