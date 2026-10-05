@@ -145,6 +145,20 @@ fn a_computed_name_with_a_static_start_counts_only_for_targets_below_it() {
 }
 
 #[test]
+fn a_component_at_the_root_holds_every_prefix() {
+    // its path is `.`: a call that loads only below src/app/ may load it
+    let ws = scan(&fixture("simple-ts-project"));
+    let json = impact(&ws, "ts-shop");
+    let calls: Vec<&str> = json["not_traced"]["dynamic"]["locations"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c["file"].as_str())
+        .collect();
+    assert!(calls.contains(&"src/app/lazy.tsx"), "{json}");
+}
+
+#[test]
 fn the_dynamic_imports_of_the_target_itself_stay_under_not_mapped() {
     let ws = scan(&fixture("simple-ts-project"));
     let text = query(&ws, "src/app/lazy.tsx", Format::Text);

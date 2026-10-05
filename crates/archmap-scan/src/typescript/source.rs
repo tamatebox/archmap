@@ -1690,13 +1690,35 @@ impl<'a> Visit<'a> for Positions {
 /// first substitution (`` `./pages/${name}` ``), the string a `+` starts
 /// with (`'./pages/' + name`), or the segments `path.join(__dirname, ..)`
 /// or `path.resolve` writes before a computed one, from the file's
-/// directory (`./handlers/`). `None` when it starts computed.
+/// directory (`./handlers/`). `None` when it starts computed, or when text
+/// after a computed part climbs out with `..`, which may leave the prefix.
 fn computed_prefix(specifier: &Expression) -> Option<String> {
+    let climbs = |text: &str| text.split('/').any(|segment| segment == "..");
     let prefix = match specifier.get_inner_expression() {
         Expression::TemplateLiteral(t) if !t.expressions.is_empty() => {
+            let later = t.quasis.iter().skip(1);
+            if later
+                .filter_map(|q| q.value.cooked.as_ref())
+                .any(|q| climbs(q))
+            {
+                return None;
+            }
             t.quasis.first()?.value.cooked.as_ref()?.to_string()
         }
         Expression::BinaryExpression(b) if b.operator == BinaryOperator::Addition => {
+            let right = match b.right.get_inner_expression() {
+                Expression::StringLiteral(s) => Some(s.value.as_str()),
+                Expression::TemplateLiteral(t) => t
+                    .quasis
+                    .iter()
+                    .filter_map(|q| q.value.cooked.as_ref())
+                    .map(|q| q.as_str())
+                    .find(|q| climbs(q)),
+                _ => None,
+            };
+            if right.is_some_and(climbs) {
+                return None;
+            }
             match b.left.get_inner_expression() {
                 Expression::StringLiteral(s) => s.value.to_string(),
                 left => computed_prefix(left)?,
@@ -1716,18 +1738,24 @@ fn computed_prefix(specifier: &Expression) -> Option<String> {
                 return None;
             }
             let mut prefix = String::from("./");
+            let mut computed = false;
             for arg in args {
                 match arg? {
-                    Expression::StringLiteral(s) => {
+                    // a later segment that climbs may leave the prefix
+                    Expression::StringLiteral(s) if computed && climbs(&s.value) => {
+                        return None;
+                    }
+                    Expression::StringLiteral(s) if !computed => {
                         prefix.push_str(s.value.trim_matches('/'));
                         prefix.push('/');
                     }
+                    Expression::StringLiteral(_) => {}
                     // a segment computed: the path so far is the prefix
-                    _ => return Some(prefix),
+                    _ => computed = true,
                 }
             }
             // every segment written out: no name is computed
-            return None;
+            return computed.then_some(prefix);
         }
         _ => return None,
     };
@@ -2628,7 +2656,10 @@ export default local;
              require(path.join(__dirname, 'plugins', kind, 'index.js'));\n\
              import(`${base}/x`);\n\
              require(path.join(__dirname, 'all'));\n\
-             require(name);\n",
+             require(name);\n\
+             import(`./app/${a}/../../lib/${b}`);\n\
+             require('./app/' + a + '/../lib');\n\
+             require(path.join(__dirname, 'app', a, '..', 'lib'));\n",
         )
         .unwrap();
         let prefixes: Vec<(u32, Option<&str>)> = file
@@ -2645,6 +2676,10 @@ export default local;
                 (5, None),
                 (6, None),
                 (7, None),
+                // text after a computed part that climbs out
+                (8, None),
+                (9, None),
+                (10, None),
             ]
         );
     }

@@ -361,7 +361,8 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   substitution, the string a `+` starts with, the segments of `path.join(__dirname, ..)` or
   `path.resolve` before a computed one), and for a relative one the path it leads to from the file
   (`` import(`./pages/${name}`) `` in `src/app.ts` for `src/pages/`); a bare one, which an alias or a
-  package may answer, records no path
+  package may answer, one that leads to the root, and one whose text after a computed part climbs
+  out with `..` (`` `./pages/${a}/../../lib/${b}` ``), which may leave the prefix, record no path
 - an `import()` type (`typeof import('./m')`, `import('./m').Wallet`) is an `import` edge that takes types
   only: `*`, or the first name after it; calls on one line that load one module with one note are one
   statement with the names of all (`import('./m').A | import('./m').B` takes `A` and `B`)

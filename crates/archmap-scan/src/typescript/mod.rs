@@ -507,7 +507,9 @@ fn prefix_path(file: &Path, written: &str) -> Option<String> {
         }
     }
     parts.push(rest.to_owned());
-    Some(parts.join("/"))
+    // the root: every file, as no prefix says
+    let path = parts.join("/");
+    (!path.is_empty()).then_some(path)
 }
 
 /// Whether `file` is a declaration file, which is never emitted:
@@ -1167,6 +1169,24 @@ impl Imports<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_relative_prefix_leads_from_the_file_s_directory() {
+        let from = |file: &str, written: &str| prefix_path(Path::new(file), written);
+        assert_eq!(
+            from("src/app.ts", "./pages/").as_deref(),
+            Some("src/pages/")
+        );
+        assert_eq!(
+            from("src/app/x.ts", "../lib/page-").as_deref(),
+            Some("src/lib/page-")
+        );
+        // the root is every file, which no prefix says; one that leaves the
+        // root and a bare one lead nowhere known
+        assert_eq!(from("main.js", "./"), None);
+        assert_eq!(from("src/a.ts", "../../x/"), None);
+        assert_eq!(from("src/a.ts", "@/pages/"), None);
+    }
 
     #[test]
     fn scripts_follow_how_typescript_reads_a_file() {

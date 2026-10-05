@@ -224,10 +224,10 @@ pub struct DynamicImport {
     pub from: ComponentId,
     /// The function called (`import_module`).
     pub call: String,
+    pub evidence: Evidence,
     /// The static start of the name, where the code writes one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefix: Option<DynamicPrefix>,
-    pub evidence: Evidence,
 }
 
 /// The start of a computed module name that the code writes out
@@ -250,9 +250,13 @@ impl DynamicImport {
     pub fn may_load(&self, place: &str) -> bool {
         match self.prefix.as_ref().and_then(|p| p.path.as_deref()) {
             Some(path) => {
+                // the root, as a component's path writes it or not
+                let place = place.trim_start_matches("./").trim_end_matches('/');
+                if place.is_empty() || place == "." {
+                    return true;
+                }
                 // a file under the prefix, or a directory that holds some
-                let dir = format!("{}/", place.trim_end_matches('/'));
-                place.starts_with(path) || path.starts_with(&dir) || place.is_empty()
+                place.starts_with(path) || path.starts_with(&format!("{place}/"))
             }
             None => true,
         }
@@ -398,8 +402,17 @@ mod tests {
             evidence: Evidence::new("src/app.ts").at_line(3),
         };
         let known = call(Some("src/pages/"));
-        // a file below it, a directory that holds it, the root
-        for place in ["src/pages/home.ts", "src/pages", "src", ""] {
+        // a file below it, a directory that holds it, the root as `""` or
+        // as a component's path writes it, `.`
+        for place in [
+            "src/pages/home.ts",
+            "src/pages",
+            "src",
+            "src/",
+            "",
+            ".",
+            "./",
+        ] {
             assert!(known.may_load(place), "{place}");
         }
         for place in ["src/lib/money.ts", "src/pager.ts", "lib"] {
