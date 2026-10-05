@@ -60,6 +60,8 @@ struct Target {
     class: bool,
     /// How a dotted string names it from its module: `charge.pay`.
     dotted: Option<String>,
+    /// The line of its definition.
+    line: Option<u32>,
 }
 
 /// A name that leads to the symbol.
@@ -137,6 +139,7 @@ pub(crate) fn read(request: &Request, out: &mut SymbolUses) {
         class: symbol.kind == SymbolKind::Struct,
         dotted: module_name(&location.file).map(|module| format!("{module}.{}", tail.join("."))),
         tail,
+        line: location.line,
     };
     // the statements by file and line, and the defining file
     let mut files: BTreeMap<&str, BTreeMap<u32, Vec<&Evidence>>> = BTreeMap::new();
@@ -241,6 +244,14 @@ impl Pass<'_> {
         let mut walker = Walker::new(read, target, bindings, calls);
         walker.module(read.module());
         walker.rebound.extend(nonlocal);
+        if walker.own_rebound {
+            // its own code may read another binding of the name
+            out.unread.push(Unread {
+                file: read.path.clone(),
+                line: target.line,
+                reason: UnreadReason::Rebound,
+            });
+        }
         // every statement ends in one list
         for (&line, evidence) in statements {
             if ended.contains(&line)
@@ -876,11 +887,23 @@ struct Binder {
     /// Names that `import a.b` binds without `as`: every such statement
     /// binds the same package `a`, so they are one place.
     packages: BTreeSet<String>,
+    /// Names of `@overload` stubs, which the definition after them binds
+    /// again before code reads them: one place when nothing else binds
+    /// them (a stub file).
+    overloads: BTreeSet<String>,
     globals: BTreeSet<String>,
     nonlocals: BTreeSet<String>,
 }
 
 impl Binder {
+    /// How many places bind each name.
+    fn sites(mut self) -> BTreeMap<String, usize> {
+        for name in self.overloads {
+            self.sites.entry(name).or_insert(1);
+        }
+        self.sites
+    }
+
     fn bind(&mut self, name: &str) {
         *self.sites.entry(name.to_owned()).or_default() += 1;
     }
@@ -902,6 +925,9 @@ impl Binder {
 impl<'a> Visitor<'a> for Binder {
     fn visit_stmt(&mut self, statement: &'a Stmt) {
         match statement {
+            Stmt::FunctionDef(f) if is_overload(f) => {
+                self.overloads.insert(f.name.to_string());
+            }
             Stmt::FunctionDef(f) => self.bind(&f.name),
             Stmt::ClassDef(c) => self.bind(&c.name),
             Stmt::Import(import) => {
@@ -1028,6 +1054,10 @@ struct Walker<'r> {
     subclasses: Vec<Evidence>,
     /// The statements whose binding its scope binds again.
     rebound: BTreeSet<u32>,
+    /// The defining file binds the symbol's name more than once (`pay =
+    /// traced(pay)`), so what its own code reads by it depends on run
+    /// order.
+    own_rebound: bool,
     /// Code may reach the file's names by a computed one: a call of the
     /// builtin `globals()`, `locals()`, `vars()` without arguments, `eval`
     /// or `exec`, or `sys.modules`.
@@ -1056,6 +1086,7 @@ impl<'r> Walker<'r> {
             strings: false,
             subclasses: Vec::new(),
             rebound: BTreeSet::new(),
+            own_rebound: false,
             dynamic: false,
         }
     }
@@ -1077,20 +1108,30 @@ impl<'r> Walker<'r> {
         self.frames.pop();
     }
 
-    fn push(&mut self, kind: Kind, id: Option<u32>, binder: Binder) {
+    fn push(&mut self, kind: Kind, id: Option<u32>, mut binder: Binder) {
+        let globals = std::mem::take(&mut binder.globals);
+        let nonlocals = std::mem::take(&mut binder.nonlocals);
+        let sites = binder.sites();
         // a binding its scope binds again is no fact of what code uses
         for binding in &self.bindings {
-            let again = binder.sites.get(&binding.name).is_some_and(|&n| n > 1);
-            if let (Some(line), true, true) = (binding.line, binding.scope == id, again) {
-                self.rebound.insert(line);
+            let again = sites.get(&binding.name).is_some_and(|&n| n > 1);
+            if binding.scope != id || !again {
+                continue;
+            }
+            match binding.line {
+                Some(line) => {
+                    self.rebound.insert(line);
+                }
+                None if !binding.instance => self.own_rebound = true,
+                None => {}
             }
         }
         self.frames.push(Frame {
             kind,
             id,
-            sites: binder.sites,
-            globals: binder.globals,
-            nonlocals: binder.nonlocals,
+            sites,
+            globals,
+            nonlocals,
         });
     }
 
@@ -1448,6 +1489,15 @@ impl<'r> Walker<'r> {
         }
         self.frames.pop();
     }
+}
+
+/// A stub decorated `@overload` or `@typing.overload`.
+fn is_overload(f: &ast::StmtFunctionDef) -> bool {
+    f.decorator_list.iter().any(|d| match &d.expression {
+        Expr::Name(name) => name.id.as_str() == "overload",
+        Expr::Attribute(attribute) => attribute.attr.as_str() == "overload",
+        _ => false,
+    })
 }
 
 /// `Literal` or `typing.Literal`, whose strings are values, not types.

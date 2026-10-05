@@ -443,8 +443,10 @@ reads, a statement's otherwise unused binding is no negative fact but
 `unread`: a name its scope binds again (an import and a later `def` of the
 name, `global pay` and an assignment, an import in `try` and another
 binding in `except ImportError`, an import of a name its function declares
-`nonlocal`, which a function around it binds too: `name bound again`; an
-import of a name declared `global` binds the module's), a file with a syntax
+`nonlocal`, which a function around it binds too, and for the uses in the
+file that defines the symbol, at its definition, a name that file binds
+again, `pay = traced(pay)` after `def pay`, though not `@overload` stubs
+before it: `name bound again`), a file with a syntax
 error, whose code around it is still read (`parse error`), a file that may
 reach names by computed ones (a call of the builtin `globals()`,
 `locals()`, `vars()` without arguments, `eval` or `exec`, not a method of

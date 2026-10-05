@@ -398,6 +398,45 @@ fn an_import_under_global_binds_in_the_module_and_one_under_nonlocal_binds_again
 }
 
 #[test]
+fn the_defining_file_uses_it_past_overloads_and_leaves_another_binding_unread() {
+    let project = Project::new(
+        "overloads",
+        &[
+            ("till/__init__.py", ""),
+            (
+                "till/wallet.py",
+                "from typing import overload\n\n\n\
+                 @overload\ndef pay(amount: int) -> int: ...\n\
+                 @overload\ndef pay(amount: str) -> str: ...\n\
+                 def pay(amount):\n    return amount\n\n\n\
+                 def refund(amount):\n    return pay(-amount)\n",
+            ),
+            ("till/app.py", "from till.wallet import pay\n\npay(1)\n"),
+            // the name holds the wrapper once the module has run
+            (
+                "till/charge.py",
+                "def traced(f):\n    return f\n\n\n\
+                 def settle(amount):\n    return amount\n\n\n\
+                 settle = traced(settle)\n\n\n\
+                 def again():\n    return settle(1)\n",
+            ),
+        ],
+    );
+    let pay = uses_of(&project.report, "pay");
+    assert_eq!(
+        shown(&pay),
+        ["till/app.py:3:1 call via 1", "till/wallet.py:13:12 call"]
+    );
+    assert!(pay.unread.is_empty(), "{:#?}", pay.unread);
+    let settle = uses_of(&project.report, "settle");
+    assert!(settle.uses.is_empty(), "{:#?}", settle.uses);
+    assert_eq!(
+        unread(&settle),
+        [("till/charge.py".into(), Some(5), UnreadReason::Rebound)]
+    );
+}
+
+#[test]
 fn every_statement_read_ends_in_one_of_the_lists() {
     for name in [
         "python-uses",
