@@ -39,6 +39,9 @@ pub(crate) struct ModuleOptions {
     /// `moduleDetection` is `force`: every file but a declaration file is a
     /// module.
     pub force: bool,
+    /// `verbatimModuleSyntax` or `preserveValueImports`: an imported value
+    /// stays however the file uses it, so only `type` makes it a type.
+    pub keeps_values: bool,
 }
 
 pub(crate) struct ImportResolver {
@@ -214,10 +217,17 @@ impl ImportResolver {
                 .as_deref()
                 .is_some_and(|v| names.iter().any(|n| v.eq_ignore_ascii_case(n)))
         };
+        let set = |option: &str| {
+            self.view
+                .setting(tsconfig.path(), &format!("/compilerOptions/{option}"))
+                .is_some_and(|(value, _)| value.as_bool() == Some(true))
+        };
         ModuleOptions {
             node: one_of(&options.module, &["node16", "node18", "node20", "nodenext"]),
             jsx_runtime: one_of(&options.jsx, &["react-jsx", "react-jsxdev"]),
             force: self.view.module_detection_forced(tsconfig.path()),
+            keeps_values: options.verbatim_module_syntax == Some(true)
+                || set("preserveValueImports"),
         }
     }
 
@@ -526,7 +536,8 @@ mod tests {
             ModuleOptions {
                 node: true,
                 jsx_runtime: true,
-                force: true
+                force: true,
+                keeps_values: false,
             }
         );
         // the last entry of `extends` wins

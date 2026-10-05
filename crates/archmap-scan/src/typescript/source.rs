@@ -13,11 +13,12 @@ use oxc_allocator::Allocator;
 use oxc_ast::ast::{
     Argument, ArrowFunctionBody, AssignmentExpression, AssignmentPattern, AssignmentTarget,
     BindingPattern, CallExpression, Class, ClassElement, Declaration, Decorator,
-    ExportDefaultDeclarationKind, Expression, FormalParameter, FormalParameters, Function,
-    IdentifierReference, ImportDeclarationSpecifier, ImportExpression, MethodDefinitionKind,
-    NewExpression, ObjectExpression, ObjectProperty, ObjectPropertyKind, Statement,
-    StaticMemberExpression, TSAccessibility, TSImportEqualsDeclaration, TSImportType,
-    TSImportTypeQualifier, TSModuleReference, VariableDeclarator,
+    ExportDefaultDeclarationKind, ExportNamedDeclaration, ExportSpecifier, Expression,
+    FormalParameter, FormalParameters, Function, IdentifierReference, ImportDeclarationSpecifier,
+    ImportExpression, MethodDefinitionKind, NewExpression, ObjectExpression, ObjectProperty,
+    ObjectPropertyKind, Statement, StaticMemberExpression, TSAccessibility, TSClassImplements,
+    TSImportEqualsDeclaration, TSImportType, TSImportTypeQualifier, TSInterfaceDeclaration,
+    TSModuleReference, TSType, VariableDeclarator,
 };
 use oxc_ast::AstKind;
 use oxc_ast_visit::{walk, Visit};
@@ -56,6 +57,10 @@ pub(crate) struct ImportStatement {
     /// the file's imports) whose factory never loads the real module: the
     /// file gets the factory's stand-in for it.
     pub replaces: bool,
+    /// The names among `names` whose bindings the file names, and only
+    /// where TypeScript reads a type (see [`Positions`]): a compiler drops
+    /// them as it drops what `type` marks, unless the tsconfig keeps values.
+    pub type_uses: BTreeSet<String>,
 }
 
 /// A call that loads a module by a name computed at runtime.
@@ -224,6 +229,7 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
             types,
             local: false,
             replaces: false,
+            type_uses: BTreeSet::new(),
         };
         let whole = || vec![WHOLE_MODULE.to_owned()];
         let whole_if = |types: bool| match types {
@@ -463,6 +469,40 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
     let mut seen = BTreeSet::new();
     file.symbols.retain(|s| seen.insert(s.name.clone()));
     file.exports.types = declared_types(&parsed.program.body);
+    // the bindings the file names only where a type is read; JavaScript
+    // has no types, and a declaration file emits nothing whatever it names
+    let mut positions = Positions {
+        wanted: bindings
+            .iter()
+            .filter(|(_, (_, _, type_only))| !type_only)
+            .map(|(local, _)| local.clone())
+            .collect(),
+        ..Positions::default()
+    };
+    let typescript = source_type.is_typescript() && !source_type.is_typescript_definition();
+    if typescript && !positions.wanted.is_empty() {
+        positions.visit_program(&parsed.program);
+    }
+    let mut kept: BTreeSet<(usize, String)> = BTreeSet::new();
+    let mut typed: BTreeSet<(usize, String)> = BTreeSet::new();
+    for (local, (index, taken, type_only)) in &bindings {
+        let name = taken.clone().unwrap_or_else(|| WHOLE_MODULE.to_owned());
+        let only_types = positions.types.contains(local) && !positions.values.contains(local);
+        match (*type_only, only_types) {
+            (true, _) => {}
+            (false, true) => {
+                typed.insert((*index, name));
+            }
+            (false, false) => {
+                kept.insert((*index, name));
+            }
+        }
+    }
+    for (index, name) in typed.difference(&kept) {
+        if let Some(import) = file.imports.get_mut(*index) {
+            import.type_uses.insert(name.clone());
+        }
+    }
     // after the statements, so the indices in the export table stay valid
     let mut calls = Calls {
         lines: &lines,
@@ -721,6 +761,7 @@ impl Calls<'_> {
             types,
             local,
             replaces: false,
+            type_uses: BTreeSet::new(),
         });
     }
 
@@ -1529,6 +1570,92 @@ fn declared_types(body: &[Statement]) -> BTreeSet<String> {
     }
     types.retain(|name| !values.contains(name));
     types
+}
+
+/// Where a file names each identifier: in a type, which TypeScript reads
+/// and erases (an annotation, a type argument, `typeof x` in a type, an
+/// interface, `implements`, `export type`), or anywhere else, which runs
+/// (an expression, JSX, `export { x }`, a decorator, `import a = b.c`). By
+/// name, not by scope: a local of an imported name used as a value counts
+/// for the import, which then runs. Inside a class with a decorator every
+/// name counts as a value, as `emitDecoratorMetadata` may turn its
+/// annotations into references that run.
+#[derive(Default)]
+struct Positions {
+    /// The names whose positions count: those imports bind.
+    wanted: BTreeSet<String>,
+    in_type: usize,
+    decorated: usize,
+    types: BTreeSet<String>,
+    values: BTreeSet<String>,
+}
+
+impl Positions {
+    fn in_type(&mut self, walk: impl FnOnce(&mut Self)) {
+        self.in_type += 1;
+        walk(self);
+        self.in_type -= 1;
+    }
+}
+
+impl<'a> Visit<'a> for Positions {
+    fn visit_identifier_reference(&mut self, it: &IdentifierReference<'a>) {
+        let name = it.name.as_str();
+        if !self.wanted.contains(name) {
+            return;
+        }
+        if self.in_type > 0 && self.decorated == 0 {
+            self.types.insert(name.to_owned());
+        } else {
+            self.values.insert(name.to_owned());
+        }
+    }
+
+    fn visit_ts_type(&mut self, it: &TSType<'a>) {
+        self.in_type(|v| walk::walk_ts_type(v, it));
+    }
+
+    fn visit_ts_interface_declaration(&mut self, it: &TSInterfaceDeclaration<'a>) {
+        self.in_type(|v| walk::walk_ts_interface_declaration(v, it));
+    }
+
+    fn visit_ts_class_implements(&mut self, it: &TSClassImplements<'a>) {
+        self.in_type(|v| walk::walk_ts_class_implements(v, it));
+    }
+
+    fn visit_export_named_declaration(&mut self, it: &ExportNamedDeclaration<'a>) {
+        match it.export_kind.is_type() {
+            true => self.in_type(|v| walk::walk_export_named_declaration(v, it)),
+            false => walk::walk_export_named_declaration(self, it),
+        }
+    }
+
+    fn visit_export_specifier(&mut self, it: &ExportSpecifier<'a>) {
+        match it.export_kind.is_type() {
+            true => self.in_type(|v| walk::walk_export_specifier(v, it)),
+            false => walk::walk_export_specifier(self, it),
+        }
+    }
+
+    fn visit_class(&mut self, it: &Class<'a>) {
+        let decorated = !it.decorators.is_empty()
+            || it.body.body.iter().any(|element| match element {
+                ClassElement::MethodDefinition(m) => {
+                    !m.decorators.is_empty()
+                        || m.value
+                            .params
+                            .items
+                            .iter()
+                            .any(|p| !p.decorators.is_empty())
+                }
+                ClassElement::PropertyDefinition(p) => !p.decorators.is_empty(),
+                ClassElement::AccessorProperty(p) => !p.decorators.is_empty(),
+                _ => false,
+            });
+        self.decorated += usize::from(decorated);
+        walk::walk_class(self, it);
+        self.decorated -= usize::from(decorated);
+    }
 }
 
 /// A number, or arithmetic of numbers (`20 * 1024 * 1024`).
@@ -2379,6 +2506,40 @@ export default local;
             ]
         );
         assert!(file.symbols.is_empty());
+    }
+
+    #[test]
+    fn bindings_written_only_in_types_are_type_uses() {
+        let file = parse(
+            Path::new("uses.ts"),
+            "import { A, B, C, D, E, F, G, H, I } from './m';\n\
+             import J from './j';\n\
+             import type { K } from './k';\n\
+             let a: A = x as B;\n\
+             interface Z extends C {}\n\
+             class Y implements D {}\n\
+             f<E>(y satisfies F);\n\
+             export type { G };\n\
+             export { type H };\n\
+             type T = typeof I;\n\
+             const j = J;\n\
+             let k: K;\n",
+        )
+        .unwrap();
+        let uses = |i: usize| -> Vec<&str> {
+            file.imports[i]
+                .type_uses
+                .iter()
+                .map(String::as_str)
+                .collect()
+        };
+        assert_eq!(uses(0), ["A", "B", "C", "D", "E", "F", "G", "H", "I"]);
+        // a value, and what `type` already marks
+        assert!(uses(1).is_empty());
+        assert!(uses(2).is_empty());
+        // JavaScript has no types to read
+        let file = parse(Path::new("uses.js"), "import { A } from './m';\n").unwrap();
+        assert!(file.imports[0].type_uses.is_empty());
     }
 
     #[test]

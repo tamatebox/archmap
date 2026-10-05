@@ -144,7 +144,7 @@ What works today, by the [roadmap](#roadmap) phase it belongs to:
 | `query` and `impact` on a symbol, by the names imports take | 2 | ✅ | ◐ | ✅ |
 | `impact` file by file | 2 | ✅ | ✅ | ✅ |
 | Test code counted apart from production code | 2 | ✅ | ✅ | ✅ |
-| `check` rules and cycles | 3 | ✅ | ✅ | ◐ |
+| `check` rules and cycles | 3 | ✅ | ✅ | ✅ |
 | Callers of a symbol | 4 | ◐ | ◐ | ◐ |
 | References to a symbol | 4 | ◐ | ◐ | ◐ |
 | Type relationships | 4 | — | — | — |
@@ -158,9 +158,6 @@ The gaps behind the marks:
   so `impact` goes on from it to every file that imports it or a module
   below it; one that lists the name, or writes `from .x import name as
   name`, is followed only to what takes the name.
-- TS/JS `check`: a value imported without `type` and used only in type
-  positions (a class or an enum in annotations, a `typeof` target) counts
-  as running, so it can close a cycle that `cycles.forbid` reports.
 - Callers and references: `query` and `impact` list where a symbol is used
   through the names imports bind and, for a method, through its class or
   type and `this` or `self`; a call through a value of a type

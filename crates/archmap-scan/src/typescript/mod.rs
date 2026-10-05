@@ -299,9 +299,13 @@ impl Analyzer for TypeScriptAnalyzer {
                 .map(|m| m.exports.renames())
                 .unwrap_or_default();
             let none = BTreeMap::new();
-            // TypeScript erases an import of names that can only be types;
-            // a JavaScript file keeps whatever it writes
+            // TypeScript erases an import of names that can only be types,
+            // and of names the file uses only as types unless its tsconfig
+            // keeps values; a JavaScript file keeps whatever it writes
             let typescript = language_of(read.file) == Some(language::LANGUAGE);
+            let by_use = typescript && !resolver.module_options(read.file).keeps_values;
+            // a declaration file is never emitted: nothing it imports runs
+            let declarations = is_declaration_file(read.file);
             for (index, (import, resolved)) in read.imports.iter().zip(&read.resolved).enumerate() {
                 match resolved {
                     // the values a statement takes, and apart from them the
@@ -309,7 +313,9 @@ impl Analyzer for TypeScriptAnalyzer {
                     Resolved::File(loaded) => {
                         let (types, values): (Vec<&String>, Vec<&String>) =
                             import.names.iter().partition(|name| {
-                                import.types.contains(*name)
+                                declarations
+                                    || import.types.contains(*name)
+                                    || by_use && import.type_uses.contains(*name)
                                     || typescript && definitions.is_type(loaded, name)
                             });
                         let recorded = |names: Vec<&String>| -> BTreeSet<String> {
@@ -335,7 +341,7 @@ impl Analyzer for TypeScriptAnalyzer {
                                 resolved,
                                 &values,
                                 &exported_as,
-                                false,
+                                declarations,
                                 &mut output,
                             );
                         }
@@ -344,8 +350,9 @@ impl Analyzer for TypeScriptAnalyzer {
                         }
                     }
                     _ => {
-                        let all_types = !import.names.is_empty()
-                            && import.names.iter().all(|n| import.types.contains(n));
+                        let all_types = declarations
+                            || !import.names.is_empty()
+                                && import.names.iter().all(|n| import.types.contains(n));
                         imports.emit(
                             import,
                             resolved,
@@ -359,7 +366,13 @@ impl Analyzer for TypeScriptAnalyzer {
                 // a re-export passes names on without using them
                 if let Resolved::File(loaded) = resolved {
                     if import.note != "export" {
-                        imports.emit_definitions(import, loaded, &mut definitions, &mut output);
+                        imports.emit_definitions(
+                            import,
+                            loaded,
+                            by_use,
+                            &mut definitions,
+                            &mut output,
+                        );
                     }
                 }
             }
@@ -438,21 +451,26 @@ fn test_code(file: &Path, package: &Package, manifests: &BTreeMap<PathBuf, Packa
 /// tsconfig's `module` reads it, when its JSX imports a runtime, or when the
 /// tsconfig forces module detection on a file that declares no types only.
 fn is_script(file: &Path, parsed: &ParsedFile, type_module: bool, options: ModuleOptions) -> bool {
-    let name = file
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or_default();
     let extension = file
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or_default();
-    // `global.d.ts`, `styles.d.css.ts`
-    let declarations = name.ends_with(".ts") && name.contains(".d.");
+    let declarations = is_declaration_file(file);
     !(parsed.module_syntax
         || matches!(extension, "mjs" | "mts" | "cjs" | "cts")
         || (type_module && options.node)
         || (parsed.has_jsx && options.jsx_runtime)
         || (options.force && !declarations))
+}
+
+/// Whether `file` is a declaration file, which is never emitted:
+/// `global.d.ts`, `index.d.mts`, `styles.d.css.ts`.
+fn is_declaration_file(file: &Path) -> bool {
+    let name = file
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    name.contains(".d.") && [".ts", ".mts", ".cts"].iter().any(|e| name.ends_with(e))
 }
 
 /// Whether the closest `package.json` above `file` says `"type": "module"`.
@@ -1042,6 +1060,7 @@ impl Imports<'_> {
         &self,
         import: &ImportStatement,
         loaded: &Path,
+        by_use: bool,
         definitions: &mut exports::Definitions,
         output: &mut AnalyzerOutput,
     ) {
@@ -1065,6 +1084,8 @@ impl Imports<'_> {
                 continue;
             }
             let type_only = import.types.contains(name)
+                || is_declaration_file(self.file)
+                || by_use && import.type_uses.contains(name)
                 || definition.type_only
                 || language_of(self.file) == Some(language::LANGUAGE)
                     && definitions.is_type(loaded, name);

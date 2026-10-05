@@ -98,7 +98,8 @@ undeclared imports count in test code too.
 `type_only` marks a statement that takes types only, so it never runs:
 TS/JS `import type`, `export type ... from`, a statement whose names all
 carry `type` and, in TypeScript, one whose names can only be types where
-they are defined, which the compiler erases, and a Python import under
+they are defined or that the file writes only in types, which the compiler
+erases, and a Python import under
 `if TYPE_CHECKING:`, which only type checkers enter. A statement that takes
 values and types from a file gives one piece of evidence for each; evidence without a
 `target` records no names and is one, `type_only` when the statement takes

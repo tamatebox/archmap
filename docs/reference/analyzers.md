@@ -386,6 +386,17 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   from`) is types only too, even when the walk reaches it through `export *`, while a namespace
   import, an `export *` statement itself and a name whose definition the walk does not find keep
   running, and a JavaScript file keeps every statement it writes
+- in a TypeScript file, an imported name also counts as a type when the file writes its binding
+  only where a type is read (an annotation, a type argument, `as` and `satisfies`, `typeof x` in a
+  type, an interface and its `extends`, `implements`, `export type`), as every compiler drops such
+  an import whatever the name is (`import { Money }` for a class used only in annotations, `import
+  * as m` used only in `typeof m`): by name, not by scope, so a local of that name used as a value
+  keeps the import running, as do an unused binding, `export { Money }`, JSX, a decorator, the
+  heritage of a `declare class` and `import a = m.b`, and inside a class with any decorator every
+  name counts as a value, since `emitDecoratorMetadata` may emit its annotations; a tsconfig with
+  `verbatimModuleSyntax` or `preserveValueImports` keeps the values a file imports, so there only
+  `type` and names that can only be types count; every import and re-export of a declaration file
+  (`.d.ts`, `.d.mts`, `.d.cts`), which is never emitted, is types only
 - the packages an install links by name are linked in the resolver's view as `node_modules/<name>`: the members
   of a workspace (`workspaces` in a `package.json`, an array or `{ "packages": [..] }`, and
   `pnpm-workspace.yaml`; `!` patterns leave members out) in its root's `node_modules`, and the directories of
@@ -510,14 +521,14 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
 - Types in JSDoc comments (`@type {import('./m').Wallet}`), `new URL('./worker.ts',
   import.meta.url)` and `new Worker(..)`, and `import x = require()` inside a namespace are not
   read.
-- A value imported without `type` and used only in type positions (a class or an enum in
-  annotations, a const or a function behind `typeof`) is dropped by every compiler, which decides by
-  how the importing file uses it; archmap does not read those uses and counts such a statement as
-  running, as it is under `emitDecoratorMetadata` for a class a decorated constructor names (NestJS,
-  Angular). A `const enum` and a namespace that holds only types count as values, though the
-  compiler without `isolatedModules` erases the first and never emits the second, and the options
-  `preserveValueImports` and `importsNotUsedAsValues: preserve` (removed in TypeScript 5.5), which
-  keep a statement of types only as a load, are not read. Under `verbatimModuleSyntax`,
+- Whether an imported name is used only in types is read by name and position alone: a name the
+  file reaches only through `eval` or a string is not seen, a class with a decorator counts every
+  name in it as a value even under TypeScript 5's decorators, which emit no metadata, and the
+  options of other compilers that keep imports (Babel's `onlyRemoveTypeImports`, SWC's
+  `jsc.transform.verbatimModuleSyntax`) are not read. A `const enum` and a namespace that holds
+  only types count as values, though the compiler without `isolatedModules` erases the first and
+  never emits the second, and `importsNotUsedAsValues: preserve` (removed in TypeScript 5.5),
+  which keeps a statement of types only as a load, is not read. Under `verbatimModuleSyntax`,
   `import { type A } from 'm'` still loads `m`, which archmap counts as types only.
 - A JavaScript file that Node runs is a module of its own even without `require` or exports;
   archmap follows how TypeScript reads it, so such a file is a script, and so is a TypeScript file
