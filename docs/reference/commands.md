@@ -144,7 +144,9 @@ whole under `May use`, and `Used at` as for a symbol, read from their files;
 a statement that passes the name on (`export { x } from 'pkg'`) is marked
 `(export)`, and `Not traced` says its file's importers are not read
 (`relays`). `impact` starts from the same statements, as from those of an
-import name.
+import name, apart from a statement that takes the module whole and never
+names it, which takes nothing of it, as for a symbol; it lists them as
+`query` does, with `Used at`.
 
 With `--by-symbol` (MCP `by_symbol`), `query` on a file lists each public
 symbol of it, in source order, with how many statements take it by name

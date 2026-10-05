@@ -107,6 +107,16 @@ pub(crate) fn render(
         };
         truncated |= used_at(&mut out, &view, caps.use_files, caps.locations);
     }
+    if let (Some(uses), About::PackageName(package, _)) = (&result.used_at, &result.about) {
+        let view = UsedAt {
+            uses,
+            instance_method: false,
+            global: false,
+            language: package.language.as_deref(),
+            left_out: Some(&result.unnamed),
+        };
+        truncated |= used_at(&mut out, &view, caps.use_files, caps.locations);
+    }
     truncated |= transitive(&mut out, result, rolled, &caps);
     truncated |= tests(&mut out, result, &caps);
     if let Some(section) = &result.co_change {

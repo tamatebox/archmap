@@ -5,8 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Context, Result};
 use archmap_core::{
     ArchitectureGraph, ChangeSeed, Component, ComponentId, ComponentKind, Edge, EdgeKind, Evidence,
-    FirstStep, Hop, ImportPlace, Symbol, SymbolImporters, SymbolUses, TestReach, TestRoute,
-    TestWay,
+    FirstStep, Hop, ImportPlace, Symbol, SymbolUses, TestReach, TestRoute, TestWay,
 };
 
 use archmap_scan::ScanReport;
@@ -212,12 +211,24 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
         }
         Resolved::PackageName { package, name } => {
             let (by_name, whole) = package_name_statements(full, &package.id, &name);
-            let statements: Vec<(&ComponentId, &Evidence)> = by_name
+            let read: Vec<&Evidence> = by_name.iter().chain(&whole).map(|i| i.evidence).collect();
+            let uses =
+                archmap_scan::package_name_uses(&ws.report, package.id.as_str(), &name, read);
+            // a statement that takes the package whole and never names it
+            // takes nothing of it, as for a symbol
+            let unnamed = never_named(whole.iter().map(|i| i.evidence), &uses);
+            let named: Vec<(&ComponentId, &Evidence)> =
+                by_name.iter().map(|i| (i.from, i.evidence)).collect();
+            let taking: Vec<(&ComponentId, &Evidence)> = whole
                 .iter()
-                .chain(&whole)
+                .filter(|i| !in_set(&unnamed, i.evidence))
                 .map(|i| (i.from, i.evidence))
                 .collect();
-            let mut result = importers_impact(full, &ws.report, depth, target, &statements, caps);
+            let mut result =
+                importers_impact(full, &ws.report, depth, target, &named, &taking, caps);
+            result.not_traced = with_uses(result.not_traced, &uses, false);
+            result.used_at = Some(uses);
+            result.unnamed = unnamed;
             result.about = About::PackageName(package, name);
             return Ok(Answer {
                 output: render(&result, format, full, &rolled, verbose)?,
@@ -231,7 +242,8 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
                 .iter()
                 .filter_map(|e| Some((&full.component_for_path(&e.file)?.id, e)))
                 .collect();
-            let mut result = importers_impact(full, &ws.report, depth, target, &statements, caps);
+            let mut result =
+                importers_impact(full, &ws.report, depth, target, &statements, &[], caps);
             result.not_traced.get_or_insert_with(NotTraced::default).env =
                 Some(EnvGaps::of(full, &uses));
             result.about = About::Env(name);
@@ -292,7 +304,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
                 let found = full.symbol_importers(symbol);
                 used_at = uses_of(full, &ws.report, symbol);
                 if let (Some(found), Some(uses)) = (&found, &used_at) {
-                    unnamed = never_named(found, uses);
+                    unnamed = never_named(found.may_use.iter().map(|(_, e)| *e), uses);
                 }
                 // files that use it through no statement of it take it too
                 let defining = symbol.location().map(|e| e.file.as_str());
@@ -571,16 +583,15 @@ fn render(
     })
 }
 
-/// The statements of `found` that take the symbol's file whole and that the
-/// uses pass read and found never naming it: they take nothing of it. Not a
-/// statement that takes it by name, which loads the file all the same (see
-/// `uses_of` for the files whose statements are never unused).
-fn never_named(found: &SymbolImporters, uses: &SymbolUses) -> BTreeSet<ImportPlace> {
-    let whole: BTreeSet<(&str, Option<u32>)> = found
-        .may_use
-        .iter()
-        .map(|(_, e)| (e.file.as_str(), e.line))
-        .collect();
+/// The statements of `whole`, which take the symbol's file or package whole,
+/// that the uses pass read and found never naming it: they take nothing of
+/// it. Not a statement that takes it by name, which loads the file all the
+/// same (see `uses_of` for the files whose statements are never unused).
+fn never_named<'e>(
+    whole: impl Iterator<Item = &'e Evidence>,
+    uses: &SymbolUses,
+) -> BTreeSet<ImportPlace> {
+    let whole: BTreeSet<(&str, Option<u32>)> = whole.map(|e| (e.file.as_str(), e.line)).collect();
     uses.unused
         .iter()
         .filter(|e| whole.contains(&(e.file.as_str(), e.line)))
@@ -757,7 +768,7 @@ fn import_name_impact<'a>(
         .unmapped_imports_of(module)
         .map(|i| (&i.from, &i.evidence))
         .collect();
-    let mut result = importers_impact(full, report, depth, target, &statements, caps);
+    let mut result = importers_impact(full, report, depth, target, &statements, &[], caps);
     result.module = Some(module.to_owned());
     result
 }
@@ -783,7 +794,7 @@ fn subpath_impact<'a>(
                 .map(move |e| (&edge.from, e))
         })
         .collect();
-    let mut result = importers_impact(full, report, depth, target, &statements, caps);
+    let mut result = importers_impact(full, report, depth, target, &statements, &[], caps);
     let at = fold(full, depth, &package.id);
     let (also_named, also_at_path) = full
         .component(&at.id)
@@ -802,17 +813,19 @@ fn subpath_impact<'a>(
 /// components that hold them: the components whose production files hold
 /// them, everything that reaches those files, and the test files among
 /// them or that reach them.
+#[allow(clippy::too_many_arguments)]
 fn importers_impact<'a>(
     full: &'a ArchitectureGraph,
     report: &ScanReport,
     depth: usize,
     target: &'a str,
     statements: &[(&'a ComponentId, &'a Evidence)],
+    whole: &[(&'a ComponentId, &'a Evidence)],
     caps: Caps,
 ) -> ImpactResult<'a> {
     let (mut direct, mut tests) = (BTreeSet::new(), BTreeSet::new());
     let mut seeds: BTreeSet<&str> = BTreeSet::new();
-    for (from, evidence) in statements {
+    for (from, evidence) in statements.iter().chain(whole) {
         let file = evidence.file.as_str();
         if evidence.test {
             tests.insert(file.to_owned());
@@ -865,7 +878,14 @@ fn importers_impact<'a>(
         ..NotTraced::default()
     });
     let importers = sites(full, depth, statements.iter().copied(), true, caps.sites);
-    let counted = counts(importers.shown.iter());
+    let may_use =
+        (!whole.is_empty()).then(|| sites(full, depth, whole.iter().copied(), true, caps.sites));
+    let counted = counts(
+        importers
+            .shown
+            .iter()
+            .chain(may_use.iter().flat_map(|m| &m.shown)),
+    );
     let (direct, transitive) = dependents(full, &reach, &counted, &BTreeSet::new(), 1);
     ImpactResult {
         requested: target,
@@ -882,7 +902,7 @@ fn importers_impact<'a>(
         tests: test_files(full, report, None, None, tests, ways, left_out, caps.tests),
         importers: Some(importers),
         imports_below: None,
-        may_use: None,
+        may_use,
         used_at: None,
         unnamed: BTreeSet::new(),
         instance_method: false,

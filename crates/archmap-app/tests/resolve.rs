@@ -845,6 +845,54 @@ fn a_name_taken_from_a_package_answers_with_its_statements_and_uses() {
 }
 
 #[test]
+fn impact_on_a_name_taken_from_a_package_leaves_out_whole_imports_that_never_name_it() {
+    let repo = Repo::new(
+        "package-name-impact",
+        &[
+            (
+                "package.json",
+                "{\"name\": \"shop\", \"dependencies\": {\"wallet-sdk\": \"1.0.0\"}}\n",
+            ),
+            (
+                "src/charge.ts",
+                "import { pay } from 'wallet-sdk';\nexport const charge = (n: number) => pay(n);\n",
+            ),
+            (
+                "src/refund.ts",
+                "import * as sdk from 'wallet-sdk';\nexport const refund = (n: number) => sdk.refund(n);\n",
+            ),
+            (
+                "tests/charge.test.ts",
+                "import { charge } from '../src/charge';\nexport const checked = charge(1);\n",
+            ),
+            (
+                "tests/refund.test.ts",
+                "import { refund } from '../src/refund';\nexport const checked = refund(1);\n",
+            ),
+        ],
+    );
+    let ws = scan(&repo.0);
+    let pay = impact_as(&ws, "ext:npm:wallet-sdk::pay", Format::Text).output;
+    for line in [
+        "\nImported by: 1\n  src/charge.ts:1\n",
+        "\n  src/charge.ts:2 (call)\n",
+        "never named (1 import of the whole module, left out of the reach): src/refund.ts:1",
+        "\nTests to run again: 1\n  tests/charge.test.ts (through src/charge.ts)\n",
+    ] {
+        assert!(pay.contains(line), "{line}: {pay}");
+    }
+    // a whole import that names it takes it
+    let refund = impact_as(&ws, "ext:npm:wallet-sdk::refund", Format::Text).output;
+    for line in [
+        "\nMay use: 1 (imports the whole module)\n  src/refund.ts:1\n",
+        "\n  src/refund.ts:2 (call) as sdk.refund\n",
+        "\nTests to run again: 1\n  tests/refund.test.ts (through src/refund.ts)\n",
+    ] {
+        assert!(refund.contains(line), "{line}: {refund}");
+    }
+}
+
+#[test]
 fn an_environment_variable_answers_with_where_the_code_reads_and_writes_it() {
     let repo = Repo::new(
         "env",
