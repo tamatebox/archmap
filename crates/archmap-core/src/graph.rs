@@ -735,11 +735,14 @@ impl ArchitectureGraph {
             let mut runs: BTreeSet<Node> = BTreeSet::new();
             let mut queue: VecDeque<Node> = VecDeque::new();
             // a start a mock replaces runs nothing, but passes types on, as
-            // a replaced module does inside the walk
+            // a replaced module does inside the walk; the importers of a
+            // module that changed outside the graph did not change, so their
+            // mocks hide the change
             let mut first: Vec<(Node, usize, bool)> = start
                 .iter()
-                .filter(|(_, _, loads)| {
-                    loads.is_none_or(|(loaded, types)| types || !cut.contains(loaded))
+                .filter(|(node, _, loads)| {
+                    (taken || !blocked(node))
+                        && loads.is_none_or(|(loaded, types)| types || !cut.contains(loaded))
                 })
                 .map(|(node, d, loads)| {
                     let running = *d == 0 || loads.is_none_or(|(_, t)| !t);
