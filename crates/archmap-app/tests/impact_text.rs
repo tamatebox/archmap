@@ -744,6 +744,45 @@ fn a_rust_glob_stays_in_the_reach_where_its_file_may_use_the_symbol() {
 }
 
 #[test]
+fn a_rust_file_whose_macro_rules_body_may_use_the_symbol_stays_in_the_reach() {
+    let files: Vec<(String, String)> = [
+        (
+            "Cargo.toml",
+            "[package]\nname = \"shop\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        ("src/lib.rs", "pub mod cart;\npub mod charge;\n"),
+        (
+            "src/charge.rs",
+            "pub fn pay(n: u32) -> u32 {\n    n\n}\n\npub fn refund(n: u32) -> u32 {\n    n\n}\n",
+        ),
+        (
+            // the module bound whole is used only in the body of a macro
+            "src/cart.rs",
+            "use crate::charge;\n\nmacro_rules! settle {\n    ($n:expr) => {\n        charge::pay($n)\n    };\n}\n\npub fn checkout() -> u32 {\n    settle!(1)\n}\n",
+        ),
+        (
+            "tests/cart.rs",
+            "use shop::cart::checkout;\n\n#[test]\nfn checks_out() {\n    assert_eq!(checkout(), 1);\n}\n",
+        ),
+    ]
+    .into_iter()
+    .map(|(file, text)| (file.to_owned(), text.to_owned()))
+    .collect();
+    let repo = Repo::new("rust-macro-rules", &files);
+    let out = text(&scan(&repo.0), "pay");
+    assert!(!out.contains("left out of the reach"), "{out}");
+    assert_eq!(
+        section(&out, "Tests to run again: 1"),
+        ["  tests/cart.rs (through src/cart.rs)"],
+        "{out}"
+    );
+    assert!(
+        out.contains("  macros: 1 macro call whose arguments are not read names `charge`: src/cart.rs:3 (macro_rules!)\n"),
+        "{out}"
+    );
+}
+
+#[test]
 fn a_python_package_that_only_relays_a_symbol_leads_on_by_its_name() {
     let files = |init: &str| -> Vec<(String, String)> {
         [

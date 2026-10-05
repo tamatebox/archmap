@@ -446,6 +446,9 @@ fn macro_arguments_are_read_and_the_rest_recorded() {
     assert_eq!(
         calls,
         [
+            // `macro_rules!` definitions, whose bodies are not read
+            ("kiosk", "macro_rules", Some(5), vec![]),
+            ("kiosk", "macro_rules", Some(6), vec![]),
             // tokens to print, never read
             (
                 "kiosk",

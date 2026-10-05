@@ -75,15 +75,18 @@ pub(super) struct ModuleFacts {
     /// the module may bring in: kept only when the module has one.
     pub names: BTreeSet<NameRef>,
     /// Macro calls whose arguments are neither expressions nor items, so
-    /// the paths in them are not read.
+    /// the paths in them are not read, and `macro_rules!` definitions,
+    /// whose bodies are not read.
     pub unread_macros: Vec<MacroCall>,
     pub symbols: Vec<SymbolDecl>,
 }
 
-/// A macro call whose arguments are not read (`json!({ .. })`, a DSL).
+/// A macro call whose arguments are not read (`json!({ .. })`, a DSL, a
+/// `macro_rules!` definition).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct MacroCall {
-    /// The macro's name, as written last in its path (`json`).
+    /// The macro's name, as written last in its path (`json`,
+    /// `macro_rules`).
     pub name: String,
     /// The names in the `a::b` paths its arguments write, which a target
     /// of that name may be.
@@ -552,6 +555,21 @@ impl Paths<'_> {
         }
     }
 
+    /// Record a macro call whose arguments are not read, with the names its
+    /// `a::b` paths write.
+    fn not_read(&mut self, mac: &syn::Macro) {
+        let last = mac.path.segments.last();
+        let mut names = BTreeSet::new();
+        path_names(mac.tokens.clone(), &mut names);
+        self.unread.push(MacroCall {
+            name: last.map(|s| s.ident.to_string()).unwrap_or_default(),
+            names,
+            line: last.map_or(0, |s| line_of(s.ident.span())),
+            scope: self.scope,
+            test: self.test,
+        });
+    }
+
     /// Keep the first name of `path` among the names a glob may bring in,
     /// unless a scope around hides it.
     fn name(&mut self, path: &Path, value: bool) {
@@ -605,22 +623,17 @@ impl<'ast> Visit<'ast> for Paths<'_> {
         let last = mac.path.segments.last();
         let code = last.is_none_or(|s| !NOT_CODE.contains(&s.ident.to_string().as_str()));
         if !(code && visit_arguments(&mac.tokens, self)) {
-            let mut names = BTreeSet::new();
-            path_names(mac.tokens.clone(), &mut names);
-            self.unread.push(MacroCall {
-                name: last.map(|s| s.ident.to_string()).unwrap_or_default(),
-                names,
-                line: last.map_or(0, |s| line_of(s.ident.span())),
-                scope: self.scope,
-                test: self.test,
-            });
+            self.not_read(mac);
         }
     }
 
-    /// A `macro_rules!` definition: its body is patterns, not code.
+    /// A `macro_rules!` definition: its body is patterns and the code each
+    /// call pastes, which may use what the file imports; it is not read, so
+    /// it is recorded as a macro call not read.
     fn visit_item_macro(&mut self, item: &'ast syn::ItemMacro) {
-        if item.ident.is_none() {
-            syn::visit::visit_item_macro(self, item);
+        match item.ident {
+            None => syn::visit::visit_item_macro(self, item),
+            Some(_) => self.not_read(&item.mac),
         }
     }
 
@@ -1135,7 +1148,7 @@ thread_local! {
         ] {
             assert!(paths.contains(read), "{read} in {paths:?}");
         }
-        // a definition's body is patterns; a DSL's arguments are not read
+        // a definition's body and a DSL's arguments are not read
         assert!(!paths
             .iter()
             .any(|p| p.contains("not::read") || p.contains("config") || p.contains("printed")));
@@ -1149,10 +1162,12 @@ thread_local! {
                 )
             })
             .collect();
-        // tokens to print are no code, though they read as an expression
+        // a definition's body may use what the file imports; tokens to
+        // print are no code, though they read as an expression
         assert_eq!(
             unread,
             [
+                ("macro_rules", vec!["crate", "not", "read"]),
                 ("json", vec!["config", "value"]),
                 ("stringify", vec!["crate", "only", "printed"])
             ]

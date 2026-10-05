@@ -126,11 +126,13 @@ into the model in [graph.md](graph.md); how the commands present it is in
   arguments are not code stays under `Not traced` (`macros`).
 
 - The arguments of a macro call that are neither expressions, an expression and a pattern, nor
-  items (`json!({ .. })`, a DSL), and those of a macro whose arguments are no code of the calling
-  crate (`stringify!`, `concat_idents!`, `quote!`, `quote_spanned!`, `parse_quote!`), are not read;
-  such a call is recorded with the names its `a::b` paths write, `summary` counts the calls, and
-  `Not traced` lists the ones that name the target (its module, or its crate for the library's
-  root). A module's own use
+  items (`json!({ .. })`, a DSL), those of a macro whose arguments are no code of the calling
+  crate (`stringify!`, `concat_idents!`, `quote!`, `quote_spanned!`, `parse_quote!`), and the body
+  of a `macro_rules!` definition, whose code each call pastes, are not read; such a call (a
+  definition as a call of `macro_rules!`) is recorded with the names its `a::b` paths write,
+  `summary` counts the calls, `Not traced` lists the ones that name the target (its module, or its
+  crate for the library's root), and `Used at` never counts a statement of a file that holds one
+  as never used. A module's own use
   of what it re-exports is not read either, so `query` and `impact` miss those dependents.
 - `#[path]` modules belong to their package without a module tree, and a target whose root lies
   outside its package directory (`path = "../shared/tool.rs"`) is not read.

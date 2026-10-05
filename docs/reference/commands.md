@@ -970,7 +970,8 @@ target's own imports without an edge stay under `Not mapped`.
   loads, for a script or what holds a `declare global` declaration, and
   for a Python package's `__init__.py` that an
   import of a module below it runs first.
-- `macros`: Rust macro calls whose arguments were not read (`json!`, a DSL)
+- `macros`: Rust macro calls whose arguments were not read (`json!`, a DSL,
+  `macro_rules!`, whose definition's body may use what its file imports)
   and whose `a::b` paths write the target's name (its module's, or its
   crate's for a crate root). A name match, not a use of it.
 - `whole_module`: for a symbol, places where a binding of its module whole
