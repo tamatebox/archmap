@@ -11,9 +11,9 @@ use std::fmt::Write;
 use archmap_core::{ArchitectureGraph, ComponentId};
 
 use crate::query_text::{
-    component_head, count, display, file_head, import_counts, import_location, marks, names_capped,
-    namesakes, not_traced, package_name_head, place, plural, shell_word, statements_title,
-    symbol_line, used_at, with_more, UsedAt, MAX_USE_FILES, SHOWN_NAMES,
+    component_head, count, display, env_head, file_head, import_counts, import_location, marks,
+    names_capped, namesakes, not_traced, package_name_head, place, plural, shell_word,
+    statements_title, symbol_line, used_at, with_more, UsedAt, MAX_USE_FILES, SHOWN_NAMES,
 };
 use crate::views::{
     About, Dependent, ImpactResult, ImportSites, TestRouteView, TestWayView, MAX_IMPORT_SITES,
@@ -165,6 +165,7 @@ fn head(
             let _ = writeln!(out, "{module}: imports without an edge, depth {depth}");
         }
         (About::PackageName(package, name), _) => package_name_head(out, package, name, depth),
+        (About::Env(name), _) => env_head(out, name),
         (About::Component, None) => {
             let _ = writeln!(out, "{}, depth {depth}", result.requested);
         }
@@ -210,6 +211,11 @@ fn direct(
         let mut line = format!("  {}", dependent_name(rolled, dependent, caps));
         let counted = dependent.imports.unwrap_or_default();
         if let Some(counts) = import_counts(counted.production, counted.tests) {
+            // what starts the walk from an environment variable reads it
+            let counts = match result.about {
+                About::Env(_) => counts.replace("import", "read"),
+                _ => counts,
+            };
             let _ = write!(line, "  {counts}");
         }
         let _ = writeln!(out, "{line}");
@@ -250,11 +256,18 @@ fn importers(
         }
         (Some(sites), _) if sites.recorded => {
             let list = List {
-                title: "Imported by",
+                // the files that read an environment variable start the walk
+                title: match result.about {
+                    About::Env(_) => "Read at",
+                    _ => "Imported by",
+                },
                 note: None,
                 taken: "from",
                 // a symbol's importers take it: the names say nothing more
-                names: !matches!(result.about, About::Symbol(_) | About::PackageName(..)),
+                names: !matches!(
+                    result.about,
+                    About::Symbol(_) | About::PackageName(..) | About::Env(_)
+                ),
             };
             statements(out, list, sites, rolled, caps)
         }

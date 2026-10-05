@@ -11,12 +11,13 @@ use archmap_core::{
 };
 
 use crate::not_traced::{
-    holds_global, not_traced, with_uses, NotTraced, Own, Place, Spot, Spots, Subject,
+    holds_global, not_traced, with_uses, EnvGaps, NotTraced, Own, Place, Spot, Spots, Subject,
 };
 use crate::resolve::{imports_subpath, resolve, Resolved};
 use crate::target::{component_file, fold, namesakes, reject_outside, unquote, AtDepth};
 use crate::views::{
-    ComponentView, FileView, Importer, PackageNameView, QueryResult, SymbolView, UnmappedView,
+    ComponentView, EnvView, FileView, Importer, PackageNameView, QueryResult, SymbolView,
+    UnmappedView,
 };
 use archmap_scan::ScanReport;
 
@@ -187,7 +188,7 @@ fn query(ws: &Workspace, request: &QueryRequest) -> Result<Answer> {
     let full = ws.graph();
     let rolled = full.rollup(depth);
 
-    let result = match resolve(full, &rolled, root, target)? {
+    let result = match resolve(full, &rolled, &ws.report, target)? {
         Resolved::Candidates(candidates) => {
             return Ok(Answer {
                 output: candidates.render(full, target, format)?,
@@ -213,6 +214,18 @@ fn query(ws: &Workspace, request: &QueryRequest) -> Result<Answer> {
         }
         Resolved::PackageName { package, name } => {
             QueryResult::PackageName(package_name_view(ws, depth, target, package, name))
+        }
+        Resolved::Env { name, uses } => {
+            let not_traced = Some(NotTraced {
+                env: Some(EnvGaps::of(full, &uses)),
+                ..NotTraced::default()
+            });
+            QueryResult::Env(EnvView {
+                requested: target,
+                name,
+                uses,
+                not_traced,
+            })
         }
         // an import name that no component carries, such as an extra
         Resolved::ImportName(_) => QueryResult::NotMapped(UnmappedView {

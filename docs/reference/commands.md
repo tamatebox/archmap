@@ -143,7 +143,24 @@ whole under `May use`, and `Used at` as for a symbol, read from their files;
 a statement that passes the name on (`export { x } from 'pkg'`) is marked
 `(export)`, and `Not traced` says its file's importers are not read
 (`relays`). `impact` starts from the same statements, as from those of an
-import name. It also takes a directory
+import name.
+
+For an environment variable (`env:APP_REGION`, or a name in capitals that
+nothing else has) `query` reads on demand the TS/JS files the scan read
+whose text names it or `process.env`, parsed, so a string or a comment that
+names it counts for nothing: `Read at` lists `process.env.APP_REGION`,
+`process.env["APP_REGION"]`, a destructuring of `process.env` that takes it
+and `import.meta.env.APP_REGION`, through `process` imported from Node and
+a binding of the environment too (`import { env } from 'node:process'`,
+`const { env } = process`, `const env = process.env`), and `Written at` an
+assignment, `delete` and a test's `vi.stubEnv`. `Not traced` names reads by
+a computed key (`process.env[key]`) and of the environment whole (spread,
+passed), which may read it, that where its value is set is not read (`.env`
+files, deployment settings, a framework's config), the forms not read
+(`globalThis.process.env`, `Bun.env`, `Deno.env.get()`, a helper that wraps
+the environment), and the languages of the scan whose reads are not read. JSON gives `reads`, `writes`, `computed`, `whole`
+and `files_read`. `impact` starts from the files that read it, as from the
+statements of an import name, under `Read at`. It also takes a directory
 for the component that owns it, a package subpath for its package with
 the statements that import that subpath (`react-dom/client`), and an
 import name that no component carries (`torch` declared as an extra) for
@@ -752,7 +769,8 @@ command that reaches the network; the MCP server does not offer it.
 matches decides:
 
 1. a path written as one (`./x`, `../x`, absolute): the file, or the
-   component that owns the directory; a path outside the root is an error
+   component that owns the directory; a path outside the root is an error;
+   `env:` and a name: that environment variable (below)
 2. a component id, or a symbol id
 3. a component name
 4. a file by its path from the root (`manage.py`, `src/lib/money.ts`)
@@ -774,6 +792,8 @@ matches decides:
     apart from `default` and `*`, which only its id reaches: the package's
     id, `::` and the name (`ext:npm:next::revalidatePath`, also at step 2);
     a default import goes by its package subpath instead (`next/link`)
+12. a name in capitals, digits and `_` (`APP_REGION`) that TS/JS code reads
+    or writes as an environment variable (below)
 
 A directory that no component has for its path answers for the component
 whose files it holds: a Rust module whose `mod.rs` sits in it with its

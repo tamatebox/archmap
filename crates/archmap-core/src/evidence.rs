@@ -259,6 +259,9 @@ pub fn via_place(note: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
+
+    use super::*;
+
     #[test]
     fn a_statement_into_a_package_writes_its_import_name_second() {
         let noted = |note: &str| Evidence::new("a.ts").with_note(note);
@@ -270,8 +273,6 @@ mod tests {
         assert_eq!(noted("import").import_name(), None);
         assert_eq!(noted("import via src/index.ts:2").import_name(), None);
     }
-
-    use super::*;
 
     #[test]
     fn only_a_walked_note_names_a_re_export() {

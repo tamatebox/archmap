@@ -13,8 +13,8 @@ use archmap_scan::ScanReport;
 
 use crate::co_change::{self, Changed};
 use crate::not_traced::{
-    barrels, declares_global, holds_global, not_traced, routes, with_uses, Narrowed, NotTraced,
-    Own, Place, Subject,
+    barrels, declares_global, holds_global, not_traced, routes, with_uses, EnvGaps, Narrowed,
+    NotTraced, Own, Place, Subject,
 };
 use crate::query::{instance_method, package_name_statements, uses_of};
 use crate::resolve::{imports_subpath, resolve, Resolved};
@@ -180,7 +180,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
     // the statements that make their file a barrel for a symbol
     let mut relays: BTreeSet<ImportPlace> = BTreeSet::new();
     let traced: Traced;
-    let (at, mut reach) = match resolve(full, &rolled, root, target)? {
+    let (at, mut reach) = match resolve(full, &rolled, &ws.report, target)? {
         Resolved::Candidates(candidates) => {
             return Ok(Answer {
                 output: candidates.render(full, target, format)?,
@@ -215,6 +215,22 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
                 .collect();
             let mut result = importers_impact(full, &ws.report, depth, target, &statements, caps);
             result.about = About::PackageName(package, name);
+            return Ok(Answer {
+                output: render(&result, format, full, &rolled, verbose)?,
+                found: Found::One,
+            });
+        }
+        Resolved::Env { name, uses } => {
+            // the files that read it start the change
+            let statements: Vec<(&ComponentId, &Evidence)> = uses
+                .reads
+                .iter()
+                .filter_map(|e| Some((&full.component_for_path(&e.file)?.id, e)))
+                .collect();
+            let mut result = importers_impact(full, &ws.report, depth, target, &statements, caps);
+            result.not_traced.get_or_insert_with(NotTraced::default).env =
+                Some(EnvGaps::of(full, &uses));
+            result.about = About::Env(name);
             return Ok(Answer {
                 output: render(&result, format, full, &rolled, verbose)?,
                 found: Found::One,

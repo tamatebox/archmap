@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use archmap_core::co_change::CoChange;
 use archmap_core::history::{HistoryState, Renames};
 use archmap_core::{
-    Component, ComponentId, DynamicImport, Edge, Evidence, ImportPlace, Symbol, SymbolId,
+    Component, ComponentId, DynamicImport, Edge, EnvUses, Evidence, ImportPlace, Symbol, SymbolId,
     SymbolUses, UnmappedImport,
 };
 use serde::Serialize;
@@ -125,6 +125,21 @@ pub enum QueryResult<'a> {
     Symbols(Vec<SymbolView<'a>>),
     NotMapped(UnmappedView<'a>),
     PackageName(PackageNameView<'a>),
+    Env(EnvView<'a>),
+}
+
+/// What `archmap query` returns for an environment variable: where the
+/// code reads and writes it, read on demand.
+#[derive(Debug, Serialize)]
+pub struct EnvView<'a> {
+    /// The target as given on the command line.
+    pub requested: &'a str,
+    pub name: String,
+    #[serde(flatten)]
+    pub uses: EnvUses,
+    /// What could read it unseen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub not_traced: Option<NotTraced>,
 }
 
 /// What `archmap query` returns for a name statements take from a package
@@ -277,6 +292,8 @@ pub(crate) enum About<'a> {
     ImportName,
     /// A name statements take from a package: the package, and the name.
     PackageName(&'a Component, String),
+    /// An environment variable, by its name.
+    Env(String),
 }
 
 /// How many import statements `impact` shows of each list, in text and

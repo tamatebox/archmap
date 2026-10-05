@@ -157,6 +157,49 @@ pub struct Unread {
     pub reason: UnreadReason,
 }
 
+/// Where the code reads and writes an environment variable, read on demand
+/// for one name from the files whose text names it or `process.env`.
+/// Nothing of it enters the graph.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvUses {
+    /// Reads of it: `process.env.X`, `process.env["X"]`, a destructuring
+    /// of `process.env` that takes it, `import.meta.env.X`; the note names
+    /// the object read.
+    pub reads: Vec<Evidence>,
+    /// Writes of it: an assignment, `delete`, a test's `vi.stubEnv("X")`.
+    #[serde(default)]
+    pub writes: Vec<Evidence>,
+    /// `process.env[key]` with a key no literal writes: it may be this one.
+    #[serde(default)]
+    pub computed: Vec<Evidence>,
+    /// `process.env` used whole (passed, spread, kept in a variable, a
+    /// destructuring with a rest): what takes it may read this one.
+    #[serde(default)]
+    pub whole: Vec<Evidence>,
+    /// Files that name it but could not be read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unread: Vec<Unread>,
+    /// How many files were read.
+    pub files_read: usize,
+}
+
+impl EnvUses {
+    /// Every list in file and line order.
+    pub fn normalize(&mut self) {
+        for list in [
+            &mut self.reads,
+            &mut self.writes,
+            &mut self.computed,
+            &mut self.whole,
+        ] {
+            list.sort();
+            list.dedup();
+        }
+        self.unread.sort();
+        self.unread.dedup();
+    }
+}
+
 /// What the uses pass found for one symbol. Every statement it reads ends
 /// in one of its lists: a use through it, `unused`, an escape in its file,
 /// `renamed`, `passed_on`, `values`, `mocked` or `unread`.

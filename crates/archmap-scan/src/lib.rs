@@ -53,9 +53,9 @@ pub struct ScanReport {
     pub warnings: Vec<String>,
     /// What the Rust analyzer read, for the passes that run on demand.
     pub(crate) rust: Option<rust::Index>,
-    /// The route directories the TS/JS analyzer found, for
-    /// [`route_files`].
-    pub(crate) routes: Option<typescript::Routes>,
+    /// What the TS/JS analyzer read, for [`route_files`] and
+    /// [`env_uses`].
+    pub(crate) typescript: Option<typescript::Kept>,
 }
 
 /// The analyzers archmap ships with, in the order they run.
@@ -91,7 +91,7 @@ pub fn scan_with(
     let mut read: BTreeMap<String, usize> = BTreeMap::new();
     let mut scripts: BTreeMap<String, usize> = BTreeMap::new();
     let mut contributed = ids::ContributedIds::default();
-    let (mut rust, mut routes) = (None, None);
+    let (mut rust, mut typescript) = (None, None);
 
     for analyzer in analyzers {
         if !analyzer.detect(&ctx) {
@@ -101,7 +101,7 @@ pub fn scan_with(
         if let Some(kept) = output.kept.take() {
             match kept.downcast::<rust::Index>() {
                 Ok(index) => rust = Some(*index),
-                Err(kept) => routes = kept.downcast::<typescript::Routes>().ok().map(|r| *r),
+                Err(kept) => typescript = kept.downcast::<typescript::Kept>().ok().map(|k| *k),
             }
         }
         warnings.extend(contributed.separate(analyzer.name(), &mut output.fragment));
@@ -123,7 +123,7 @@ pub fn scan_with(
         root: ctx.root().to_path_buf(),
         warnings,
         rust,
-        routes,
+        typescript,
     })
 }
 
@@ -153,6 +153,26 @@ fn coverage(
     coverage
 }
 
+/// Where the code reads and writes the environment variable `name`, read on
+/// demand from the TS/JS files the scan read whose text names it or
+/// `process.env`: `process.env.X`, `process.env["X"]`, a destructuring of
+/// `process.env`, `import.meta.env.X`, and the places that may read it
+/// unseen. Other languages are not read for it.
+pub fn env_uses(report: &ScanReport, name: &str) -> archmap_core::EnvUses {
+    let marks = report.graph.test_code();
+    let test = |file: &str| {
+        marks
+            .get(file)
+            .copied()
+            .unwrap_or_else(|| is_test_code(Path::new(file)))
+    };
+    report
+        .typescript
+        .as_ref()
+        .map(|kept| kept.env_uses(&report.root, name, test))
+        .unwrap_or_default()
+}
+
 /// The files among `paths` that a framework runs before the requests of
 /// every URL they match, so a test of any URL may reach them: Next.js's
 /// `middleware.ts`, or `proxy.ts` since Next.js 16, in the directory of a
@@ -162,9 +182,9 @@ pub fn before_routes<'a>(
     paths: impl IntoIterator<Item = &'a str>,
 ) -> BTreeSet<&'a str> {
     report
-        .routes
+        .typescript
         .as_ref()
-        .map(|routes| routes.before(paths))
+        .map(|kept| kept.routes.before(paths))
         .unwrap_or_default()
 }
 
@@ -180,9 +200,9 @@ pub fn route_files<'a>(
     paths: impl IntoIterator<Item = &'a str>,
 ) -> BTreeSet<&'a str> {
     report
-        .routes
+        .typescript
         .as_ref()
-        .map(|routes| routes.files(paths))
+        .map(|kept| kept.routes.files(paths))
         .unwrap_or_default()
 }
 

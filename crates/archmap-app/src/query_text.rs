@@ -14,11 +14,12 @@ use archmap_core::{
     UnmappedReason, UseRole, WHOLE_MODULE,
 };
 
-use crate::not_traced::NotTraced;
+use crate::not_traced::{NotTraced, Spots};
 use crate::pairs::{Counted, Pairs};
 
 use crate::views::{
-    ComponentView, FileView, Importer, PackageNameView, QueryResult, SymbolView, UnmappedView,
+    ComponentView, EnvView, FileView, Importer, PackageNameView, QueryResult, SymbolView,
+    UnmappedView,
 };
 
 /// Default caps, lifted by `--verbose`.
@@ -80,6 +81,7 @@ pub fn render(
         }
         QueryResult::NotMapped(view) => unmapped_name(&mut out, view, full, rolled, &caps),
         QueryResult::PackageName(view) => package_name(&mut out, view, full, &caps),
+        QueryResult::Env(view) => env(&mut out, view, &caps),
     };
     // a file's text says "Imported by: none" without why; a symbol's says
     // it, and that a script or `declare global` declares it; a script's
@@ -98,6 +100,7 @@ pub fn render(
         ),
         QueryResult::NotMapped(_) => (None, false, false, false),
         QueryResult::PackageName(view) => (view.not_traced.as_ref(), false, false, false),
+        QueryResult::Env(view) => (view.not_traced.as_ref(), false, false, false),
     };
     let mut tail = String::new();
     if let Some(found) = not_traced {
@@ -661,6 +664,74 @@ fn symbol_list(
         }
     }
     truncated
+}
+
+/// `APP_REGION (environment variable)` and its id.
+pub(crate) fn env_head(out: &mut String, name: &str) {
+    let _ = writeln!(out, "{name} (environment variable)\nid: env:{name}");
+}
+
+/// An environment variable: where the code reads it, then writes it.
+fn env(out: &mut String, view: &EnvView, caps: &Caps) -> bool {
+    env_head(out, &view.name);
+    let mut truncated = env_places(out, "Read at", &view.uses.reads, caps);
+    if !view.uses.writes.is_empty() {
+        truncated |= env_places(out, "Written at", &view.uses.writes, caps);
+    }
+    truncated
+}
+
+/// `Read at: 4 in 3 files` and a line per file, production code first, as
+/// `Used at` lists uses.
+fn env_places(out: &mut String, title: &str, list: &[Evidence], caps: &Caps) -> bool {
+    let mut by_file: BTreeMap<(bool, &str), Vec<&Evidence>> = BTreeMap::new();
+    for e in list {
+        by_file
+            .entry((e.test, e.file.as_str()))
+            .or_default()
+            .push(e);
+    }
+    if list.is_empty() {
+        let _ = writeln!(
+            out,
+            "\n{title}: none found\n  (only TS/JS code that names it on `process.env` or \
+             `import.meta.env` is read)"
+        );
+        return false;
+    }
+    let files = by_file.len();
+    let shown = files.min(caps.use_files);
+    let _ = writeln!(
+        out,
+        "\n{title}: {} in {}",
+        list.len(),
+        count_of(files, shown, "file")
+    );
+    let mut truncated = shown < files;
+    for places in by_file.values().take(shown) {
+        let at: Vec<String> = places
+            .iter()
+            .take(caps.locations)
+            .map(|e| {
+                let mut at = place(&e.file, e.line);
+                if e.test {
+                    at.push_str(" (test)");
+                }
+                at
+            })
+            .collect();
+        truncated |= at.len() < places.len();
+        let _ = writeln!(out, "  {}", with_more(&at, places.len()));
+    }
+    truncated
+}
+
+/// `3 files` or `3 files, showing 2`.
+fn count_of(total: usize, shown: usize, noun: &str) -> String {
+    match shown < total {
+        true => format!("{}, showing {shown}", plural(total, noun)),
+        false => plural(total, noun),
+    }
 }
 
 /// `revalidatePath (a name taken from next), depth 2` and its id.
@@ -1662,6 +1733,59 @@ pub(crate) fn not_traced(
              removal or an error on load also breaks whatever else loads {them}: {}",
             with_more(&places, b.total)
         ));
+    }
+    if let Some(gaps) = &found.env {
+        let spots = |s: &Spots| -> Vec<String> {
+            s.shown
+                .iter()
+                .take(cap)
+                .map(|s| {
+                    let at = place(&s.file, s.line);
+                    if s.test {
+                        format!("{at} (test)")
+                    } else {
+                        at
+                    }
+                })
+                .collect()
+        };
+        // reads that only tests make, which restore what they set
+        let all_tests = |s: &Spots| match s.shown.iter().all(|s| s.test) {
+            true => " (all in test code)",
+            false => "",
+        };
+        if let Some(c) = &gaps.computed {
+            let places = spots(c);
+            truncated |= places.len() < c.total;
+            let what = match c.total {
+                1 => "1 place reads the environment by a computed key".to_owned(),
+                n => format!("{n} places read the environment by a computed key"),
+            } + all_tests(c);
+            lines.push(format!(
+                "  computed keys: {what}, which may be this one: {}",
+                with_more(&places, c.total)
+            ));
+        }
+        if let Some(w) = &gaps.whole {
+            let places = spots(w);
+            truncated |= places.len() < w.total;
+            let what = match w.total {
+                1 => "1 place takes the environment whole".to_owned(),
+                n => format!("{n} places take the environment whole"),
+            } + all_tests(w);
+            lines.push(format!(
+                "  whole environment: {what}, and what takes it may read this one: {}",
+                with_more(&places, w.total)
+            ));
+        }
+        lines.push(format!("  set: {}", gaps.set));
+        lines.push(format!("  forms: {}", gaps.forms));
+        if !gaps.languages.is_empty() {
+            lines.push(format!(
+                "  other languages: their reads of the environment are not read: {}",
+                gaps.languages.join(", ")
+            ));
+        }
     }
     if let Some(r) = &found.relays {
         let what = match r.total {

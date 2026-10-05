@@ -52,8 +52,9 @@ struct QueryArgs {
     /// What to look up: a file or directory path (absolute or relative to
     /// the root), a component name or id, a symbol (`Class.method`,
     /// `Type::method`) or its id, `<component>.<file stem>`, a package
-    /// subpath, an import name no component carries, a file name, or the
-    /// last part of a component's name.
+    /// subpath, an import name no component carries, a file name, the last
+    /// part of a component's name, a name taken from a package, or an
+    /// environment variable (`env:APP_REGION`).
     target: String,
     /// Another repository root, absolute or relative to the project
     /// directory. Default: the project directory.

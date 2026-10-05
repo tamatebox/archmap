@@ -67,8 +67,10 @@ enum Command {
         /// A file or directory path (relative to the root or absolute), a
         /// component name or id (`archmap-core`), a symbol name or id
         /// (`scan`), `<component>.<file stem>`, a package subpath, an import
-        /// name no component carries (`torch`), a file name or the last
-        /// part of a component's name. Several matches, or for a word that
+        /// name no component carries (`torch`), a file name, the last part
+        /// of a component's name, a name taken from a package
+        /// (`ext:npm:next::revalidatePath`) or an environment variable
+        /// (`env:APP_REGION`). Several matches, or for a word that
         /// names nothing the names that contain it, are listed as
         /// candidates, with exit code 1.
         target: String,

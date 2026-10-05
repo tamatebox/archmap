@@ -6,8 +6,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use archmap_core::{
-    ArchitectureGraph, Component, ComponentId, ComponentKind, DynamicImport, EdgeKind, Evidence,
-    ImportPlace, Symbol, SymbolUses, UnmappedImport, UnmappedReason, UnreadMacro, UnreadReason,
+    ArchitectureGraph, Component, ComponentId, ComponentKind, DynamicImport, EdgeKind, EnvUses,
+    Evidence, ImportPlace, Symbol, SymbolUses, UnmappedImport, UnmappedReason, UnreadMacro,
+    UnreadReason,
 };
 use serde::Serialize;
 
@@ -79,6 +80,9 @@ pub struct NotTraced {
     /// the same commits as the target.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) history: Option<HistoryGaps>,
+    /// For an environment variable: what may read it unseen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) env: Option<EnvGaps>,
     /// For a name taken from a package: the statements that pass it on
     /// (`export { x } from 'pkg'`), whose files' importers are not read.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -92,6 +96,62 @@ pub struct NotTraced {
     /// may reach.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) middleware: Option<Routes>,
+}
+
+/// What an environment variable's answer may miss: reads of the
+/// environment by a computed key or whole, where it is set, and the
+/// languages whose reads of it are not read.
+#[derive(Debug, Serialize)]
+pub(crate) struct EnvGaps {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) computed: Option<Spots>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) whole: Option<Spots>,
+    pub(crate) set: &'static str,
+    pub(crate) forms: &'static str,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) languages: Vec<String>,
+}
+
+pub(crate) const ENV_FORMS: &str = "`globalThis.process.env`, Bun's `Bun.env` and Deno's \
+     `Deno.env.get()` are not read, nor a helper that wraps the environment (`createEnv`)";
+
+pub(crate) const ENV_SET: &str = "where its value is set is not read: `.env` files, deployment \
+     settings, a framework's config (`next.config` `env`)";
+
+impl EnvGaps {
+    /// The gaps of `uses`, in a scan whose other languages are those of
+    /// `full`'s Coverage.
+    pub(crate) fn of(full: &ArchitectureGraph, uses: &EnvUses) -> EnvGaps {
+        let spots = |list: &[Evidence]| {
+            (!list.is_empty()).then(|| Spots {
+                total: list.len(),
+                shown: list
+                    .iter()
+                    .map(|e| Spot {
+                        file: e.file.clone(),
+                        line: e.line,
+                        test: e.test,
+                    })
+                    .collect(),
+            })
+        };
+        EnvGaps {
+            computed: spots(&uses.computed),
+            whole: spots(&uses.whole),
+            set: ENV_SET,
+            forms: ENV_FORMS,
+            languages: full
+                .meta
+                .coverage
+                .iter()
+                .filter(|(language, c)| {
+                    c.files > 0 && !matches!(language.as_str(), "typescript" | "javascript")
+                })
+                .map(|(language, _)| language.clone())
+                .collect(),
+        }
+    }
 }
 
 /// Files a framework loads by their path, by path.

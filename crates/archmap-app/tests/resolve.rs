@@ -831,6 +831,79 @@ fn a_name_taken_from_a_package_answers_with_its_statements_and_uses() {
 }
 
 #[test]
+fn an_environment_variable_answers_with_where_the_code_reads_and_writes_it() {
+    let repo = Repo::new(
+        "env",
+        &[
+            ("package.json", "{\"name\": \"web\"}\n"),
+            (
+                "src/region.ts",
+                "export const region = process.env.APP_REGION ?? 'eu';\nexport const { APP_REGION: r } = process.env;\n",
+            ),
+            (
+                "src/app.ts",
+                "import { region } from './region';\nexport const app = region;\n",
+            ),
+            (
+                "src/all.ts",
+                "export const copy = { ...process.env };\nexport const pick = (k: string) => process.env[k];\n",
+            ),
+            (
+                "tests/region.test.ts",
+                "import { vi } from 'vitest';\nvi.stubEnv('APP_REGION', 'us');\n// process.env.APP_REGION in a comment\n",
+            ),
+            ("tools/run.py", "import os\nos.environ['APP_REGION']\n"),
+        ],
+    );
+    let ws = scan(&repo.0);
+    let answer = query(&ws, "APP_REGION");
+    assert_eq!(answer.found, Found::One, "{}", answer.output);
+    for line in [
+        "APP_REGION (environment variable)\nid: env:APP_REGION\n",
+        "\nRead at: 2 in 1 file\n  src/region.ts:1, src/region.ts:2\n",
+        "\nWritten at: 1 in 1 file\n  tests/region.test.ts:2 (test)\n",
+        "computed keys: 1 place reads the environment by a computed key, which may be this one: \
+         src/all.ts:2",
+        "whole environment: 1 place takes the environment whole, and what takes it may read this \
+         one: src/all.ts:1",
+        "  set: where its value is set is not read",
+        "other languages: their reads of the environment are not read: python",
+    ] {
+        assert!(answer.output.contains(line), "{line}: {}", answer.output);
+    }
+    assert_eq!(query(&ws, "env:APP_REGION").output, answer.output);
+    let json = query_as(&ws, "APP_REGION", Format::Json).output;
+    assert!(json.contains("\"reads\": ["), "{json}");
+    assert!(json.contains("\"note\": \"vi.stubEnv\""), "{json}");
+
+    // a name in capitals that the code never reads is no variable
+    let answer = ws.query(&QueryRequest {
+        target: "NEVER_SET",
+        depth: DEFAULT_DEPTH,
+        format: Format::Text,
+        verbose: false,
+    });
+    assert!(answer.is_err(), "{:?}", answer.map(|a| a.output));
+    // by its id it answers anyway, with none found
+    assert!(
+        query(&ws, "env:NEVER_SET")
+            .output
+            .contains("\nRead at: none found\n"),
+        "env id"
+    );
+
+    // impact starts from the files that read it
+    let answer = impact_as(&ws, "APP_REGION", Format::Text);
+    for line in [
+        "\nDirect dependents: 1\n  region.ts  2 reads\n",
+        "\nRead at: 2\n  src/region.ts:1\n  src/region.ts:2\n",
+        "\n  app.ts  2 steps, through src/region.ts\n",
+    ] {
+        assert!(answer.output.contains(line), "{line}: {}", answer.output);
+    }
+}
+
+#[test]
 fn names_of_test_code_that_contain_a_word_come_after_production_ones() {
     let repo = Repo::new(
         "contains-tests",

@@ -392,6 +392,12 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   namespace import, `import x = require()` and
   `export *`, none for a side-effect import; `via` evidence records the names as the defining file
   declares them, one evidence per defining file and re-export, and re-export statements are not walked
+- on demand, for one name, `query` and `impact` read where the code reads and writes an environment
+  variable on `process.env` (`.X`, `["X"]`, a destructuring) and `import.meta.env`, `process`
+  imported from `node:process` and bindings of the environment included, a local named `process`
+  aside; reads in other languages (Python's `os.environ`, Rust's `std::env`), through
+  `globalThis.process`, `Bun.env`, `Deno.env.get()` or a helper that wraps the environment
+  (`createEnv`), and in a framework's config are not read
 - a statement into a package records the names it writes (`default`, `*` for a namespace import, a
   `require`'s module whole), as one for a file does, so a name taken from a package is a target of
   `query` and `impact`; what imports it from a file that re-exports it (`export { x } from 'pkg'`)

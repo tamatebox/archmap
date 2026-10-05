@@ -48,6 +48,7 @@
 //!   `global`
 
 mod bundler;
+mod env;
 mod exports;
 mod fs;
 mod language;
@@ -78,7 +79,25 @@ use source::{ExportedSymbol, ImportStatement, ParsedFile};
 
 use language::{is_code, language_of};
 pub use language::{JAVASCRIPT, LANGUAGE};
-pub(crate) use routes::Routes;
+/// What the analyzer keeps for the passes that run on demand: the route
+/// directories, and the code files it reads, relative to the root.
+#[derive(Debug, Default)]
+pub(crate) struct Kept {
+    pub routes: routes::Routes,
+    pub files: Vec<String>,
+}
+
+impl Kept {
+    /// Where the code reads and writes the environment variable `name`.
+    pub(crate) fn env_uses(
+        &self,
+        root: &Path,
+        name: &str,
+        test: impl Fn(&str) -> bool,
+    ) -> archmap_core::EnvUses {
+        env::read(root, &self.files, name, test)
+    }
+}
 pub use source::is_mock_call;
 
 /// Prefix of the component ids of npm packages outside the repository.
@@ -155,12 +174,19 @@ impl Analyzer for TypeScriptAnalyzer {
                 .collect(),
         };
         emit_components(&layout, &manifests, &linked, &mut output);
-        output.kept = Some(Box::new(routes::Routes::of(
-            layout
-                .packages
+        output.kept = Some(Box::new(Kept {
+            routes: routes::Routes::of(
+                layout
+                    .packages
+                    .iter()
+                    .filter_map(|p| Some((p.dir.as_path(), next_sixteen(p, &manifests)?))),
+            ),
+            files: code
                 .iter()
-                .filter_map(|p| Some((p.dir.as_path(), next_sixteen(p, &manifests)?))),
-        )));
+                .filter(|f| layout.owners.contains_key(**f))
+                .map(|f| display_path(f))
+                .collect(),
+        }));
         for file in &code {
             if let Some(language) = language_of(file) {
                 output.read.entry(language.to_owned()).or_insert(0);

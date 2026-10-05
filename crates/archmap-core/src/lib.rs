@@ -31,7 +31,9 @@ pub use model::{
     Component, ComponentId, ComponentKind, DynamicImport, DynamicPrefix, Edge, EdgeKind,
     LanguageCoverage, Symbol, SymbolId, SymbolKind, UnmappedImport, UnmappedReason, UnreadMacro,
 };
-pub use uses::{ImportPlace, Renamed, SymbolUse, SymbolUses, Unread, UnreadReason, UseRole};
+pub use uses::{
+    EnvUses, ImportPlace, Renamed, SymbolUse, SymbolUses, Unread, UnreadReason, UseRole,
+};
 
 /// Version of the JSON schema emitted by [`ArchitectureGraph`].
 ///

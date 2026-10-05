@@ -7,9 +7,10 @@ use std::path::Path;
 
 use anyhow::{bail, Result};
 use archmap_core::{
-    ArchitectureGraph, Component, ComponentId, ComponentKind, EdgeKind, Evidence, Symbol, SymbolId,
-    SymbolKind, WHOLE_MODULE,
+    ArchitectureGraph, Component, ComponentId, ComponentKind, EdgeKind, EnvUses, Evidence, Symbol,
+    SymbolId, SymbolKind, WHOLE_MODULE,
 };
+use archmap_scan::ScanReport;
 use serde::Serialize;
 
 use crate::query_text::{component_kind, count, shell_word, symbol_kind};
@@ -36,6 +37,11 @@ pub(crate) enum Resolved<'g> {
     PackageName {
         package: &'g Component,
         name: String,
+    },
+    /// An environment variable, with where the code reads and writes it.
+    Env {
+        name: String,
+        uses: EnvUses,
     },
     Candidates(Candidates<'g>),
 }
@@ -94,9 +100,17 @@ const MIN_CONTAINED: usize = 3;
 pub(crate) fn resolve<'g>(
     full: &'g ArchitectureGraph,
     rolled: &'g ArchitectureGraph,
-    root: &Path,
+    report: &ScanReport,
     target: &str,
 ) -> Result<Resolved<'g>> {
+    let root = report.root.as_path();
+    // an environment variable, by its id
+    if let Some(name) = target.strip_prefix(ENV).filter(|n| !n.is_empty()) {
+        return Ok(Resolved::Env {
+            name: name.to_owned(),
+            uses: archmap_scan::env_uses(report, name),
+        });
+    }
     // a path written as one: the file, or the component owning the directory
     if written_as_path(target) {
         if let Some(file) = file_target(root, target) {
@@ -232,6 +246,17 @@ pub(crate) fn resolve<'g>(
         }
     }
 
+    // a name written as environment variables are that the code reads
+    if is_env_name(target) {
+        let uses = archmap_scan::env_uses(report, target);
+        if !uses.reads.is_empty() || !uses.writes.is_empty() {
+            return Ok(Resolved::Env {
+                name: target.to_owned(),
+                uses,
+            });
+        }
+    }
+
     // a word that names nothing: the names that contain it
     if target.contains('/') {
         bail!(
@@ -257,6 +282,19 @@ pub(crate) fn resolve<'g>(
         contains,
         ..Candidates::default()
     }))
+}
+
+/// The prefix of an environment variable's id: `env:APP_REGION`.
+pub(crate) const ENV: &str = "env:";
+
+/// Whether `target` is written as environment variables are, in capitals,
+/// digits and `_` (`APP_REGION`), which the code's reads are looked up for
+/// when nothing else has the name.
+fn is_env_name(target: &str) -> bool {
+    target.starts_with(|c: char| c.is_ascii_uppercase())
+        && target
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
 
 /// The names statements take from packages, each with its package: a
