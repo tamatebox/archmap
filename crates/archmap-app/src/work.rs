@@ -508,7 +508,7 @@ fn text(view: &WorkView, snapshot: &Snapshot, history: &History, verbose: bool) 
         ));
     }
     if !not_traced.is_empty() {
-        let _ = writeln!(out, "\nNot traced:");
+        let _ = writeln!(out, "\n{}", crate::query_text::NOT_TRACED);
         for line in not_traced {
             let _ = writeln!(out, "{line}");
         }

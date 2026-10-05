@@ -108,7 +108,7 @@ Merge commit: 9f541d5 matched by sha (2026-01-04)
 Closes: #12 issue, open
 Closed: #12 issue, open, 2026-01-04
 
-Not traced:
+Not traced (what this answer may miss):
   closings: seen on the closed issue's timeline, so issues outside the range that #15 closed are not seen
   cross-references: seen on the referenced item's timeline, so references from #15 to items outside the range are not seen
 ```

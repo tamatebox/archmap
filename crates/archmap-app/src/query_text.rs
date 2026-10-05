@@ -83,9 +83,12 @@ pub fn render(
         }
         QueryResult::NotMapped(_) => (None, false),
     };
+    let mut tail = String::new();
     if let Some(not_traced) = not_traced {
-        truncated |= self::not_traced(&mut out, not_traced, caps.locations, no_importers, false);
+        truncated |= self::not_traced(&mut tail, not_traced, caps.locations, no_importers, false);
     }
+    marks(&mut out, &tail);
+    out.push_str(&tail);
     if truncated {
         let _ = writeln!(
             out,
@@ -798,7 +801,7 @@ pub(crate) fn used_at(out: &mut String, view: &UsedAt, use_files: usize, locatio
         truncated |= places.len() < uses.mocked.len();
         let _ = writeln!(
             out,
-            "  mocked ({}): {}",
+            "  mocked ({}, keys of tests' mock factories, no use): {}",
             plural(uses.mocked.len(), "place"),
             with_more(&places, uses.mocked.len())
         );
@@ -1043,6 +1046,52 @@ pub(crate) fn import_location(evidence: &Evidence, more_files: usize, show_targe
     out
 }
 
+/// Every mark an answer writes, as written after a space, as the `Marks`
+/// line names it, and what it means, in the order that line lists them: a
+/// statement's marks as `import_location` writes them, the one a neighbor's
+/// statement adds, the roles of a use, then a path's in the history. A new
+/// mark gets its entry here.
+const MARKS: [(&str, &str, &str); 12] = [
+    (
+        " (via ",
+        "(via file:line)",
+        "reached through that re-export",
+    ),
+    (" (export)", "(export)", "a re-export, passes names on"),
+    (" (mock)", "(mock)", "a test's mock replaces the module"),
+    (" (type)", "(type)", "types only, never runs"),
+    (" (test)", "(test)", "in test code"),
+    (" (local)", "(local)", "inside a function, runs when called"),
+    (" (through)", "(through)", "takes it through re-exports"),
+    (" (call)", "(call)", "called"),
+    (" (new)", "(new)", "constructed"),
+    (" (jsx)", "(jsx)", "rendered as a JSX element"),
+    (
+        " (read)",
+        "(read)",
+        "any other use: passed, assigned, compared",
+    ),
+    (" (submodule)", "(submodule)", "a git submodule, not a file"),
+];
+
+/// `Marks: (type) types only, never runs; (test) in test code`: what the
+/// marks that `out` and `tail` show mean, written to `out` before `tail`
+/// follows it; nothing when they show none. A mark follows a space, so a
+/// path such as `app/(test)/page.tsx` shows none. The text is searched
+/// whole, which holds while answers show no free text (titles, messages)
+/// that could hold a mark's words; one that does needs the marks recorded
+/// where they are written instead.
+pub(crate) fn marks(out: &mut String, tail: &str) {
+    let shown: Vec<String> = MARKS
+        .iter()
+        .filter(|(written, _, _)| out.contains(written) || tail.contains(written))
+        .map(|(_, mark, meaning)| format!("{mark} {meaning}"))
+        .collect();
+    if !shown.is_empty() {
+        let _ = writeln!(out, "\nMarks: {}", shown.join("; "));
+    }
+}
+
 /// `word` as a shell reads it back: in single quotes when it holds a
 /// character the shell would expand or split on (TS/JS paths such as
 /// `app/(public)/[slug]/page.tsx`).
@@ -1115,6 +1164,10 @@ pub(crate) fn symbol_kind(kind: SymbolKind) -> &'static str {
         SymbolKind::Other => "symbol",
     }
 }
+
+/// The heading of the section that ends an answer when anything applies:
+/// what the answer could not follow or see.
+pub(crate) const NOT_TRACED: &str = "Not traced (what this answer may miss):";
 
 /// The `Not traced` section at the end of `query` and `impact`. `query`
 /// says a script where its text shows importers, and a symbol nothing
@@ -1388,7 +1441,7 @@ pub(crate) fn not_traced(
         ));
     }
     if !lines.is_empty() {
-        let _ = writeln!(out, "\nNot traced:");
+        let _ = writeln!(out, "\n{NOT_TRACED}");
         for line in lines {
             let _ = writeln!(out, "{line}");
         }
@@ -1439,6 +1492,47 @@ mod tests {
             ("it's", "'it'\\''s'"),
         ] {
             assert_eq!(shell_word(word), quoted, "{word}");
+        }
+    }
+
+    #[test]
+    fn marks_explain_only_what_an_answer_shows_in_one_order() {
+        let mut out = "a.rs:3 (local)\nb.ts:1 (test) (type)\n".to_owned();
+        marks(&mut out, "");
+        assert!(out.ends_with(
+            "\nMarks: (type) types only, never runs; (test) in test code; (local) inside a \
+             function, runs when called\n"
+        ));
+        let mut out = "Used at: 2 in 1 file (1 new, 1 read)\napp/(test)/page.tsx:1\n".to_owned();
+        let before = out.clone();
+        marks(&mut out, "");
+        assert_eq!(out, before);
+        let mut out = "a.py:1 (via b.py:2)\n".to_owned();
+        marks(
+            &mut out,
+            "\nNot traced (what this answer may miss):\n  x: c.py:4 (test)\n",
+        );
+        assert!(out.ends_with(
+            "\nMarks: (via file:line) reached through that re-export; (test) in test code\n"
+        ));
+    }
+
+    #[test]
+    fn every_role_has_a_mark_and_every_meaning_stays_short() {
+        for role in [
+            UseRole::Call,
+            UseRole::New,
+            UseRole::Jsx,
+            UseRole::Type,
+            UseRole::Read,
+        ] {
+            let written = format!(" ({})", role.as_str());
+            assert!(MARKS.iter().any(|(w, _, _)| *w == written), "{written}");
+        }
+        // the line is read in every answer that shows marks: a meaning that
+        // needs more belongs in docs/reference/
+        for (_, mark, meaning) in MARKS {
+            assert!(meaning.split(' ').count() <= 6, "{mark} {meaning}");
         }
     }
 

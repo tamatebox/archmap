@@ -50,7 +50,9 @@ fn impact(ws: &Workspace, target: &str) -> serde_json::Value {
 fn a_python_file_lists_dynamic_imports_elsewhere_and_imports_named_like_it() {
     let ws = scan(&fixture("simple-python-project"));
     let text = query(&ws, "scripts/helpers.py", Format::Text);
-    let section = text.split_once("\nNot traced:\n").map(|(_, s)| s);
+    let section = text
+        .split_once("\nNot traced (what this answer may miss):\n")
+        .map(|(_, s)| s);
     assert_eq!(
         section,
         Some(
@@ -127,7 +129,7 @@ fn a_macro_call_not_read_that_names_the_target_is_listed() {
     let text = query(&ws, "kiosk/src/stamp.rs", Format::Text);
     assert!(
         text.contains(
-            "\nNot traced:\n  macros: 1 macro call whose arguments are not read names `stamp`: \
+            "\nNot traced (what this answer may miss):\n  macros: 1 macro call whose arguments are not read names `stamp`: \
              kiosk/src/lib.rs:27 (tally!)\n"
         ),
         "{text}"
@@ -159,7 +161,7 @@ fn a_rust_target_counts_the_files_its_analyzer_did_not_read() {
     // files these are
     assert!(
         text.ends_with(
-            "\nNot traced:\n  not read: 3 of 26 rust files: the Rust analyzer reads src/ and what \
+            "\nNot traced (what this answer may miss):\n  not read: 3 of 26 rust files: the Rust analyzer reads src/ and what \
              the other Cargo targets load, so files outside src/ that no target loads, such as \
              test data, are among them, as is any file that failed to parse\n"
         ),
@@ -202,7 +204,9 @@ fn a_file_nothing_imports_says_so_in_query_text_too() {
     let ws = scan(&fixture("simple-ts-project"));
     let text = query(&ws, "src/app/page.tsx", Format::Text);
     assert!(
-        text.contains(&format!("\nNot traced:\n  no importers: {NO_IMPORTERS}\n")),
+        text.contains(&format!(
+            "\nNot traced (what this answer may miss):\n  no importers: {NO_IMPORTERS}\n"
+        )),
         "{text}"
     );
     // the script's text says it where it lists importers

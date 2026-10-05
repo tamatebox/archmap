@@ -314,6 +314,7 @@ fn check_text(
             }
         }
     }
+    crate::query_text::marks(&mut out, "");
     if !signals.is_empty() {
         out.push_str("\nSignals are observations; they never change the exit code.\n");
     }

@@ -287,7 +287,7 @@ async fn impact_lists_the_files_changed_in_the_same_commits_as_the_app_does() {
     )
     .await);
     assert!(
-        text.contains("\nChanged in the same commits: 1 file, in the 2 commits that changed pkg/__init__.py\n  pkg/rates.toml  2 of the target's 2, 2 of its own 2: "),
+        text.contains("\nChanged in the same commits (history, not imports): 1 file, in the 2 commits that changed pkg/__init__.py; per file: commits shared, of the target's and of its own\n  pkg/rates.toml  2 of the target's 2, 2 of its own 2: "),
         "{text}"
     );
     client.cancel().await.unwrap();

@@ -167,7 +167,10 @@ it, as in `src/shop/billing/charge.py:5 -> src/shop/users.py`, and ends in
 the function is called; the others run when their file loads. `(type)` marks
 a statement that takes types only, so it never runs (a TS/JS `import type`,
 which the compiler erases, or a Python import under `if TYPE_CHECKING:`),
-and `(test)` a statement in test code. Each
+and `(test)` a statement in test code. An answer that shows marks says
+what they mean in a `Marks` line before `Not traced`, naming only the marks
+it shows, always in the same order (`Marks: (type) types only, never runs;
+(test) in test code`); `impact` and `check` do the same. Each
 neighbor counts its statements as `summary` counts the pair: in production
 code and in tests apart (`2 imports, 1 in tests`), and apart from those
 statements of the component's entry file into its own submodules (`6 of its
@@ -274,7 +277,7 @@ Used at: 21 in 14 files, showing 10 (20 calls, 1 type)
   ...
   never used (1 import): src/unused.ts:1
   never named (1 import of the whole module): tests/actual.test.ts:2
-  mocked (2 places): tests/mocked.test.ts:4 (test), tests/partial.test.ts:5 (test)
+  mocked (2 places, keys of tests' mock factories, no use): tests/mocked.test.ts:4 (test), tests/partial.test.ts:5 (test)
 ```
 
 There is a line per file, production code first, then the files with the
@@ -486,7 +489,9 @@ Tests to run again: 1
   tests/money.test.ts (mocks it)
   not tests: tests/helpers.ts (helper, for 1 test listed)
 
-Not traced:
+Marks: (via file:line) reached through that re-export; (export) a re-export, passes names on; (type) types only, never runs
+
+Not traced (what this answer may miss):
   dynamic: 2 calls load modules by computed names, which may be this: scripts/report.cjs:4, src/app/lazy.tsx:7
   barrels: 1 file passes on what may change, and only what takes it from there is followed; a rename, a removal or an error on load also breaks whatever else loads that file: src/index.ts:8
 
@@ -559,12 +564,13 @@ below `tests/`, `test/` or `__mocks__` and a module of a Rust test, with
 the listed tests that import it; and a Rust example or bench. A runner's
 own configuration (pytest's `python_files`, Jest's `testMatch`, Vitest's
 `include`) is not read. `Changed in the
-same commits` follows, from the root's committed git history: the files
-committed together with the target (a file, a symbol's file, or a
-component's files), each with the commits it shares with the target out
-of the target's and out of its own (`2 of the target's 4, 2 of its own
-2`) and its newest shared commits, those that change mostly with the
-target first, then a `history:` line
+same commits (history, not imports)` follows, from the root's committed git
+history: the files committed together with the target (a file, a symbol's
+file, or a component's files), each with the commits it shares with the
+target out of the target's and out of its own (`2 of the target's 4, 2 of
+its own 2`, as the heading says to read them) and its newest shared
+commits, those that change mostly with the target first, then a `history:`
+line
 saying what was read (`history: HEAD 6bf7b15, full clone; 6 commits read, 5
 counted; left out 1 over 30 files; renames -M50%`), or why nothing was
 (`not read (not a git repository)`); see [history.md](history.md).
@@ -739,7 +745,8 @@ file, those of the component it is), and their JSON in `also_named` and
 
 `query` and `impact` end with what could reach their target without an
 edge showing it, from what the analyzers record and only when something
-applies: `Not traced` in their text and `not_traced` in their JSON. The
+applies: `Not traced (what this answer may miss)` in their text and
+`not_traced` in their JSON. The
 target's own imports without an edge stay under `Not mapped`.
 
 - `dynamic`: calls elsewhere in the target's language (TypeScript and

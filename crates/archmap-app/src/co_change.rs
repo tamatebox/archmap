@@ -170,9 +170,12 @@ pub(crate) fn render(out: &mut String, section: &CoChangeSection, verbose: bool)
             if shown < files.len() {
                 let _ = write!(count, ", showing {shown}");
             }
+            // the counts per file read as commits it shares, out of the
+            // target's and out of its own
             let _ = writeln!(
                 out,
-                "\n{heading}: {count}, in the {commits} that changed {}",
+                "\n{heading} (history, not imports): {count}, in the {commits} that changed {}; \
+                 per file: commits shared, of the target's and of its own",
                 section.label
             );
             for file in files.iter().take(shown) {

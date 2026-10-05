@@ -145,7 +145,10 @@ fn a_file_answers_with_its_dependents_statements_tests_and_blind_spots() {
          \n\
          Changed in the same commits: not read (not a git repository)\n\
          \n\
-         Not traced:\n  \
+         Marks: (via file:line) reached through that re-export; (export) a re-export, passes \
+         names on; (type) types only, never runs\n\
+         \n\
+         Not traced (what this answer may miss):\n  \
            dynamic: 2 calls load modules by computed names, which may be this: \
            scripts/report.cjs:4, src/app/lazy.tsx:7\n  \
            barrels: 1 file passes on what may change, and only what takes it from there is followed; a \
@@ -179,7 +182,7 @@ fn every_list_is_capped_and_says_how_many_it_shows() {
         section(&out, "Tests to run again: 25, showing 20").len(),
         20
     );
-    let not_traced = section(&out, "Not traced:");
+    let not_traced = section(&out, "Not traced (what this answer may miss):");
     assert_eq!(
         not_traced,
         [
@@ -206,7 +209,9 @@ fn verbose_lists_every_entry() {
     );
     assert_eq!(section(&out, "Imported by: 60").len(), 60);
     assert_eq!(section(&out, "Tests to run again: 25").len(), 25);
-    assert!(section(&out, "Not traced:")[0].ends_with("src/app/load3.ts:2"));
+    assert!(
+        section(&out, "Not traced (what this answer may miss):")[0].ends_with("src/app/load3.ts:2")
+    );
     assert!(!out.contains("Lists are capped"), "{out}");
 }
 
@@ -358,7 +363,7 @@ fn a_script_says_what_uses_its_globals_is_not_traced() {
     let ws = scan(&fixture("simple-ts-project"));
     let out = text(&ws, "src/global.d.ts");
     assert!(
-        section(&out, "Not traced:").contains(
+        section(&out, "Not traced (what this answer may miss):").contains(
             &"  a script: its declarations are global, so no import names what uses them"
         ),
         "{out}"

@@ -50,7 +50,7 @@ message.
 ## Files changed in the same commits
 
 ```text
-Changed in the same commits: 6 files, showing 5, in the 4 commits that changed src/pricing/price.ts
+Changed in the same commits (history, not imports): 6 files, showing 5, in the 4 commits that changed src/pricing/price.ts; per file: commits shared, of the target's and of its own
   config/rates.yaml  2 of the target's 4, 2 of its own 2: f9396a2 2026-01-02, f0e9bdf 2026-01-01
   docs/pricing.md  2 of the target's 4, 2 of its own 2: c6677fc 2026-01-04, f0e9bdf 2026-01-01 (then docs/prices.md)
   src/pricing/round.ts  2 of the target's 4, 2 of its own 2: f9396a2 2026-01-02, f0e9bdf 2026-01-01

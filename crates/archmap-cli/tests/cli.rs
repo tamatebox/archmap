@@ -755,7 +755,8 @@ fn query_text_is_a_compact_drill_down() {
         "Symbols matching `greet`: 1\n  pub fn greet(user: &User) -> String  crates/lib_core/src/lib.rs:28  in lib_core\n\
          \nImported by: 2\n  crates/app/src/config.rs:12 (local)\n  crates/app/src/main.rs:2\n\
          \nUsed at: 2 in 2 files (2 calls)\n  crates/app/src/config.rs:12 (call) as lib_core::greet\n  \
-         crates/app/src/main.rs:8 (call)\n"
+         crates/app/src/main.rs:8 (call)\n\
+         \nMarks: (local) inside a function, runs when called; (call) called\n"
     );
 }
 
@@ -2027,6 +2028,8 @@ to = "money"
         "forbidden by deny[0] types -> money: lib/types.ts -> lib/money.ts (import, types only)\n",
         // page.tsx:1 takes a value too
         "forbidden by deny[1] page -> money: app/page.tsx -> lib/money.ts (import)\n",
+        // the evidence lines' marks, as query and impact explain theirs
+        "\nMarks: (type) types only, never runs\n",
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
     }
@@ -2781,7 +2784,7 @@ fn query_on_a_ts_symbol_lists_where_it_is_used() {
          \x20 src/relayed.ts:3 (call) as fmt2\n\
          \x20 never used (1 import): src/unused.ts:1\n\
          \x20 never named (1 import of the whole module): src/rates.ts:1\n\
-         \x20 mocked (2 places): tests/mocked.test.ts:4 (test), tests/partial.test.ts:5 (test)\n";
+         \x20 mocked (2 places, keys of tests' mock factories, no use): tests/mocked.test.ts:4 (test), tests/partial.test.ts:5 (test)\n";
     assert!(text.contains(used_at), "{text}");
     for line in [
         "  whole module: 3 places use the module as a value, which may use this: \
@@ -2822,7 +2825,7 @@ fn query_on_a_ts_symbol_lists_where_it_is_used() {
     );
     assert!(!method.contains("never used"), "{method}");
     assert!(
-        method.contains("  mocked (1 place): tests/mocked.test.ts:5 (test) as Wallet\n"),
+        method.contains("  mocked (1 place, keys of tests' mock factories, no use): tests/mocked.test.ts:5 (test) as Wallet\n"),
         "{method}"
     );
     assert!(

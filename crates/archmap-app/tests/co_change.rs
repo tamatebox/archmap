@@ -171,6 +171,9 @@ fn impact(root: &Path, target: &str, format: Format) -> String {
     .output
 }
 
+/// How the heading of a list says to read its counts.
+const PER_FILE: &str = "; per file: commits shared, of the target's and of its own";
+
 /// The section's lines, from its heading to the history line.
 fn section(text: &str) -> Vec<&str> {
     let mut lines = text
@@ -193,9 +196,10 @@ fn a_file_lists_the_files_changed_in_its_commits_with_counts_and_examples() {
     assert_eq!(
         section(&text),
         [
-            "Changed in the same commits: 6 files, showing 5, in the 4 commits that changed \
-             src/pricing/price.ts"
-                .to_owned(),
+            format!(
+                "Changed in the same commits (history, not imports): 6 files, showing 5, in the \
+                 4 commits that changed src/pricing/price.ts{PER_FILE}"
+            ),
             // as close to it: by path
             format!(
                 "  config/rates.yaml  2 of the target's 4, 2 of its own 2: {} 2026-01-02, {} \
@@ -265,7 +269,9 @@ fn a_component_counts_each_commit_once_for_its_files() {
     // the price and its rounding changed together in one commit: the rates
     // count it once
     assert!(
-        lines[0].ends_with("in the 4 commits that changed pricing's 2 files"),
+        lines[0].ends_with(&format!(
+            "in the 4 commits that changed pricing's 2 files{PER_FILE}"
+        )),
         "{text}"
     );
     assert!(
@@ -288,7 +294,9 @@ fn a_symbol_reads_the_commits_of_its_file() {
     let (repo, _) = shop("symbol");
     let text = impact(&repo.dir, "price", Format::Text);
     assert!(
-        section(&text)[0].ends_with("in the 4 commits that changed its file src/pricing/price.ts"),
+        section(&text)[0].ends_with(&format!(
+            "in the 4 commits that changed its file src/pricing/price.ts{PER_FILE}"
+        )),
         "{text}"
     );
 }
@@ -373,7 +381,10 @@ fn a_merge_counts_through_the_commits_it_merges() {
     // what the merge changed itself is not read, and the heading says so
     assert_eq!(
         lines[0],
-        "Changed in the same commits: 2 files, in the 2 non-merge commits that changed src/a.ts",
+        format!(
+            "Changed in the same commits (history, not imports): 2 files, in the 2 non-merge \
+             commits that changed src/a.ts{PER_FILE}"
+        ),
         "{text}"
     );
     assert_eq!(
@@ -394,6 +405,34 @@ fn a_merge_counts_through_the_commits_it_merges() {
 }
 
 #[test]
+fn a_submodule_changed_with_the_target_is_marked() {
+    let mut repo = Repo::new("submodule");
+    repo.write("package.json", "{ \"name\": \"shop\" }\n");
+    repo.write("src/a.ts", "export const a = 1;\n");
+    repo.commit();
+    // a submodule as HEAD's tree holds it: a commit of another repository,
+    // with nothing checked out
+    let commit = repo.git(&["rev-parse", "HEAD"]);
+    repo.write("src/a.ts", "export const a = 2;\n");
+    repo.git(&["add", "src/a.ts"]);
+    let link = format!("160000,{commit},vendor/lib");
+    repo.git(&["update-index", "--add", "--cacheinfo", &link]);
+    repo.git(&["commit", "-q", "-m", "change"]);
+    repo.commits += 1;
+    let text = impact(&repo.dir, "src/a.ts", Format::Text);
+    assert!(
+        section(&text).iter().any(
+            |l| l.starts_with("  vendor/lib (submodule)  1 of the target's 2, 1 of its own 1:")
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("\nMarks: (submodule) a git submodule, not a file\n"),
+        "{text}"
+    );
+}
+
+#[test]
 fn a_root_below_the_top_reads_the_commits_under_it() {
     let (repo, _) = shop("below");
     let text = impact(&repo.dir.join("src"), "pricing/price.ts", Format::Text);
@@ -401,7 +440,9 @@ fn a_root_below_the_top_reads_the_commits_under_it() {
     // paths are the root's, files outside it are no candidates, and the
     // mass change counts: it changed one file under the root
     assert!(
-        lines[0].ends_with("in the 5 commits that changed pricing/price.ts"),
+        lines[0].ends_with(&format!(
+            "in the 5 commits that changed pricing/price.ts{PER_FILE}"
+        )),
         "{text}"
     );
     assert!(
