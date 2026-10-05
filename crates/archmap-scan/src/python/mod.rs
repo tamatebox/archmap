@@ -896,6 +896,18 @@ struct Resolved {
     read: Vec<(String, String)>,
 }
 
+impl Resolved {
+    /// Every name the statement takes is a definition placed in a file:
+    /// no submodule, which code may import for what loading it registers.
+    fn binds_definitions(&self) -> bool {
+        !self.names.is_empty()
+            && self
+                .names
+                .iter()
+                .all(|p| p.as_ref().is_some_and(|(_, name)| name != WHOLE_MODULE))
+    }
+}
+
 /// A Python file once read, with how its imports resolved.
 struct ReadFile {
     file: PathBuf,
@@ -1033,15 +1045,13 @@ fn emit_imports(
         // a statement that only passes on the definitions it binds is a
         // re-export, as a TS/JS `export ... from` is; not one that binds a
         // submodule, which code may import for what loading it registers
-        let symbols = !placed.is_empty()
-            && placed
-                .iter()
-                .all(|p| p.as_ref().is_some_and(|(_, name)| name != WHOLE_MODULE));
-        resolved.push(Resolved {
+        let statement = Resolved {
             names: placed,
             own: own.clone(),
             read,
-        });
+        };
+        let symbols = statement.binds_definitions();
+        resolved.push(statement);
 
         let note = if import.relays && symbols {
             "export"
@@ -1205,16 +1215,14 @@ fn emit_imports(
                             .extend(taken);
                     }
                     if !files.is_empty() {
-                        let symbols = !placed.is_empty()
-                            && placed
-                                .iter()
-                                .all(|p| p.as_ref().is_some_and(|(_, name)| name != WHOLE_MODULE));
+                        let statement = Resolved {
+                            names: placed,
+                            own: own.map(|(file, _)| file),
+                            read,
+                        };
+                        let symbols = statement.binds_definitions();
                         if let Some(last) = resolved.last_mut() {
-                            *last = Resolved {
-                                names: placed,
-                                own: own.map(|(file, _)| file),
-                                read,
-                            };
+                            *last = statement;
                         }
                         for (target_file, (entry, names)) in files {
                             let Some(target) = (ctx.owner_of)(Path::new(&target_file)) else {
@@ -1379,6 +1387,11 @@ fn emit_definitions(
     for read in reads {
         let test = is_test_code(&read.file);
         for (import, resolved) in read.scanned.imports.iter().zip(&read.resolved) {
+            // a statement that only passes definitions on is a re-export,
+            // which leads on through its barrel, as a TS/JS one does
+            if import.relays && resolved.binds_definitions() {
+                continue;
+            }
             // by defining file, first binding and whether only types travel
             let mut found: BTreeMap<(String, (String, u32), bool), BTreeSet<String>> =
                 BTreeMap::new();

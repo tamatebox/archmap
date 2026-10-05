@@ -103,3 +103,40 @@ fn a_computed_name_stays_a_call_that_loads_a_module_by_name() {
         .collect();
     assert_eq!(dynamic, [("import_module", Some(17))]);
 }
+
+#[test]
+fn a_barrel_that_passes_on_another_barrels_name_gives_no_via_evidence() {
+    // top/__init__.py passes on what top/mid/__init__.py passes on from
+    // charge.py: a re-export leads on through its barrel, so only a
+    // statement that takes the name gets evidence for the defining file
+    let root = std::env::temp_dir().join(format!("archmap-nested-barrels-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    for (file, text) in [
+        ("pyproject.toml", "[project]\nname = \"nest\"\n"),
+        (
+            "top/__init__.py",
+            "from .mid import pay\n\n__all__ = [\"pay\"]\n",
+        ),
+        (
+            "top/mid/__init__.py",
+            "from .charge import pay\n\n__all__ = [\"pay\"]\n",
+        ),
+        ("top/mid/charge.py", "def pay(x):\n    return x\n"),
+        ("app.py", "from top import pay\n\npay(1)\n"),
+    ] {
+        let path = root.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    let report = scan(&root, &ScanOptions::default()).expect("scan succeeds");
+    std::fs::remove_dir_all(&root).unwrap();
+    let mut via: Vec<String> = report
+        .graph
+        .edges
+        .iter()
+        .flat_map(|e| &e.evidence)
+        .filter_map(|e| Some(format!("{}:{} {}", e.file, e.line?, e.via()?)))
+        .collect();
+    via.sort();
+    assert_eq!(via, ["app.py:1 top/__init__.py:1"]);
+}

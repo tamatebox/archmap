@@ -190,7 +190,9 @@ into the model in [graph.md](graph.md); how the commands present it is in
   written nowhere else in the file, comments and strings included, and the file reaches no name by a
   computed one (`globals()`, `locals()`, `vars()`, `sys.modules`, a module `__getattr__`, `exec`,
   `eval`, `importlib`): a package's `__init__.py` with `from .charge import pay` and `__all__ =
-  ["pay"]`
+  ["pay"]`. A statement noted `export` gets no evidence for the file that defines what it passes on:
+  it leads on through its file, as a TS/JS re-export does, and what takes the name from that file
+  gets the evidence
 - a statement keeps only the evidence for the file it loads when a file on the way shows the name in
   ways that lead to more than one definition (its definitions, assignments, `from` imports and star
   imports; only those that run count, when any does), binds it in a way the walk does not follow
