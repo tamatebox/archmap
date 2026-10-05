@@ -800,6 +800,39 @@ fn a_python_star_import_outside_a_package_entry_passes_its_names_on() {
 }
 
 #[test]
+fn an_import_name_reaches_the_tests_that_load_a_helper_importing_it() {
+    // a dev-dependency only a test helper imports
+    let files: Vec<(String, String)> = [
+        (
+            "Cargo.toml",
+            "[package]\nname = \"p\"\nversion = \"0.1.0\"\n\n[dev-dependencies]\ntempfile = \"3\"\n",
+        ),
+        ("src/lib.rs", "pub fn answer() -> u32 {\n    42\n}\n"),
+        (
+            "tests/common/mod.rs",
+            "use tempfile::TempDir;\n\npub fn scratch() -> TempDir {\n    TempDir::new().unwrap()\n}\n",
+        ),
+        (
+            "tests/disk.rs",
+            "mod common;\n\n#[test]\nfn writes() {\n    let _dir = common::scratch();\n}\n",
+        ),
+    ]
+    .into_iter()
+    .map(|(file, text)| (file.to_owned(), text.to_owned()))
+    .collect();
+    let repo = Repo::new("dev-dependency", &files);
+    let out = text(&scan(&repo.0), "tempfile");
+    assert_eq!(
+        section(&out, "Tests to run again: 1"),
+        [
+            "  tests/disk.rs (through tests/common/mod.rs)",
+            "  not tests: tests/common/mod.rs (helper, for 1 test listed)"
+        ],
+        "{out}"
+    );
+}
+
+#[test]
 fn no_importers_is_said_only_when_nothing_imports_the_target() {
     // statements of the whole module that never name the symbol import it
     let ws = scan(&fixture("rust-uses"));

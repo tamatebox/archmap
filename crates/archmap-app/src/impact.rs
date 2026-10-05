@@ -632,11 +632,12 @@ fn import_name_impact<'a>(
             tests.insert(file.to_owned());
         } else {
             direct.insert(full.ancestor_at(&import.from, depth));
-            seeds.insert(file);
         }
+        seeds.insert(file);
     }
-    // every production importer at once, so that a file one of them reaches
-    // through production code is no test of another
+    // every importer at once, so that a file one of them reaches through
+    // production code is no test of another, and a test helper that imports
+    // the name leads on to the tests that load it
     let seeds: Vec<&str> = seeds.into_iter().collect();
     let mut reach = full.change_impact(ChangeSeed::Importers(&seeds), depth);
     // the importers' components are the direct dependents of the name, and
