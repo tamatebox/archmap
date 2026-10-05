@@ -1145,6 +1145,13 @@ fn emit_imports(
                     );
                     continue;
                 }
+            }
+            // a directory a conftest.py adds may hold what the project
+            // does not, another project's code included
+            if matches!(
+                reason,
+                UnmappedReason::LocalName | UnmappedReason::Undeclared
+            ) {
                 if let Some(found) = OnSysPath::find(ctx.search, top, ctx.known_files) {
                     // as for a module of the scan: a named submodule, else
                     // a name of the module's file, and for `import m` what

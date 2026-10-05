@@ -201,8 +201,9 @@ into the model in [graph.md](graph.md); how the commands present it is in
 - a bare import that matches no module but a `.py` file next to the importing file (`import helpers`
   beside `helpers.py`) loads that file, as it does when the directory is on `sys.path` for a script run
   directly or a function deployed from it; its evidence note says so
-- otherwise such an import resolves against the directories a `conftest.py` above the importing file
-  adds to `sys.path`, which pytest does before it loads the files below the conftest's directory,
+- otherwise such an import, or one no manifest of its project declares, resolves against the
+  directories a `conftest.py` above the importing file adds to `sys.path`, another project's
+  included, which pytest does before it loads the files below the conftest's directory,
   production code included when the conftest sits at the top of the project: `sys.path.insert(i, X)`
   and `sys.path.append(X)` at module level (inside `if`, `try` and `with` too) where `X` is computed
   from `__file__` by `pathlib.Path(...)`, `.resolve()`, `.parent`, `.parents[N]`, `/ "dir"`,

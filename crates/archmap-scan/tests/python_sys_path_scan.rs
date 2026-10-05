@@ -46,6 +46,29 @@ fn imports_resolve_against_the_directories_a_conftest_adds_to_sys_path() {
         ]
     );
 
+    // a directory outside the importer's project, which declares nothing
+    // of that name
+    let other: Vec<String> = report
+        .graph
+        .edges
+        .iter()
+        .flat_map(|edge| edge.evidence.iter().map(move |e| (edge, e)))
+        .filter(|(_, e)| e.file == "kiln/checks/test_glaze.py")
+        .map(|(edge, e)| {
+            format!(
+                "{} -> {} {} | {}",
+                e.file,
+                e.target.as_deref().unwrap(),
+                edge.to,
+                e.note.as_deref().unwrap()
+            )
+        })
+        .collect();
+    assert_eq!(
+        other,
+        ["kiln/checks/test_glaze.py -> shared/stencil.py almanac::shared | import stencil, in shared, which kiln/checks/conftest.py:4 adds to sys.path"]
+    );
+
     // a path the scan cannot compute adds nothing, and a file outside the
     // conftest's directory is not below it
     let mut unmapped: Vec<String> = report
