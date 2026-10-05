@@ -183,7 +183,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
     let (at, mut reach) = match resolve(full, &rolled, &ws.report, target)? {
         Resolved::Candidates(candidates) => {
             return Ok(Answer {
-                output: candidates.render(full, target, format)?,
+                output: candidates.render(full, target, format, verbose)?,
                 found: Found::Candidates,
             })
         }

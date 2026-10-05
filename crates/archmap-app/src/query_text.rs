@@ -178,15 +178,12 @@ fn component(
         Shown::TARGETS,
         caps,
     );
-    truncated |= neighbors(
-        out,
-        "Used by",
-        incoming,
-        rolled,
-        pairs,
-        Shown::TARGETS,
-        caps,
-    );
+    // what each statement takes says how a package is used
+    let shown = match c.kind {
+        ComponentKind::External => Shown::BOTH,
+        _ => Shown::TARGETS,
+    };
+    truncated |= neighbors(out, "Used by", incoming, rolled, pairs, shown, caps);
     if c.kind != ComponentKind::External {
         truncated |= not_mapped(out, &view.not_mapped, &view.dynamic_imports, caps);
     }
@@ -772,7 +769,11 @@ fn package_name(
         let _ = writeln!(out, "\nImported by: none");
     }
     for (written, list) in &by_import {
-        let note = format!("from {written}");
+        let tests = list.iter().filter(|i| i.evidence.test).count();
+        let note = match tests {
+            0 => format!("from {written}"),
+            n => format!("from {written}; {n} in tests"),
+        };
         truncated |= sites(out, "Imported by", Some(&note), "from", list, caps);
     }
     if !view.may_use.is_empty() {

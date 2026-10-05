@@ -1,7 +1,8 @@
 //! One lookup for `query` and `impact`: what a target names, in one order
 //! for both, and every match when it names several things.
 
-use std::collections::BTreeSet;
+use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -75,6 +76,8 @@ enum Thing<'g> {
     File(String),
     /// A name statements take from a package.
     Taken(&'g Component, String),
+    /// A name that several symbols share, and how many.
+    Symbols(String, usize),
 }
 
 /// How a name contains the target, best first: equal to it ignoring case,
@@ -472,10 +475,28 @@ fn containing<'g>(full: &'g ArchitectureGraph, root: &Path, target: &str) -> Vec
         found.push((key, Thing::Taken(package, name.to_owned())));
     }
     found.sort_by(|a, b| a.0.cmp(&b.0));
-    found
-        .into_iter()
-        .map(|((rank, ..), thing)| Near { thing, rank })
-        .collect()
+    // symbols that share a name are one candidate, which their name names
+    let mut named: BTreeMap<&str, usize> = BTreeMap::new();
+    for (_, thing) in &found {
+        if let Thing::Symbol(s) = thing {
+            *named.entry(s.name.as_str()).or_default() += 1;
+        }
+    }
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let mut near = Vec::new();
+    for ((rank, ..), thing) in found {
+        let thing = match thing {
+            Thing::Symbol(s) if named[s.name.as_str()] > 1 => {
+                if !seen.insert(s.name.as_str()) {
+                    continue;
+                }
+                Thing::Symbols(s.name.clone(), named[s.name.as_str()])
+            }
+            thing => thing,
+        };
+        near.push(Near { thing, rank });
+    }
+    near
 }
 
 /// `./x`, `../x` or an absolute path: a path whatever names it also matches.
@@ -654,19 +675,24 @@ impl Candidates<'_> {
         full: &ArchitectureGraph,
         target: &str,
         format: Format,
+        verbose: bool,
     ) -> Result<String> {
+        let cap = match verbose {
+            true => usize::MAX,
+            false => MAX_CANDIDATES,
+        };
         match format {
             Format::Json => crate::json(&CandidatesView {
                 requested: target,
                 total: self.total(),
                 candidates: self.views(full, target),
             }),
-            Format::Text if self.contains.is_empty() => Ok(self.text(full, target)),
-            Format::Text => Ok(self.contains_text(full, target)),
+            Format::Text if self.contains.is_empty() => Ok(self.text(full, target, cap)),
+            Format::Text => Ok(self.contains_text(full, target, cap)),
         }
     }
 
-    fn text(&self, full: &ArchitectureGraph, target: &str) -> String {
+    fn text(&self, full: &ArchitectureGraph, target: &str, cap: usize) -> String {
         let mut kinds = Vec::new();
         for (n, one, many) in [
             (
@@ -711,19 +737,19 @@ impl Candidates<'_> {
         for package in &self.taken {
             lines.push(taken_row(package, target));
         }
-        for line in lines.iter().take(MAX_CANDIDATES) {
+        for line in lines.iter().take(cap) {
             let _ = writeln!(out, "{line}");
         }
-        if lines.len() > MAX_CANDIDATES {
-            let _ = writeln!(out, "  +{} more", lines.len() - MAX_CANDIDATES);
+        if lines.len() > cap {
+            let _ = writeln!(out, "  +{} more", lines.len() - cap);
         }
         out
     }
 
     /// The names that contain a target that names nothing, best first.
-    fn contains_text(&self, full: &ArchitectureGraph, target: &str) -> String {
+    fn contains_text(&self, full: &ArchitectureGraph, target: &str, cap: usize) -> String {
         let total = self.contains.len();
-        let shown = total.min(MAX_CANDIDATES);
+        let shown = total.min(cap);
         let mut out = format!(
             "No name is `{target}`. Names that contain it, ignoring case: {}\n",
             count(total, shown)
@@ -734,6 +760,9 @@ impl Candidates<'_> {
                 Thing::Symbol(s) => symbol_row(full, s),
                 Thing::File(f) => file_row(f),
                 Thing::Taken(package, name) => taken_row(package, name),
+                Thing::Symbols(name, n) => {
+                    format!("  {}  {n} symbols of that name", shell_word(name))
+                }
             };
             let _ = writeln!(out, "{row}");
         }
@@ -773,6 +802,12 @@ impl Candidates<'_> {
                     ..CandidateView::of(matched)
                 },
                 Thing::Taken(package, name) => taken_view(package, name, matched),
+                Thing::Symbols(name, n) => CandidateView {
+                    kind: "symbols",
+                    id: Some(Cow::Borrowed(name.as_str())),
+                    count: Some(*n),
+                    ..CandidateView::of(matched)
+                },
             }
         });
         let taken = self
@@ -841,8 +876,8 @@ fn taken_view<'a>(
 ) -> CandidateView<'a> {
     CandidateView {
         kind: "package name",
-        id: Some(package.id.as_str()),
-        name: Some(name),
+        id: Some(Cow::Owned(format!("{}::{name}", package.id))),
+        package: Some(package.id.as_str()),
         ..CandidateView::of(matched)
     }
 }
@@ -850,7 +885,7 @@ fn taken_view<'a>(
 fn component_view<'a>(c: &'a Component, matched: &'static str) -> CandidateView<'a> {
     CandidateView {
         kind: "component",
-        id: Some(c.id.as_str()),
+        id: Some(Cow::Borrowed(c.id.as_str())),
         path: c.path.clone(),
         ..CandidateView::of(matched)
     }
@@ -865,7 +900,7 @@ fn symbol_view<'a>(
     CandidateView {
         kind: "symbol",
         symbol_kind: Some(symbol_kind(s.kind)),
-        id: Some(s.id.as_str()),
+        id: Some(Cow::Borrowed(s.id.as_str())),
         file: s.location().map(|e| e.file.as_str()),
         line: s.location().and_then(|e| e.line),
         imported_by: counts.map(|c| c.0),
@@ -893,12 +928,16 @@ struct CandidateView<'a> {
     /// For a symbol: what it is (`function`, `struct`, ...).
     #[serde(skip_serializing_if = "Option::is_none")]
     symbol_kind: Option<&'static str>,
+    /// What to retry with: a component's or symbol's id, a name taken
+    /// from a package as `<package id>::<name>`, a shared symbol name.
     #[serde(skip_serializing_if = "Option::is_none")]
-    id: Option<&'a str>,
-    /// For a name taken from a package: that name, `id` being the
-    /// package's; retry with `<id>::<name>`.
+    id: Option<Cow<'a, str>>,
+    /// For a name taken from a package: the package's id.
     #[serde(skip_serializing_if = "Option::is_none")]
-    name: Option<&'a str>,
+    package: Option<&'a str>,
+    /// For a name that several symbols share: how many.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    count: Option<usize>,
     /// A component's path, or a file or directory as written to retry
     /// with (`./helper` for a directory).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -922,7 +961,8 @@ impl CandidateView<'_> {
             matched,
             symbol_kind: None,
             id: None,
-            name: None,
+            package: None,
+            count: None,
             path: None,
             file: None,
             line: None,

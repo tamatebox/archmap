@@ -191,7 +191,7 @@ fn query(ws: &Workspace, request: &QueryRequest) -> Result<Answer> {
     let result = match resolve(full, &rolled, &ws.report, target)? {
         Resolved::Candidates(candidates) => {
             return Ok(Answer {
-                output: candidates.render(full, target, format)?,
+                output: candidates.render(full, target, format, verbose)?,
                 found: Found::Candidates,
             })
         }

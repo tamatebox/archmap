@@ -259,7 +259,6 @@ pub fn via_place(note: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
 
     #[test]

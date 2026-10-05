@@ -754,6 +754,10 @@ fn packages_repo(name: &str) -> Repo {
             ("src/relay.ts", "export { refresh } from 'kit/cache';\n"),
             ("src/a.ts", "import { route } from 'kit/nav';\nexport const a = route;\n"),
             ("src/b.ts", "import { route } from 'other';\nexport const b = route;\n"),
+            (
+                "tests/save.test.ts",
+                "import { refresh } from 'kit/cache';\nrefresh('/');\n",
+            ),
         ],
     )
 }
@@ -766,7 +770,7 @@ fn a_name_taken_from_a_package_answers_with_its_statements_and_uses() {
     assert_eq!(answer.found, Found::One, "{}", answer.output);
     for line in [
         "refresh (a name taken from kit), depth 2\nid: ext:npm:kit::refresh\n",
-        "\nImported by: 2 (from kit/cache; 1 re-export)\n  src/relay.ts:1 (export)\n  src/save.ts:1\n",
+        "\nImported by: 3 (from kit/cache; 1 in tests; 1 re-export)\n  src/relay.ts:1 (export)\n  src/save.ts:1\n  tests/save.test.ts:1 (test)\n",
         // a module taken whole, of the subpath the name comes from only
         "\nMay use: 1 (imports the whole module)\n  src/bust.js:1\n",
         "src/save.ts:3 (call)",
@@ -802,6 +806,15 @@ fn a_name_taken_from_a_package_answers_with_its_statements_and_uses() {
         answer
             .output
             .contains("\n  ext:npm:kit::route  a name taken from kit\n"),
+        "{}",
+        answer.output
+    );
+    let json = query_as(&ws, "route", Format::Json).output;
+    assert!(json.contains("\"id\": \"ext:npm:kit::route\""), "{json}");
+    // a package's importers say what each statement takes
+    let answer = query(&ws, "kit/cache");
+    assert!(
+        answer.output.contains("src/save.ts:1 (names refresh)"),
         "{}",
         answer.output
     );
@@ -901,6 +914,48 @@ fn an_environment_variable_answers_with_where_the_code_reads_and_writes_it() {
     ] {
         assert!(answer.output.contains(line), "{line}: {}", answer.output);
     }
+}
+
+#[test]
+fn symbols_that_share_a_name_are_one_candidate_and_verbose_lists_every_one() {
+    let mut files: Vec<(String, String)> =
+        vec![("package.json".into(), "{\"name\": \"web\"}\n".into())];
+    for i in 0..3 {
+        files.push((format!("src/t{i}.ts"), "export const tick = 1;\n".into()));
+    }
+    for i in 0..12 {
+        files.push((
+            format!("src/u{i}.ts"),
+            format!("export const tickle{i} = 1;\n"),
+        ));
+    }
+    let files: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(f, t)| (f.as_str(), t.as_str()))
+        .collect();
+    let repo = Repo::new("shared-names", &files);
+    let ws = scan(&repo.0);
+    let answer = query(&ws, "tic");
+    let first = answer.output.lines().nth(1).unwrap_or_default();
+    assert_eq!(first, "  tick  3 symbols of that name", "{}", answer.output);
+    assert!(answer.output.contains("showing 10"), "{}", answer.output);
+    let json = query_as(&ws, "tic", Format::Json).output;
+    assert!(json.contains("\"kind\": \"symbols\""), "{json}");
+    assert!(json.contains("\"count\": 3"), "{json}");
+    let every = ws
+        .query(&QueryRequest {
+            target: "tic",
+            depth: DEFAULT_DEPTH,
+            format: Format::Text,
+            verbose: true,
+        })
+        .unwrap()
+        .output;
+    assert_eq!(
+        every.lines().filter(|l| l.starts_with("  ")).count(),
+        13,
+        "{every}"
+    );
 }
 
 #[test]

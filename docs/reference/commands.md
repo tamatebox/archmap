@@ -138,7 +138,7 @@ archmap query acme/shop#123 --snapshot ../shop-github.json
 `query` works on top of the rolled-up graph, for a component, a symbol or a
 single file, including the imports no edge shows. For a name taken from a
 package it lists the statements that take it, under `Imported by` by the
-import name each writes (`(from next/cache)`), those that take that module
+import name each writes (`(from next/cache; 39 in tests)`), those that take that module
 whole under `May use`, and `Used at` as for a symbol, read from their files;
 a statement that passes the name on (`export { x } from 'pkg'`) is marked
 `(export)`, and `Not traced` says its file's importers are not read
@@ -190,8 +190,9 @@ locations. A location names the file the statement loads when archmap knows
 it, as in `src/shop/billing/charge.py:5 -> src/shop/users.py`, and ends in
 `(local)` when the import sits inside a function body and so runs only when
 the function is called; the others run when their file loads. In a file's
-`Imports` and `Imported by`, and in `impact`'s `Imported by` for a target
-that is no symbol, a location says which names the statement takes, as its
+`Imports` and `Imported by`, a package's `Used by`, and in `impact`'s
+`Imported by` for a target that is no symbol or name taken from a package,
+a location says which names the statement takes, as its
 evidence records them, in their order ignoring case: `(names formatPrice,
 Money, +2 more)`, three at most and every one with `--verbose`, or `(whole
 module)` for a namespace import, a module bound whole or `export *`. `(type)` marks
@@ -812,12 +813,13 @@ every kind as candidates instead: components with their path and kind,
 symbols with their location, kind and importer counts, files (production
 code before tests), and directories as `./<path>`. A component id that is also the id of a symbol other than the
 module itself, and a name with `/` that is also another path under the root,
-give candidates too. Text shows the first 10 and counts the rest; JSON
-(`--format json`) has every one as
+give candidates too. Text shows the first 10 and counts the rest, every one
+with `--verbose`; JSON (`--format json`) has every one as
 `{"requested", "total", "candidates": [{"kind", "id" or "path", ...}]}`,
-a directory's `path` written as `./<path>`, and each with `match`: `exact`,
-or `segment` for a component found by the last part of its name. Retry with
-one of the ids, or with the path as `./<path>`.
+a directory's `path` written as `./<path>`, a name taken from a package's
+`id` as `<package id>::<name>` with its `package`, and each with `match`:
+`exact`, or `segment` for a component found by the last part of its name.
+Retry with one of the ids, or with the path as `./<path>`.
 
 A target of three characters or more without a `/` that names nothing
 lists instead the components, symbols and files whose names contain it,
@@ -828,7 +830,9 @@ start with it, hold it from the start of a word (after `_`, `-`, `.`, `/`,
 production code before tests, the repository's components before external
 ones, shorter names first. A component that is one file is listed as its
 file, and a name taken from a package as its id, after the repository's
-names. JSON gives these candidates `match` `case` or `contains`. When nothing
+names. Symbols that share a name are one candidate (`tick  3 symbols of
+that name`; JSON `kind` `symbols` with their `count`), to retry with the
+name. JSON gives these candidates `match` `case` or `contains`. When nothing
 contains the word either, the error says so, with what to do next.
 
 Both commands exit 0 with an answer, 1 with candidates, and 2 when they
