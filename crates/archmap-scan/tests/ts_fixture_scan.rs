@@ -1361,11 +1361,11 @@ fn imports_of_types_only_are_marked() {
         kinds("src/app/checkout.ts:8", "src/lib/types.ts"),
         rows(&[(&["Money"], true)])
     );
-    // imported without `type` from a file that re-exports it as a type: the
-    // loaded file's evidence runs, the defining file's does not
+    // imported without `type` from a file that re-exports it as a type: it
+    // can only be a type, so TypeScript erases the statement
     assert_eq!(
         kinds("src/app/checkout.ts:9", "src/index.ts"),
-        rows(&[(&["Money"], false)])
+        rows(&[(&["Money"], true)])
     );
     assert_eq!(
         kinds("src/app/checkout.ts:9", "src/lib/types.ts"),

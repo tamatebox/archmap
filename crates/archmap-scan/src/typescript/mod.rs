@@ -296,15 +296,19 @@ impl Analyzer for TypeScriptAnalyzer {
                 .map(|m| m.exports.renames())
                 .unwrap_or_default();
             let none = BTreeMap::new();
+            // TypeScript erases an import of names that can only be types;
+            // a JavaScript file keeps whatever it writes
+            let typescript = language_of(read.file) == Some(language::LANGUAGE);
             for (index, (import, resolved)) in read.imports.iter().zip(&read.resolved).enumerate() {
                 match resolved {
                     // the values a statement takes, and apart from them the
                     // types, which never run
                     Resolved::File(loaded) => {
-                        let (types, values): (Vec<&String>, Vec<&String>) = import
-                            .names
-                            .iter()
-                            .partition(|name| import.types.contains(*name));
+                        let (types, values): (Vec<&String>, Vec<&String>) =
+                            import.names.iter().partition(|name| {
+                                import.types.contains(*name)
+                                    || typescript && definitions.is_type(loaded, name)
+                            });
                         let recorded = |names: Vec<&String>| -> BTreeSet<String> {
                             names
                                 .into_iter()
@@ -1047,7 +1051,10 @@ impl Imports<'_> {
             {
                 continue;
             }
-            let type_only = import.types.contains(name) || definition.type_only;
+            let type_only = import.types.contains(name)
+                || definition.type_only
+                || language_of(self.file) == Some(language::LANGUAGE)
+                    && definitions.is_type(loaded, name);
             found
                 .entry((definition.file, definition.via, type_only))
                 .or_default()

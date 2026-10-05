@@ -462,6 +462,7 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
     }
     let mut seen = BTreeSet::new();
     file.symbols.retain(|s| seen.insert(s.name.clone()));
+    file.exports.types = declared_types(&parsed.program.body);
     // after the statements, so the indices in the export table stay valid
     let mut calls = Calls {
         lines: &lines,
@@ -1468,6 +1469,66 @@ impl Source<'_> {
             _ => Vec::new(),
         }
     }
+}
+
+/// The top-level names declared only as types: interfaces and type aliases,
+/// a default interface included, that no value of the same name merges with
+/// (a variable, a function, a class, an enum, a namespace, `import x =`).
+fn declared_types(body: &[Statement]) -> BTreeSet<String> {
+    let (mut types, mut values) = (BTreeSet::new(), BTreeSet::new());
+    for statement in body {
+        let declaration = match statement {
+            Statement::ExportDeclaration(export) => Some(&export.declaration),
+            Statement::ExportDefaultDeclaration(export) => {
+                match &export.declaration {
+                    ExportDefaultDeclarationKind::TSInterfaceDeclaration(i) => {
+                        types.insert(i.id.name.to_string());
+                    }
+                    ExportDefaultDeclarationKind::FunctionDeclaration(f) => {
+                        values.extend(f.id.as_ref().map(|id| id.name.to_string()));
+                    }
+                    ExportDefaultDeclarationKind::ClassDeclaration(c) => {
+                        values.extend(c.id.as_ref().map(|id| id.name.to_string()));
+                    }
+                    _ => {}
+                }
+                None
+            }
+            _ => statement.as_declaration(),
+        };
+        match declaration {
+            Some(Declaration::TSInterfaceDeclaration(i)) => {
+                types.insert(i.id.name.to_string());
+            }
+            Some(Declaration::TSTypeAliasDeclaration(t)) => {
+                types.insert(t.id.name.to_string());
+            }
+            Some(Declaration::VariableDeclaration(v)) => {
+                for declarator in &v.declarations {
+                    let ids = declarator.id.get_binding_identifiers();
+                    values.extend(ids.iter().map(|id| id.name.to_string()));
+                }
+            }
+            Some(Declaration::FunctionDeclaration(f)) => {
+                values.extend(f.id.as_ref().map(|id| id.name.to_string()));
+            }
+            Some(Declaration::ClassDeclaration(c)) => {
+                values.extend(c.id.as_ref().map(|id| id.name.to_string()));
+            }
+            Some(Declaration::TSEnumDeclaration(e)) => {
+                values.insert(e.id.name.to_string());
+            }
+            Some(Declaration::TSNamespaceDeclaration(n)) => {
+                values.insert(n.id.name.to_string());
+            }
+            Some(Declaration::TSImportEqualsDeclaration(i)) => {
+                values.insert(i.id.name.to_string());
+            }
+            _ => {}
+        }
+    }
+    types.retain(|name| !values.contains(name));
+    types
 }
 
 /// A number, or arithmetic of numbers (`20 * 1024 * 1024`).

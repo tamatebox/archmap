@@ -160,9 +160,9 @@ The gaps behind the marks:
   name`, is followed only to what takes the name.
 - TS/JS imports: aliases defined only in a bundler configuration or a
   `jsconfig.json` are not followed.
-- TS/JS `check`: only `type` written in an import marks it as types only,
-  so a type imported without it (`import { Money }` for an interface) can
-  close a cycle that `cycles.forbid` reports.
+- TS/JS `check`: a value imported without `type` and used only in type
+  positions (a class or an enum in annotations, a `typeof` target) counts
+  as running, so it can close a cycle that `cycles.forbid` reports.
 - Callers and references: `query` and `impact` list where a symbol is used
   through the names imports bind and, for a method, through its class or
   type and `this` or `self`; a call through a value of a type

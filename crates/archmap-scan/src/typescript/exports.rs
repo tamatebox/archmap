@@ -22,6 +22,10 @@ pub(crate) struct ExportTable {
     /// carries: `limitOf` for `export default function limitOf`. `None` for
     /// an anonymous or a re-exported default, or none at all.
     pub default_name: Option<String>,
+    /// The names the file declares only as types: interfaces and type
+    /// aliases that no value of the same name merges with. The compiler
+    /// erases an import or a re-export that takes nothing else.
+    pub types: BTreeSet<String>,
 }
 
 impl ExportTable {
@@ -103,6 +107,8 @@ pub(crate) struct Definition {
 pub(crate) struct Definitions<'a> {
     index: Index<'a>,
     walked: BTreeMap<(PathBuf, String), Option<Definition>>,
+    /// What [`Definitions::is_type`] answered, by file and name.
+    types: BTreeMap<(PathBuf, String), bool>,
 }
 
 impl<'a> Definitions<'a> {
@@ -110,7 +116,27 @@ impl<'a> Definitions<'a> {
         Definitions {
             index: Index::new(modules),
             walked: BTreeMap::new(),
+            types: BTreeMap::new(),
         }
+    }
+
+    /// Whether `name`, as `file` exports it, can only be a type: a
+    /// re-export on the way passes it on as one, or the file that defines
+    /// it declares it only as one. A name whose definition is not known,
+    /// or a namespace, may be a value.
+    pub(crate) fn is_type(&mut self, file: &Path, name: &str) -> bool {
+        let key = (file.to_path_buf(), name.to_owned());
+        if let Some(known) = self.types.get(&key) {
+            return *known;
+        }
+        let found = match self.index.walk(file, name, 0, &mut BTreeMap::new()) {
+            Walk::Found(found) => {
+                found.type_only || self.index.declares_type(&found.file, found.name)
+            }
+            Walk::Missing | Walk::Unknown => false,
+        };
+        self.types.insert(key, found);
+        found
     }
 
     /// Where `name`, as `file` exports it, is defined, when `file`
@@ -205,6 +231,15 @@ impl<'a> Index<'a> {
             }
         }
         Index { modules, providers }
+    }
+
+    /// Whether `file` declares `name`, a default export by the name its
+    /// declaration gives, only as a type.
+    fn declares_type(&self, file: &Path, name: String) -> bool {
+        let name = self.declared(file, name);
+        self.modules
+            .get(file)
+            .is_some_and(|m| m.exports.types.contains(&name))
     }
 
     /// `name` as `file` declares it: a default export by the name its
@@ -402,6 +437,7 @@ mod tests {
                     .collect(),
                 stars: stars.iter().map(|&(i, l)| (i, l, false)).collect(),
                 default_name: None,
+                types: BTreeSet::new(),
             },
             loads: loads.iter().map(|l| l.map(PathBuf::from)).collect(),
         }
