@@ -109,6 +109,32 @@ impl Index {
     }
 }
 
+impl Index {
+    /// The build units each file of a target crate is compiled into, by
+    /// their root file, and of those the libraries, which other crates
+    /// import.
+    pub(crate) fn units(&self) -> archmap_core::Units {
+        let mut of: BTreeMap<String, std::collections::BTreeSet<String>> = BTreeMap::new();
+        let mut libraries = std::collections::BTreeSet::new();
+        for node in &self.forest.nodes {
+            let Some(root) = node.root.filter(|_| node.module == 0) else {
+                continue;
+            };
+            let Some(tree) = self.forest.trees.get(&root) else {
+                continue;
+            };
+            let unit = display_path(&self.files[self.forest.nodes[root].file].rel);
+            if tree.kind == TargetKind::Lib {
+                libraries.insert(unit.clone());
+            }
+            of.entry(display_path(&self.files[node.file].rel))
+                .or_default()
+                .insert(unit);
+        }
+        archmap_core::Units::new(of, libraries)
+    }
+}
+
 impl std::fmt::Debug for Index {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(

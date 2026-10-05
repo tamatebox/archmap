@@ -1665,3 +1665,49 @@ fn a_change_that_reaches_a_route_file_says_tests_may_reach_it_by_its_url() {
     let answer = text(&ws, "app/shelf/actions.ts");
     assert!(!answer.contains("routes:"), "{answer}");
 }
+
+#[test]
+fn a_file_that_several_crates_compile_leads_on_within_the_crate_it_is_reached_in() {
+    // tests/common/mod.rs calls `crate::helper()`, which tests/total.rs and
+    // tests/stock.rs each define: reached through total.rs, it leads to no
+    // file of stock.rs's crate
+    let ws = scan(&fixture("rust-cargo-targets"));
+    let answer = text(&ws, "kiosk/src/util.rs");
+    let tests = section(&answer, "Tests to run again: 1");
+    assert!(
+        tests.iter().any(|l| l.contains("kiosk/tests/total.rs")),
+        "{tests:?}"
+    );
+    assert!(
+        !tests.iter().any(|l| l.contains("kiosk/tests/stock.rs")),
+        "{tests:?}"
+    );
+
+    // a module a library and its binary both declare, which calls the
+    // `helper` of whichever root compiles it
+    let files: Vec<(String, String)> = [
+        (
+            "Cargo.toml",
+            "[package]\nname = \"pkg\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        ("src/lib.rs", "pub mod shared;\npub fn helper() {}\n"),
+        (
+            "src/main.rs",
+            "mod shared;\nfn helper() {}\nfn main() { shared::s(); }\n",
+        ),
+        ("src/shared.rs", "pub fn s() { crate::helper(); }\n"),
+        ("tests/it.rs", "#[test]\nfn it() { pkg::shared::s(); }\n"),
+    ]
+    .into_iter()
+    .map(|(f, t)| (f.to_owned(), t.to_owned()))
+    .collect();
+    let repo = Repo::new("lib-and-bin", &files);
+    let ws = scan(&repo.0);
+    // the binary's root reaches the module only in the binary, which no
+    // other crate imports
+    let main = text(&ws, "src/main.rs");
+    assert!(!main.contains("tests/it.rs"), "{main}");
+    // the library's root reaches it in the library, which the test imports
+    let lib = text(&ws, "src/lib.rs");
+    assert!(lib.contains("tests/it.rs"), "{lib}");
+}

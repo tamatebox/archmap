@@ -168,6 +168,9 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
     reject_outside(root, target)?;
     let full = ws.graph();
     let rolled = full.rollup(depth);
+    // a file several build units compile leads on within the unit it is
+    // reached in
+    let units = archmap_scan::units(&ws.report);
 
     let (mut importers, mut imports_below) = (None, None);
     let (mut symbol_id, mut may_use) = (None, None);
@@ -195,7 +198,8 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
             });
         }
         Resolved::Component(component) => {
-            let reach = full.change_impact(ChangeSeed::Component(&component.id), depth);
+            let reach =
+                full.change_impact_with(ChangeSeed::Component(&component.id), depth, &units);
             traced = match component_file(full, root, component) {
                 Some(file) => {
                     importers = Some(import_sites(full, depth, &file, caps.sites));
@@ -261,7 +265,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
                 true => ChangeSeed::Component(&owner.id),
                 false => ChangeSeed::File(&file),
             };
-            let reach = full.change_impact(seed, depth);
+            let reach = full.change_impact_with(seed, depth, &units);
             importers = Some(import_sites(full, depth, &file, caps.sites));
             imports_below = below_sites(full, depth, &file, caps.sites);
             let at = fold(full, depth, &owner.id);
@@ -271,7 +275,8 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
         Resolved::Symbol(symbol) => match full.component(&ComponentId::new(symbol.id.as_str())) {
             // a Rust module's symbol stands for its component
             Some(module) => {
-                let reach = full.change_impact(ChangeSeed::Component(&module.id), depth);
+                let reach =
+                    full.change_impact_with(ChangeSeed::Component(&module.id), depth, &units);
                 traced = match component_file(full, root, module) {
                     Some(file) => {
                         importers = Some(import_sites(full, depth, &file, caps.sites));
@@ -333,7 +338,8 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
                     users,
                     passing,
                 };
-                let reach = full.change_impact(ChangeSeed::Symbol(symbol, &first), depth);
+                let reach =
+                    full.change_impact_with(ChangeSeed::Symbol(symbol, &first), depth, &units);
                 if let Some(found) = &found {
                     let mut only: BTreeMap<&str, bool> = BTreeMap::new();
                     for (_, e) in found.by_name.iter().chain(&found.may_use) {
@@ -814,7 +820,8 @@ fn importers_impact<'a>(
     // production code is no test of another, and a test helper that imports
     // the name leads on to the tests that load it
     let seeds: Vec<&str> = seeds.into_iter().collect();
-    let mut reach = full.change_impact(ChangeSeed::Importers(&seeds), depth);
+    let units = archmap_scan::units(report);
+    let mut reach = full.change_impact_with(ChangeSeed::Importers(&seeds), depth, &units);
     // the importers' components are the direct dependents of the name, and
     // what reaches them is one step further
     reach.transitive.extend(direct.iter().cloned());

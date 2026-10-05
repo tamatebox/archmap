@@ -25,7 +25,7 @@ pub use evidence::{via_place, Evidence, Scope, WHOLE_MODULE};
 pub use fragment::GraphFragment;
 pub use graph::{
     ArchitectureGraph, ChangeSeed, FileFacts, FirstStep, GraphMeta, Hop, Reach, SymbolImporters,
-    TestReach, TestRoute, TestWay,
+    TestReach, TestRoute, TestWay, Units,
 };
 pub use model::{
     Component, ComponentId, ComponentKind, DynamicImport, DynamicPrefix, Edge, EdgeKind,

@@ -452,8 +452,14 @@ it and a package subpath for its package, starting from the statements
 that import that subpath as from those of an import name, and a component
 that is one file answers as that file. Dependencies without a target file
 (manifests, external packages) are followed component by component, and the
-result is still reported at the roll-up depth. A file reached through
-production code stands for its component there; one reached through test
+result is still reported at the roll-up depth. A Rust module file that
+several crates compile (a test's `tests/common/mod.rs`, a module a library
+and its binary both declare) leads on only within the crates the walk
+reached it in: a `crate::` path inside it names each crate's own root, so
+reached through one test it leads to no other test that declares it, and
+reached only inside a binary it leads to no crate that imports the library;
+once it is reached in a crate, every way out in that crate is followed. A
+file reached through production code stands for its component there; one reached through test
 code alone (a test, or a Rust file through its unit tests) does not, since no
 dependent loads it that way: a test that a package owns reaches no manifest
 that declares the package. A package that names the files its dependents

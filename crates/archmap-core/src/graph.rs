@@ -277,14 +277,22 @@ impl ArchitectureGraph {
     /// `tests` holds the files only test code reaches, the tests to run
     /// again.
     pub fn change_impact(&self, seed: ChangeSeed, depth: usize) -> Reach {
+        self.change_impact_with(seed, depth, &Units::default())
+    }
+
+    /// [`Self::change_impact`], knowing the compilation units files belong
+    /// to: a file that several units load leads on, from a way into it that
+    /// holds in some of them, only to what imports it in those (see
+    /// [`Units`]).
+    pub fn change_impact_with(&self, seed: ChangeSeed, depth: usize, units: &Units) -> Reach {
         let test_code: BTreeSet<&str> = self
             .test_code()
             .into_iter()
             .filter(|(_, test)| *test)
             .map(|(file, _)| file)
             .collect();
-        let (mut reach, production, _) = self.reach(seed, depth, false, &test_code);
-        let (through_tests, with_tests, seeds) = self.reach(seed, depth, true, &test_code);
+        let (mut reach, production, _) = self.reach(seed, depth, false, &test_code, units);
+        let (through_tests, with_tests, seeds) = self.reach(seed, depth, true, &test_code, units);
         reach.left_out = through_tests.left_out;
         let mut test_ways = through_tests.test_ways;
         for (entry, from) in through_tests.barrels {
@@ -343,6 +351,7 @@ impl ArchitectureGraph {
         depth: usize,
         tests: bool,
         test_code: &BTreeSet<&'s str>,
+        units: &'s Units,
     ) -> (Reach, BTreeSet<&'s str>, BTreeSet<&'s str>) {
         // what depends on each node, and how
         let mut dependents: BTreeMap<Node, BTreeMap<Node, Link>> = BTreeMap::new();
@@ -804,6 +813,9 @@ impl ArchitectureGraph {
             // the nodes the change reaches through statements that load
             // values all the way, which run what changed
             let mut runs: BTreeSet<Node> = BTreeSet::new();
+            // for each file several units load, the units the walk entered
+            // it in: it leads on only to what imports it in those
+            let mut active: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
             let mut queue: VecDeque<Node> = VecDeque::new();
             // a start a mock replaces runs nothing, but passes types on, as
             // a replaced module does inside the walk; the importers of a
@@ -826,6 +838,15 @@ impl ArchitectureGraph {
             for (node, d, running) in first {
                 if running {
                     runs.insert(node);
+                }
+                // a changed file is changed in every unit that loads it
+                if let Node::File(f) = node {
+                    if let Some(all) = units.shared(f) {
+                        active
+                            .entry(f)
+                            .or_default()
+                            .extend(all.iter().map(String::as_str));
+                    }
                 }
                 if let Entry::Vacant(slot) = distance.entry(node) {
                     slot.insert(d);
@@ -924,7 +945,35 @@ impl ArchitectureGraph {
                     }
                 }
                 let open = |(n, link, _): &(Node, Link, Kind)| link.types || !(here || blocked(n));
+                // the units this node leads on in: those the walk entered a
+                // file several units load in, else the file's own
+                let at: Option<&str> = match node {
+                    Node::File(f) | Node::Passes(f) | Node::Relays(f) => Some(f),
+                    Node::Component(_) => None,
+                };
+                let mut regrown: BTreeSet<Node> = BTreeSet::new();
+                let mut kept: Vec<(Node, Link, Kind)> = Vec::new();
                 for (n, link, kind) in links.into_iter().filter(open) {
+                    let importer = match n {
+                        Node::File(d) | Node::Passes(d) | Node::Relays(d) => Some(d),
+                        Node::Component(_) => None,
+                    };
+                    match units.enter(at, importer, at.and_then(|f| active.get(f))) {
+                        Entered::No => continue,
+                        Entered::Any => {}
+                        Entered::In(entered) => {
+                            let d = importer.unwrap_or_default();
+                            let known = active.entry(d).or_default();
+                            let before = known.len();
+                            known.extend(entered);
+                            if known.len() > before {
+                                regrown.insert(n);
+                            }
+                        }
+                    }
+                    kept.push((n, link, kind));
+                }
+                for (n, link, kind) in kept {
                     // a module a mock replaces runs for nothing
                     let n_runs = node_runs && link.values && !here && !blocked(&n);
                     if let (true, Node::File(t) | Node::Passes(t) | Node::Relays(t)) = (record, n) {
@@ -967,8 +1016,9 @@ impl ArchitectureGraph {
                         } else {
                             queue.push_back(n);
                         }
-                    } else if starts_running {
-                        // reached before: what it leads to runs as well now
+                    } else if starts_running || regrown.contains(&n) {
+                        // reached before: what it leads to runs as well now,
+                        // or in more units
                         queue.push_back(n);
                     }
                 }
@@ -2115,6 +2165,97 @@ pub struct FileFacts<'a> {
     pub importers_recorded: bool,
     pub unmapped_imports: Vec<&'a UnmappedImport>,
     pub dynamic_imports: Vec<&'a DynamicImport>,
+}
+
+/// The build units each file is compiled into, by a name of each, and the
+/// units other units can import. A file that several units compile (a
+/// test's shared helper module, a module a library and its binary both
+/// declare) imports in each unit what that unit's own paths name. The reach
+/// enters such a file in the units the way into it holds in: for a way from
+/// a file of the same units, the units both share that the walk entered the
+/// file it came from in, and none, so no way, when they share none it
+/// entered; for a way from another unit's code, every unit of the file, and
+/// only when the walk entered the file it came from in a unit other units
+/// can import. It leads on only to what imports it in the units it was
+/// entered in. Once a unit is entered, every way out in that unit is
+/// followed, whichever way led in, so it may list more than one exact way
+/// would, never less.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Units {
+    of: BTreeMap<String, BTreeSet<String>>,
+    importable: BTreeSet<String>,
+}
+
+/// How the walk enters an importer through one way, by [`Units::enter`].
+enum Entered<'a> {
+    /// Not at all: the way holds in no unit the walk is in.
+    No,
+    /// Whatever its units: no unit says otherwise.
+    Any,
+    /// In these units of a file that several units compile.
+    In(BTreeSet<&'a str>),
+}
+
+impl Units {
+    /// The units of each file, for every file of the languages that have
+    /// them, and the units other units can import.
+    pub fn new(of: BTreeMap<String, BTreeSet<String>>, importable: BTreeSet<String>) -> Self {
+        Units { of, importable }
+    }
+
+    fn of(&self, file: &str) -> Option<&BTreeSet<String>> {
+        self.of.get(file)
+    }
+
+    /// The units of a file that more than one compiles.
+    fn shared(&self, file: &str) -> Option<&BTreeSet<String>> {
+        self.of(file).filter(|u| u.len() > 1)
+    }
+
+    /// How the walk, in `file` (entered in `active` when several units
+    /// compile it), enters `importer`, which imports it.
+    fn enter<'u>(
+        &'u self,
+        file: Option<&str>,
+        importer: Option<&str>,
+        active: Option<&BTreeSet<&'u str>>,
+    ) -> Entered<'u> {
+        let (Some(here), Some(there)) = (
+            file.and_then(|f| self.of(f)),
+            importer.and_then(|d| self.of(d)),
+        ) else {
+            return Entered::Any;
+        };
+        let shared = here.len() > 1;
+        let shared_there = there.len() > 1;
+        let crossing = here.is_disjoint(there);
+        let entered: BTreeSet<&str> = if crossing {
+            // another unit's code takes the units others can import
+            let importable = |u: &&str| self.importable.contains(*u);
+            if shared && !active.is_some_and(|a| a.iter().any(importable)) {
+                return Entered::No;
+            }
+            there.iter().map(String::as_str).collect()
+        } else {
+            let walked: BTreeSet<&str> = match (shared, active) {
+                (true, Some(a)) => a.clone(),
+                _ => here.iter().map(String::as_str).collect(),
+            };
+            let within: BTreeSet<&str> = there
+                .iter()
+                .map(String::as_str)
+                .filter(|u| walked.contains(u))
+                .collect();
+            if within.is_empty() {
+                return Entered::No;
+            }
+            within
+        };
+        match shared_there {
+            true => Entered::In(entered),
+            false => Entered::Any,
+        }
+    }
 }
 
 /// Where a change starts, for [`ArchitectureGraph::change_impact`].

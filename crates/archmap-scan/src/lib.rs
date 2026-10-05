@@ -206,6 +206,17 @@ pub fn route_files<'a>(
         .unwrap_or_default()
 }
 
+/// The build units each file is compiled into, for `impact` to keep a file
+/// that several of them compile within the unit it is reached in: the
+/// Rust target crates, by their root file.
+pub fn units(report: &ScanReport) -> archmap_core::Units {
+    report
+        .rust
+        .as_ref()
+        .map(rust::Index::units)
+        .unwrap_or_default()
+}
+
 /// What each of `paths`, files of test code, is to a test runner: for
 /// Python and TS/JS by the runners' default names (a test file's name, a
 /// file below `__tests__`), for Rust by the kind of Cargo target whose tree
