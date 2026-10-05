@@ -68,7 +68,7 @@ struct QueryArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct ImpactArgs {
-    /// What changes: anything `query` takes.
+    /// What changes: anything `query` takes but `#N`.
     target: String,
     /// Another repository root, absolute or relative to the project
     /// directory. Default: the project directory.
@@ -80,7 +80,7 @@ struct ImpactArgs {
     /// `text` (default) or `json`.
     #[serde(default)]
     format: Option<OutputFormat>,
-    /// List every entry instead of capped lists, in text and in JSON.
+    /// List every entry in the text instead of capped lists.
     #[serde(default)]
     verbose: Option<bool>,
 }

@@ -87,12 +87,13 @@ enum Command {
         #[arg(long)]
         snapshot: Option<PathBuf>,
     },
-    /// List components that may be affected when a component or file changes.
+    /// List components that may be affected when a component, file, symbol
+    /// or import name changes.
     ///
     /// Components are rolled up to `--depth` like in `summary`.
     Impact {
-        /// Anything `query` takes; several matches are listed as candidates,
-        /// with exit code 1.
+        /// Anything `query` takes but an issue or pull request (`'#N'`);
+        /// several matches are listed as candidates, with exit code 1.
         target: String,
         /// Repository root to scan.
         #[arg(long, default_value = ".")]
@@ -100,10 +101,10 @@ enum Command {
         /// Containment depth to roll modules up to, as in `summary`.
         #[arg(long, default_value_t = archmap_app::DEFAULT_DEPTH)]
         depth: usize,
-        /// Compact text with capped lists, or JSON.
+        /// Compact text with capped lists, or JSON with every entry.
         #[arg(long, value_enum, default_value_t = ReportFormat::Text)]
         format: ReportFormat,
-        /// List every entry instead of capped lists, in text and in JSON.
+        /// List every entry in the text instead of capped lists.
         #[arg(long)]
         verbose: bool,
     },
