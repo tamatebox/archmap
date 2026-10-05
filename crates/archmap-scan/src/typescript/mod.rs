@@ -1025,7 +1025,12 @@ impl Imports<'_> {
                     .pointing_at(display_path(target))
                     .taking(names.iter().cloned())
                     .replacing(replaces)
-                    .referencing_server(!type_only && self.references(target));
+                    .referencing_server(!type_only && self.references(target))
+                    .exposing(match type_only {
+                        // what takes types only passes them on already
+                        true => BTreeSet::new(),
+                        false => import.exposed.clone(),
+                    });
                 for (taken, exported) in exported_as.iter().filter(|(t, _)| names.contains(*t)) {
                     for name in exported {
                         evidence = evidence.exporting(taken.clone(), name.clone());

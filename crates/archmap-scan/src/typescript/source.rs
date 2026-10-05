@@ -63,6 +63,10 @@ pub(crate) struct ImportStatement {
     /// them as it drops what `type` marks, unless the tsconfig keeps values;
     /// each with the local names that bind it.
     pub type_uses: BTreeMap<String, BTreeSet<String>>,
+    /// The names among `names` that the file's exported types name
+    /// (`export type Made = Wallet` for `import { Wallet }`): a test whose
+    /// mock replaces the file still type-checks against them.
+    pub exposed: BTreeSet<String>,
     /// `type` marks the whole statement (`import type`, `export type ..
     /// from`, an `import()` type), which every compiler erases; one whose
     /// names `type` marks one by one still loads its module where the
@@ -254,6 +258,7 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
             local: false,
             replaces: false,
             type_uses: BTreeMap::new(),
+            exposed: BTreeSet::new(),
             type_statement,
         };
         let whole = || vec![WHOLE_MODULE.to_owned()];
@@ -477,6 +482,8 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
             _ => {}
         }
     }
+    // the declarations `export { .. }` exports, by their local names
+    let exported_locals: BTreeSet<String> = exported.iter().map(|(l, ..)| l.clone()).collect();
     for (local, name, line, export_type) in exported {
         let export = match bindings.get(&local) {
             Some((import, Some(taken), binding_type)) => Export::Reexport {
@@ -560,6 +567,36 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
         }
         if let Some(import) = file.imports.get_mut(index) {
             import.type_uses.insert(name, locals);
+        }
+    }
+    // the imported names the file's exported types name, where a test that
+    // replaces the file still reads its types
+    if typescript {
+        let mut exposed = Positions {
+            wanted: bindings.keys().cloned().collect(),
+            ..Positions::default()
+        };
+        for statement in &parsed.program.body {
+            let exported = match statement {
+                Statement::ExportDeclaration(_) | Statement::ExportDefaultDeclaration(_) => true,
+                _ => statement.as_declaration().is_some_and(|d| {
+                    declared_names(d)
+                        .iter()
+                        .any(|n| exported_locals.contains(n))
+                }),
+            };
+            if exported {
+                exposed.visit_statement(statement);
+            }
+        }
+        for local in &exposed.types {
+            let Some((index, taken, _)) = bindings.get(local) else {
+                continue;
+            };
+            let name = taken.clone().unwrap_or_else(|| WHOLE_MODULE.to_owned());
+            if let Some(import) = file.imports.get_mut(*index) {
+                import.exposed.insert(name);
+            }
         }
     }
     // after the statements, so the indices in the export table stay valid
@@ -821,6 +858,7 @@ impl Calls<'_> {
             local,
             replaces: false,
             type_uses: BTreeMap::new(),
+            exposed: BTreeSet::new(),
             type_statement: type_only,
         });
     }
@@ -1666,6 +1704,26 @@ impl Positions {
         let in_type = std::mem::take(&mut self.in_type);
         walk(self);
         self.in_type = in_type;
+    }
+}
+
+/// The local names a top-level declaration binds.
+fn declared_names(declaration: &Declaration) -> Vec<String> {
+    match declaration {
+        Declaration::VariableDeclaration(v) => v
+            .declarations
+            .iter()
+            .filter_map(|d| match &d.id {
+                BindingPattern::BindingIdentifier(b) => Some(b.name.to_string()),
+                _ => None,
+            })
+            .collect(),
+        Declaration::FunctionDeclaration(f) => f.id.iter().map(|i| i.name.to_string()).collect(),
+        Declaration::ClassDeclaration(c) => c.id.iter().map(|i| i.name.to_string()).collect(),
+        Declaration::TSTypeAliasDeclaration(t) => vec![t.id.name.to_string()],
+        Declaration::TSInterfaceDeclaration(t) => vec![t.id.name.to_string()],
+        Declaration::TSEnumDeclaration(t) => vec![t.id.name.to_string()],
+        _ => Vec::new(),
     }
 }
 
@@ -2698,6 +2756,27 @@ export default local;
             ]
         );
         assert!(file.symbols.is_empty());
+    }
+
+    #[test]
+    fn the_names_exported_types_use_are_exposed() {
+        let file = parse(
+            Path::new("exposed.ts"),
+            "import { A, B, C, D, E, F, G } from './m';\n\
+             export type Made = A;\n\
+             export type Ctor = typeof G;\n\
+             export interface Shape { b: B }\n\
+             export function make(): C { return new C(); }\n\
+             type Kept = D;\n\
+             export { Kept };\n\
+             type Hidden = E;\n\
+             export const f = new F();\n",
+        )
+        .unwrap();
+        let exposed: Vec<&str> = file.imports[0].exposed.iter().map(String::as_str).collect();
+        // what no exported type names stays out: E in a type not exported,
+        // F as a value only
+        assert_eq!(exposed, ["A", "B", "C", "D", "G"]);
     }
 
     #[test]

@@ -15,7 +15,7 @@ ArchitectureGraph
 ├── dynamic_imports:  [ DynamicImport { from, call, prefix?: { written, path?, first? }, evidence } ]
 └── unread_macros:    [ UnreadMacro { from, name, names?, evidence } ]
 
-Evidence { file, line?, note?, target?, scope?: module | local, names?, test?, type_only?, replaces?, server_reference? }
+Evidence { file, line?, note?, target?, scope?: module | local, names?, test?, type_only?, replaces?, server_reference?, exposed? }
 ```
 
 `line` is the line a statement or a declaration is written on: a manifest's
@@ -140,6 +140,17 @@ module, which the file still depends on: `impact` follows such a test file
 only along ways that pass none of the modules it replaces, apart from one
 whose stand-in gives a name the change may alter, and lists the test files
 it leaves out. Only the TS/JS analyzer sets it.
+
+`exposed` lists the names a TS/JS statement takes as values that its file's
+exported types name (`export type Made = Wallet` for `import { Wallet }`,
+an exported interface's members, an exported function's signature). A test
+whose mock replaces that file still type-checks against them, so the
+statement passes its types on through the mock as one of types only does,
+while the mock still stands in for its values: a change to `Wallet` reaches
+a test that takes `Made` from the mocked file, as a test of types only.
+Exposed names belong to the statement, not to each exported type: a test
+that takes any name from the module is reached through them. This lists
+more tests than may type-check against the change, never fewer.
 
 A symbol's evidence with a `target` says how the symbol is reached rather
 than where it is: a Rust method whose type another file defines carries

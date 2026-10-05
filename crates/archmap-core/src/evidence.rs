@@ -65,6 +65,12 @@ pub struct Evidence {
     /// references that call the server, not the file's code.
     #[serde(default, skip_serializing_if = "is_false")]
     pub server_reference: bool,
+    /// The names among `names` that the statement's file exposes in the
+    /// types it exports (`export type Made = Wallet` for `import { Wallet
+    /// }`): a test whose mock replaces that file still type-checks against
+    /// them, so the statement passes its types on through such a mock.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub exposed: BTreeSet<String>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -97,6 +103,7 @@ impl Evidence {
             type_only: false,
             replaces: false,
             server_reference: false,
+            exposed: BTreeSet::new(),
         }
     }
 
@@ -132,6 +139,16 @@ impl Evidence {
 
     pub fn replacing(mut self, replaces: bool) -> Self {
         self.replaces = replaces;
+        self
+    }
+
+    /// The names the statement's file exposes in the types it exports.
+    pub fn exposing<I, S>(mut self, names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.exposed.extend(names.into_iter().map(Into::into));
         self
     }
 

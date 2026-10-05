@@ -2446,7 +2446,9 @@ impl Link {
     fn of(e: &Evidence) -> Self {
         Link {
             production: !e.test,
-            types: e.type_only,
+            // a statement whose names the file's exported types name passes
+            // types on, through a mock of that file too
+            types: e.type_only || !e.exposed.is_empty(),
             values: !e.type_only,
         }
     }

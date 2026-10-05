@@ -1711,3 +1711,65 @@ fn a_file_that_several_crates_compile_leads_on_within_the_crate_it_is_reached_in
     let lib = text(&ws, "src/lib.rs");
     assert!(lib.contains("tests/it.rs"), "{lib}");
 }
+
+#[test]
+fn a_test_reaches_a_change_through_the_types_a_mocked_module_exposes_from_it() {
+    let files = |runner: &str| -> Vec<(String, String)> {
+        [
+            (
+                "package.json",
+                "{ \"name\": \"web\", \"devDependencies\": { \"vitest\": \"1.0.0\" } }",
+            ),
+            (
+                "src/core.ts",
+                "export class Wallet { pay() { return 1; } }\nexport function helper() { return 2; }\n",
+            ),
+            ("src/runner.ts", runner),
+            // takes a type of the mocked module
+            (
+                "tests/typed.test.ts",
+                "import { vi } from 'vitest';\nimport type { Made } from '../src/runner';\nvi.mock('../src/runner', () => ({ make: vi.fn() }));\nexport let made: Made;\n",
+            ),
+            // takes a value of the mocked module, which the mock stands in for
+            (
+                "tests/value.test.ts",
+                "import { vi } from 'vitest';\nimport { make } from '../src/runner';\nvi.mock('../src/runner', () => ({ make: vi.fn() }));\nmake();\n",
+            ),
+        ]
+        .into_iter()
+        .map(|(f, t)| (f.to_owned(), t.to_owned()))
+        .collect()
+    };
+    // the mocked module exposes the changed class in a type it exports
+    let repo = Repo::new(
+        "exposed-types",
+        &files(
+            "import { Wallet } from './core';\nexport const make = () => new Wallet();\nexport type Made = Wallet;\n",
+        ),
+    );
+    let ws = scan(&repo.0);
+    let answer = text(&ws, "src/core.ts");
+    assert_eq!(
+        section(&answer, "Tests to run again: 1"),
+        [
+            "  tests/typed.test.ts (through src/runner.ts, types only)",
+            // the mock still stands in for its values
+            "  left out: 1 test file reaches it only through a module its mock replaces: \
+             tests/value.test.ts:3 (mocks src/runner.ts)",
+        ],
+        "{answer}"
+    );
+
+    // one that exposes only a type of its own, beside a function it imports
+    let repo = Repo::new(
+        "unexposed-types",
+        &files(
+            "import { helper } from './core';\nexport const make = () => helper();\nexport type Made = { id: string };\n",
+        ),
+    );
+    let ws = scan(&repo.0);
+    let answer = text(&ws, "src/core.ts");
+    let tests = section(&answer, "Tests to run again: none");
+    assert_eq!(tests.len(), 1, "{answer}");
+    assert!(tests[0].contains("tests/typed.test.ts:3"), "{answer}");
+}

@@ -407,6 +407,10 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   evidence noted with it, and a statement of a `"use client"` file that takes values from a `"use
   server"` file, `via` evidence of a name such a file defines included, is a `server_reference`
   (see [graph.md](graph.md)): it calls the server and loads none of that file's code
+- the names a value import takes that the file's exported types name are `exposed` (see
+  [graph.md](graph.md)), read from the file's exported type aliases, interfaces, enums and the
+  signatures of what it exports, and from the declarations `export { .. }` names; a type a value
+  export gets by inference names nothing
 - a statement that takes types only is `type_only` (see [graph.md](graph.md)): `import type`,
   `export type ... from`, `export type *`, `import type x = require()` and `import()` types, and a statement whose names
   all carry `type` (`import { type A }`); one that takes values and types from a file
