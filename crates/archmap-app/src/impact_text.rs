@@ -11,9 +11,9 @@ use std::fmt::Write;
 use archmap_core::{ArchitectureGraph, ComponentId};
 
 use crate::query_text::{
-    component_head, count, display, file_head, import_counts, import_location, marks, namesakes,
-    not_traced, place, plural, shell_word, statements_title, symbol_line, used_at, with_more,
-    UsedAt, MAX_USE_FILES,
+    component_head, count, display, file_head, import_counts, import_location, marks, names_capped,
+    namesakes, not_traced, place, plural, shell_word, statements_title, symbol_line, used_at,
+    with_more, UsedAt, MAX_USE_FILES, SHOWN_NAMES,
 };
 use crate::views::{
     About, Dependent, ImpactResult, ImportSites, TestRouteView, TestWayView, MAX_IMPORT_SITES,
@@ -33,6 +33,8 @@ struct Caps {
     use_files: usize,
     /// The files a component that holds the target names.
     holder_files: usize,
+    /// The names a statement's line shows.
+    names: usize,
 }
 
 impl Caps {
@@ -45,6 +47,7 @@ impl Caps {
                 locations: usize::MAX,
                 use_files: usize::MAX,
                 holder_files: usize::MAX,
+                names: usize::MAX,
             }
         } else {
             Caps {
@@ -54,6 +57,7 @@ impl Caps {
                 locations: MAX_LOCATIONS,
                 use_files: MAX_USE_FILES,
                 holder_files: MAX_FILES,
+                names: SHOWN_NAMES,
             }
         }
     }
@@ -293,12 +297,17 @@ fn statements(
         names: show_names,
     } = list;
     let shown = sites.shown.len().min(caps.statements);
+    let mut truncated = shown < sites.total;
     let heading = statements_title(title, note, sites.total, shown, sites.exports);
     let _ = writeln!(out, "\n{heading}");
     let rest = &sites.shown[shown..];
     for site in &sites.shown[..shown] {
         // a type's taker names the type below
-        let names = show_names && site.takes_type.is_none();
+        let names = match show_names && site.takes_type.is_none() {
+            true => caps.names,
+            false => 0,
+        };
+        truncated |= names_capped(site.evidence, names);
         let mut line = import_location(site.evidence, 0, false, names);
         if let Some(barrel) = site.through {
             let _ = write!(line, " ({taken} {barrel}, which passes it on)");
@@ -342,7 +351,7 @@ fn statements(
         }
         let _ = writeln!(out, "{line}");
     }
-    shown < sites.total
+    truncated
 }
 
 /// The components reached only through others: `direct` is not repeated.

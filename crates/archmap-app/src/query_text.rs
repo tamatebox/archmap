@@ -32,6 +32,8 @@ struct Caps {
     locations: usize,
     importers: usize,
     use_files: usize,
+    /// The names a statement's line shows.
+    names: usize,
 }
 
 impl Caps {
@@ -43,6 +45,7 @@ impl Caps {
                 locations: usize::MAX,
                 importers: usize::MAX,
                 use_files: usize::MAX,
+                names: usize::MAX,
             }
         } else {
             Caps {
@@ -51,6 +54,7 @@ impl Caps {
                 locations: MAX_LOCATIONS,
                 importers: MAX_IMPORTERS,
                 use_files: MAX_USE_FILES,
+                names: SHOWN_NAMES,
             }
         }
     }
@@ -227,7 +231,7 @@ fn not_mapped(
         let locations: Vec<String> = evidence
             .iter()
             .take(caps.locations)
-            .map(|e| import_location(e, 0, false, false))
+            .map(|e| import_location(e, 0, false, 0))
             .collect();
         let more = evidence.len().saturating_sub(caps.locations);
         truncated |= more > 0;
@@ -376,7 +380,9 @@ fn neighbors<'a>(
                 .iter()
                 .take(caps.locations)
                 .map(|(e, more, c)| {
-                    let mut at = import_location(e, more.len(), show.targets, show.names);
+                    let names = if show.names { caps.names } else { 0 };
+                    truncated |= names_capped(e, names);
+                    let mut at = import_location(e, more.len(), show.targets, names);
                     if *c == Counted::Through {
                         at.push_str(" (through)");
                     }
@@ -880,7 +886,7 @@ pub(crate) fn used_at(out: &mut String, view: &UsedAt, use_files: usize, locatio
             .iter()
             .take(locations)
             .map(|e| {
-                let mut place = import_location(e, 0, false, false);
+                let mut place = import_location(e, 0, false, 0);
                 for name in &e.names {
                     let _ = write!(place, " as {name}");
                 }
@@ -950,7 +956,7 @@ fn sites(
         statements_title(title, note, list.len(), shown, exports)
     );
     for importer in list.iter().take(shown) {
-        let mut line = import_location(importer.evidence, 0, false, false);
+        let mut line = import_location(importer.evidence, 0, false, 0);
         if let Some(barrel) = importer.through {
             let _ = write!(line, " ({taken} {barrel}, which passes it on)");
         }
@@ -1107,7 +1113,7 @@ pub(crate) fn import_location(
     evidence: &Evidence,
     more_files: usize,
     show_target: bool,
-    show_names: bool,
+    names: usize,
 ) -> String {
     let mut out = location(evidence);
     if let Some(target) = evidence.target.as_ref().filter(|_| show_target) {
@@ -1119,8 +1125,8 @@ pub(crate) fn import_location(
     if let Some(place) = evidence.note.as_deref().and_then(crate::pairs::via_place) {
         let _ = write!(out, " (via {place})");
     }
-    if show_names {
-        out.push_str(&taken_names(evidence));
+    if names > 0 {
+        out.push_str(&taken_names(evidence, names));
     }
     // a re-export statement passes names on: not a use of them
     if evidence.note.as_deref() == Some("export") {
@@ -1144,28 +1150,32 @@ pub(crate) fn import_location(
 }
 
 /// How many of the names a statement takes its line shows.
-const SHOWN_NAMES: usize = 3;
+pub(crate) const SHOWN_NAMES: usize = 3;
 
 /// ` (names formatPrice, Money, +2 more)`, or ` (whole module)`: the names
-/// a statement takes from what it imports, as its evidence records them;
-/// nothing for one that records none.
-fn taken_names(evidence: &Evidence) -> String {
+/// a statement takes from what it imports, as its evidence records them,
+/// `cap` at most, ignoring case in their order; nothing for one that
+/// records none.
+fn taken_names(evidence: &Evidence, cap: usize) -> String {
     if evidence.names.is_empty() {
         return String::new();
     }
     if evidence.names.contains(WHOLE_MODULE) {
         return " (whole module)".to_owned();
     }
-    let names: Vec<&str> = evidence.names.iter().map(String::as_str).collect();
-    let mut out = format!(
-        " (names {}",
-        names[..names.len().min(SHOWN_NAMES)].join(", ")
-    );
-    if names.len() > SHOWN_NAMES {
-        let _ = write!(out, ", +{} more", names.len() - SHOWN_NAMES);
+    let mut names: Vec<&str> = evidence.names.iter().map(String::as_str).collect();
+    names.sort_by_key(|n| (n.to_ascii_lowercase(), *n));
+    let mut out = format!(" (names {}", names[..names.len().min(cap)].join(", "));
+    if names.len() > cap {
+        let _ = write!(out, ", +{} more", names.len() - cap);
     }
     out.push(')');
     out
+}
+
+/// Whether `taken_names` leaves names of `evidence` out at `cap`.
+pub(crate) fn names_capped(evidence: &Evidence, cap: usize) -> bool {
+    cap > 0 && !evidence.names.contains(WHOLE_MODULE) && evidence.names.len() > cap
 }
 
 /// Every mark an answer writes, as written after a space, as the `Marks`

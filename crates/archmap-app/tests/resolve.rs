@@ -596,7 +596,8 @@ fn names_that_contain_a_word_that_names_nothing_are_candidates() {
         .unwrap();
     assert_eq!(
         err.to_string(),
-        "no component, file, symbol or import named `zq`"
+        "no component, file, symbol or import named `zq` (the names that contain a word are \
+         looked for from 3 characters)"
     );
 
     // nothing contains it either: the error says what to do next
@@ -639,10 +640,44 @@ fn statements_say_which_names_they_take() {
                 "src/one.ts",
                 "import { a } from './m';\nexport const one = a;\n",
             ),
+            (
+                "src/k.ts",
+                "export const B_CONST = 1;\nexport function alpha() {}\n",
+            ),
+            (
+                "src/kk.ts",
+                "import { B_CONST, alpha } from './k';\nexport const kk = [B_CONST, alpha];\n",
+            ),
         ],
     );
     let ws = scan(&repo.0);
+    // in their order ignoring case
+    let answer = query(&ws, "src/kk.ts");
+    assert!(
+        answer.output.contains("-> src/k.ts (names alpha, B_CONST)"),
+        "{}",
+        answer.output
+    );
+    // every name when verbose, and the capped text says it is capped
+    let every = ws
+        .query(&QueryRequest {
+            target: "src/m.ts",
+            depth: DEFAULT_DEPTH,
+            format: Format::Text,
+            verbose: true,
+        })
+        .unwrap()
+        .output;
+    assert!(
+        every.contains("src/u.ts:1 (names a, b, c, d, e)"),
+        "{every}"
+    );
     let answer = query(&ws, "src/m.ts");
+    assert!(
+        answer.output.contains("Lists are capped"),
+        "{}",
+        answer.output
+    );
     for line in [
         "src/u.ts:1 (names a, b, c, +2 more)",
         "src/w.ts:1 (whole module)",

@@ -168,9 +168,9 @@ it, as in `src/shop/billing/charge.py:5 -> src/shop/users.py`, and ends in
 the function is called; the others run when their file loads. In a file's
 `Imports` and `Imported by`, and in `impact`'s `Imported by` for a target
 that is no symbol, a location says which names the statement takes, as its
-evidence records them: `(names formatPrice, Money, +2 more)`, three at
-most, or `(whole module)` for a namespace import, a module bound whole or
-`export *`. `(type)` marks
+evidence records them, in their order ignoring case: `(names formatPrice,
+Money, +2 more)`, three at most and every one with `--verbose`, or `(whole
+module)` for a namespace import, a module bound whole or `export *`. `(type)` marks
 a statement that takes types only, so it never runs (a TS/JS `import type`,
 which the compiler erases, or a Python import under `if TYPE_CHECKING:`),
 and `(test)` a statement in test code. An answer that shows marks says

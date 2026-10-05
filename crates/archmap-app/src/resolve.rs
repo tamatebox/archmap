@@ -200,7 +200,10 @@ pub(crate) fn resolve<'g>(
         )
     }
     if target.chars().count() < MIN_CONTAINED {
-        bail!("no component, file, symbol or import named `{target}`")
+        bail!(
+            "no component, file, symbol or import named `{target}` (the names that contain a \
+             word are looked for from {MIN_CONTAINED} characters)"
+        )
     }
     let contains = containing(full, root, target);
     if contains.is_empty() {
