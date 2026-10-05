@@ -178,6 +178,8 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
     // statements that take a symbol's file whole, those that never name it
     // included
     let mut takes_whole = false;
+    // for a symbol, the tests whose every statement that takes it is a mock
+    let mut mock_only: Option<BTreeSet<String>> = None;
     // the statements that make their file a barrel for a symbol
     let mut relays: BTreeSet<ImportPlace> = BTreeSet::new();
     let traced: Traced;
@@ -293,6 +295,19 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
                     passing,
                 };
                 let reach = full.change_impact(ChangeSeed::Symbol(symbol, &first), depth);
+                if let Some(found) = &found {
+                    let mut only: BTreeMap<&str, bool> = BTreeMap::new();
+                    for (_, e) in found.by_name.iter().chain(&found.may_use) {
+                        let mock = archmap_scan::is_mock_call(e.note.as_deref().unwrap_or(""));
+                        *only.entry(e.file.as_str()).or_insert(true) &= mock;
+                    }
+                    mock_only = Some(
+                        only.into_iter()
+                            .filter(|(_, mock)| *mock)
+                            .map(|(file, _)| file.to_owned())
+                            .collect(),
+                    );
+                }
                 if let Some(found) = found {
                     importers = Some(symbol_sites(
                         full,
@@ -459,6 +474,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
             full,
             &ws.report,
             taken.as_deref(),
+            mock_only.as_ref(),
             reach.tests,
             reach.test_ways,
             reach.left_out,
@@ -747,7 +763,7 @@ fn import_name_impact<'a>(
         also_at_path: Vec::new(),
         direct,
         transitive,
-        tests: test_files(full, report, None, tests, ways, left_out, caps.tests),
+        tests: test_files(full, report, None, None, tests, ways, left_out, caps.tests),
         importers: Some(importers),
         imports_below: None,
         may_use: None,
@@ -762,10 +778,12 @@ fn import_name_impact<'a>(
 
 /// The test files to run again, and those left out with the mocks that
 /// replace a module on their way, the first `cap` of each by path.
+#[allow(clippy::too_many_arguments)]
 fn test_files(
     full: &ArchitectureGraph,
     report: &ScanReport,
     taken: Option<&str>,
+    mock_only: Option<&BTreeSet<String>>,
     tests: BTreeSet<String>,
     mut ways: BTreeMap<String, TestReach>,
     left_out: BTreeMap<String, Vec<Evidence>>,
@@ -797,11 +815,16 @@ fn test_files(
     let view = |test: &str, route: TestRoute| {
         let (way, mock) = match route.way {
             TestWay::Target => (TestWayView::Target, false),
+            // for a symbol, by the statements that take it
             TestWay::Takes { via } => {
-                let mock = via.is_none() && by_mock(test, taken);
+                let mock = via.is_none()
+                    && mock_only.map_or_else(|| by_mock(test, taken), |only| only.contains(test));
                 (TestWayView::Takes { via }, mock)
             }
-            TestWay::Whole => (TestWayView::Whole, false),
+            TestWay::Whole => {
+                let mock = mock_only.is_some_and(|only| only.contains(test));
+                (TestWayView::Whole, mock)
+            }
             TestWay::RunsFirst { entry } => (TestWayView::RunsFirst { file: entry }, false),
             TestWay::Through { from } => {
                 let mock = by_mock(test, Some(&from));

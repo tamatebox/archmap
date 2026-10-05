@@ -494,6 +494,7 @@ fn way_text(ways: &[TestRouteView], types_only: bool, about: &About) -> Option<S
         TestWayView::Takes { via: None } if mock => "mocks it".to_owned(),
         TestWayView::Takes { via: None } => "takes it".to_owned(),
         TestWayView::Takes { via: Some(via) } => format!("takes it, via {via}"),
+        TestWayView::Whole if mock => "mocks it".to_owned(),
         TestWayView::Whole => "takes its module whole".to_owned(),
         TestWayView::RunsFirst { file } => format!("runs first: {file}"),
         TestWayView::Through { file } if mock => format!("through {file}, by its mock"),

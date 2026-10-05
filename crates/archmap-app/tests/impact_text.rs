@@ -535,6 +535,16 @@ fn a_test_whose_mock_replaces_a_module_on_the_way_is_left_out() {
         ],
         "{relays}"
     );
+    // a symbol of it marks the tests that only mock it, as the file does
+    let symbol = text(&ws, "placeOrder");
+    assert!(
+        symbol.contains("\n  tests/auto.test.ts (mocks it)\n"),
+        "{symbol}"
+    );
+    assert!(
+        symbol.contains("\n  tests/jest.test.ts (takes it)\n"),
+        "{symbol}"
+    );
     // the mocked module itself: the mocks replace its names
     let orders = text(&ws, "src/orders.ts");
     assert!(orders.contains("\nTests to run again: 11\n"), "{orders}");

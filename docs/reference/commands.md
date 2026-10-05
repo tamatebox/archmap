@@ -565,8 +565,8 @@ first: src/shop/__init__.py)`), or reaches through other files, the first
 one on the way (`(through src/app.py)`). Of its ways it names the nearest
 that runs what changed, every statement on it taking values, in the walk
 that its mocks leave, and of ways as near the first named here. A test
-whose statements toward the target are all calls that put a mock in its
-place reads `(mocks it)`, and a way through another file that only such
+whose statements toward the target (for a symbol, those that take it) are
+all calls that put a mock in its place reads `(mocks it)`, and a way through another file that only such
 calls load ends `, by its mock` (`(through src/orders.ts, by its mock)`).
 `types only` follows when no way runs what changed: running the test runs
 none of the change, though its type checks may break. A test file that is
