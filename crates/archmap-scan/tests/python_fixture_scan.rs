@@ -830,6 +830,7 @@ fn dynamic_imports_are_recorded_where_they_are_called() {
             prefix: Some(DynamicPrefix {
                 written: "shop.plugins.".into(),
                 path: None,
+                first: Vec::new(),
             }),
             evidence: Evidence::new("scripts/plugins.py")
                 .at_line(5)

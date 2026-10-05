@@ -238,9 +238,15 @@ pub struct DynamicPrefix {
     pub written: String,
     /// Where the analyzer knows what it names: the start of the paths,
     /// relative to the root, of every file the call can load (`src/pages/`,
-    /// `src/plugins/`). A call loads no file whose path does not start so.
+    /// `src/plugins/`). A call loads no file whose path does not start so,
+    /// apart from those in `first`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// The files that loading any module below `path` runs first: a Python
+    /// package's `__init__.py` on the dotted way (`app/__init__.py` and
+    /// `app/plugins/__init__.py` for `app.plugins.`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub first: Vec<String>,
 }
 
 impl DynamicImport {
@@ -255,8 +261,12 @@ impl DynamicImport {
                 if place.is_empty() || place == "." {
                     return true;
                 }
-                // a file under the prefix, or a directory that holds some
-                place.starts_with(path) || path.starts_with(&format!("{place}/"))
+                // a file under the prefix, one that runs first, or a
+                // directory that holds some
+                let first = self.prefix.iter().flat_map(|p| &p.first);
+                place.starts_with(path)
+                    || path.starts_with(&format!("{place}/"))
+                    || first.into_iter().any(|f| f == place)
             }
             None => true,
         }
@@ -398,6 +408,7 @@ mod tests {
             prefix: Some(DynamicPrefix {
                 written: "./pages/".into(),
                 path: path.map(str::to_owned),
+                first: vec!["src/__init__.py".into()],
             }),
             evidence: Evidence::new("src/app.ts").at_line(3),
         };
@@ -418,6 +429,8 @@ mod tests {
         for place in ["src/lib/money.ts", "src/pager.ts", "lib"] {
             assert!(!known.may_load(place), "{place}");
         }
+        // what loading it runs first
+        assert!(known.may_load("src/__init__.py"));
         // a prefix that ends inside a name
         let partial = call(Some("src/pages/page-"));
         assert!(partial.may_load("src/pages/page-home.ts"));

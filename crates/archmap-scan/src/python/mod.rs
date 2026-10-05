@@ -1290,9 +1290,13 @@ fn emit_imports(
     }
 
     for dynamic in &scanned.dynamic_imports {
-        let prefix = dynamic.prefix.as_ref().map(|written| DynamicPrefix {
-            written: written.clone(),
-            path: prefix_path(written, modules, by_dotted),
+        let prefix = dynamic.prefix.as_ref().map(|written| {
+            let (path, first) = prefix_path(written, modules, by_dotted).unzip();
+            DynamicPrefix {
+                written: written.clone(),
+                path,
+                first: first.unwrap_or_default(),
+            }
         });
         output.fragment.push_dynamic_import(DynamicImport {
             from: owner.clone(),
@@ -1309,19 +1313,37 @@ fn emit_imports(
 
 /// The start of the paths a computed name's static start leads to, when it
 /// names a package of the scan and then the start of a name in it:
-/// `plugins.` for `src/plugins/`, `plugins.csv_` for `src/plugins/csv_`.
+/// `plugins.` for `src/plugins/`, `plugins.csv_` for `src/plugins/csv_`;
+/// with the `__init__.py` of each regular package on the dotted way, which
+/// loading such a module runs first.
 fn prefix_path(
     written: &str,
     modules: &[Module],
     by_dotted: &BTreeMap<&str, usize>,
-) -> Option<String> {
+) -> Option<(String, Vec<String>)> {
     let (package, rest) = written.rsplit_once('.')?;
     let module = &modules[*by_dotted.get(package)?];
     let dir = display_path(&module.dir);
-    Some(match dir.is_empty() {
+    let path = match dir.is_empty() {
         true => rest.to_owned(),
         false => format!("{dir}/{rest}"),
-    })
+    };
+    let mut dotted = String::new();
+    let mut first = Vec::new();
+    for part in package.split('.') {
+        if !dotted.is_empty() {
+            dotted.push('.');
+        }
+        dotted.push_str(part);
+        let Some(&at) = by_dotted.get(dotted.as_str()) else {
+            continue;
+        };
+        let above = &modules[at];
+        if above.regular {
+            first.push(display_path(&above.dir.join("__init__.py")));
+        }
+    }
+    Some((path, first))
 }
 
 fn scope(local: bool) -> Scope {

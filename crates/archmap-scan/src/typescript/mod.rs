@@ -238,6 +238,7 @@ impl Analyzer for TypeScriptAnalyzer {
                 let prefix = call.prefix.as_ref().map(|written| DynamicPrefix {
                     written: written.clone(),
                     path: prefix_path(file, written),
+                    first: Vec::new(),
                 });
                 output.fragment.push_dynamic_import(DynamicImport {
                     from: owner.component.clone(),

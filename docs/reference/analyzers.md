@@ -236,7 +236,8 @@ into the model in [graph.md](graph.md); how the commands present it is in
   to them and to `spec_from_file_location` are recorded as dynamic imports, which no edge can follow,
   with the static start of the name where the line writes one (an f-string's text before its first
   field, a string literal before `+`, `%` or `.format(`), and when that starts with a package of the
-  scan, the path below it (`f"plugins.{name}"` for `src/plugins/`)
+  scan, the path below it (`f"plugins.{name}"` for `src/plugins/`) and the `__init__.py` of each
+  package on the way, which loading such a module runs first
 - public top-level `def` / `class` / `CONSTANT` and public methods of public classes become symbols
   for files inside a regular package tree; a file outside any regular package tree (in a namespace
   tree such as `scripts/` or a `tests/` without `__init__.py`, or at the top of the project) gives
