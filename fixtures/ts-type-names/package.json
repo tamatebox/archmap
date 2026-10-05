@@ -1,5 +1,9 @@
 {
   "name": "ts-type-names",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "lodash-like": "^1.0.0",
+    "react": "^18.0.0"
+  }
 }

@@ -369,7 +369,9 @@ impl Analyzer for TypeScriptAnalyzer {
                     }
                     _ => {
                         let erased = !import.names.is_empty()
-                            && import.names.iter().all(|n| import.types.contains(n));
+                            && import.names.iter().all(|n| {
+                                import.types.contains(n) || by_use && import.type_uses.contains(n)
+                            });
                         // a load the tsconfig keeps runs, as above
                         let kept = typescript && options.keeps(import) && !import.type_statement;
                         let all_types = declarations || erased && !kept;

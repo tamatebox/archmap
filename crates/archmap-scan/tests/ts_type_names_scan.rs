@@ -249,3 +249,51 @@ fn options_that_keep_a_load_keep_a_statement_of_types_running() {
         rows(&[(&["Account"], true, "import")])
     );
 }
+
+/// The evidence of the statement at `at` for a package, as (names, types
+/// only): a package's import records no names.
+fn package_evidence(graph: &ArchitectureGraph, at: &str, package: &str) -> BTreeSet<bool> {
+    graph
+        .edges
+        .iter()
+        .filter(|e| e.to.as_str() == package)
+        .flat_map(|e| &e.evidence)
+        .filter(|e| format!("{}:{}", e.file, e.line.unwrap_or(0)) == at)
+        .map(|e| e.type_only)
+        .collect()
+}
+
+#[test]
+fn what_tsc_keeps_and_drops_at_the_edges_of_types_by_use() {
+    let graph = scan_fixture();
+    // a package's name used only in a type is dropped like a file's
+    assert_eq!(
+        package_evidence(&graph, "src/pkguse.ts:1", "ext:npm:lodash-like"),
+        BTreeSet::from([true])
+    );
+    // classic JSX calls React, which no identifier names
+    assert_eq!(
+        package_evidence(&graph, "src/comp.tsx:1", "ext:npm:react"),
+        BTreeSet::from([false])
+    );
+    // a computed key in a type is a value, and so is a `@jsx` factory
+    assert_eq!(
+        evidence(&graph, "src/keys.ts:1", "src/consts.ts"),
+        rows(&[(&["KEY"], false, "import")])
+    );
+    assert_eq!(
+        evidence(&graph, "src/preact.tsx:2", "src/h.ts"),
+        rows(&[(&["h"], false, "import")])
+    );
+    // a class that its file exports by `export type` only is a type
+    assert_eq!(
+        evidence(&graph, "src/wallets.ts:1", "src/wallet.ts"),
+        rows(&[(&["Wallet"], true, "export")])
+    );
+    // a type re-export of a package passes on a type, which a re-export
+    // of it, taking no binding, passes on too
+    assert_eq!(
+        evidence(&graph, "src/useext.ts:1", "src/extbarrel.ts"),
+        rows(&[(&["FC"], true, "export")])
+    );
+}

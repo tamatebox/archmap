@@ -398,9 +398,11 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   compiler erases a statement that takes nothing else whatever the file does with it: one the file
   that defines it declares only as an interface or a type alias (`import { Money }` for `export
   interface Money`, a default interface by its name), with no variable, function, class, enum,
-  namespace or `import x =` of that name merged into it, or one a re-export on the way passes on as
-  a type (`export type { Money } from` in a barrel); a re-export of such a name (`export { Money }
-  from`) is types only too, even when the walk reaches it through `export *`, while a namespace
+  namespace or `import x =` of that name merged into it, or that it exports by `export type { .. }`
+  only (`class Wallet {}`, then `export type { Wallet }`), or one a re-export on the way passes on as
+  a type (`export type { Money } from` in a barrel, from a package too); a re-export of such a name
+  (`export { Money } from`) is types only too, even when the walk reaches it through `export *`,
+  while a namespace
   import, an `export *` statement itself and a name whose definition the walk does not find keep
   running, and a JavaScript file keeps every statement it writes
 - in a TypeScript file, an imported name also counts as a type when the file writes its binding
@@ -409,8 +411,11 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   an import whatever the name is (`import { Money }` for a class used only in annotations, `import
   * as m` used only in `typeof m`): by name, not by scope, so a local of that name used as a value
   keeps the import running, as do an unused binding, `export { Money }`, JSX, a decorator, the
-  heritage of a `declare class` and `import a = m.b`, and inside a class with any decorator every
-  name counts as a value, since `emitDecoratorMetadata` may emit its annotations; a tsconfig with
+  heritage of a `declare class`, `import a = m.b` and a computed key in a type (`[KEY]: string`),
+  and inside a class with any decorator every name counts as a value, since `emitDecoratorMetadata`
+  may emit its annotations, while a file with JSX counts `React`, and the factories its `@jsx` and
+  `@jsxFrag` pragmas name, as values, which classic JSX calls; an import of a package, or of a
+  name that resolves to no scanned file, counts its names the same way; a tsconfig with
   `verbatimModuleSyntax` or `preserveValueImports` keeps the values a file imports, so there only
   `type` and names that can only be types count; every import and re-export of a declaration file
   (`.d.ts`, `.d.mts`, `.d.cts`), which is never emitted, is types only
@@ -547,7 +552,9 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   file reaches only through `eval` or a string is not seen, a class with a decorator counts every
   name in it as a value even under TypeScript 5's decorators, which emit no metadata, and the
   options of other compilers that keep imports (Babel's `onlyRemoveTypeImports`, SWC's
-  `jsc.transform.verbatimModuleSyntax`) are not read. A `const enum` and a namespace that holds
+  `jsc.transform.verbatimModuleSyntax`) are not read, nor a tsconfig's `jsxFactory` and
+  `jsxFragmentFactory`, so a factory other than React that no pragma names and the file also writes
+  in a type counts as a type. A `const enum` and a namespace that holds
   only types count as values, though the compiler without `isolatedModules` erases the first and
   never emits the second.
 - A JavaScript file that Node runs is a module of its own even without `require` or exports;

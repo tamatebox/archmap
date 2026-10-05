@@ -15,10 +15,11 @@ use oxc_ast::ast::{
     BinaryOperator, BindingPattern, CallExpression, Class, ClassElement, Declaration, Decorator,
     ExportDefaultDeclarationKind, ExportNamedDeclaration, ExportSpecifier, Expression,
     FormalParameter, FormalParameters, Function, IdentifierReference, ImportDeclarationSpecifier,
-    ImportExpression, MethodDefinitionKind, NewExpression, ObjectExpression, ObjectProperty,
-    ObjectPropertyKind, Statement, StaticMemberExpression, TSAccessibility, TSClassImplements,
-    TSImportEqualsDeclaration, TSImportType, TSImportTypeQualifier, TSInterfaceDeclaration,
-    TSModuleReference, TSType, VariableDeclarator,
+    ImportExpression, JSXFragment, JSXOpeningElement, MethodDefinitionKind, NewExpression,
+    ObjectExpression, ObjectProperty, ObjectPropertyKind, Statement, StaticMemberExpression,
+    TSAccessibility, TSClassImplements, TSImportEqualsDeclaration, TSImportType,
+    TSImportTypeQualifier, TSInterfaceDeclaration, TSMethodSignature, TSModuleReference,
+    TSPropertySignature, TSType, VariableDeclarator,
 };
 use oxc_ast::AstKind;
 use oxc_ast_visit::{walk, Visit};
@@ -487,6 +488,10 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
             if slot.key() == "default" && export == Export::Local && !local.is_empty() {
                 file.exports.default_name = Some(local);
             }
+            let own = matches!(export, Export::Local | Export::Alias { .. });
+            if own && export_type {
+                file.exports.type_exports.insert(slot.key().clone());
+            }
             slot.insert(export);
         }
     }
@@ -506,6 +511,15 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
     let typescript = source_type.is_typescript() && !source_type.is_typescript_definition();
     if typescript && !positions.wanted.is_empty() {
         positions.visit_program(&parsed.program);
+        // classic JSX calls its factory, which no identifier names: React,
+        // or what a `@jsx` / `@jsxFrag` pragma says
+        if positions.jsx {
+            let factories = comments
+                .iter()
+                .flat_map(|&(start, end)| jsx_pragmas(&text[start as usize..end as usize]))
+                .chain(["React".to_owned()]);
+            positions.values.extend(factories);
+        }
     }
     let mut kept: BTreeSet<(usize, String)> = BTreeSet::new();
     let mut typed: BTreeSet<(usize, String)> = BTreeSet::new();
@@ -1616,6 +1630,8 @@ struct Positions {
     decorated: usize,
     types: BTreeSet<String>,
     values: BTreeSet<String>,
+    /// The file holds JSX, which may call a factory it never names.
+    jsx: bool,
 }
 
 impl Positions {
@@ -1624,6 +1640,31 @@ impl Positions {
         walk(self);
         self.in_type -= 1;
     }
+
+    fn as_value(&mut self, walk: impl FnOnce(&mut Self)) {
+        let in_type = std::mem::take(&mut self.in_type);
+        walk(self);
+        self.in_type = in_type;
+    }
+}
+
+/// The names a comment's `@jsx h` and `@jsxFrag Fragment` pragmas give,
+/// by their first segment (`h` of `h.f`).
+fn jsx_pragmas(comment: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for pragma in ["@jsx ", "@jsxFrag "] {
+        for (at, _) in comment.match_indices(pragma) {
+            let rest = comment[at + pragma.len()..].trim_start();
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+                .collect();
+            if !name.is_empty() {
+                names.push(name);
+            }
+        }
+    }
+    names
 }
 
 impl<'a> Visit<'a> for Positions {
@@ -1649,6 +1690,32 @@ impl<'a> Visit<'a> for Positions {
 
     fn visit_ts_class_implements(&mut self, it: &TSClassImplements<'a>) {
         self.in_type(|v| walk::walk_ts_class_implements(v, it));
+    }
+
+    // a computed key in a type (`[KEY]: string`) is a value the compiler
+    // keeps
+    fn visit_ts_property_signature(&mut self, it: &TSPropertySignature<'a>) {
+        if it.computed {
+            self.as_value(|v| v.visit_property_key(&it.key));
+        }
+        walk::walk_ts_property_signature(self, it);
+    }
+
+    fn visit_ts_method_signature(&mut self, it: &TSMethodSignature<'a>) {
+        if it.computed {
+            self.as_value(|v| v.visit_property_key(&it.key));
+        }
+        walk::walk_ts_method_signature(self, it);
+    }
+
+    fn visit_jsx_opening_element(&mut self, it: &JSXOpeningElement<'a>) {
+        self.jsx = true;
+        walk::walk_jsx_opening_element(self, it);
+    }
+
+    fn visit_jsx_fragment(&mut self, it: &JSXFragment<'a>) {
+        self.jsx = true;
+        walk::walk_jsx_fragment(self, it);
     }
 
     fn visit_export_named_declaration(&mut self, it: &ExportNamedDeclaration<'a>) {

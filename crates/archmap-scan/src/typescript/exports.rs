@@ -26,6 +26,10 @@ pub(crate) struct ExportTable {
     /// aliases that no value of the same name merges with. The compiler
     /// erases an import or a re-export that takes nothing else.
     pub types: BTreeSet<String>,
+    /// The names the file exports, as it exports them, of its own
+    /// declarations by `export type { .. }` only (`class Wallet {};
+    /// export type { Wallet }`), which importers can take as types only.
+    pub type_exports: BTreeSet<String>,
 }
 
 impl ExportTable {
@@ -133,6 +137,7 @@ impl<'a> Definitions<'a> {
             Walk::Found(found) => {
                 found.type_only || self.index.declares_type(&found.file, found.name)
             }
+            Walk::TypeOnly => true,
             Walk::Missing | Walk::Unknown => false,
         };
         self.types.insert(key, found);
@@ -150,7 +155,7 @@ impl<'a> Definitions<'a> {
         }
         let found = match self.index.walk(file, name, 0, &mut BTreeMap::new()) {
             Walk::Found(found) => Some(found),
-            Walk::Missing | Walk::Unknown => None,
+            Walk::Missing | Walk::Unknown | Walk::TypeOnly => None,
         }
         .and_then(|f| {
             let via = f.via?;
@@ -188,6 +193,9 @@ enum Walk {
     /// walk gives up past [`MAX_HOPS`]. A sibling `export *` then answers
     /// nothing either.
     Unknown,
+    /// Where it is defined is not known, but a re-export on the way passes
+    /// it on as a type only (`export type { FC } from 'react'`).
+    TypeOnly,
 }
 
 /// A name found: the file that declares it, the first re-export on the
@@ -298,7 +306,8 @@ impl<'a> Index<'a> {
                     file: file.to_path_buf(),
                     via: None,
                     name: name.to_owned(),
-                    type_only: false,
+                    // `export type { Wallet }` of its own class
+                    type_only: module.exports.type_exports.contains(name),
                 });
             }
             // the file's own declaration, by the name it declares, reached
@@ -308,7 +317,7 @@ impl<'a> Index<'a> {
                     file: file.to_path_buf(),
                     via: via(*line),
                     name: local.clone(),
-                    type_only: false,
+                    type_only: module.exports.type_exports.contains(name),
                 });
             }
             Some(Export::Reexport {
@@ -317,8 +326,14 @@ impl<'a> Index<'a> {
                 line,
                 type_only,
             }) => {
+                // what leads nowhere known is a type all the same where this
+                // re-export passes it on as one
+                let unknown = || match type_only {
+                    true => Walk::TypeOnly,
+                    false => Walk::Unknown,
+                };
                 let Some(next) = loaded(*import) else {
-                    return Walk::Unknown;
+                    return unknown();
                 };
                 return match self.walk(next, inner, hops + 1, walked) {
                     Walk::Found(found) => Walk::Found(Found {
@@ -327,8 +342,9 @@ impl<'a> Index<'a> {
                         name: found.name,
                         type_only: *type_only || found.type_only,
                     }),
+                    Walk::TypeOnly => Walk::TypeOnly,
                     // the file says it exports the name all the same
-                    Walk::Missing | Walk::Unknown => Walk::Unknown,
+                    Walk::Missing | Walk::Unknown => unknown(),
                 };
             }
             Some(Export::Namespace {
@@ -337,7 +353,10 @@ impl<'a> Index<'a> {
                 type_only,
             }) => {
                 let Some(next) = loaded(*import) else {
-                    return Walk::Unknown;
+                    return match type_only {
+                        true => Walk::TypeOnly,
+                        false => Walk::Unknown,
+                    };
                 };
                 return Walk::Found(Found {
                     file: next.to_path_buf(),
@@ -362,7 +381,9 @@ impl<'a> Index<'a> {
             let this = match self.walk(next, name, hops + 1, walked) {
                 Walk::Found(this) => this,
                 Walk::Missing => continue,
-                Walk::Unknown => return Walk::Unknown,
+                // where `export *` sources would have to agree, a name of no
+                // known file answers nothing
+                Walk::Unknown | Walk::TypeOnly => return Walk::Unknown,
             };
             match &found {
                 None => {
@@ -438,6 +459,7 @@ mod tests {
                 stars: stars.iter().map(|&(i, l)| (i, l, false)).collect(),
                 default_name: None,
                 types: BTreeSet::new(),
+                type_exports: BTreeSet::new(),
             },
             loads: loads.iter().map(|l| l.map(PathBuf::from)).collect(),
         }

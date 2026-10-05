@@ -1,0 +1,1 @@
+export { FC } from './extbarrel';
