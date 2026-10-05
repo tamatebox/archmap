@@ -30,7 +30,7 @@ Planned work lives in GitHub issues on tamatebox/archmap. The repository is publ
 
 ## Close an issue
 
-- The change that closes it also updates `docs/reference/`, `README.md` and `plugins/archmap/skills/archmap/SKILL.md` wherever behavior changed. None of them ever cites issue numbers.
+- The change that closes it also updates `docs/reference/` and `README.md` wherever behavior changed, and the plugin skill and the MCP texts only as CLAUDE.md says. None of them ever cites issue numbers.
 - Suggest `Closes #<n>` in the body of the commit message, on the last commit when the work spans several, so the issue closes on push and links to the commit.
 - After the push, tick the item in its plan issue, when there is one; tick a milestone step once all of its issues are closed. When the last item is ticked, close the plan issue and propose what comes next.
 - Update any local design note that links the issue.

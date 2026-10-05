@@ -121,8 +121,19 @@ async fn the_server_offers_four_read_only_tools_and_says_what_it_is_for() {
         let description = tool.description.as_deref().unwrap();
         assert!(!description.contains("callers"), "{}", tool.name);
     }
+    // what a client loads in every session, before any answer
+    let size = instructions.len() + serde_json::to_string(&tools).unwrap().len();
+    assert!(
+        size <= MAX_SESSION_TEXT,
+        "{size} bytes over {MAX_SESSION_TEXT}: every session loads these texts; say details in \
+         the answers (Marks line, headings, Not traced) or docs/reference/, not here"
+    );
     client.cancel().await.unwrap();
 }
+
+/// The bytes of instructions and tool listings a client receives (6,815 when
+/// set). Raising it is the user's decision, as CLAUDE.md says.
+const MAX_SESSION_TEXT: usize = 7_500;
 
 #[tokio::test]
 async fn query_answers_with_the_shared_layers_text() {

@@ -71,7 +71,9 @@ first 5 shown, so a JSON answer stays JSON.
 The server's instructions and each tool's description say what the tool
 gives, when it helps and what it cannot see, including that runtime
 coupling (HTTP, databases, queues, dynamic loading) is not seen. They live
-in `crates/archmap-mcp/src/text.rs`.
+in `crates/archmap-mcp/src/text.rs`. A client loads them in every session,
+so they stay short (a test caps what a client receives) and leave what a
+mark, heading or count means to the answers, which say it themselves.
 
 ## The graph it keeps
 
