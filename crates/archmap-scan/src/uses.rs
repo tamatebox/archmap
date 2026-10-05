@@ -3,7 +3,7 @@
 //! as [`ArchitectureGraph::symbol_importers`] lists them. Nothing here runs
 //! during a scan, and nothing it finds enters the graph.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use archmap_core::{ArchitectureGraph, Evidence, Symbol, SymbolUses, Unread, UnreadReason};
 
@@ -32,6 +32,47 @@ fn with_siblings<'g>(graph: &'g ArchitectureGraph, listed: Vec<&'g Evidence>) ->
         }
     }
     statements
+}
+
+/// The names under which each file offers a symbol `name` that `file`
+/// defines: its own there, then for each barrel that passes it on (a
+/// statement noted `export`), the names it passes it on under.
+fn offered_as(
+    graph: &ArchitectureGraph,
+    file: &str,
+    name: &str,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut offered: BTreeMap<String, BTreeSet<String>> =
+        BTreeMap::from([(file.to_owned(), BTreeSet::from([name.to_owned()]))]);
+    let passing: Vec<&Evidence> = graph
+        .edges
+        .iter()
+        .flat_map(|edge| &edge.evidence)
+        .filter(|e| e.passes_on() && e.target.is_some())
+        .collect();
+    // at most one round per file, as a walk through barrels
+    for _ in 0..=passing.len().min(32) {
+        let mut grew = false;
+        for e in &passing {
+            let Some(names) = e.target.as_deref().and_then(|t| offered.get(t)) else {
+                continue;
+            };
+            let passed: BTreeSet<String> = names
+                .iter()
+                .filter(|n| e.names.contains(*n))
+                .flat_map(|n| e.exported_names(n))
+                .map(str::to_owned)
+                .collect();
+            let known = offered.entry(e.file.clone()).or_default();
+            for n in passed {
+                grew |= known.insert(n);
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    offered
 }
 
 /// Where `symbol` is used, read from the files of the scanned root that the
@@ -76,6 +117,12 @@ pub fn symbol_uses(report: &ScanReport, symbol: &Symbol) -> SymbolUses {
                 symbol,
                 statements,
                 imported,
+                // a method goes by its class
+                offered: offered_as(
+                    graph,
+                    &location.file,
+                    symbol.name.split('.').next().unwrap_or(&symbol.name),
+                ),
             };
             crate::python::uses::read(&request, &mut found);
         }

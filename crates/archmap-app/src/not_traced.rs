@@ -6,8 +6,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use archmap_core::{
-    ArchitectureGraph, ComponentId, ComponentKind, DynamicImport, EdgeKind, Evidence, Symbol,
-    SymbolUses, UnmappedImport, UnmappedReason, UnreadMacro, UnreadReason,
+    ArchitectureGraph, ComponentId, ComponentKind, DynamicImport, EdgeKind, Evidence, ImportPlace,
+    Symbol, SymbolUses, UnmappedImport, UnmappedReason, UnreadMacro, UnreadReason,
 };
 use serde::Serialize;
 
@@ -119,7 +119,9 @@ fn is_zero(n: &usize) -> bool {
 /// What `impact` narrowed at barrels for: a file, or a symbol.
 pub(crate) enum Narrowed<'a> {
     File(&'a str),
-    Symbol(&'a Symbol),
+    /// A symbol, with the statements that make their file a barrel for it
+    /// though they are no re-export (see `FirstStep::passing`).
+    Symbol(&'a Symbol, &'a BTreeSet<ImportPlace>),
 }
 
 /// The re-exports of the files in `barrels`, which the reach went on from
@@ -130,6 +132,16 @@ pub(crate) enum Narrowed<'a> {
 /// counts the test files that load its file (or, for a package's entry
 /// file, a module below it) that `listed` does not hold, apart from those
 /// that load it for types only or replace it with a mock.
+/// Whether `relays` holds the statement `e` is evidence of.
+fn relayed(relays: &BTreeSet<ImportPlace>, e: &Evidence) -> bool {
+    e.line.is_some_and(|line| {
+        relays.contains(&ImportPlace {
+            file: e.file.clone(),
+            line,
+        })
+    })
+}
+
 pub(crate) fn barrels(
     full: &ArchitectureGraph,
     target: Option<Narrowed>,
@@ -149,12 +161,12 @@ pub(crate) fn barrels(
             .filter(|e| e.passes_on() && e.target.as_deref() == Some(file) && e.file != file)
             .map(|e| (e.file.as_str(), e.line))
             .collect(),
-        Some(Narrowed::Symbol(symbol)) => full
+        Some(Narrowed::Symbol(symbol, relays)) => full
             .symbol_importers(symbol)
             .into_iter()
             .flat_map(|found| found.by_name.into_iter().chain(found.may_use))
             .map(|(_, e)| e)
-            .filter(|e| e.passes_on())
+            .filter(|e| e.passes_on() || relayed(relays, e))
             .map(|e| (e.file.as_str(), e.line))
             .collect(),
         None => BTreeSet::new(),
@@ -163,10 +175,16 @@ pub(crate) fn barrels(
     // nearest, then a statement by the file it re-exports
     let mut rank: BTreeMap<(&str, Option<u32>), usize> = BTreeMap::new();
     let mut statements: Vec<&Evidence> = Vec::new();
+    let relays = match target {
+        Some(Narrowed::Symbol(_, relays)) => Some(relays),
+        _ => None,
+    };
     for (barrel, from) in barrels {
         let re_exports: Vec<&Evidence> = imports()
             .filter(|e| {
-                e.passes_on() && e.file == *barrel && e.target.as_deref() != Some(barrel.as_str())
+                (e.passes_on() || relays.is_some_and(|r| relayed(r, e)))
+                    && e.file == *barrel
+                    && e.target.as_deref() != Some(barrel.as_str())
             })
             .collect();
         let near = |e: &Evidence| {
@@ -230,11 +248,17 @@ pub(crate) fn barrels(
             } else {
                 Vec::new()
             };
+            // a test whose mock replaces the barrel runs none of it
+            let mocking: BTreeSet<&str> = imports()
+                .filter(|i| i.replaces && i.target.as_deref() == Some(barrel))
+                .map(|i| i.file.as_str())
+                .collect();
             let loading: BTreeSet<&str> = imports()
                 .filter(|i| i.target.as_deref() == Some(barrel) && i.via().is_none())
                 .chain(below.iter().map(|(_, i)| *i))
-                .filter(|i| i.test && !i.type_only && !i.replaces && !listed.contains(&i.file))
+                .filter(|i| i.test && !i.type_only && !listed.contains(&i.file))
                 .map(|i| i.file.as_str())
+                .filter(|file| !mocking.contains(file))
                 .collect();
             Barrel {
                 file: e.file.clone(),

@@ -1,6 +1,8 @@
 //! `query`: one target in detail, as a component, a file, symbols or an
 //! import name without a component.
 
+use std::collections::BTreeSet;
+
 use anyhow::{Context, Result};
 use archmap_core::{
     ArchitectureGraph, ComponentId, ComponentKind, Edge, EdgeKind, Evidence, Symbol, SymbolUses,
@@ -291,7 +293,31 @@ pub(crate) fn uses_of(
 ) -> Option<SymbolUses> {
     // the symbol as scan recorded it, in the component that declares it
     let symbol = full.symbol(&symbol.id).unwrap_or(symbol);
-    let found = archmap_scan::symbol_uses(report, symbol);
+    let mut found = archmap_scan::symbol_uses(report, symbol);
+    // a file that uses the symbol through none of its statements of the
+    // symbol (through a Rust inline module's `use super::*`) or holds macro
+    // calls the scan does not read may take it through any of them: none of
+    // them is unused
+    let defining = symbol.location().map(|e| e.file.as_str());
+    let listed: BTreeSet<(String, u32)> = full
+        .symbol_importers(symbol)
+        .into_iter()
+        .flat_map(|found| found.by_name.into_iter().chain(found.may_use))
+        .filter_map(|(_, e)| Some((e.file.clone(), e.line?)))
+        .collect();
+    let open: BTreeSet<String> = found
+        .uses
+        .iter()
+        .filter(|u| Some(u.evidence.file.as_str()) != defining)
+        .filter(|u| {
+            u.statement
+                .as_ref()
+                .is_none_or(|at| !listed.contains(&(at.file.clone(), at.line)))
+        })
+        .map(|u| u.evidence.file.clone())
+        .chain(full.unread_macros.iter().map(|m| m.evidence.file.clone()))
+        .collect();
+    found.unused.retain(|e| !open.contains(&e.file));
     let unread_language = found
         .unread
         .iter()

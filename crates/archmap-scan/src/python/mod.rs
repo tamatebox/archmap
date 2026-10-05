@@ -1075,6 +1075,14 @@ fn emit_imports(
                 if let Some(t) = target_file {
                     e = e.pointing_at(t).taking(names.iter().cloned());
                 }
+                // a re-export passes a name on under the one it binds
+                if note == "export" {
+                    for (name, bound) in import.names.iter().zip(&import.bound) {
+                        if name != bound && names.contains(name) {
+                            e = e.exporting(name.clone(), bound.clone());
+                        }
+                    }
+                }
                 output.fragment.push_edge(
                     Edge::new(owner.clone(), target.clone(), EdgeKind::Import).with_evidence(e),
                 );
@@ -1241,13 +1249,18 @@ fn emit_imports(
                                     entry.line
                                 )
                             };
+                            let export = note == "export";
+                            let mut e = evidence().with_note(note).pointing_at(target_file);
+                            if export {
+                                for (name, bound) in import.names.iter().zip(&import.bound) {
+                                    if name != bound && names.contains(name) {
+                                        e = e.exporting(name.clone(), bound.clone());
+                                    }
+                                }
+                            }
                             output.fragment.push_edge(
-                                Edge::new(owner.clone(), target, EdgeKind::Import).with_evidence(
-                                    evidence()
-                                        .with_note(note)
-                                        .pointing_at(target_file)
-                                        .taking(names),
-                                ),
+                                Edge::new(owner.clone(), target, EdgeKind::Import)
+                                    .with_evidence(e.taking(names)),
                             );
                         }
                         continue;

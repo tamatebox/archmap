@@ -141,7 +141,7 @@ What works today, by the [roadmap](#roadmap) phase it belongs to:
 | Names each import takes | 1 | ✅ | ✅ | ✅ |
 | Imports without an edge, with the reason | 1 | ✅ | ✅ | ✅ |
 | `summary` and `query`, down to one file | 2 | ✅ | ✅ | ✅ |
-| `query` and `impact` on a symbol, by the names imports take | 2 | ✅ | ◐ | ✅ |
+| `query` and `impact` on a symbol, by the names imports take | 2 | ✅ | ✅ | ✅ |
 | `impact` file by file | 2 | ✅ | ✅ | ✅ |
 | Test code counted apart from production code | 2 | ✅ | ✅ | ✅ |
 | `check` rules and cycles | 3 | ✅ | ✅ | ✅ |
@@ -153,11 +153,6 @@ What works today, by the [roadmap](#roadmap) phase it belongs to:
 
 The gaps behind the marks:
 
-- Python `impact` on a symbol: an `__init__.py` that imports a name from
-  another file without listing it in `__all__` (or as `x as x`) may use it,
-  so `impact` goes on from it to every file that imports it or a module
-  below it; one that lists the name, or writes `from .x import name as
-  name`, is followed only to what takes the name.
 - Callers and references: `query` and `impact` list where a symbol is used
   through the names imports bind and, for a method, through its class or
   type and `this` or `self`; a call through a value of a type

@@ -262,7 +262,9 @@ into the model in [graph.md](graph.md); how the commands present it is in
   directory) is not, nor pytest's `pythonpath` setting; a file outside the conftest's directory that a
   test session imports after it, which depends on the order pytest loads files in, does not resolve
   against it, and the paths are taken as written, not through the symbolic links `.resolve()`
-  follows.
+  follows. A conftest's entries are tried only for an import that no module of the scan, declared
+  dependency or standard library module answers, so one that `sys.path.insert(0, ..)` puts before a
+  module of the same name elsewhere (a stubs directory) is not seen to shadow it.
 - `Used at` does not read a method called through a value of its class (`wallet.open()`) or
   `super().open()`, a name read through another name its module is assigned to, a string that names the
   symbol where a file imported it (`mock.patch("shop.web.views.pay")`) rather than by its own module's
@@ -270,9 +272,10 @@ into the model in [graph.md](graph.md); how the commands present it is in
   is not counted as bound again in the function around it, nor a name a class body's annotation scope
   sees.
 - An `__init__.py` that imports a name without listing it in a literal `__all__` (or as `x as x`),
-  or whose `__all__` is built at runtime (`__all__ += other.__all__`), is no barrel, since it may use
-  what it imports: `impact` goes on from it file by file, to every importer of it and whatever imports
-  a module below it. One that lists a name it imports only for what loading its module registers (a
+  or whose `__all__` is built at runtime (`__all__ += other.__all__`), is no barrel for a file target,
+  since it may use what it imports: `impact` on the file goes on from it file by file, to every
+  importer of it and whatever imports a module below it. For a symbol, the uses pass reads it, and
+  one whose code never uses the name is a barrel for that symbol. One that lists a name it imports only for what loading its module registers (a
   class a decorator adds to a registry) passes it on all the same, so what uses the registry through
   the package is not reached from a change to that module, and the `__init__.py` shows only in
   `impact`'s `barrels:` line.

@@ -472,8 +472,16 @@ pub fn scan_source(text: &str) -> PyFile {
             (listed(bound) || explicit.contains(&(import.line, name.clone())))
                 && !appears(text, bound, &elsewhere)
         };
+        // code after `;` on a line the check leaves out may use it
+        let more_code = elsewhere.iter().any(|&line| {
+            (line as usize)
+                .checked_sub(1)
+                .and_then(|at| text.lines().nth(at))
+                .is_some_and(|l| l.split('#').next().unwrap_or("").contains(';'))
+        });
         relays.push(
             !computed
+                && !more_code
                 && module_level
                 && whole
                 && !import.names.is_empty()
@@ -1144,6 +1152,15 @@ CURRENCY = "JPY"
         // not listed; written elsewhere, a comment included; read by a
         // computed name
         assert_eq!(relays("from .charge import pay\n"), [false]);
+        // code after `;` on its line or on the `__all__` line
+        assert_eq!(
+            relays("from .charge import pay; pay(0)\n__all__ = [\"pay\"]\n"),
+            [false]
+        );
+        assert_eq!(
+            relays("from .charge import pay\n__all__ = [\"pay\"]; pay(0)\n"),
+            [false]
+        );
         assert_eq!(
             relays("from .charge import pay\n__all__ = [\"pay\"]\ntotal = pay(1)\n"),
             [false]

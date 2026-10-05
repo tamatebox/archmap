@@ -426,7 +426,9 @@ evidence anyway. A barrel that also imports the changed file for its own
 use, or that code depending on the change imports, leads on through every
 statement that loads it. A Python package's `__init__.py` that only passes
 names on (its `from` import noted `export`, see
-[analyzers.md](analyzers.md#python)) is such a barrel too, and past it the
+[analyzers.md](analyzers.md#python)) is such a barrel too, and so, for a
+symbol, is one whose statement takes the symbol's name and that the uses
+pass finds passing it on with no use in its file; past it the
 reach follows names only: not the imports of a module below the package,
 which run the `__init__.py` first. Nor are they followed past one reached
 only through what it re-exports from a file that did not change, since none

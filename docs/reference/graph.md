@@ -46,8 +46,10 @@ from another), evidence noted `<note> via <file>:<line>` (one word,
 `import via src/index.ts:2`, `use via src/shapes/mod.rs:2`) names what the
 defining file declares; a note that only contains ` via `, as a specifier
 written with it does, is no such evidence. Such evidence belongs to an edge
-to the component of the defining file, which `deny`, `layers` and `allow`
-count like any other. A statement noted `export`
+to the component of the defining file, which `query`, `impact` and the cycle
+check follow; `deny`, `layers` and `allow` count it toward the component of
+the re-export it went through when that re-export is an import of its own
+(see [rules.md](rules.md)). A statement noted `export`
 passes the names it takes on, as a TS/JS re-export does, and a Python
 `from` import that binds only definitions its file lists in `__all__` and
 never writes again: `impact` follows a changed file or symbol through such

@@ -43,6 +43,9 @@ pub(crate) struct Request<'g> {
     pub statements: Vec<&'g Evidence>,
     /// The files some statement of the scan imports.
     pub imported: BTreeSet<&'g str>,
+    /// The names under which each file offers the symbol, through the
+    /// barrels that pass it on.
+    pub offered: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// What a use must reach.
@@ -134,6 +137,7 @@ pub(crate) fn read(request: &Request, out: &mut SymbolUses) {
         root: request.root,
         target: &target,
         imported: &request.imported,
+        offered: &request.offered,
     };
     for (&file, statements) in &files {
         let defining = file == target.file;
@@ -162,6 +166,7 @@ struct Pass<'t> {
     root: &'t Path,
     target: &'t Target,
     imported: &'t BTreeSet<&'t str>,
+    offered: &'t BTreeMap<String, BTreeSet<String>>,
 }
 
 impl Pass<'_> {
@@ -376,22 +381,31 @@ impl Pass<'_> {
             let Some(loaded) = e.target.as_deref() else {
                 continue;
             };
-            let all = std::fs::read_to_string(self.root.join(loaded))
+            let source = std::fs::read_to_string(self.root.join(loaded))
                 .ok()
-                .map(|text| scan_source(&text).all);
-            let takes = match all {
-                Some(Some(DunderAll::Listed(names))) => Some(names.contains(name)),
-                Some(None) => Some(!name.starts_with('_')),
-                Some(Some(DunderAll::Built)) | None => None,
+                .map(|text| scan_source(&text));
+            // a barrel offers it under the names it passes it on as
+            // (`from .impl import amount as total`)
+            let offered: Vec<&String> = match self.offered.get(loaded) {
+                Some(names) if loaded != self.target.file => names.iter().collect(),
+                _ => vec![name],
             };
-            if takes == Some(false) {
-                continue;
+            let all = source.map(|source| source.all);
+            for offered in offered {
+                let takes = match &all {
+                    Some(Some(DunderAll::Listed(names))) => Some(names.contains(offered)),
+                    Some(None) => Some(!offered.starts_with('_')),
+                    Some(Some(DunderAll::Built)) | None => None,
+                };
+                if takes == Some(false) {
+                    continue;
+                }
+                bound.may_bind |= takes.is_none();
+                bound.bindings.push(Binding {
+                    star: true,
+                    ..Binding::new(line, offered, None, self.target.tail[1..].to_vec(), 0)
+                });
             }
-            bound.may_bind |= takes.is_none();
-            bound.bindings.push(Binding {
-                star: true,
-                ..Binding::new(line, name, None, self.target.tail[1..].to_vec(), 0)
-            });
         }
     }
 

@@ -414,6 +414,32 @@ fn loaded_dependencies(graph: &ArchitectureGraph) -> Vec<Loaded<'_>> {
                 .filter_map(move |e| Some(((e.file.as_str(), e.line?), &edge.from)))
         })
         .collect();
+    // each file's statements that load a file, with their component: a
+    // barrel that imports a name on one line and passes it on from another
+    // (`import { x } from './m'`, then `export { x }`) re-exports it through
+    // that import, which takes the same name
+    let mut loading: BTreeMap<(&str, &str), Vec<(&Evidence, &ComponentId)>> = BTreeMap::new();
+    for edge in graph
+        .edges
+        .iter()
+        .filter(|edge| edge.kind == EdgeKind::Import)
+    {
+        for e in edge.evidence.iter().filter(|e| !e.test) {
+            if let Some(target) = e.target.as_deref() {
+                loading
+                    .entry((e.file.as_str(), target))
+                    .or_default()
+                    .push((e, &edge.from));
+            }
+        }
+    }
+    let through_import = |at: (&str, u32), e: &Evidence| {
+        loading
+            .get(&(at.0, e.target.as_deref()?))?
+            .iter()
+            .find(|(i, _)| i.names.iter().any(|n| e.names.contains(n)))
+            .map(|(_, from)| *from)
+    };
     let mut loaded: BTreeMap<(&ComponentId, &ComponentId, EdgeKind), Vec<&Evidence>> =
         BTreeMap::new();
     for edge in graph.edges.iter().filter(|edge| edge.in_production()) {
@@ -424,7 +450,12 @@ fn loaded_dependencies(graph: &ArchitectureGraph) -> Vec<Loaded<'_>> {
             let to = e
                 .via()
                 .and_then(place)
-                .and_then(|at| statements.get(&at).copied())
+                .and_then(|at| {
+                    statements
+                        .get(&at)
+                        .copied()
+                        .or_else(|| through_import(at, e))
+                })
                 .unwrap_or(&edge.to);
             if to != &edge.from {
                 loaded
@@ -1213,6 +1244,47 @@ mod tests {
             ),
             "{findings:?}"
         );
+    }
+
+    #[test]
+    fn a_barrel_that_passes_on_what_it_imported_on_another_line_is_the_facade() {
+        // src/shop/index.ts: `import { pay } from './billing/pay';` on line
+        // 1, `export { pay };` on line 3, which the walk names
+        let mut g = modules(&[
+            ("app", "app"),
+            ("shop", "src/shop"),
+            ("billing", "src/shop/billing"),
+        ]);
+        let pay = "src/shop/billing/pay.ts";
+        g.add_edges([
+            Edge::new("shop", "billing", EdgeKind::Import).with_evidence(
+                Evidence::new("src/shop/index.ts")
+                    .at_line(1)
+                    .pointing_at(pay)
+                    .taking(["pay"]),
+            ),
+            Edge::new("app", "billing", EdgeKind::Import).with_evidence(
+                Evidence::new("app/main.ts")
+                    .at_line(1)
+                    .pointing_at(pay)
+                    .with_note("import via src/shop/index.ts:3")
+                    .taking(["pay"]),
+            ),
+        ]);
+        let set = RuleSet {
+            components: declared(&[
+                ("app", "app"),
+                ("facade", "src/shop"),
+                ("internals", "src/shop/billing"),
+            ]),
+            deny: vec![DenyRule {
+                from: "app".into(),
+                to: "internals".into(),
+                reason: None,
+            }],
+            ..RuleSet::default()
+        };
+        assert_eq!(check(&g, &set, 2), Vec::new());
     }
 
     #[test]

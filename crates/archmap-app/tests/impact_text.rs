@@ -732,6 +732,142 @@ fn a_rust_glob_stays_in_the_reach_where_its_file_may_use_the_symbol() {
 }
 
 #[test]
+fn a_python_package_that_only_relays_a_symbol_leads_on_by_its_name() {
+    let files = |init: &str| -> Vec<(String, String)> {
+        [
+            ("pyproject.toml", "[project]\nname = \"relay\"\n"),
+            ("store/__init__.py", init),
+            ("store/charge.py", "def pay(x):\n    return x\n"),
+            ("store/report.py", "def report():\n    return 1\n"),
+            ("app.py", "from store import pay\n\npay(1)\n"),
+            (
+                "tests/test_report.py",
+                "from store.report import report\n\n\ndef test_report():\n    assert report() == 1\n",
+            ),
+            (
+                "tests/test_pay.py",
+                "import store\n\n\ndef test_pay():\n    assert store.pay(1) == 1\n",
+            ),
+        ]
+        .into_iter()
+        .map(|(file, text)| (file.to_owned(), text.to_owned()))
+        .collect()
+    };
+    // no __all__ and no use of `pay` there: what loads a module below the
+    // package runs nothing of `pay`
+    let repo = Repo::new("relay-only", &files("from .charge import pay\n"));
+    let out = text(&scan(&repo.0), "pay");
+    assert_eq!(
+        section(&out, "Tests to run again: 1"),
+        ["  tests/test_pay.py (takes it, via store/__init__.py:1)"],
+        "{out}"
+    );
+    assert!(out.contains("app.py"), "{out}");
+    assert!(out.contains("barrels: 1 file"), "{out}");
+    // one whose own code calls it keeps the whole reach
+    let repo = Repo::new(
+        "relay-used",
+        &files("from .charge import pay\n\nTOTAL = pay(0)\n"),
+    );
+    let out = text(&scan(&repo.0), "pay");
+    assert!(out.contains("tests/test_report.py"), "{out}");
+}
+
+#[test]
+fn a_python_name_a_barrel_renames_reaches_its_star_importers() {
+    let files = |barrels: &[(&str, &str)]| -> Vec<(String, String)> {
+        let mut files: Vec<(&str, &str)> = vec![
+            ("pyproject.toml", "[project]\nname = \"ren\"\n"),
+            (
+                "star_user/m.py",
+                "from pkg import *\n\n\ndef go():\n    return total(1)\n",
+            ),
+            (
+                "tests/test_star.py",
+                "from pkg import *\n\n\ndef test_t():\n    assert total(1) == 1\n",
+            ),
+        ];
+        files.extend_from_slice(barrels);
+        files
+            .into_iter()
+            .map(|(file, text)| (file.to_owned(), text.to_owned()))
+            .collect()
+    };
+    // one barrel renames it and lists the new name
+    let repo = Repo::new(
+        "renamed-star",
+        &files(&[
+            (
+                "pkg/__init__.py",
+                "from .impl import amount as total\n\n__all__ = [\"total\"]\n",
+            ),
+            ("pkg/impl.py", "def amount(x):\n    return x\n"),
+        ]),
+    );
+    let out = text(&scan(&repo.0), "amount");
+    assert!(
+        out.contains("tests/test_star.py:5 (call) (test) as total"),
+        "{out}"
+    );
+    assert!(out.contains("\nTests to run again: 1\n"), "{out}");
+    // an outer barrel passes the new name on
+    let repo = Repo::new(
+        "renamed-twice",
+        &files(&[
+            ("pkg/__init__.py", "from .sub import total as total\n"),
+            (
+                "pkg/sub/__init__.py",
+                "from .impl import amount as total\n\n__all__ = [\"total\"]\n",
+            ),
+            ("pkg/sub/impl.py", "def amount(x):\n    return x\n"),
+        ]),
+    );
+    let out = text(&scan(&repo.0), "amount");
+    assert!(out.contains("\nTests to run again: 1\n"), "{out}");
+}
+
+#[test]
+fn a_mocked_module_still_passes_types_on() {
+    // a test that takes a type through a module its mock replaces: a mock
+    // replaces no type, for the file and for the symbol alike
+    let files: Vec<(String, String)> = [
+        ("package.json", r#"{"name": "mockstart", "devDependencies": {"vitest": "1.0.0"}}"#),
+        ("src/core.ts", "export class Wallet {}\n"),
+        (
+            "src/service.ts",
+            "import { Wallet } from './core';\n\nexport type Svc = Wallet;\nexport const run = () => 1;\n",
+        ),
+        (
+            // a test that mocks the changed file and takes a type of it
+            "tests/core.test.ts",
+            "import { vi } from 'vitest';\nimport type { Wallet } from '../src/core';\n\n\
+             vi.mock('../src/core', () => ({}));\n\nexport const w: Wallet | null = null;\n",
+        ),
+        (
+            "tests/svc.test.ts",
+            "import { vi } from 'vitest';\nimport type { Svc } from '../src/service';\n\n\
+             vi.mock('../src/service', () => ({ run: vi.fn() }));\n\nexport const s: Svc | null = null;\n",
+        ),
+    ]
+    .into_iter()
+    .map(|(file, text)| (file.to_owned(), text.to_owned()))
+    .collect();
+    let repo = Repo::new("mock-start", &files);
+    let ws = scan(&repo.0);
+    for target in ["src/core.ts", "Wallet"] {
+        let out = text(&ws, target);
+        assert_eq!(
+            section(&out, "Tests to run again: 2"),
+            [
+                "  tests/core.test.ts (takes it, types only)",
+                "  tests/svc.test.ts (through src/service.ts, types only)"
+            ],
+            "{target}: {out}"
+        );
+    }
+}
+
+#[test]
 fn small_lists_say_what_they_hold() {
     // a component's bench, example and helper are in the target
     let ws = scan(&fixture("rust-cargo-targets"));

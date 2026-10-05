@@ -4,9 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result};
 use archmap_core::{
-    ArchitectureGraph, ChangeSeed, Component, ComponentId, ComponentKind, Edge, Evidence, Hop,
-    ImportPlace, Symbol, SymbolImporters, SymbolUses, TestReach, TestRoute, TestWay,
-    UnmappedImport,
+    ArchitectureGraph, ChangeSeed, Component, ComponentId, ComponentKind, Edge, Evidence,
+    FirstStep, Hop, ImportPlace, Symbol, SymbolImporters, SymbolUses, TestReach, TestRoute,
+    TestWay, UnmappedImport,
 };
 
 use archmap_scan::ScanReport;
@@ -177,6 +177,8 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
     // statements that take a symbol's file whole, those that never name it
     // included
     let mut takes_whole = false;
+    // the statements that make their file a barrel for a symbol
+    let mut relays: BTreeSet<ImportPlace> = BTreeSet::new();
     let traced: Traced;
     let (at, mut reach) = match resolve(full, &rolled, root, target)? {
         Resolved::Candidates(candidates) => {
@@ -243,7 +245,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
                 let found = full.symbol_importers(symbol);
                 used_at = uses_of(full, &ws.report, symbol);
                 if let (Some(found), Some(uses)) = (&found, &used_at) {
-                    unnamed = never_named(full, found, uses);
+                    unnamed = never_named(found, uses);
                 }
                 // files that use it through no statement of it take it too
                 let defining = symbol.location().map(|e| e.file.as_str());
@@ -259,7 +261,37 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
                     .filter(|f| Some(*f) != defining && !listed.contains(f))
                     .map(str::to_owned)
                     .collect();
-                let reach = full.change_impact(ChangeSeed::Symbol(symbol, &unnamed, &users), depth);
+                // a statement that takes it by name only to pass it on, in a
+                // file that uses it no way, makes its file a barrel for it
+                let used: BTreeSet<&str> = used_at
+                    .iter()
+                    .flat_map(|u| &u.uses)
+                    .map(|u| u.evidence.file.as_str())
+                    .collect();
+                let named: BTreeSet<(&str, Option<u32>)> = found
+                    .iter()
+                    .flat_map(|f| &f.by_name)
+                    .map(|(_, e)| (e.file.as_str(), e.line))
+                    .collect();
+                let passing: BTreeSet<ImportPlace> = used_at
+                    .iter()
+                    .flat_map(|u| &u.passed_on)
+                    .filter(|e| named.contains(&(e.file.as_str(), e.line)))
+                    .filter(|e| !used.contains(e.file.as_str()))
+                    .filter_map(|e| {
+                        Some(ImportPlace {
+                            file: e.file.clone(),
+                            line: e.line?,
+                        })
+                    })
+                    .collect();
+                relays = passing.clone();
+                let first = FirstStep {
+                    unnamed: unnamed.clone(),
+                    users,
+                    passing,
+                };
+                let reach = full.change_impact(ChangeSeed::Symbol(symbol, &first), depth);
                 if let Some(found) = found {
                     importers = Some(symbol_sites(
                         full,
@@ -356,7 +388,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
     // the barrels past which the reach went on by names only
     let narrowed = match &traced {
         Traced::File(file, _) => Some(Narrowed::File(file)),
-        Traced::Symbol(symbol) => Some(Narrowed::Symbol(symbol)),
+        Traced::Symbol(symbol) => Some(Narrowed::Symbol(symbol, &relays)),
         Traced::Component(_) => None,
     };
     if let Some(found) = barrels(full, narrowed, &reach.barrels, &reach.tests, usize::MAX) {
@@ -470,30 +502,17 @@ fn render(
 
 /// The statements of `found` that take the symbol's file whole and that the
 /// uses pass read and found never naming it: they take nothing of it. Not a
-/// statement that takes it by name, which loads the file all the same, nor
-/// one in a file that uses the symbol through another binding (a Rust
-/// inline module's `use super::*`) or holds macro calls the scan does not
-/// read, which may take it through any statement there.
-fn never_named(
-    full: &ArchitectureGraph,
-    found: &SymbolImporters,
-    uses: &SymbolUses,
-) -> BTreeSet<ImportPlace> {
+/// statement that takes it by name, which loads the file all the same (see
+/// `uses_of` for the files whose statements are never unused).
+fn never_named(found: &SymbolImporters, uses: &SymbolUses) -> BTreeSet<ImportPlace> {
     let whole: BTreeSet<(&str, Option<u32>)> = found
         .may_use
         .iter()
         .map(|(_, e)| (e.file.as_str(), e.line))
         .collect();
-    let open: BTreeSet<&str> = uses
-        .uses
-        .iter()
-        .map(|u| u.evidence.file.as_str())
-        .chain(full.unread_macros.iter().map(|m| m.evidence.file.as_str()))
-        .collect();
     uses.unused
         .iter()
         .filter(|e| whole.contains(&(e.file.as_str(), e.line)))
-        .filter(|e| !open.contains(e.file.as_str()))
         .filter_map(|e| {
             Some(ImportPlace {
                 file: e.file.clone(),

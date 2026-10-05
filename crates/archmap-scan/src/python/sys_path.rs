@@ -15,7 +15,8 @@
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
-use ruff_python_ast::{Expr, Number, Operator, PySourceType, Stmt};
+use ruff_python_ast::visitor::{walk_expr, walk_stmt, Visitor};
+use ruff_python_ast::{Expr, ExprContext, Number, Operator, PySourceType, Stmt};
 use ruff_python_parser::parse_unchecked_source;
 use ruff_text_size::Ranged;
 
@@ -79,6 +80,7 @@ impl Reader {
     fn stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Assign(assign) => {
+                self.unbind_stores(&assign.value);
                 let value = self.path(&assign.value);
                 for target in &assign.targets {
                     self.bind(target, value.clone());
@@ -88,23 +90,45 @@ impl Reader {
                 let value = assign.value.as_deref().and_then(|v| self.path(v));
                 self.bind(&assign.target, value);
             }
-            Stmt::Expr(expr) => self.call(&expr.value),
+            Stmt::Expr(expr) => {
+                self.unbind_stores(&expr.value);
+                self.call(&expr.value);
+            }
+            // each arm from the same names; a name the arms bind apart is
+            // known only where they agree
             Stmt::If(stmt) => {
-                self.body(&stmt.body);
-                for clause in &stmt.elif_else_clauses {
-                    self.body(&clause.body);
-                }
+                self.unbind_stores(&stmt.test);
+                let mut arms: Vec<Vec<&Stmt>> = vec![stmt.body.iter().collect()];
+                arms.extend(
+                    stmt.elif_else_clauses
+                        .iter()
+                        .map(|c| c.body.iter().collect()),
+                );
+                let skipped = stmt.elif_else_clauses.iter().all(|c| c.test.is_some());
+                self.arms(&arms, skipped);
             }
             Stmt::Try(stmt) => {
-                self.body(&stmt.body);
+                let mut arms: Vec<Vec<&Stmt>> =
+                    vec![stmt.body.iter().chain(&stmt.orelse).collect()];
                 for handler in &stmt.handlers {
                     let ruff_python_ast::ExceptHandler::ExceptHandler(handler) = handler;
-                    self.body(&handler.body);
+                    if let Some(name) = &handler.name {
+                        self.unbind(name.as_str());
+                    }
+                    arms.push(handler.body.iter().collect());
                 }
-                self.body(&stmt.orelse);
+                self.arms(&arms, false);
                 self.body(&stmt.finalbody);
             }
-            Stmt::With(stmt) => self.body(&stmt.body),
+            Stmt::With(stmt) => {
+                for item in &stmt.items {
+                    self.unbind_stores(&item.context_expr);
+                    if let Some(target) = &item.optional_vars {
+                        self.unbind_stores(target);
+                    }
+                }
+                self.body(&stmt.body);
+            }
             // a definition binds its name to something other than a path
             Stmt::FunctionDef(def) => self.unbind(def.name.as_str()),
             Stmt::ClassDef(def) => self.unbind(def.name.as_str()),
@@ -133,7 +157,64 @@ impl Reader {
                         .insert(local.to_string(), format!("{module}.{}", alias.name));
                 }
             }
-            _ => {}
+            // a loop, an augmented assignment, `del`: what they store is no
+            // path the scan computes
+            other => {
+                let mut stores = Stores::default();
+                stores.visit_stmt(other);
+                for name in stores.names {
+                    self.unbind(&name);
+                }
+            }
+        }
+    }
+
+    /// Run each of `arms` from the names as they are, `skipped` when none
+    /// may run, then keep a name only where every way agrees.
+    fn arms(&mut self, arms: &[Vec<&Stmt>], skipped: bool) {
+        let (names, modules) = (self.names.clone(), self.modules.clone());
+        let mut ways = Vec::new();
+        for arm in arms {
+            self.names = names.clone();
+            self.modules = modules.clone();
+            for stmt in arm {
+                self.stmt(stmt);
+            }
+            ways.push((self.names.clone(), self.modules.clone()));
+        }
+        if skipped {
+            ways.push((names, modules));
+        }
+        let Some(((first_names, first_modules), rest)) = ways.split_first() else {
+            return;
+        };
+        self.names = first_names
+            .iter()
+            .map(|(name, path)| {
+                let same = rest.iter().all(|(n, _)| n.get(name) == Some(path));
+                (name.clone(), path.clone().filter(|_| same))
+            })
+            .collect();
+        for (n, _) in rest {
+            for name in n.keys() {
+                if !first_names.contains_key(name) {
+                    self.names.insert(name.clone(), None);
+                }
+            }
+        }
+        self.modules = first_modules
+            .iter()
+            .filter(|(name, module)| rest.iter().all(|(_, m)| m.get(*name) == Some(module)))
+            .map(|(name, module)| (name.clone(), module.clone()))
+            .collect();
+    }
+
+    /// Unbind what `expr` stores: a walrus, or the targets of a `with`.
+    fn unbind_stores(&mut self, expr: &Expr) {
+        let mut stores = Stores::default();
+        stores.visit_expr(expr);
+        for name in stores.names {
+            self.unbind(&name);
         }
     }
 
@@ -143,9 +224,13 @@ impl Reader {
     }
 
     fn bind(&mut self, target: &Expr, value: Option<Vec<String>>) {
-        if let Expr::Name(name) = target {
-            self.modules.remove(name.id.as_str());
-            self.names.insert(name.id.to_string(), value);
+        match target {
+            Expr::Name(name) => {
+                self.modules.remove(name.id.as_str());
+                self.names.insert(name.id.to_string(), value);
+            }
+            // a tuple or a list unpacks something other than a path
+            other => self.unbind_stores(other),
         }
     }
 
@@ -285,6 +370,34 @@ fn literal(expr: &Expr) -> Option<&str> {
     }
 }
 
+/// The names a statement or an expression stores into or deletes, apart
+/// from those of a function or class body, which bind there.
+#[derive(Default)]
+struct Stores {
+    names: Vec<String>,
+}
+
+impl<'a> Visitor<'a> for Stores {
+    fn visit_stmt(&mut self, stmt: &'a Stmt) {
+        match stmt {
+            Stmt::FunctionDef(def) => self.names.push(def.name.to_string()),
+            Stmt::ClassDef(def) => self.names.push(def.name.to_string()),
+            _ => walk_stmt(self, stmt),
+        }
+    }
+
+    fn visit_expr(&mut self, expr: &'a Expr) {
+        match expr {
+            Expr::Name(name) if name.ctx != ExprContext::Load => {
+                self.names.push(name.id.to_string());
+            }
+            // a lambda's parameters bind in it
+            Expr::Lambda(_) => {}
+            _ => walk_expr(self, expr),
+        }
+    }
+}
+
 /// `path` joined with relative `parts`, `..` leaving a directory; `None`
 /// when that leaves the root or a part is absolute.
 fn join<'a>(
@@ -341,6 +454,47 @@ mod tests {
         assert_eq!(
             dirs(&added.back),
             vec![("tools", 9), ("tests/helpers", 10), ("vendor", 11)]
+        );
+    }
+
+    #[test]
+    fn a_name_stored_another_way_is_no_path_and_arms_must_agree() {
+        let added = |body: &str| {
+            let text = format!(
+                "import sys\nfrom pathlib import Path\nROOT = Path(__file__).parent.parent\n{body}"
+            );
+            let added = added_by(Path::new("tests/conftest.py"), &text);
+            dirs(&added.front)
+                .into_iter()
+                .map(|(dir, _)| dir.to_owned())
+                .collect::<Vec<_>>()
+        };
+        // an augmented assignment, a tuple, a loop, a walrus, `del`
+        for body in [
+            "ROOT /= \"lib\"\nsys.path.insert(0, str(ROOT))\n",
+            "ROOT, _ = ROOT / \"lib\", None\nsys.path.insert(0, str(ROOT))\n",
+            "for ROOT in [ROOT / \"lib\"]:\n    pass\nsys.path.insert(0, str(ROOT))\n",
+            "if (ROOT := Path(\"x\")):\n    pass\nsys.path.insert(0, str(ROOT))\n",
+            "del ROOT\nsys.path.insert(0, str(ROOT))\n",
+        ] {
+            assert!(added(body).is_empty(), "{body}");
+        }
+        // arms that bind it apart, or one that may not run
+        for body in [
+            "if X:\n    ROOT = ROOT / \"a\"\nelse:\n    ROOT = ROOT / \"b\"\nsys.path.insert(0, str(ROOT))\n",
+            "if X:\n    ROOT = ROOT / \"a\"\nsys.path.insert(0, str(ROOT))\n",
+            "try:\n    ROOT = ROOT / \"a\"\nexcept ImportError:\n    pass\nsys.path.insert(0, str(ROOT))\n",
+        ] {
+            assert!(added(body).is_empty(), "{body}");
+        }
+        // arms that agree, and a call inside one arm
+        assert_eq!(
+            added("if X:\n    ROOT = ROOT / \"a\"\nelse:\n    ROOT = ROOT / \"a\"\nsys.path.insert(0, str(ROOT))\n"),
+            ["a"]
+        );
+        assert_eq!(
+            added("if X:\n    sys.path.insert(0, str(ROOT / \"b\"))\n"),
+            ["b"]
         );
     }
 
