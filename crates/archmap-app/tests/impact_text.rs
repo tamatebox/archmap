@@ -1609,7 +1609,7 @@ fn a_change_that_reaches_a_route_file_says_tests_may_reach_it_by_its_url() {
             // a page in the component of the file it reaches through another
             (
                 "app/shelf/[id]/page.tsx",
-                "import { Editor } from '../../../components/editor';\nexport default function Page() { return Editor; }\n",
+                "import { Editor } from '../../../components/editor';\nexport function title() { return 'shelf'; }\nexport default function Page() { return Editor; }\n",
             ),
             (
                 "app/shelf/actions.ts",
@@ -1655,6 +1655,16 @@ fn a_change_that_reaches_a_route_file_says_tests_may_reach_it_by_its_url() {
             "\n  middleware: 1 file runs before every request its matcher covers, so tests of any \
              URL may reach the change through it: src/proxy.ts\n"
         ),
+        "{answer}"
+    );
+    // a symbol of the page changes the page
+    let answer = text(&ws, "title");
+    assert!(
+        answer.contains("a framework loads for a URL; tests that reach it through a URL"),
+        "{answer}"
+    );
+    assert!(
+        answer.contains("serves: app/shelf/[id]/page.tsx\n"),
         "{answer}"
     );
     // a change that reaches the page only through types runs in none of it

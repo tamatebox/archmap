@@ -568,6 +568,8 @@ impl ArchitectureGraph {
         // a symbol, the file it is reached through and the name it goes by
         let mut changed: BTreeSet<&str> = BTreeSet::new();
         let mut symbol_name: Option<(&str, &str)> = None;
+        // a symbol's file, which the change starts from, when no test
+        let mut defined_in: Option<&str> = None;
         // for a symbol, how the files of its statements take it, whether the
         // statement takes types only, and the file it loads
         let mut start_ways: BTreeMap<&str, Vec<StartWay>> = BTreeMap::new();
@@ -601,6 +603,10 @@ impl ArchitectureGraph {
                 // of the latter that never name it; dependencies without file
                 // detail on its component stay, like the latter
                 start.push((Node::Component(&symbol.component), 0, None));
+                defined_in = symbol
+                    .location()
+                    .map(|e| e.file.as_str())
+                    .filter(|f| !test_code.contains(f));
                 // the file and name a mock replaces it by
                 let reached = symbol
                     .evidence
@@ -1206,6 +1212,7 @@ impl ArchitectureGraph {
                 Node::Component(_) => None,
             })
             .chain(seeds.iter().copied())
+            .chain(defined_in)
             .map(str::to_owned)
             .collect();
         // how each test file reaches the change, in the walk its mocks give:
