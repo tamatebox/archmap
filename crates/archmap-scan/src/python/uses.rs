@@ -284,10 +284,12 @@ impl Pass<'_> {
                         || takes(WHOLE_MODULE)
                         || b.star && taken.is_some() && read.exports(&b.name))
             });
-            if offers || evidence.iter().any(|e| e.passes_on()) {
-                out.passed_on.push(first.clone());
-            } else if walker.rebound.contains(&line) {
+            if walker.rebound.contains(&line) {
+                // what the module offers by the name may be another
+                // binding, which its own code made (`pay = traced(pay)`)
                 out.unread.push(unread(UnreadReason::Rebound));
+            } else if offers || evidence.iter().any(|e| e.passes_on()) {
+                out.passed_on.push(first.clone());
             } else if read.syntax_error {
                 out.unread.push(unread(UnreadReason::ParseError));
             } else if walker.dynamic || may_bind.contains(&line) {

@@ -461,7 +461,10 @@ any name a module-level import binds in a module that a statement of
 another file takes it from, by name (`from shop.api import pay`,
 `shop.api.pay`, or on a walk through re-exports) or whole (a star import,
 or the module bound whole), so its statement is `passed_on`, never `never
-used`. A module bound
+used`, unless the module binds the name again, as a package's
+`__init__.py` that wraps what it imports does (`pay = traced(pay)`): what
+it offers is then the other binding, so the statement is `name bound
+again`. A module bound
 whole that the code passes as a value or reads a dunder of
 (`charge.__dict__`) is a `whole module` place in `Not traced`, and a string
 that names the symbol by its module's dotted path

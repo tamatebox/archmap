@@ -437,6 +437,28 @@ fn the_defining_file_uses_it_past_overloads_and_leaves_another_binding_unread() 
 }
 
 #[test]
+fn a_package_that_wraps_a_name_it_imports_binds_it_again_rather_than_passing_it_on() {
+    let project = Project::new(
+        "wrapped",
+        &[
+            (
+                "till/__init__.py",
+                "from .charge import pay\nfrom .log import traced\n\npay = traced(pay)\n",
+            ),
+            ("till/charge.py", "def pay(amount):\n    return amount\n"),
+            ("till/log.py", "def traced(f):\n    return f\n"),
+            ("till/app.py", "from till import pay\n\npay(1)\n"),
+        ],
+    );
+    let pay = uses_of(&project.report, "pay");
+    assert!(pay.passed_on.is_empty(), "{:#?}", pay.passed_on);
+    assert_eq!(
+        unread(&pay),
+        [("till/__init__.py".into(), Some(1), UnreadReason::Rebound)]
+    );
+}
+
+#[test]
 fn every_statement_read_ends_in_one_of_the_lists() {
     for name in [
         "python-uses",
