@@ -389,9 +389,11 @@ async fn a_target_that_names_several_things_gives_candidates_not_an_error() {
         )
         .await,
     );
-    assert_eq!(
-        missing,
-        "no component, file, symbol or import named `nothing-here`"
+    assert!(
+        missing.starts_with(
+            "no component, file, symbol or import named `nothing-here`, nor a name that contains it"
+        ),
+        "{missing}"
     );
     client.cancel().await.unwrap();
 }

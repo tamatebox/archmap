@@ -457,7 +457,8 @@ fn a_missing_path_above_the_root_is_looked_up_as_a_name() {
         .unwrap();
     assert_eq!(
         err.to_string(),
-        "no component, file, symbol or import named `../nope`"
+        "no component, file, symbol or import named `../nope`: a path names a file or directory \
+         from the root; query the directory above it to see what is there"
     );
 }
 
@@ -476,7 +477,170 @@ fn a_missing_file_under_a_python_package_is_no_package_subpath() {
         .unwrap();
     assert_eq!(
         err.to_string(),
-        "no component, file, symbol or import named `app/nowhere.py`"
+        "no component, file, symbol or import named `app/nowhere.py`: a path names a file or directory \
+         from the root; query the directory above it to see what is there"
+    );
+}
+
+/// A TS/JS package with a directory component under `components/` and one
+/// under `lib/` that a test file shares a stem with.
+fn pantry_repo(name: &str) -> Repo {
+    Repo::new(
+        name,
+        &[
+            ("package.json", "{\"name\": \"web\"}\n"),
+            (
+                "components/pantry/shelf.ts",
+                "export function shelfLabel() { return 'x'; }\nexport const hold_until = 1;\n",
+            ),
+            (
+                "components/pantry/editor.ts",
+                "import { shelfLabel } from './shelf';\nexport const editor = shelfLabel;\n",
+            ),
+            ("lib/notify/index.ts", "export function send() {}\n"),
+            ("lib/notify/queue.ts", "export const queue = 1;\n"),
+            (
+                "lib/__tests__/notify.test.ts",
+                "import { send } from '../notify';\nsend();\n",
+            ),
+        ],
+    )
+}
+
+#[test]
+fn a_bare_word_finds_a_directory_component_by_its_last_segment() {
+    let repo = pantry_repo("last-segment");
+    let ws = scan(&repo.0);
+    let answer = query(&ws, "pantry");
+    assert_eq!(answer.found, Found::One, "{}", answer.output);
+    assert!(
+        answer.output.starts_with("components/pantry (module"),
+        "{}",
+        answer.output
+    );
+
+    // a test file with that stem is one more candidate, not the answer
+    let answer = query(&ws, "notify");
+    assert_eq!(answer.found, Found::Candidates, "{}", answer.output);
+    assert!(
+        answer
+            .output
+            .contains("\n  web::lib/notify  lib/notify  module\n"),
+        "{}",
+        answer.output
+    );
+    assert!(
+        answer
+            .output
+            .contains("\n  lib/__tests__/notify.test.ts  file\n"),
+        "{}",
+        answer.output
+    );
+    let json = query_as(&ws, "notify", Format::Json).output;
+    assert!(json.contains("\"match\": \"segment\""), "{json}");
+
+    // the same in Python: a package by the last part of its dotted name
+    let ws = scan(&fixture("simple-python-project"));
+    let answer = query(&ws, "billing");
+    assert_eq!(answer.found, Found::One, "{}", answer.output);
+    assert!(
+        answer.output.starts_with("shop.billing (module"),
+        "{}",
+        answer.output
+    );
+}
+
+#[test]
+fn names_that_contain_a_word_that_names_nothing_are_candidates() {
+    let repo = pantry_repo("contains");
+    let ws = scan(&repo.0);
+    for target in ["shelflabel", "Label", "LABEL", "shelf_label", "holdUntil"] {
+        let answer = query(&ws, target);
+        assert_eq!(
+            answer.found,
+            Found::Candidates,
+            "{target}: {}",
+            answer.output
+        );
+        assert!(
+            answer.output.starts_with(&format!(
+                "No name is `{target}`. Names that contain it, ignoring case: "
+            )),
+            "{target}: {}",
+            answer.output
+        );
+    }
+    let answer = query(&ws, "label");
+    assert!(
+        answer.output.contains("\n  web::components/pantry/shelf.ts::shelfLabel  components/pantry/shelf.ts:1  function"),
+        "{}",
+        answer.output
+    );
+    let json = query_as(&ws, "label", Format::Json).output;
+    assert!(json.contains("\"match\": \"contains\""), "{json}");
+
+    // equal ignoring case ranks first, before what only contains it
+    let answer = query(&ws, "QUEUE");
+    let first = answer.output.lines().nth(1).unwrap_or_default();
+    assert!(first.contains("::queue "), "{}", answer.output);
+
+    // too short to look for
+    let err = ws
+        .query(&QueryRequest {
+            target: "zq",
+            depth: DEFAULT_DEPTH,
+            format: Format::Text,
+            verbose: false,
+        })
+        .err()
+        .unwrap();
+    assert_eq!(
+        err.to_string(),
+        "no component, file, symbol or import named `zq`"
+    );
+
+    // nothing contains it either: the error says what to do next
+    let err = ws
+        .impact(&ImpactRequest {
+            target: "zebra",
+            depth: DEFAULT_DEPTH,
+            format: Format::Text,
+            verbose: false,
+        })
+        .err()
+        .unwrap();
+    assert!(
+        err.to_string().starts_with(
+            "no component, file, symbol or import named `zebra`, nor a name that contains it"
+        ),
+        "{err}"
+    );
+}
+
+#[test]
+fn names_of_test_code_that_contain_a_word_come_after_production_ones() {
+    let repo = Repo::new(
+        "contains-tests",
+        &[
+            ("package.json", "{\"name\": \"web\"}\n"),
+            ("src/lib/deep/helpers/a.ts", "export const a = 1;\n"),
+            ("src/lib/deep/helpers/b.ts", "export const b = 1;\n"),
+            ("tests/helpers/c.ts", "export const c = 1;\n"),
+            ("tests/helpers/d.ts", "export const d = 1;\n"),
+        ],
+    );
+    let ws = scan(&repo.0);
+    let answer = query(&ws, "helper");
+    assert_eq!(answer.found, Found::Candidates, "{}", answer.output);
+    let rows: Vec<&str> = answer.output.lines().skip(1).take(2).collect();
+    assert_eq!(
+        rows,
+        [
+            "  web::src/lib/deep/helpers  src/lib/deep/helpers  module",
+            "  web::tests/helpers  tests/helpers  module",
+        ],
+        "{}",
+        answer.output
     );
 }
 

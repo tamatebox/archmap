@@ -749,7 +749,11 @@ matches decides:
    (`react-dom/client.js`) or an `index` file; JSON keeps the same
    statements
 9. an import name that no component carries
-10. a file name or stem anywhere under the root (`users.py`, `users`)
+10. a file name or stem anywhere under the root (`users.py`, `users`), or a
+    component whose name ends in the word as its last part, after `/`, `.`
+    or `::` (`pantry` for `components/pantry`, `billing` for
+    `shop.billing`), unless that component is one file, which its stem
+    finds
 
 A directory that no component has for its path answers for the component
 whose files it holds: a Rust module whose `mod.rs` sits in it with its
@@ -771,8 +775,20 @@ module itself, and a name with `/` that is also another path under the root,
 give candidates too. Text shows the first 10 and counts the rest; JSON
 (`--format json`) has every one as
 `{"requested", "total", "candidates": [{"kind", "id" or "path", ...}]}`,
-a directory's `path` written as `./<path>`. Retry with one of the ids, or
-with the path as `./<path>`.
+a directory's `path` written as `./<path>`, and each with `match`: `exact`,
+or `segment` for a component found by the last part of its name. Retry with
+one of the ids, or with the path as `./<path>`.
+
+A target of three characters or more without a `/` that names nothing
+lists instead the components, symbols and files whose names contain it,
+ignoring case (`No name is ...`): those equal to it first, then those that
+start with it, hold it from the start of a word (after `_`, `-`, `.`, `/`,
+`:`, or a capital after a small letter), hold it anywhere, and hold it with
+`_` and `-` left out of both (`hold_until` for `holdUntil`); among them
+production code before tests, the repository's components before external
+ones, shorter names first. A component that is one file is listed as its
+file. JSON gives these candidates `match` `case` or `contains`. When nothing
+contains the word either, the error says so, with what to do next.
 
 Both commands exit 0 with an answer, 1 with candidates, and 2 when they
 cannot answer (nothing has that name, a path is outside the root). Every

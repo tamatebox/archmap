@@ -12,9 +12,9 @@ use archmap_core::{
 };
 use serde::Serialize;
 
-use crate::query_text::{component_kind, shell_word, symbol_kind};
+use crate::query_text::{component_kind, count, shell_word, symbol_kind};
 use crate::target::{
-    directory_target, file_target, find_component, owner_of_shared_path, test_files,
+    component_file, directory_target, file_target, find_component, owner_of_shared_path, test_files,
 };
 use crate::Format;
 
@@ -34,14 +34,49 @@ pub(crate) enum Resolved<'g> {
     Candidates(Candidates<'g>),
 }
 
-/// Everything a target names when it names several things, by kind.
+/// Everything a target names when it names several things, by kind; or,
+/// when it names nothing, the names that contain it.
 #[derive(Default)]
 pub(crate) struct Candidates<'g> {
     components: Vec<&'g Component>,
+    /// Components whose name ends in the target as its last segment.
+    segments: Vec<&'g Component>,
     symbols: Vec<&'g Symbol>,
     files: Vec<String>,
     directories: Vec<String>,
+    /// Names that contain the target, ignoring case, best first, for a
+    /// target that names nothing.
+    contains: Vec<Near<'g>>,
 }
+
+/// A name that contains a target which names nothing, and how.
+pub(crate) struct Near<'g> {
+    thing: Thing<'g>,
+    rank: Rank,
+}
+
+enum Thing<'g> {
+    Component(&'g Component),
+    Symbol(&'g Symbol),
+    File(String),
+}
+
+/// How a name contains the target, best first: equal to it ignoring case,
+/// starting with it, holding it from a word's start (after `_`, `-`, `.`,
+/// `/`, `:` or where a capital follows a small letter), anywhere, or with
+/// `_` and `-` left out of both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Rank {
+    Case,
+    Start,
+    Word,
+    Inside,
+    Squashed,
+}
+
+/// The shortest target whose containing names are looked for: shorter ones
+/// are inside too many names to list.
+const MIN_CONTAINED: usize = 3;
 
 /// Resolve `target` (already unquoted and inside the root): the first kind
 /// that matches decides; several matches of it give every match of every
@@ -149,13 +184,178 @@ pub(crate) fn resolve<'g>(
     }
 
     let files = files_named(full, target);
-    match files.as_slice() {
-        [] => {}
-        [only] => return Ok(Resolved::File(only.clone())),
+    let segments = components_by_segment(full, root, target);
+    match (files.as_slice(), segments.as_slice()) {
+        ([], []) => {}
+        ([only], []) => return Ok(Resolved::File(only.clone())),
+        ([], [only]) => return Ok(Resolved::Component(only)),
         _ => return Ok(Resolved::Candidates(every_match(full, root, target)?)),
     }
 
-    bail!("no component, file, symbol or import named `{target}`")
+    // a word that names nothing: the names that contain it
+    if target.contains('/') {
+        bail!(
+            "no component, file, symbol or import named `{target}`: a path names a file or \
+             directory from the root; query the directory above it to see what is there"
+        )
+    }
+    if target.chars().count() < MIN_CONTAINED {
+        bail!("no component, file, symbol or import named `{target}`")
+    }
+    let contains = containing(full, root, target);
+    if contains.is_empty() {
+        bail!(
+            "no component, file, symbol or import named `{target}`, nor a name that contains it, \
+             ignoring case: for a word from an error message, a log or a screen, search the code \
+             for it and query the file it finds"
+        )
+    }
+    Ok(Resolved::Candidates(Candidates {
+        contains,
+        ..Candidates::default()
+    }))
+}
+
+/// The last segment of a component's name: after its last `/` for a name
+/// that is a path (`lib/notify`), else after its last `.` or `::`
+/// (`shop.billing`, `archmap_core::graph`).
+fn last_segment(name: &str) -> &str {
+    let split: &[char] = if name.contains('/') {
+        &['/']
+    } else {
+        &['.', ':']
+    };
+    name.rsplit(split).next().unwrap_or(name)
+}
+
+/// Components whose name ends in `target` as its last segment, for a
+/// target that is one word, apart from those that are one file, which their
+/// file's stem finds.
+fn components_by_segment<'g>(
+    full: &'g ArchitectureGraph,
+    root: &Path,
+    target: &str,
+) -> Vec<&'g Component> {
+    if target.contains(['/', '.', ':']) {
+        return Vec::new();
+    }
+    full.components
+        .values()
+        .filter(|c| c.kind != ComponentKind::External)
+        .filter(|c| c.name != target && last_segment(&c.name) == target)
+        .filter(|c| component_file(full, root, c).is_none())
+        .collect()
+}
+
+/// How `name` contains `target` (both compared in ASCII lower case), if it
+/// does; `squashed` is `target` without `_` and `-`.
+fn rank(name: &str, target: &str, squashed: &str) -> Option<Rank> {
+    let lower = name.to_ascii_lowercase();
+    if lower == target {
+        return Some(Rank::Case);
+    }
+    if lower.starts_with(target) {
+        return Some(Rank::Start);
+    }
+    let bytes = name.as_bytes();
+    let mut inside = None;
+    for (i, _) in lower.match_indices(target) {
+        let prev = bytes[i - 1];
+        let word = matches!(prev, b'_' | b'-' | b'.' | b'/' | b':')
+            || ((prev.is_ascii_lowercase() || prev.is_ascii_digit())
+                && bytes[i].is_ascii_uppercase());
+        if word {
+            return Some(Rank::Word);
+        }
+        inside = Some(Rank::Inside);
+    }
+    if inside.is_some() {
+        return inside;
+    }
+    let lower: String = lower.chars().filter(|c| !matches!(c, '_' | '-')).collect();
+    (!squashed.is_empty() && lower.contains(squashed)).then_some(Rank::Squashed)
+}
+
+/// What near matches sort by: rank, in test code, external, the name's
+/// length, the kind (component, symbol, file), then the id or path.
+type NearKey = (Rank, bool, bool, usize, u8, String);
+
+/// The components, symbols and files whose names contain `target`,
+/// ignoring case, best first: by how they contain it, production code
+/// before tests, components of the repository before external ones, shorter
+/// names first, then components, symbols and files, each by id or path.
+fn containing<'g>(full: &'g ArchitectureGraph, root: &Path, target: &str) -> Vec<Near<'g>> {
+    let target = target.to_ascii_lowercase();
+    let squashed: String = target.chars().filter(|c| !matches!(c, '_' | '-')).collect();
+    let best = |names: &[&str]| {
+        names
+            .iter()
+            .filter_map(|n| rank(n, &target, &squashed))
+            .min()
+    };
+    let mut found: Vec<(NearKey, Thing<'g>)> = Vec::new();
+    let parents: BTreeSet<&ComponentId> = full
+        .components
+        .values()
+        .filter_map(|c| c.parent.as_ref())
+        .collect();
+    for c in full.components.values() {
+        let Some(rank) = best(&[&c.name, last_segment(&c.name)]) else {
+            continue;
+        };
+        // a component that is one file is found as that file
+        let leaf = !parents.contains(&c.id);
+        if leaf
+            && c.path
+                .as_deref()
+                .and_then(|p| file_target(root, p))
+                .is_some()
+        {
+            continue;
+        }
+        // test code when a file in it would be by the path rule of the
+        // languages that have one (Rust goes by the kind of Cargo target)
+        let by_path = matches!(
+            c.language.as_deref(),
+            Some("python" | "typescript" | "javascript")
+        );
+        let test = by_path
+            && c.path
+                .as_deref()
+                .is_some_and(|p| archmap_scan::is_test_code(Path::new(&format!("{p}/_"))));
+        let external = c.kind == ComponentKind::External;
+        let key = (rank, test, external, c.name.len(), 0, c.id.to_string());
+        found.push((key, Thing::Component(c)));
+    }
+    for s in full.symbols.values() {
+        let short = s.name.rsplit(['.', ':']).next().unwrap_or(&s.name);
+        let Some(rank) = best(&[&s.name, short]) else {
+            continue;
+        };
+        let test = s.location().is_some_and(|e| e.test);
+        let key = (rank, test, false, s.name.len(), 1, s.id.to_string());
+        found.push((key, Thing::Symbol(s)));
+    }
+    let files: Vec<&str> = full
+        .known_files()
+        .into_iter()
+        .filter(|f| best(&[f.rsplit('/').next().unwrap_or(f)]).is_some())
+        .collect();
+    let tests: BTreeSet<&str> = test_files(full, files.iter().copied())
+        .into_iter()
+        .collect();
+    for f in files {
+        let name = f.rsplit('/').next().unwrap_or(f);
+        if let Some(rank) = best(&[name]) {
+            let key = (rank, tests.contains(f), false, name.len(), 2, f.to_owned());
+            found.push((key, Thing::File(f.to_owned())));
+        }
+    }
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    found
+        .into_iter()
+        .map(|((rank, ..), thing)| Near { thing, rank })
+        .collect()
 }
 
 /// `./x`, `../x` or an absolute path: a path whatever names it also matches.
@@ -312,9 +512,11 @@ fn every_match<'g>(
     production_first(full, &mut files);
     Ok(Candidates {
         components: full.components_named(target).collect(),
+        segments: components_by_segment(full, root, target),
         symbols: full.symbols_named(target).collect(),
         files,
         directories: directory.into_iter().collect(),
+        contains: Vec::new(),
     })
 }
 
@@ -323,7 +525,12 @@ const MAX_CANDIDATES: usize = 10;
 
 impl Candidates<'_> {
     fn total(&self) -> usize {
-        self.components.len() + self.symbols.len() + self.files.len() + self.directories.len()
+        self.components.len()
+            + self.segments.len()
+            + self.symbols.len()
+            + self.files.len()
+            + self.directories.len()
+            + self.contains.len()
     }
 
     /// The candidates, in text or JSON, the same for `query` and `impact`.
@@ -339,14 +546,19 @@ impl Candidates<'_> {
                 total: self.total(),
                 candidates: self.views(full),
             }),
-            Format::Text => Ok(self.text(full, target)),
+            Format::Text if self.contains.is_empty() => Ok(self.text(full, target)),
+            Format::Text => Ok(self.contains_text(full, target)),
         }
     }
 
     fn text(&self, full: &ArchitectureGraph, target: &str) -> String {
         let mut kinds = Vec::new();
         for (n, one, many) in [
-            (self.components.len(), "a component", "components"),
+            (
+                self.components.len() + self.segments.len(),
+                "a component",
+                "components",
+            ),
             (self.symbols.len(), "a symbol", "symbols"),
             (self.files.len(), "a file", "files"),
             (self.directories.len(), "a directory", "directories"),
@@ -364,34 +576,14 @@ impl Candidates<'_> {
         };
         let mut out = format!("`{target}` names {names}; retry with one of them by id or path:\n");
         let mut lines = Vec::new();
-        for c in &self.components {
-            lines.push(format!(
-                "  {}  {}  {}",
-                shell_word(c.id.as_str()),
-                c.path.as_deref().unwrap_or("-"),
-                component_kind(c.kind)
-            ));
+        for c in self.components.iter().chain(&self.segments) {
+            lines.push(component_row(c));
         }
         for s in &self.symbols {
-            let at = s
-                .location()
-                .map(|e| match e.line {
-                    Some(line) => format!("{}:{line}", e.file),
-                    None => e.file.clone(),
-                })
-                .unwrap_or_default();
-            let mut line = format!(
-                "  {}  {at}  {}",
-                shell_word(s.id.as_str()),
-                symbol_kind(s.kind)
-            );
-            if let Some((by_name, may_use)) = importer_counts(full, s) {
-                let _ = write!(line, "  imported by {by_name}, may use {may_use}");
-            }
-            lines.push(line);
+            lines.push(symbol_row(full, s));
         }
         for f in &self.files {
-            lines.push(format!("  {}  file", shell_word(f)));
+            lines.push(file_row(f));
         }
         for d in &self.directories {
             lines.push(format!("  {}  directory", shell_word(&format!("./{d}"))));
@@ -405,51 +597,128 @@ impl Candidates<'_> {
         out
     }
 
+    /// The names that contain a target that names nothing, best first.
+    fn contains_text(&self, full: &ArchitectureGraph, target: &str) -> String {
+        let total = self.contains.len();
+        let shown = total.min(MAX_CANDIDATES);
+        let mut out = format!(
+            "No name is `{target}`. Names that contain it, ignoring case: {}\n",
+            count(total, shown)
+        );
+        for near in self.contains.iter().take(shown) {
+            let row = match &near.thing {
+                Thing::Component(c) => component_row(c),
+                Thing::Symbol(s) => symbol_row(full, s),
+                Thing::File(f) => file_row(f),
+            };
+            let _ = writeln!(out, "{row}");
+        }
+        out.push_str("Retry with one of them by id or path");
+        out.push_str(match shown < total {
+            true => "; JSON lists every one.\n",
+            false => ".\n",
+        });
+        out
+    }
+
     fn views(&self, full: &ArchitectureGraph) -> Vec<CandidateView<'_>> {
-        let blank = CandidateView {
-            kind: "",
-            symbol_kind: None,
-            id: None,
-            path: None,
-            file: None,
-            line: None,
-            imported_by: None,
-            may_use: None,
-        };
-        let components = self.components.iter().map(|c| CandidateView {
-            kind: "component",
-            id: Some(c.id.as_str()),
-            path: c.path.clone(),
-            ..blank.clone()
-        });
-        let symbols = self.symbols.iter().map(|s| {
-            let counts = importer_counts(full, s);
-            CandidateView {
-                kind: "symbol",
-                symbol_kind: Some(symbol_kind(s.kind)),
-                id: Some(s.id.as_str()),
-                file: s.location().map(|e| e.file.as_str()),
-                line: s.location().and_then(|e| e.line),
-                imported_by: counts.map(|c| c.0),
-                may_use: counts.map(|c| c.1),
-                ..blank.clone()
-            }
-        });
+        let components = self.components.iter().map(|c| component_view(c, "exact"));
+        let segments = self.segments.iter().map(|c| component_view(c, "segment"));
+        let symbols = self.symbols.iter().map(|s| symbol_view(full, s, "exact"));
         let files = self.files.iter().map(|f| CandidateView {
             kind: "file",
             path: Some(f.clone()),
-            ..blank.clone()
+            ..CandidateView::of("exact")
         });
         let directories = self.directories.iter().map(|d| CandidateView {
             kind: "directory",
             path: Some(format!("./{d}")),
-            ..blank.clone()
+            ..CandidateView::of("exact")
+        });
+        let contains = self.contains.iter().map(|near| {
+            let matched = match near.rank {
+                Rank::Case => "case",
+                _ => "contains",
+            };
+            match &near.thing {
+                Thing::Component(c) => component_view(c, matched),
+                Thing::Symbol(s) => symbol_view(full, s, matched),
+                Thing::File(f) => CandidateView {
+                    kind: "file",
+                    path: Some(f.clone()),
+                    ..CandidateView::of(matched)
+                },
+            }
         });
         components
+            .chain(segments)
             .chain(symbols)
             .chain(files)
             .chain(directories)
+            .chain(contains)
             .collect()
+    }
+}
+
+/// A component as a candidate row: id, path and kind.
+fn component_row(c: &Component) -> String {
+    format!(
+        "  {}  {}  {}",
+        shell_word(c.id.as_str()),
+        c.path.as_deref().unwrap_or("-"),
+        component_kind(c.kind)
+    )
+}
+
+/// A symbol as a candidate row: id, location, kind and, where its language
+/// records names, how many statements take it.
+fn symbol_row(full: &ArchitectureGraph, s: &Symbol) -> String {
+    let at = s
+        .location()
+        .map(|e| match e.line {
+            Some(line) => format!("{}:{line}", e.file),
+            None => e.file.clone(),
+        })
+        .unwrap_or_default();
+    let mut line = format!(
+        "  {}  {at}  {}",
+        shell_word(s.id.as_str()),
+        symbol_kind(s.kind)
+    );
+    if let Some((by_name, may_use)) = importer_counts(full, s) {
+        let _ = write!(line, "  imported by {by_name}, may use {may_use}");
+    }
+    line
+}
+
+fn file_row(f: &str) -> String {
+    format!("  {}  file", shell_word(f))
+}
+
+fn component_view<'a>(c: &'a Component, matched: &'static str) -> CandidateView<'a> {
+    CandidateView {
+        kind: "component",
+        id: Some(c.id.as_str()),
+        path: c.path.clone(),
+        ..CandidateView::of(matched)
+    }
+}
+
+fn symbol_view<'a>(
+    full: &ArchitectureGraph,
+    s: &'a Symbol,
+    matched: &'static str,
+) -> CandidateView<'a> {
+    let counts = importer_counts(full, s);
+    CandidateView {
+        kind: "symbol",
+        symbol_kind: Some(symbol_kind(s.kind)),
+        id: Some(s.id.as_str()),
+        file: s.location().map(|e| e.file.as_str()),
+        line: s.location().and_then(|e| e.line),
+        imported_by: counts.map(|c| c.0),
+        may_use: counts.map(|c| c.1),
+        ..CandidateView::of(matched)
     }
 }
 
@@ -464,6 +733,11 @@ struct CandidatesView<'a> {
 #[derive(Clone, Serialize)]
 struct CandidateView<'a> {
     kind: &'static str,
+    /// How it matches the target: `exact`, `segment` (the last segment of a
+    /// component's name), or for a target that names nothing `case` (equal
+    /// ignoring case) or `contains`.
+    #[serde(rename = "match")]
+    matched: &'static str,
     /// For a symbol: what it is (`function`, `struct`, ...).
     #[serde(skip_serializing_if = "Option::is_none")]
     symbol_kind: Option<&'static str>,
@@ -483,6 +757,22 @@ struct CandidateView<'a> {
     imported_by: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     may_use: Option<usize>,
+}
+
+impl CandidateView<'_> {
+    fn of(matched: &'static str) -> Self {
+        CandidateView {
+            kind: "",
+            matched,
+            symbol_kind: None,
+            id: None,
+            path: None,
+            file: None,
+            line: None,
+            imported_by: None,
+            may_use: None,
+        }
+    }
 }
 
 /// The statements that take `symbol` by name and those that take its file
