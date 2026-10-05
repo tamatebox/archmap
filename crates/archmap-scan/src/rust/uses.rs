@@ -173,7 +173,28 @@ fn target(index: &Index, symbol: &Symbol) -> Option<Target> {
 /// `&'a mut self`, `self: Box<Self>`): a method that values of its type
 /// call.
 pub fn takes_self(signature: &str) -> bool {
-    let Some((_, after)) = signature.split_once('(') else {
+    // the parameters open at the first `(` after the name outside the
+    // generics, whose bounds may hold one (`<F: Fn(u32) -> u32>`)
+    let after_fn = signature
+        .find("fn ")
+        .map_or(signature, |at| &signature[at + 3..]);
+    let mut depth = 0usize;
+    let mut previous = ' ';
+    let mut open = None;
+    for (at, c) in after_fn.char_indices() {
+        match c {
+            '<' => depth += 1,
+            // the arrow of `Fn(u32) -> u32` closes nothing
+            '>' if previous != '-' => depth = depth.saturating_sub(1),
+            '(' if depth == 0 => {
+                open = Some(at);
+                break;
+            }
+            _ => {}
+        }
+        previous = c;
+    }
+    let Some(after) = open.map(|at| &after_fn[at + 1..]) else {
         return false;
     };
     let first = after.split([',', ')']).next().unwrap_or("").trim();
@@ -975,6 +996,9 @@ mod tests {
             ("pub fn set(&mut self, n: u32)", true),
             ("pub fn get<'a>(&'a self) -> &'a str", true),
             ("pub fn boxed(self: Box<Self>)", true),
+            // a bound in the generics holds parentheses of its own
+            ("pub fn map<F: Fn(u32) -> u32>(&self, f: F) -> u32", true),
+            ("pub fn with<F: FnOnce(&Self) -> u32>(f: F) -> u32", false),
             ("pub fn new(from: u32) -> Self", false),
             ("pub fn parse(text: &'a str) -> Self", false),
             ("pub fn none() -> Self", false),
