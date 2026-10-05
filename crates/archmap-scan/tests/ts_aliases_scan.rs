@@ -1,0 +1,84 @@
+//! End-to-end scan of `fixtures/ts-aliases`: imports through the aliases
+//! of a jsconfig.json, a bundler's configuration and a Deno import map.
+
+use std::collections::BTreeSet;
+use std::path::Path;
+
+use archmap_core::{ArchitectureGraph, UnmappedReason};
+use archmap_scan::{scan, ScanOptions};
+
+fn scan_fixture() -> ArchitectureGraph {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/ts-aliases")
+        .canonicalize()
+        .expect("fixture exists");
+    let report = scan(&root, &ScanOptions::default()).expect("scan succeeds");
+    assert!(
+        report.warnings.is_empty(),
+        "warnings: {:?}",
+        report.warnings
+    );
+    report.graph
+}
+
+/// The files the statements of `file` load, as `line -> target`.
+fn loads(graph: &ArchitectureGraph, file: &str) -> BTreeSet<String> {
+    graph
+        .edges
+        .iter()
+        .flat_map(|e| &e.evidence)
+        .filter(|e| e.file == file && e.via().is_none())
+        .filter_map(|e| Some(format!("{} -> {}", e.line?, e.target.as_deref()?)))
+        .collect()
+}
+
+/// The imports of `file` that map to no component, as `line name reason`.
+fn unmapped(graph: &ArchitectureGraph, file: &str) -> BTreeSet<String> {
+    graph
+        .unmapped_imports
+        .iter()
+        .filter(|u| u.evidence.file == file)
+        .map(|u| {
+            let reason = match u.reason {
+                UnmappedReason::Unresolved => "unresolved",
+                UnmappedReason::Undeclared => "undeclared",
+                UnmappedReason::LocalName => "local name",
+                _ => "other",
+            };
+            format!("{} {} {reason}", u.evidence.line.unwrap_or(0), u.module)
+        })
+        .collect()
+}
+
+fn set(items: &[&str]) -> BTreeSet<String> {
+    items.iter().map(|s| (*s).to_owned()).collect()
+}
+
+#[test]
+fn a_jsconfig_resolves_the_files_below_it_where_it_is_the_nearest_config() {
+    let graph = scan_fixture();
+    assert_eq!(
+        loads(&graph, "js-app/src/pages/home.js"),
+        set(&[
+            "1 -> js-app/src/lib/format.js",
+            "2 -> js-app/legacy/index.js",
+        ])
+    );
+    // its pattern, leading to no file, is an alias all the same
+    assert_eq!(
+        unmapped(&graph, "js-app/src/pages/home.js"),
+        set(&["3 @/lib/gone unresolved"])
+    );
+    // the tsconfig above it still answers for its own files
+    assert_eq!(
+        loads(&graph, "shared/use.ts"),
+        set(&["1 -> shared/util.ts"])
+    );
+    // a jsconfig's `baseUrl` alone
+    assert_eq!(
+        loads(&graph, "js-base/src/app.js"),
+        set(&["1 -> js-base/src/components/Button.js"])
+    );
+    // in one directory, the tsconfig wins
+    assert_eq!(loads(&graph, "both/main.ts"), set(&["1 -> both/ts/x.ts"]));
+}

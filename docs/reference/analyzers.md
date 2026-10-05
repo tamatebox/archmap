@@ -321,9 +321,11 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
 - `import` (`import x = require('m')` included) and `export ... from` become `import` edges (noted
   `import` and `export`), resolved with
   `oxc_resolver` through each file's `tsconfig.json` (`paths`, `baseUrl`, `references`) and `.js` written for
-  `.ts`; the resolver sees only the scanned files, so `node_modules` and build output never change the graph,
-  and an `extends` it cannot load, in a tsconfig or in a config one extends, is dropped with a warning while
-  the file's own `paths` still apply
+  `.ts`, or through its `jsconfig.json` (`paths`, `baseUrl`) where that is the config TypeScript's editor
+  takes for it: the nearest directory above the file that holds either, the tsconfig where one holds
+  both; the resolver sees only the scanned files, so `node_modules` and build output never change the graph,
+  and an `extends` it cannot load, in a tsconfig, a jsconfig or a config one extends, is dropped with a
+  warning while the file's own `paths` still apply
 - calls with a written-out specifier (a string, or a template without substitutions) anywhere in a file
   become `import` edges too, noted with the call: `require`, `import()`, and the module calls of Vitest
   and Jest (`vi.mock`, `vi.doMock`, `vi.unmock`, `vi.importActual`, `vi.importMock`, `jest.mock`,
@@ -519,7 +521,7 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
 - Vue, Svelte and Astro components and GraphQL documents are not code to the analyzer: an import of
   one is an import of a file, as for a stylesheet, and the imports inside them are not read.
 - A tsconfig's `customConditions` count for every file, not only those its config covers.
-- Aliases defined only in a bundler configuration, `jsconfig.json` and Deno import maps are not
-  read: an import through such an alias is `unresolved` when a tsconfig or jsconfig declares its
-  pattern, `local name` when it names a top directory of the source root (`@components/button`),
-  and `undeclared` otherwise (`@ui/card` defined only in `vite.config.ts`).
+- Aliases defined only in a bundler configuration and Deno import maps are not read: an import
+  through such an alias is `unresolved` when a tsconfig or jsconfig declares its pattern, `local
+  name` when it names a top directory of the source root (`@components/button`), and `undeclared`
+  otherwise (`@ui/card` defined only in `vite.config.ts`).

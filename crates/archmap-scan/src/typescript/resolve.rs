@@ -2,10 +2,13 @@
 //! repository, and telling what a specifier is when it resolves to no
 //! file.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use oxc_resolver::{ResolveError, ResolveOptions, ResolverGeneric, TsconfigDiscovery};
+use oxc_resolver::{
+    ResolveError, ResolveOptions, ResolverGeneric, TsconfigDiscovery, TsconfigOptions,
+    TsconfigReferences,
+};
 
 use super::fs::ViewFs;
 use crate::context::display_path;
@@ -48,6 +51,10 @@ pub(crate) struct ImportResolver {
     /// lead outside the scan.
     untyped_with_tsconfig: ResolverGeneric<ViewFs>,
     untyped_without_tsconfig: ResolverGeneric<ViewFs>,
+    /// For the files whose nearest config is a jsconfig.json, which no
+    /// tsconfig discovery finds, by its directory: resolvers that apply it,
+    /// with and without the `types` condition.
+    jsconfigs: BTreeMap<PathBuf, (ResolverGeneric<ViewFs>, ResolverGeneric<ViewFs>)>,
 }
 
 impl ImportResolver {
@@ -60,14 +67,49 @@ impl ImportResolver {
                 options(tsconfig, types, conditions),
             )
         };
+        let jsconfigs = view
+            .files_named("jsconfig.json")
+            .into_iter()
+            .filter_map(|config| {
+                let dir = config.parent()?.to_path_buf();
+                let manual = || {
+                    Some(TsconfigDiscovery::Manual(TsconfigOptions {
+                        config_file: config.clone(),
+                        references: TsconfigReferences::Disabled,
+                    }))
+                };
+                Some((dir, (resolver(manual(), true), resolver(manual(), false))))
+            })
+            .collect();
         Self {
             root: root.to_path_buf(),
             with_tsconfig: resolver(Some(TsconfigDiscovery::Auto), true),
             without_tsconfig: resolver(None, true),
             untyped_with_tsconfig: resolver(Some(TsconfigDiscovery::Auto), false),
             untyped_without_tsconfig: resolver(None, false),
+            jsconfigs,
             view,
         }
+    }
+
+    /// The resolvers that apply the config of `file`, an absolute path,
+    /// with and without the `types` condition: as TypeScript's editor
+    /// finds a project, the nearest directory above it with a
+    /// tsconfig.json or a jsconfig.json, the tsconfig where it has both.
+    fn configured(&self, file: &Path) -> (&ResolverGeneric<ViewFs>, &ResolverGeneric<ViewFs>) {
+        let tsconfig = (&self.with_tsconfig, &self.untyped_with_tsconfig);
+        if self.jsconfigs.is_empty() {
+            return tsconfig;
+        }
+        for dir in file.ancestors().skip(1) {
+            if !dir.starts_with(&self.root) || self.view.has_file(&dir.join("tsconfig.json")) {
+                break;
+            }
+            if let Some((typed, untyped)) = self.jsconfigs.get(dir) {
+                return (typed, untyped);
+            }
+        }
+        tsconfig
     }
 
     /// Resolve `specifier` as `file` (relative to the root), a file of the
@@ -93,7 +135,8 @@ impl ImportResolver {
                 other => other,
             }
         };
-        let mut result = attempt(&self.with_tsconfig, &self.without_tsconfig, problems);
+        let (with, untyped_with) = self.configured(&absolute);
+        let mut result = attempt(with, &self.without_tsconfig, problems);
         // the `types` condition of a package the view holds (a linked one,
         // the package's own `imports` and name) can lead to built
         // declarations outside the scan, where its source answers to the
@@ -101,11 +144,7 @@ impl ImportResolver {
         let held = specifier.starts_with('#')
             || package_name(specifier).is_some_and(|p| self.view.links(p) || Some(p) == own_name);
         if held && matches!(&result, Err(e) if !matches!(e, ResolveError::Builtin { .. })) {
-            if let ok @ Ok(_) = attempt(
-                &self.untyped_with_tsconfig,
-                &self.untyped_without_tsconfig,
-                problems,
-            ) {
+            if let ok @ Ok(_) = attempt(untyped_with, &self.untyped_without_tsconfig, problems) {
                 result = ok;
             }
         }
@@ -123,7 +162,8 @@ impl ImportResolver {
     /// detection; nothing for a file without one, or with one the resolver
     /// cannot use.
     pub(crate) fn module_options(&self, file: &Path) -> ModuleOptions {
-        let Ok(Some(tsconfig)) = self.with_tsconfig.find_tsconfig(self.root.join(file)) else {
+        let absolute = self.root.join(file);
+        let Ok(Some(tsconfig)) = self.configured(&absolute).0.find_tsconfig(&absolute) else {
             return ModuleOptions::default();
         };
         let options = &tsconfig.compiler_options;
@@ -209,9 +249,9 @@ fn is_tsconfig_problem(err: &ResolveError) -> bool {
 
 /// The `paths` aliases that the tsconfig and jsconfig files of the scan
 /// declare, with the file of each. An import that matches one and resolves
-/// to no file is an alias that leads nowhere here (a jsconfig the resolver
-/// does not read, or a file outside the tsconfig), never an undeclared
-/// package.
+/// to no file is an alias that leads nowhere here (a config that a nearer
+/// one hides for the importing file, a target the scan does not hold),
+/// never an undeclared package.
 #[derive(Debug, Default)]
 pub(crate) struct Aliases(Vec<(String, String, PathBuf)>);
 

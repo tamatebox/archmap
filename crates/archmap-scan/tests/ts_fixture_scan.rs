@@ -963,7 +963,7 @@ fn aliases_and_the_package_s_own_name_are_never_undeclared() {
             ("src/components/ui/card.js", "export const c = 1;\n"),
             (
                 "examples/demo.js",
-                "import { x } from 'my-lib';\nimport card from '@ui/card';\n\
+                "import { x } from 'my-lib';\nimport card from '@ui/gone';\n\
                  import Button from '@components/button';\nimport pad from 'left-pad';\n",
             ),
         ],
@@ -984,10 +984,12 @@ fn aliases_and_the_package_s_own_name_are_never_undeclared() {
     assert_eq!(
         unmapped,
         BTreeSet::from([
+            // the jsconfig resolves `@ui/card`; a name it leads nowhere
+            // with is its alias all the same
             (
-                "@ui/card",
+                "@ui/gone",
                 UnmappedReason::Unresolved,
-                "import @ui/card: no file matches; jsconfig.json declares the alias `@ui/*`"
+                "import @ui/gone: no file matches; jsconfig.json declares the alias `@ui/*`"
             ),
             (
                 "@components/button",

@@ -130,9 +130,9 @@ fn is_broken_package_json(ctx: &RepoContext, rel: &Path) -> bool {
 
 /// `tsconfig.json`, `tsconfig.app.json`, `tsconfig.base.json` ...
 fn is_tsconfig(file: &Path) -> bool {
-    file.file_name()
-        .and_then(|n| n.to_str())
-        .is_some_and(|n| n.starts_with("tsconfig") && n.ends_with(".json"))
+    file.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+        (n.starts_with("tsconfig") || n.starts_with("jsconfig")) && n.ends_with(".json")
+    })
 }
 
 /// `text`, the tsconfig at `path`, without the `extends` entries that name
@@ -256,6 +256,21 @@ impl ViewFs {
     /// member, a path dependency), the only packages whose files it holds.
     pub(crate) fn links(&self, name: &str) -> bool {
         self.0.linked.contains(name)
+    }
+
+    /// Whether the view holds the file at `path`, an absolute path.
+    pub(crate) fn has_file(&self, path: &Path) -> bool {
+        self.0.files.contains(path)
+    }
+
+    /// The files of the view named `name`, absolute, in path order.
+    pub(crate) fn files_named(&self, name: &str) -> Vec<PathBuf> {
+        let mut found: Vec<PathBuf> = (self.0.files.iter())
+            .filter(|f| f.file_name().is_some_and(|n| n == name))
+            .cloned()
+            .collect();
+        found.sort();
+        found
     }
 }
 

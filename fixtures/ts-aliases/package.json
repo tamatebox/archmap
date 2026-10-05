@@ -1,0 +1,5 @@
+{
+  "name": "ts-aliases",
+  "private": true,
+  "workspaces": ["js-app"]
+}

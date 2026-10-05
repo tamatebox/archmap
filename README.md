@@ -158,8 +158,8 @@ The gaps behind the marks:
   so `impact` goes on from it to every file that imports it or a module
   below it; one that lists the name, or writes `from .x import name as
   name`, is followed only to what takes the name.
-- TS/JS imports: aliases defined only in a bundler configuration or a
-  `jsconfig.json` are not followed.
+- TS/JS imports: aliases defined only in a bundler configuration are not
+  followed.
 - TS/JS `check`: a value imported without `type` and used only in type
   positions (a class or an enum in annotations, a `typeof` target) counts
   as running, so it can close a cycle that `cycles.forbid` reports.
