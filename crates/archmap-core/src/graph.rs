@@ -839,13 +839,25 @@ impl ArchitectureGraph {
                 if running {
                     runs.insert(node);
                 }
-                // a changed file is changed in every unit that loads it
                 if let Node::File(f) = node {
-                    if let Some(all) = units.shared(f) {
-                        active
-                            .entry(f)
-                            .or_default()
-                            .extend(all.iter().map(String::as_str));
+                    match (d, symbol_name) {
+                        // a statement that takes the symbol, which did not
+                        // change, in the units it takes it in
+                        (1.., Some((file, _))) => {
+                            if let Entered::In(entered) = units.enter(Some(file), Some(f), None) {
+                                active.entry(f).or_default().extend(entered);
+                            }
+                        }
+                        // a changed file is changed in every unit that loads
+                        // it
+                        _ => {
+                            if let Some(all) = units.shared(f) {
+                                active
+                                    .entry(f)
+                                    .or_default()
+                                    .extend(all.iter().map(String::as_str));
+                            }
+                        }
                     }
                 }
                 if let Entry::Vacant(slot) = distance.entry(node) {
@@ -2176,10 +2188,12 @@ pub struct FileFacts<'a> {
 /// file it came from in, and none, so no way, when they share none it
 /// entered; for a way from another unit's code, every unit of the file, and
 /// only when the walk entered the file it came from in a unit other units
-/// can import. It leads on only to what imports it in the units it was
-/// entered in. Once a unit is entered, every way out in that unit is
-/// followed, whichever way led in, so it may list more than one exact way
-/// would, never less.
+/// can import. A file the walk entered from a component, by a dependency
+/// without a file, it entered in every unit; a statement that takes a
+/// symbol, in the units it takes it in. It leads on only to what imports
+/// it in the units it was entered in. Once a unit is entered, every way
+/// out in that unit is followed, whichever way led in, so it may list
+/// more than one exact way would, never less.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Units {
     of: BTreeMap<String, BTreeSet<String>>,
@@ -2226,21 +2240,20 @@ impl Units {
         ) else {
             return Entered::Any;
         };
-        let shared = here.len() > 1;
         let shared_there = there.len() > 1;
         let crossing = here.is_disjoint(there);
+        // a file entered from no file of a unit is in every unit
+        let walked: BTreeSet<&str> = match (here.len() > 1, active) {
+            (true, Some(a)) => a.clone(),
+            _ => here.iter().map(String::as_str).collect(),
+        };
         let entered: BTreeSet<&str> = if crossing {
             // another unit's code takes the units others can import
-            let importable = |u: &&str| self.importable.contains(*u);
-            if shared && !active.is_some_and(|a| a.iter().any(importable)) {
+            if here.len() > 1 && !walked.iter().any(|u| self.importable.contains(*u)) {
                 return Entered::No;
             }
             there.iter().map(String::as_str).collect()
         } else {
-            let walked: BTreeSet<&str> = match (shared, active) {
-                (true, Some(a)) => a.clone(),
-                _ => here.iter().map(String::as_str).collect(),
-            };
             let within: BTreeSet<&str> = there
                 .iter()
                 .map(String::as_str)

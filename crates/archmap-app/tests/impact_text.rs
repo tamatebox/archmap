@@ -1715,6 +1715,45 @@ fn a_file_that_several_crates_compile_leads_on_within_the_crate_it_is_reached_in
 }
 
 #[test]
+fn a_symbol_reaches_a_file_that_several_crates_compile_in_the_crates_that_take_it() {
+    // tests/common/mod.rs takes stock.rs's helper only in stock.rs's crate
+    let ws = scan(&fixture("rust-cargo-targets"));
+    let answer = text(&ws, "kiosk::tests/stock.rs::helper");
+    let tests = section(&answer, "Tests to run again: 1");
+    assert!(
+        tests.iter().any(|l| l.contains("kiosk/tests/stock.rs")),
+        "{tests:?}"
+    );
+    assert!(
+        !tests.iter().any(|l| l.contains("kiosk/tests/total.rs")),
+        "{tests:?}"
+    );
+
+    // a module the library and its binary both declare, reached from a
+    // dependency's component, is in both and leads on to the test
+    let files: Vec<(String, String)> = [
+        (
+            "Cargo.toml",
+            "[package]\nname = \"pkg\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+             [dependencies]\nserde = \"1\"\n",
+        ),
+        ("src/lib.rs", "pub mod shared;\n"),
+        ("src/main.rs", "mod shared;\nfn main() { shared::s(); }\n"),
+        (
+            "src/shared.rs",
+            "use serde::Serialize;\npub fn s() {}\npub fn t<T: Serialize>(_: &T) {}\n",
+        ),
+        ("tests/it.rs", "#[test]\nfn it() { pkg::shared::s(); }\n"),
+    ]
+    .into_iter()
+    .map(|(f, t)| (f.to_owned(), t.to_owned()))
+    .collect();
+    let repo = Repo::new("lib-and-bin-dependency", &files);
+    let answer = text(&scan(&repo.0), "serde");
+    assert!(answer.contains("tests/it.rs"), "{answer}");
+}
+
+#[test]
 fn a_test_reaches_a_change_through_the_types_a_mocked_module_exposes_from_it() {
     let files = |runner: &str| -> Vec<(String, String)> {
         [

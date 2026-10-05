@@ -464,7 +464,10 @@ and its binary both declare) leads on only within the crates the walk
 reached it in: a `crate::` path inside it names each crate's own root, so
 reached through one test it leads to no other test that declares it, and
 reached only inside a binary it leads to no crate that imports the library;
-once it is reached in a crate, every way out in that crate is followed. A
+a statement in it that takes a changed symbol takes it only in the crates
+whose paths name that symbol, and a dependency without a file (an external
+package) reaches it in every crate that compiles it; once it is reached in
+a crate, every way out in that crate is followed. A
 file reached through production code stands for its component there; one reached through test
 code alone (a test, or a Rust file through its unit tests) does not, since no
 dependent loads it that way: a test that a package owns reaches no manifest
