@@ -323,7 +323,17 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   `oxc_resolver` through each file's `tsconfig.json` (`paths`, `baseUrl`, `references`) and `.js` written for
   `.ts`, or through its `jsconfig.json` (`paths`, `baseUrl`) where that is the config TypeScript's editor
   takes for it: the nearest directory above the file that holds either, the tsconfig where one holds
-  both; the resolver sees only the scanned files, so `node_modules` and build output never change the graph,
+  both; before either, the `resolve.alias` of a `vite.config.*` or `webpack.config.*` at the top of the
+  file's package rewrites a specifier it matches, as the bundler does: a key matches the specifier or
+  its first segments (webpack's `key$` the specifier alone), the first in the config's order wins, and
+  the config is read from its code, its object given by `export default` or `module.exports`
+  through `defineConfig(..)`, `as`, `satisfies`, module-level `const` bindings and a function whose
+  body returns one object, an alias counting when its replacement is a path computed inside the root
+  (`path.resolve(__dirname, 'src')` or `path.join` with `path` imported or required,
+  `fileURLToPath(new URL('./src', import.meta.url))`, `new URL(..).pathname`, and for Vite `/src`
+  from the config's directory where it sets no `root`); the config itself and the files of a package
+  below it with a `package.json` of its own are outside its aliases; the resolver sees only the
+  scanned files, so `node_modules` and build output never change the graph,
   and an `extends` it cannot load, in a tsconfig, a jsconfig or a config one extends, is dropped with a
   warning while the file's own `paths` still apply
 - calls with a written-out specifier (a string, or a template without substitutions) anywhere in a file
@@ -469,8 +479,8 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   may answer, a factory passed by name or that calls a helper, `vi.doMock`, a mock inside
   `describe`, and mocks in setup files, which no test file names. Jest's ESM mocks
   (`jest.unstable_mockModule`) are not read, and a mocked path that only a test runner's own
-  aliases resolve (Vite's `resolve.alias`, Jest's `moduleNameMapper`) maps to no file, so neither
-  hides a module.
+  aliases resolve (those of a `vitest.config.*`, Jest's `moduleNameMapper`) maps to no file, so
+  neither hides a module.
 - `Used at` does not read a method called through a value of its type (`wallet.pay()`), a member
   reached through a subclass (`Rich.open()`, `super.m()`; `Not traced` names the classes that extend it),
   `this.m()` in a subclass that only inherits `m`, what an `import()` or a `vi.importActual()` that is
@@ -521,7 +531,18 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
 - Vue, Svelte and Astro components and GraphQL documents are not code to the analyzer: an import of
   one is an import of a file, as for a stylesheet, and the imports inside them are not read.
 - A tsconfig's `customConditions` count for every file, not only those its config covers.
-- Aliases defined only in a bundler configuration and Deno import maps are not read: an import
-  through such an alias is `unresolved` when a tsconfig or jsconfig declares its pattern, `local
+- Bundler aliases are read only as `resolve.alias` written in a `vite.config.*` or
+  `webpack.config.*` at a package's top: aliases a plugin adds, a replacement relative to the
+  importing file (`'./src'`, which both bundlers resolve again from there) or naming a package
+  (`react` to `preact/compat`), a regex `find`, Vite's `root` and a key ending in `$`, a config
+  built by `mergeConfig` or spread from another, an array of webpack configs, a webpack config
+  under another name (`webpack.common.js` merged by `webpack-merge`, one below `config/`) and
+  webpack's `resolve.modules`, `vitest.config.*` with `test.alias` and Vitest workspaces, the
+  `webpack(config)` function of `next.config.js`, Nuxt's `alias` and SvelteKit's `kit.alias`
+  (which reach a tsconfig only through one the framework generates, which a fresh checkout
+  lacks), Rollup's `@rollup/plugin-alias`, Babel's
+  `babel-plugin-module-resolver`, Metro's `extraNodeModules`, CRA and craco aliases, Jest's
+  `moduleNameMapper` and Deno import maps are not read. An import through such an alias is
+  `unresolved` when a tsconfig, a jsconfig or a bundler config read declares its pattern, `local
   name` when it names a top directory of the source root (`@components/button`), and `undeclared`
-  otherwise (`@ui/card` defined only in `vite.config.ts`).
+  otherwise.

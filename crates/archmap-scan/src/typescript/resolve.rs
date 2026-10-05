@@ -10,6 +10,7 @@ use oxc_resolver::{
     TsconfigReferences,
 };
 
+use super::bundler::BundlerAliases;
 use super::fs::ViewFs;
 use crate::context::display_path;
 use crate::RepoContext;
@@ -55,6 +56,8 @@ pub(crate) struct ImportResolver {
     /// tsconfig discovery finds, by its directory: resolvers that apply it,
     /// with and without the `types` condition.
     jsconfigs: BTreeMap<PathBuf, (ResolverGeneric<ViewFs>, ResolverGeneric<ViewFs>)>,
+    /// What bundler configs rewrite before anything resolves.
+    bundler: BundlerAliases,
 }
 
 impl ImportResolver {
@@ -88,8 +91,18 @@ impl ImportResolver {
             untyped_with_tsconfig: resolver(Some(TsconfigDiscovery::Auto), false),
             untyped_without_tsconfig: resolver(None, false),
             jsconfigs,
+            bundler: BundlerAliases::default(),
             view,
         }
+    }
+
+    /// The same, rewriting first what `bundler` aliases.
+    pub(crate) fn with_bundler(self, bundler: BundlerAliases) -> Self {
+        Self { bundler, ..self }
+    }
+
+    pub(crate) fn bundler(&self) -> &BundlerAliases {
+        &self.bundler
     }
 
     /// The resolvers that apply the config of `file`, an absolute path,
@@ -124,6 +137,15 @@ impl ImportResolver {
         problems: &mut BTreeSet<String>,
     ) -> Resolved {
         let absolute = self.root.join(file);
+        // a bundler rewrites the specifier before anything resolves it
+        let rewritten = self
+            .bundler
+            .matching(file, specifier)
+            .map(|alias| self.root.join(alias.path));
+        let specifier = match rewritten.as_deref().and_then(Path::to_str) {
+            Some(path) => path,
+            None => specifier,
+        };
         let attempt = |with: &ResolverGeneric<ViewFs>,
                        without: &ResolverGeneric<ViewFs>,
                        problems: &mut BTreeSet<String>| {

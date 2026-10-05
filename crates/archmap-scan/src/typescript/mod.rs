@@ -47,6 +47,7 @@
 //!   a `Script`; a module gives those inside its `declare global`, noted
 //!   `global`
 
+mod bundler;
 mod exports;
 mod fs;
 mod language;
@@ -164,7 +165,8 @@ impl Analyzer for TypeScriptAnalyzer {
         let view = fs::ViewFs::new_linked(ctx, &links, &mut output.warnings);
         let aliases = resolve::Aliases::collect(ctx, &view);
         let conditions = resolve::custom_conditions(ctx, &view);
-        let resolver = resolve::ImportResolver::new(ctx.root(), view, &conditions);
+        let resolver = resolve::ImportResolver::new(ctx.root(), view, &conditions)
+            .with_bundler(bundler::BundlerAliases::read(ctx));
         let mut problems = BTreeSet::new();
         // Every file is parsed and its imports resolved before any import is
         // emitted: a walk through re-exports reads the files it passes.
@@ -285,6 +287,7 @@ impl Analyzer for TypeScriptAnalyzer {
                     .map(|(dir, m)| (dir.as_path(), m))
                     .collect(),
                 aliases: &aliases,
+                bundler: resolver.bundler(),
                 linked: &linked,
                 file: read.file,
                 test: test_code(read.file, package, &manifests),
@@ -746,6 +749,7 @@ struct Imports<'a> {
     /// resolvable there.
     manifests: Vec<(&'a Path, &'a PackageJson)>,
     aliases: &'a resolve::Aliases,
+    bundler: &'a bundler::BundlerAliases,
     /// The packages of the repository an install links by name.
     linked: &'a Linked<'a>,
     file: &'a Path,
@@ -800,6 +804,15 @@ impl Imports<'_> {
     /// aliases write it), else undeclared.
     fn undeclared(&self, import: &ImportStatement, package: &str) -> (UnmappedReason, String) {
         let spec = &import.specifier;
+        if let Some(alias) = self.bundler.matching(self.file, spec) {
+            let note = format!(
+                "{} {spec}: no file matches; {} declares the alias `{}`",
+                import.note,
+                display_path(alias.config),
+                alias.key
+            );
+            return (UnmappedReason::Unresolved, note);
+        }
         if let Some((pattern, file)) = self.aliases.matching(spec, self.file) {
             let note = format!(
                 "{} {spec}: no file matches; {file} declares the alias `{pattern}`",

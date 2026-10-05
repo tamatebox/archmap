@@ -82,3 +82,54 @@ fn a_jsconfig_resolves_the_files_below_it_where_it_is_the_nearest_config() {
     // in one directory, the tsconfig wins
     assert_eq!(loads(&graph, "both/main.ts"), set(&["1 -> both/ts/x.ts"]));
 }
+
+#[test]
+fn a_vite_config_rewrites_its_package_s_imports_before_the_tsconfig() {
+    let graph = scan_fixture();
+    // `@` goes to src/, not to the tsconfig's legacy/
+    assert_eq!(
+        loads(&graph, "vite-app/src/main.ts"),
+        set(&[
+            "1 -> vite-app/src/a.ts",
+            "2 -> vite-app/src/icons/star.ts",
+            "3 -> vite-app/src/shared/index.ts",
+            "4 -> vite-app/src/app/entry.ts",
+        ])
+    );
+    // a relative replacement is left as Vite leaves it, and an alias that
+    // leads to no file is one all the same
+    assert_eq!(
+        unmapped(&graph, "vite-app/src/main.ts"),
+        set(&["5 rel/x undeclared", "6 @/gone unresolved",])
+    );
+    // a package below keeps its own config
+    assert_eq!(
+        loads(&graph, "vite-app/packages/inner/main.ts"),
+        set(&["1 -> vite-app/packages/inner/src/b.ts"])
+    );
+}
+
+#[test]
+fn a_vite_config_without_aliases_changes_nothing() {
+    let graph = scan_fixture();
+    assert_eq!(
+        loads(&graph, "paths-app/src/main.ts"),
+        set(&["1 -> paths-app/src/x.ts"])
+    );
+}
+
+#[test]
+fn a_webpack_alias_matches_a_prefix_or_with_dollar_the_name_alone() {
+    let graph = scan_fixture();
+    assert_eq!(
+        loads(&graph, "webpack-app/src/index.js"),
+        set(&[
+            "1 -> webpack-app/src/utilities/file.js",
+            "2 -> webpack-app/src/templates/main.js",
+        ])
+    );
+    assert_eq!(
+        unmapped(&graph, "webpack-app/src/index.js"),
+        set(&["3 Templates/other undeclared"])
+    );
+}
