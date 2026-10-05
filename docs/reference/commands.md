@@ -452,8 +452,12 @@ large`). A name a
 module-level import binds in a package's `__init__.py`, or that a
 module's literal `__all__` lists, is offered to whoever imports the
 module, and so is a name a module-level star import binds, in a module
-that some statement imports and whose star import takes the name too, so
-its statement is `passed_on`, never `never used`. A module bound
+that some statement imports and whose star import takes the name too, and
+any name a module-level import binds in a module that a statement of
+another file takes it from, by name (`from shop.api import pay`,
+`shop.api.pay`, or on a walk through re-exports) or whole (a star import,
+or the module bound whole), so its statement is `passed_on`, never `never
+used`. A module bound
 whole that the code passes as a value or reads a dunder of
 (`charge.__dict__`) is a `whole module` place in `Not traced`, and a string
 that names the symbol by its module's dotted path
@@ -514,8 +518,8 @@ use, or that code depending on the change imports, leads on through every
 statement that loads it. A Python package's `__init__.py` that only passes
 names on (its `from` import noted `export`, see
 [analyzers.md](analyzers.md#python)) is such a barrel too, and so, for a
-symbol, is one whose statement takes the symbol's name and that the uses
-pass finds passing it on with no use in its file; past it the
+symbol, is any Python file whose statement takes the symbol's name and that
+the uses pass finds passing it on with no use in its file; past it the
 reach follows names only: not the imports of a module below the package,
 which run the `__init__.py` first. Nor are they followed past one reached
 only through what it re-exports from a file that did not change, since none

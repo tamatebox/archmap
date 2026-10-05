@@ -41,8 +41,10 @@ pub(crate) struct Request<'g> {
     /// The statements `query` lists for it, and the others on their lines
     /// that load the same file.
     pub statements: Vec<&'g Evidence>,
-    /// The files some statement of the scan imports.
-    pub imported: BTreeSet<&'g str>,
+    /// The files some statement of the scan imports from another file,
+    /// with the names those statements take from each (`*` for the
+    /// module whole).
+    pub imported: BTreeMap<&'g str, BTreeSet<&'g str>>,
     /// The names under which each file offers the symbol, through the
     /// barrels that pass it on.
     pub offered: BTreeMap<String, BTreeSet<String>>,
@@ -178,7 +180,7 @@ pub(crate) fn read(request: &Request, out: &mut SymbolUses) {
 struct Pass<'t> {
     root: &'t Path,
     target: &'t Target,
-    imported: &'t BTreeSet<&'t str>,
+    imported: &'t BTreeMap<&'t str, BTreeSet<&'t str>>,
     offered: &'t BTreeMap<String, BTreeSet<String>>,
 }
 
@@ -248,15 +250,20 @@ impl Pass<'_> {
             };
             // a module-level name its `__all__` lists, or that a package's
             // `__init__.py` binds, is offered to whoever imports the module,
-            // and one a star import binds, to a module that imports it
+            // one a star import binds, to a module that imports it, and any
+            // to a statement of another file that takes it from the module,
+            // by name or whole (a star, or the module as a value)
             let package = read.path == "__init__.py" || read.path.ends_with("/__init__.py");
-            let imported = self.imported.contains(read.path.as_str());
+            let taken = self.imported.get(read.path.as_str());
+            let takes = |name: &str| taken.is_some_and(|names| names.contains(name));
             let offers = walker.bindings.iter().any(|b| {
                 b.line == Some(line)
                     && b.scope.is_none()
                     && (package
                         || read.lists(&b.name)
-                        || b.star && imported && read.exports(&b.name))
+                        || takes(&b.name)
+                        || takes(WHOLE_MODULE)
+                        || b.star && taken.is_some() && read.exports(&b.name))
             });
             if offers || evidence.iter().any(|e| e.passes_on()) {
                 out.passed_on.push(first.clone());

@@ -16,6 +16,37 @@ fn report() -> ScanReport {
     scan(&fixture("python-uses"), &ScanOptions::default()).unwrap()
 }
 
+/// A project written to a directory of its own, scanned; the directory
+/// goes when it drops, since the pass reads the files when asked.
+struct Project {
+    root: PathBuf,
+    report: ScanReport,
+}
+
+impl Project {
+    fn new(name: &str, files: &[(&str, &str)]) -> Project {
+        let root =
+            std::env::temp_dir().join(format!("archmap-py-uses-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (file, text) in [("pyproject.toml", "[project]\nname = \"till\"\n")]
+            .iter()
+            .chain(files)
+        {
+            let path = root.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        let report = scan(&root, &ScanOptions::default()).unwrap();
+        Project { root, report }
+    }
+}
+
+impl Drop for Project {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
 fn uses_of(report: &ScanReport, name: &str) -> SymbolUses {
     let symbol = report
         .graph
@@ -267,6 +298,51 @@ fn a_star_binds_what_the_module_exports() {
             UnreadReason::DynamicAccess
         )]
     );
+}
+
+#[test]
+fn a_module_level_import_that_another_file_takes_the_name_from_passes_it_on() {
+    let project = Project::new(
+        "taken",
+        &[
+            ("till/__init__.py", ""),
+            ("till/impl.py", "def pay(amount):\n    return amount\n"),
+            // taken by name, directly and through the module
+            ("till/api.py", "from .impl import pay\n"),
+            ("till/app.py", "from till.api import pay\n\npay(1)\n"),
+            ("till/mod.py", "from .impl import pay\n"),
+            ("till/dotted.py", "import till.mod\n\ntill.mod.pay(2)\n"),
+            // taken by a star, without `__all__` and with one code builds
+            ("till/open.py", "from .impl import pay\n"),
+            ("till/starred.py", "from till.open import *\n"),
+            (
+                "till/built.py",
+                "from .impl import pay\n\n__all__ = [\"pay\"] + []\n",
+            ),
+            ("till/built_star.py", "from till.built import *\n"),
+            // another name taken from the module: nothing takes `pay`
+            ("till/lone.py", "from .impl import pay\n\nRATE = 2\n"),
+            ("till/rate.py", "from till.lone import RATE\n"),
+        ],
+    );
+    let pay = uses_of(&project.report, "pay");
+    assert_eq!(
+        shown(&pay),
+        [
+            "till/app.py:3:1 call via 1",
+            "till/dotted.py:3:10 call as till.mod.pay via 1"
+        ]
+    );
+    assert_eq!(
+        places(&pay.passed_on),
+        [
+            "till/api.py:1",
+            "till/built.py:1",
+            "till/mod.py:1",
+            "till/open.py:1"
+        ]
+    );
+    assert_eq!(places(&pay.unused), ["till/lone.py:1"]);
 }
 
 #[test]

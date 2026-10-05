@@ -105,13 +105,15 @@ pub fn symbol_uses(report: &ScanReport, symbol: &Symbol) -> SymbolUses {
             crate::rust::uses::read(index, root, symbol, &statements, &mut found);
         }
         (Some("python"), _) => {
-            // a star import passes its names on to what imports its file
-            let imported = graph
-                .edges
-                .iter()
-                .flat_map(|edge| &edge.evidence)
-                .filter_map(|e| e.target.as_deref().filter(|t| *t != e.file))
-                .collect();
+            // a name a module binds goes on to what takes it from its file,
+            // and a star import's to what imports its file
+            let mut imported: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+            for e in graph.edges.iter().flat_map(|edge| &edge.evidence) {
+                if let Some(target) = e.target.as_deref().filter(|t| *t != e.file) {
+                    let names = imported.entry(target).or_default();
+                    names.extend(e.names.iter().map(String::as_str));
+                }
+            }
             let request = crate::python::uses::Request {
                 root,
                 symbol,
