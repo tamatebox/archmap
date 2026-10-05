@@ -89,6 +89,7 @@ pub(crate) fn render(
         let view = UsedAt {
             uses,
             instance_method: result.instance_method,
+            global: crate::not_traced::is_global(full, symbol),
             language,
             left_out: Some(&result.unnamed),
         };
@@ -101,7 +102,7 @@ pub(crate) fn render(
     }
     let mut tail = String::new();
     if let Some(found) = &result.not_traced {
-        truncated |= not_traced(&mut tail, found, caps.locations, true, true);
+        truncated |= not_traced(&mut tail, found, caps.locations, true, true, true);
     }
     marks(&mut out, &tail);
     out.push_str(&tail);

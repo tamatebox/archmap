@@ -86,6 +86,7 @@ pub fn symbol_uses(report: &ScanReport, symbol: &Symbol) -> SymbolUses {
                 defining: &location.file,
                 name: &symbol.name,
                 test: location.test,
+                global: location.declares_global(),
                 statements,
             };
             ts::read(&request, &mut found);

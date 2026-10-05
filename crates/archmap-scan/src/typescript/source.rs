@@ -136,6 +136,10 @@ pub(crate) struct ParsedFile {
     /// Without module syntax: every top-level declaration, the first of a
     /// name, which a script declares globally.
     pub globals: Vec<ExportedSymbol>,
+    /// The declarations directly inside a top-level `declare global { .. }`,
+    /// which a module adds to the global scope, the first of a name and none
+    /// that the file also exports.
+    pub declared_global: Vec<ExportedSymbol>,
 }
 
 /// Characters of a signature kept; a longer one ends in `...`.
@@ -487,6 +491,29 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
         let mut seen = BTreeSet::new();
         file.globals.retain(|s| seen.insert(s.name.clone()));
     }
+    // what `declare global` adds to the global scope; a name the file also
+    // exports keeps the export
+    for statement in &parsed.program.body {
+        let Some(Declaration::TSGlobalDeclaration(global)) = statement.as_declaration() else {
+            continue;
+        };
+        for inner in &global.body.body {
+            // `export` is allowed there and changes nothing, so the
+            // signature leaves it out
+            let declaration = match inner {
+                Statement::ExportDeclaration(export) => Some(&export.declaration),
+                _ => inner.as_declaration(),
+            };
+            for symbols in declaration
+                .map(|d| source.declared(d, d.span().start))
+                .unwrap_or_default()
+            {
+                file.declared_global.extend(symbols);
+            }
+        }
+    }
+    let mut seen: BTreeSet<String> = file.symbols.iter().map(|s| s.name.clone()).collect();
+    file.declared_global.retain(|s| seen.insert(s.name.clone()));
     Ok(file)
 }
 
@@ -2291,6 +2318,32 @@ export default local;
             ]
         );
         assert!(file.symbols.is_empty());
+    }
+
+    #[test]
+    fn a_modules_declare_global_declares_globals() {
+        let file = parse(
+            Path::new("env.ts"),
+            "export const mode = 'a';\n\
+             declare global {\n  interface Window { shop: string }\n  var mode: string;\n  \
+             function track(e: string): void;\n}\n\
+             declare module 'other' {\n  global {\n    const hidden: string;\n  }\n}\n",
+        )
+        .unwrap();
+        let global: Vec<(&str, SymbolKind, u32)> = file
+            .declared_global
+            .iter()
+            .map(|s| (s.name.as_str(), s.kind, s.line))
+            .collect();
+        // `mode` names the module's own export, which keeps it
+        assert_eq!(
+            global,
+            [
+                ("Window", SymbolKind::Trait, 3),
+                ("track", SymbolKind::Function, 5),
+            ]
+        );
+        assert!(file.globals.is_empty());
     }
 
     #[test]

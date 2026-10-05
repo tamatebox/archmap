@@ -21,8 +21,8 @@ use archmap_core::{
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
     BindingIdentifier, BindingPattern, CallExpression, ClassElement, Expression,
-    ImportDeclarationSpecifier, ModuleExportName, Program, Statement, TSImportTypeQualifier,
-    TSModuleReference,
+    IdentifierReference, ImportDeclarationSpecifier, ModuleExportName, Program, Statement,
+    TSImportTypeQualifier, TSModuleReference,
 };
 use oxc_ast::AstKind;
 use oxc_parser::Parser;
@@ -56,6 +56,9 @@ pub(crate) struct Request<'g> {
     pub name: &'g str,
     /// The defining file is test code.
     pub test: bool,
+    /// The symbol is declared in the file's `declare global`, which code
+    /// reaches as a global rather than through the binding.
+    pub global: bool,
     /// The statements that import the symbol, with their evidence.
     pub statements: Vec<&'g Evidence>,
 }
@@ -79,7 +82,7 @@ pub(crate) fn read(request: &Request, out: &mut SymbolUses) {
     };
     // a member whose declaration says nothing stays a possible instance one
     pass.instance_member = pass.tail.len() == 2;
-    pass.defining_file(request.test);
+    pass.defining_file(request.test, request.global);
     // one statement per line and kind: a line can hold an import and a
     // call that loads a module
     let mut by_file: BTreeMap<&str, BTreeMap<(u32, &str), &Evidence>> = BTreeMap::new();
@@ -296,7 +299,7 @@ impl<'g> Pass<'g, '_> {
         found
     }
 
-    fn defining_file(&mut self, test: bool) {
+    fn defining_file(&mut self, test: bool, global: bool) {
         let file = self.defining;
         let path = self.root.join(file);
         let Ok(text) = std::fs::read_to_string(&path) else {
@@ -313,11 +316,19 @@ impl<'g> Pass<'g, '_> {
         let local = local_name(&read.program.body, &exported).unwrap_or(exported);
         self.aliases = aliases(&read.program.body, &local, &self.tail[0]);
         let scoping = read.semantic.scoping();
-        let Some(symbol) = scoping.get_root_binding(local.as_str().into()) else {
-            return;
-        };
         let rests = vec![self.tail[1..].to_vec()];
         let mut uses = Vec::new();
+        let symbol = match global {
+            true => {
+                global_uses(&read, &local, &rests, &mut uses, self.out);
+                in_declare_global(&read, &local)
+            }
+            false => scoping.get_root_binding(local.as_str().into()),
+        };
+        let Some(symbol) = symbol else {
+            self.out.uses.extend(uses);
+            return;
+        };
         follow_binding(&read, symbol, &local, &rests, 0, &mut uses, self.out);
         if let [_, member] = self.tail.as_slice() {
             let is_static = this_member(&read, symbol, member, &mut uses);
@@ -748,6 +759,65 @@ fn aliases(body: &[Statement], local: &str, exported: &str) -> Vec<String> {
 /// Follow every reference to a binding along `rests`, the paths from it to
 /// the symbol (`[]`: the binding is the symbol). Returns whether a reference
 /// passes the binding on, by an export, rather than using it.
+/// The binding of `name` in a top-level `declare global` of the file, which
+/// the code inside the block resolves to.
+fn in_declare_global(read: &Read, name: &str) -> Option<SymbolId> {
+    let scoping = read.semantic.scoping();
+    read.program.body.iter().find_map(|statement| {
+        let Statement::TSGlobalDeclaration(global) = statement else {
+            return None;
+        };
+        scoping.get_binding(global.scope_id.get()?, name.into())
+    })
+}
+
+/// The uses of a name the file's `declare global` declares outside the
+/// block: the analysis leaves them unresolved, as it does a member of the
+/// global object (`globalThis.registry`, `window.`, `self.`). A local of
+/// the name hides it.
+fn global_uses(
+    read: &Read,
+    name: &str,
+    rests: &[Vec<String>],
+    uses: &mut Vec<SymbolUse>,
+    out: &mut SymbolUses,
+) {
+    let scoping = read.semantic.scoping();
+    let nodes = read.semantic.nodes();
+    for reference in scoping
+        .root_unresolved_references()
+        .get(name)
+        .into_iter()
+        .flatten()
+    {
+        let id = scoping.get_reference(*reference).node_id();
+        let span = nodes.get_node(id).kind().span();
+        follow_node(read, id, span, name, rests, 0, uses, out);
+    }
+    let unresolved = |object: &IdentifierReference| {
+        object
+            .reference_id
+            .get()
+            .is_some_and(|r| scoping.get_reference(r).symbol_id().is_none())
+    };
+    for node in nodes.iter() {
+        let AstKind::StaticMemberExpression(m) = node.kind() else {
+            continue;
+        };
+        let Expression::Identifier(object) = &m.object else {
+            continue;
+        };
+        let global_object = matches!(object.name.as_str(), "globalThis" | "window" | "self");
+        if m.property.name != name || !global_object || !unresolved(object) {
+            continue;
+        }
+        if let Some(role) = role_at(read, node.id(), m.span) {
+            let binding = Some(format!("{}.{name}", object.name));
+            uses.push(make_use(read, m.property.span, role, binding));
+        }
+    }
+}
+
 fn follow_binding(
     read: &Read,
     symbol: SymbolId,

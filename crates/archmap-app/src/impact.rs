@@ -12,7 +12,9 @@ use archmap_core::{
 use archmap_scan::ScanReport;
 
 use crate::co_change::{self, Changed};
-use crate::not_traced::{barrels, not_traced, with_uses, Narrowed, NotTraced, Own, Place, Subject};
+use crate::not_traced::{
+    barrels, declares_global, not_traced, with_uses, Narrowed, NotTraced, Own, Place, Subject,
+};
 use crate::query::{instance_method, uses_of};
 use crate::resolve::{resolve, Resolved};
 use crate::target::{component_file, fold, namesakes, reject_outside, unquote};
@@ -280,6 +282,9 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
             place: component.path.as_deref().map(Place::Directory),
             own: Own::Component(&at.id, depth),
             script: component.kind == ComponentKind::Script,
+            global: full
+                .symbols_of(&component.id)
+                .any(|s| s.location().is_some_and(Evidence::declares_global)),
             unreached: false,
         },
         Traced::File(file, owner) => Subject {
@@ -287,6 +292,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
             place: Some(Place::File(file)),
             own: Own::File(file),
             script: owner.is_some_and(|c| c.kind == ComponentKind::Script),
+            global: declares_global(full, file),
             unreached: none_found(&importers) && imports_below.is_none(),
         },
         Traced::Symbol(symbol) => {
@@ -297,6 +303,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
                 place: symbol.location().map(|e| Place::File(&e.file)),
                 own: Own::File(symbol.location().map_or("", |e| e.file.as_str())),
                 script: declared.is_some_and(|c| c.kind == ComponentKind::Script),
+                global: symbol.location().is_some_and(Evidence::declares_global),
                 unreached: none_found(&importers) && none_found(&may_use),
             }
         }

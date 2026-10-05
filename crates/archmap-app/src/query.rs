@@ -115,6 +115,10 @@ fn file_view<'a>(
             place: Some(Place::File(&facts.file)),
             own: Own::File(&facts.file),
             script,
+            global: facts
+                .symbols
+                .iter()
+                .any(|s| s.location().is_some_and(Evidence::declares_global)),
             // a package's entry file runs before the modules below it
             unreached: importers.as_ref().is_some_and(Vec::is_empty)
                 && below.is_empty()
@@ -257,6 +261,7 @@ fn symbol_view<'a>(
             place: symbol.location().map(|e| Place::File(&e.file)),
             own: Own::File(location),
             script: declared.is_some_and(|c| c.kind == ComponentKind::Script),
+            global: symbol.location().is_some_and(Evidence::declares_global),
             unreached: imported_by.as_ref().is_some_and(Vec::is_empty)
                 && may_use.as_ref().is_some_and(Vec::is_empty),
         },
@@ -328,6 +333,9 @@ fn component_view<'a>(
             place: component.path.as_deref().map(Place::Directory),
             own: Own::Component(&component.id, depth),
             script: component.kind == ComponentKind::Script,
+            global: full
+                .symbols_of(&component.id)
+                .any(|s| s.location().is_some_and(Evidence::declares_global)),
             unreached: false,
         },
         usize::MAX,

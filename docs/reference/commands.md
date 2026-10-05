@@ -195,7 +195,8 @@ facts behind its component: the file's public symbols, what it imports
 imports without an edge. Where no evidence names imported files for the
 file's language, `Imported by` says it is unknown rather than showing none,
 and for a script, whose declarations are global, it says that what uses them
-is not traced; `query` on a symbol a script declares says the same.
+is not traced; `query` on a symbol a script declares says the same, and so
+does `query` on a symbol declared in a module's `declare global`.
 A TS/JS re-export statement (`export ... from`) is marked `(export)`
 wherever a location is shown: it passes names on rather than uses them. A
 test's mock that replaces a module for the test's whole run (a `vi.mock`
@@ -302,7 +303,11 @@ module gives keys that cannot be read. A method that is not static gets
 only the uses through its class and `this` (`Used at: through the class and
 this only: ...`), and `Not traced` says that calls through a value of its
 type (`wallet.pay()`) are not read (`values`), with the imports of the type
-or its module that may make them; those are never `never used`. For any
+or its module that may make them; those are never `never used`. A symbol
+that a script or a module's `declare global` declares gets only the uses in
+its own file (`Used at: in its own file only: ...`), since code anywhere
+uses it without an import, there through `globalThis`, `window` or `self`
+too (`as globalThis.registry`). For any
 member, `Not traced` names the places that extend its class
 (`subclasses`): a subclass reaches its members, statics included
 (`Rich.open()`, `super.open()`), and the pass does not read those calls, so
@@ -585,7 +590,8 @@ saying what was read (`history: HEAD 6bf7b15, full clone; 6 commits read, 5
 counted; left out 1 over 30 files; renames -M50%`), or why nothing was
 (`not read (not a git repository)`); see [history.md](history.md).
 Changing together is a fact of the history, never proof of a dependency.
-`Not traced` ends the answer as in `query`, and gives a script's note too,
+`Not traced` ends the answer as in `query`, and gives a script's note and a
+`declare global` one too,
 and `history:` when the history read may hide files changed with the
 target (a shallow clone, older commits not read, renames not detected).
 
@@ -780,14 +786,20 @@ target's own imports without an edge stay under `Not mapped`.
   targets load, so the files outside `src/` that no target loads, such as
   test data, are among them.
 - `script`: the target is a script, whose globals no import names; the value
-  says so. `impact`'s text gives it here, and `query`'s where it lists the
-  target's importers, when there are none.
+  says so. `impact`'s text gives it here, and so does `query`'s when it
+  lists importers of the target; otherwise `query` says it where the
+  importers would be.
+- `global`: the target is a symbol a module declares in `declare global`,
+  or a file or component that holds one, whose uses no import names; the
+  value says so. `query`'s text gives it here for a file or a component,
+  and where the importers would be for a symbol.
 - `no_importers`: the target's importers are recorded and none exists; the
   value says why that is no proof of no use (only import statements are
   read, so a file that a framework, a test runner or a command loads by
   name or path has none). `query`'s text shows it for a file, `impact`'s for
   a file or a symbol. It is left out for a test file, which its runner
-  loads, for a script, and for a Python package's `__init__.py` that an
+  loads, for a script or what holds a `declare global` declaration, and
+  for a Python package's `__init__.py` that an
   import of a module below it runs first.
 - `macros`: Rust macro calls whose arguments were not read (`json!`, a DSL)
   and whose `a::b` paths write the target's name (its module's, or its

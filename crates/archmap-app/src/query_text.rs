@@ -74,18 +74,27 @@ pub fn render(
         }
         QueryResult::NotMapped(view) => unmapped_name(&mut out, view, full, rolled, &caps),
     };
-    // a file's text says "Imported by: none" without why; a symbol's says it
-    let (not_traced, no_importers) = match result {
-        QueryResult::Component(view) => (view.not_traced.as_ref(), false),
-        QueryResult::File(view) => (view.not_traced.as_ref(), true),
-        QueryResult::Symbols(symbols) => {
-            (symbols.first().and_then(|v| v.not_traced.as_ref()), false)
+    // a file's text says "Imported by: none" without why; a symbol's says
+    // it, and that a script or `declare global` declares it; a script's
+    // file says it is one where it lists no importers
+    let (not_traced, no_importers, script, global) = match result {
+        QueryResult::Component(view) => (view.not_traced.as_ref(), false, false, true),
+        QueryResult::File(view) => {
+            let listed = view.importers.as_ref().is_some_and(|e| !e.is_empty());
+            (view.not_traced.as_ref(), true, listed, true)
         }
-        QueryResult::NotMapped(_) => (None, false),
+        QueryResult::Symbols(symbols) => (
+            symbols.first().and_then(|v| v.not_traced.as_ref()),
+            false,
+            false,
+            false,
+        ),
+        QueryResult::NotMapped(_) => (None, false, false, false),
     };
     let mut tail = String::new();
-    if let Some(not_traced) = not_traced {
-        truncated |= self::not_traced(&mut tail, not_traced, caps.locations, no_importers, false);
+    if let Some(found) = not_traced {
+        let cap = caps.locations;
+        truncated |= self::not_traced(&mut tail, found, cap, no_importers, script, global);
     }
     marks(&mut out, &tail);
     out.push_str(&tail);
@@ -567,6 +576,9 @@ fn symbol_list(
                     &UsedAt {
                         uses,
                         instance_method: one.instance_method,
+                        global: full
+                            .symbol(&one.symbol.id)
+                            .is_some_and(|s| crate::not_traced::is_global(full, s)),
                         language,
                         left_out: None,
                     },
@@ -629,6 +641,16 @@ fn importers(
             out,
             "\nImported by: none (a script declares it globally: what uses it is not traced)"
         );
+    } else if by_name.is_empty()
+        && view
+            .symbol
+            .location()
+            .is_some_and(Evidence::declares_global)
+    {
+        let _ = writeln!(
+            out,
+            "\nImported by: none (`declare global` declares it: what uses it is not traced)"
+        );
     } else if by_name.is_empty() {
         let _ = writeln!(
             out,
@@ -656,6 +678,9 @@ pub(crate) struct UsedAt<'a> {
     pub(crate) uses: &'a SymbolUses,
     /// A method that is not static, whose calls through values are not read.
     pub(crate) instance_method: bool,
+    /// Code uses it without importing its file, where the uses pass does
+    /// not look (see [`crate::not_traced::is_global`]).
+    pub(crate) global: bool,
     /// The language of the component that declares it.
     pub(crate) language: Option<&'a str>,
     /// For `impact`: the imports of the whole module that never name it and
@@ -667,18 +692,21 @@ pub(crate) struct UsedAt<'a> {
 /// the files with the most uses, then by path (`files` files and
 /// `locations` per file shown), and the imports whose binding is never
 /// used. A method that is not static says that the list holds only the uses
-/// through its class and `this` (`self`), so that an empty list never reads
-/// as unused.
+/// through its class and `this` (`self`), and a global one that it holds
+/// those of its own file, so that an empty list never reads as unused.
 pub(crate) fn used_at(out: &mut String, view: &UsedAt, use_files: usize, locations: usize) -> bool {
     let UsedAt {
         uses,
         instance_method,
+        global,
         language,
         left_out,
     } = *view;
-    // the calls through values and subclasses are under `Not traced`
-    let partial = instance_method || !uses.subclasses.is_empty();
+    // the calls through values and subclasses, and the uses of a global,
+    // are under `Not traced`
+    let partial = global || instance_method || !uses.subclasses.is_empty();
     let lead = match (partial, language) {
+        _ if global => "in its own file only: ",
         (false, _) => "",
         (true, Some("rust")) => "through the type and self only: ",
         (true, Some("python")) => "through the class and self only: ",
@@ -1175,19 +1203,23 @@ pub(crate) fn symbol_kind(kind: SymbolKind) -> &'static str {
 pub(crate) const NOT_TRACED: &str = "Not traced (what this answer may miss):";
 
 /// The `Not traced` section at the end of `query` and `impact`. `query`
-/// says a script where its text shows importers, and a symbol nothing
-/// imports, so not again here: `script` and `no_importers` say them when
-/// asked to. Shows `cap` locations per kind; returns whether some were left
-/// out.
+/// says a script where its text shows no importers, a symbol nothing
+/// imports and a symbol declared globally, so not again here: `script`,
+/// `no_importers` and `global` say them when asked to. Shows `cap`
+/// locations per kind; returns whether some were left out.
 pub(crate) fn not_traced(
     out: &mut String,
     found: &NotTraced,
     cap: usize,
     no_importers: bool,
     script: bool,
+    global: bool,
 ) -> bool {
     let mut lines = Vec::new();
     if let Some(note) = found.script.filter(|_| script) {
+        lines.push(format!("  {note}"));
+    }
+    if let Some(note) = found.global.filter(|_| global) {
         lines.push(format!("  {note}"));
     }
     if let Some(why) = found.no_importers.filter(|_| no_importers) {

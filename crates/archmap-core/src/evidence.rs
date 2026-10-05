@@ -168,6 +168,13 @@ impl Evidence {
         self.note.as_deref() == Some("entry")
     }
 
+    /// A symbol's evidence for a declaration a module adds to the global
+    /// scope (TS/JS `declare global { .. }`): a graph convention, the note
+    /// `global`. Code anywhere uses it without importing its file.
+    pub fn declares_global(&self) -> bool {
+        self.note.as_deref() == Some("global")
+    }
+
     /// The re-export this evidence went through to the file that defines a
     /// name, when its note says so (see [`via_place`]).
     pub fn via(&self) -> Option<&str> {

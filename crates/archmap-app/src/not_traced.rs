@@ -36,6 +36,11 @@ pub struct NotTraced {
     /// says so in words.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) script: Option<&'static str>,
+    /// The target is, or its file holds, a declaration in a module's
+    /// `declare global`, whose uses no import names; the value says so in
+    /// words.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) global: Option<&'static str>,
     /// Importers of the target are recorded and none exists; the value says
     /// why that is no proof of no use. Never for a test file, which its
     /// runner loads.
@@ -376,6 +381,7 @@ pub(crate) fn with_uses(
         && found.macros.is_none()
         && found.not_read.is_none()
         && found.script.is_none()
+        && found.global.is_none()
         && found.no_importers.is_none()
         && found.whole_module.is_none()
         && found.strings.is_none()
@@ -388,6 +394,8 @@ pub(crate) fn with_uses(
 
 pub(crate) const SCRIPT: &str =
     "a script: its declarations are global, so no import names what uses them";
+pub(crate) const GLOBAL: &str =
+    "declarations in `declare global` are global, so no import names what uses them";
 pub(crate) const NO_IMPORTERS: &str = "no import of it was found: only import statements are \
      read, so a file that a framework, a test runner or a command loads by name or path has none";
 
@@ -476,6 +484,9 @@ pub(crate) struct Subject<'a> {
     /// already lists.
     pub(crate) own: Own<'a>,
     pub(crate) script: bool,
+    /// The target is, or its file holds, a declaration in a module's
+    /// `declare global` (see [`declares_global`]).
+    pub(crate) global: bool,
     /// Importers are recorded and none exists.
     pub(crate) unreached: bool,
 }
@@ -615,8 +626,11 @@ pub(crate) fn not_traced(
         macros,
         not_read,
         script: subject.script.then_some(SCRIPT),
-        // a script's own note already says why nothing imports it
-        no_importers: (subject.unreached && !test_file && !subject.script).then_some(NO_IMPORTERS),
+        global: subject.global.then_some(GLOBAL),
+        // a script's own note, or a global one, already says why nothing
+        // imports it
+        no_importers: (subject.unreached && !test_file && !subject.script && !subject.global)
+            .then_some(NO_IMPORTERS),
         ..Default::default()
     };
     let empty = found.dynamic.is_none()
@@ -624,12 +638,30 @@ pub(crate) fn not_traced(
         && found.macros.is_none()
         && found.not_read.is_none()
         && found.script.is_none()
+        && found.global.is_none()
         && found.no_importers.is_none();
     (!empty).then_some(found)
 }
 
 /// One analyzer reads TypeScript and JavaScript, and either can load the
 /// other.
+/// Whether `file` holds a declaration in a module's `declare global`.
+pub(crate) fn declares_global(full: &ArchitectureGraph, file: &str) -> bool {
+    full.symbols
+        .values()
+        .filter_map(Symbol::location)
+        .any(|e| e.file == file && e.declares_global())
+}
+
+/// Whether code uses `symbol` without importing its file: a script's
+/// declaration, or one in a module's `declare global`.
+pub(crate) fn is_global(full: &ArchitectureGraph, symbol: &Symbol) -> bool {
+    symbol.location().is_some_and(Evidence::declares_global)
+        || full
+            .component(&symbol.component)
+            .is_some_and(|c| c.kind == ComponentKind::Script)
+}
+
 fn family(language: &str) -> &str {
     match language {
         "javascript" => "typescript",
@@ -813,6 +845,7 @@ mod tests {
             place: None,
             own: Own::File("src/target.ts"),
             script: false,
+            global: false,
             unreached: false,
         };
         let dynamic = not_traced(&full, &subject, 10)
@@ -842,6 +875,7 @@ mod tests {
                 place: Some(Place::File(file)),
                 own: Own::File(file),
                 script: false,
+                global: false,
                 unreached: true,
             };
             not_traced(&full, &subject, 10).and_then(|found| found.no_importers)

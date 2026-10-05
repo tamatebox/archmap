@@ -44,7 +44,8 @@
 //! - exported declarations and CommonJS exports become symbols (see
 //!   [`source`]), except in test, story and mock files; a file TypeScript
 //!   reads as a script gives its global declarations, and its component is
-//!   a `Script`
+//!   a `Script`; a module gives those inside its `declare global`, noted
+//!   `global`
 
 mod exports;
 mod fs;
@@ -213,12 +214,13 @@ impl Analyzer for TypeScriptAnalyzer {
             let package = &layout.packages[owner.package];
             let test = test_code(file, package, &manifests);
             if !layout::is_test_file(file) {
-                let symbols = if script {
-                    &parsed.globals
+                if script {
+                    emit_symbols(owner, file, &parsed.globals, test, false, &mut output);
                 } else {
-                    &parsed.symbols
-                };
-                emit_symbols(owner, file, symbols, test, &mut output);
+                    emit_symbols(owner, file, &parsed.symbols, test, false, &mut output);
+                    let global = &parsed.declared_global;
+                    emit_symbols(owner, file, global, test, true, &mut output);
+                }
             }
             for call in &parsed.dynamic {
                 output.fragment.push_dynamic_import(DynamicImport {
@@ -683,15 +685,22 @@ fn emit_components(
 }
 
 /// The symbols of `file`, a helper below a test directory marked as test
-/// code.
+/// code, and those of `declare global` noted `global`.
 fn emit_symbols(
     owner: &Owner,
     file: &Path,
     symbols: &[ExportedSymbol],
     test: bool,
+    global: bool,
     output: &mut AnalyzerOutput,
 ) {
     for symbol in symbols {
+        let mut evidence = Evidence::new(display_path(file))
+            .at_line(symbol.line)
+            .in_test(test);
+        if global {
+            evidence = evidence.with_note("global");
+        }
         let mut id = owner.component.to_string();
         if let Some(scope) = &owner.symbol_scope {
             id.push_str("::");
@@ -705,9 +714,7 @@ fn emit_symbols(
             kind: symbol.kind,
             component: owner.component.clone(),
             signature: symbol.signature.clone(),
-            evidence: vec![Evidence::new(display_path(file))
-                .at_line(symbol.line)
-                .in_test(test)],
+            evidence: vec![evidence],
         });
     }
 }

@@ -411,6 +411,12 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   where the tsconfig's `jsx` is `react-jsx` or `react-jsxdev`, `"type": "module"` in the closest
   `package.json` where the tsconfig's `module` is `node16`, `node18`, `node20` or `nodenext`, or a
   tsconfig with `"moduleDetection": "force"` (declaration files stay scripts then)
+- in a module, each declaration directly inside a top-level `declare global { .. }` (an interface, a
+  `var`, a function, a namespace; `export` there changes nothing) is a symbol of its file noted
+  `global` (see [graph.md](graph.md)), which code anywhere uses without importing the file; it often
+  merges with a declaration of TypeScript's libraries or of another file (`interface Window`,
+  `namespace NodeJS`), so the symbol is this file's part of it; a name the file also exports keeps
+  the export, and a script's `declare global` (an error to TypeScript) and a test file's give none
 - the imports of test code carry `test` in their evidence (see [graph.md](graph.md)): `*.test.*` and
   `*.spec.*` files (`*.test-d.*` and `*.spec-d.*` too) and any file below a `test`, `tests`, `__tests__` or `__mocks__` directory, helpers
   included; stories are not test code; below the routes of a package whose own `package.json` declares
@@ -426,7 +432,9 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   statements that import it and the barrels those go through are read again, with oxc's semantic
   analysis, for the identifiers that resolve to it (`Used at`, see [commands.md](commands.md#query));
   which file a statement loads is the scan's evidence, found again by its line, and nothing of this
-  enters the graph
+  enters the graph; for a declaration in a module's `declare global`, which the analysis keeps apart
+  from the rest of the file, its file is read for the identifiers of its name that resolve to no
+  declaration and for the members of that name of `globalThis`, `window` and `self`
 
 ### TypeScript and JavaScript known gaps
 
@@ -487,7 +495,7 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   member or a path dependency, by its path in the package (`@acme/tsconfig/base.json`, or
   `@acme/tsconfig/react` for `react.json`), not through `exports` that map it elsewhere; a config of
   any other package is not in the scan.
-- Declarations inside `declare global { .. }`, triple-slash directives (`/// <reference types="vite/client" />`),
+- A `global { .. }` block inside `declare module 'x' { .. }`, triple-slash directives (`/// <reference types="vite/client" />`),
   spreads in `module.exports = { ...require('./a') }`, `Object.defineProperty(exports, 'a', ..)` and the
   re-exports compilers write into CommonJS output (`__exportStar(require('./a'), exports)`) are not read.
 - Files loaded by a pattern (Vite's `import.meta.glob('./pages/*.ts')`, webpack's `require.context`)

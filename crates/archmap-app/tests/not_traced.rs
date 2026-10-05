@@ -181,6 +181,8 @@ fn a_rust_target_counts_the_files_its_analyzer_did_not_read() {
 
 const NO_IMPORTERS: &str = "no import of it was found: only import statements are read, \
      so a file that a framework, a test runner or a command loads by name or path has none";
+const GLOBAL: &str =
+    "declarations in `declare global` are global, so no import names what uses them";
 
 #[test]
 fn impact_says_in_words_why_no_import_shows_who_uses_a_file() {
@@ -212,6 +214,79 @@ fn a_file_nothing_imports_says_so_in_query_text_too() {
     // the script's text says it where it lists importers
     let script = query(&ws, "src/global.d.ts", Format::Text);
     assert!(!script.contains("no importers:"), "{script}");
+}
+
+#[test]
+fn what_declare_global_declares_says_that_no_import_names_its_uses() {
+    let ws = scan(&fixture("ts-globals"));
+    let not_traced = |text: &str| {
+        text.split_once("\nNot traced (what this answer may miss):\n")
+            .map(|(_, s)| s.to_owned())
+    };
+    // a symbol: no import names it, and the uses pass reads its own file,
+    // where code reaches it as a global
+    let text = query(&ws, "registry", Format::Text);
+    assert!(
+        text.contains(
+            "\nImported by: none (`declare global` declares it: what uses it is not traced)\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "\nUsed at: in its own file only: 1 in 1 file (1 read)\n  \
+             src/setup.ts:5 (read) as globalThis.registry\n"
+        ),
+        "{text}"
+    );
+    assert_eq!(not_traced(&text), None, "{text}");
+    // a file that declares one, imported for what it runs: its importers
+    // stay, and the line says what they do not show
+    let text = query(&ws, "src/setup.ts", Format::Text);
+    assert!(text.contains("\nImported by: 2\n"), "{text}");
+    assert_eq!(
+        not_traced(&text).as_deref(),
+        Some(&*format!("  {GLOBAL}\n"))
+    );
+    // one nothing imports: not a file a framework loads by name
+    let text = query(&ws, "src/global.d.ts", Format::Text);
+    assert_eq!(
+        not_traced(&text).as_deref(),
+        Some(&*format!("  {GLOBAL}\n"))
+    );
+    // impact on the symbol: an import that loads its file for what it runs
+    // takes no name, so neither lists it nor leaves it out as never naming
+    // it, and the line says why the reach is empty
+    let symbol = impact(&ws, "registry");
+    assert_eq!(symbol["not_traced"]["global"], GLOBAL, "{symbol}");
+    assert_eq!(symbol["may_use"]["total"], 0, "{symbol}");
+    assert!(symbol.get("unnamed").is_none(), "{symbol}");
+    assert!(
+        symbol["not_traced"].get("no_importers").is_none(),
+        "{symbol}"
+    );
+    let file = impact(&ws, "src/global.d.ts");
+    assert_eq!(file["not_traced"]["global"], GLOBAL, "{file}");
+    assert!(file["not_traced"].get("no_importers").is_none(), "{file}");
+    // a module that only exports declares nothing global
+    let plain = impact(&ws, "src/main.ts");
+    assert!(plain["not_traced"].get("global").is_none(), "{plain}");
+}
+
+#[test]
+fn a_script_that_lists_importers_still_says_it_is_one() {
+    // `import './polyfill.js'` loads the script for what it runs; its
+    // globals are used elsewhere all the same
+    let ws = scan(&fixture("ts-globals"));
+    let text = query(&ws, "src/polyfill.js", Format::Text);
+    assert!(text.contains("\nImported by: 1\n"), "{text}");
+    assert!(
+        text.ends_with(
+            "\nNot traced (what this answer may miss):\n  \
+             a script: its declarations are global, so no import names what uses them\n"
+        ),
+        "{text}"
+    );
 }
 
 #[test]

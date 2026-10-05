@@ -120,7 +120,13 @@ it leaves out. Only the TS/JS analyzer sets it.
 
 A symbol's evidence with a `target` says how the symbol is reached rather
 than where it is: a Rust method whose type another file defines carries
-evidence noted `impl` that points at that file, with the type's name.
+evidence noted `impl` that points at that file, with the type's name. A
+symbol whose evidence is noted `global` is a declaration that a module adds
+to the global scope (TS/JS `declare global { .. }`): code anywhere uses it
+without importing its file, so no edge shows who does. Such a declaration
+often merges with one of the same name in TypeScript's libraries or in
+another file (`interface Window`, `namespace NodeJS`), so the symbol is this
+file's part of it, and several files may give a symbol of that name.
 
 An unmapped import is an import that maps to no component, standard-library
 imports aside, and `reason` says why. A dynamic import is a call that loads a

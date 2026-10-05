@@ -109,7 +109,7 @@ Details: [commands](docs/reference/commands.md), [MCP server](docs/reference/mcp
 |---|---|
 | [Rust](docs/reference/analyzers.md#rust) | `Cargo.toml` packages and dependencies; module files reached from every Cargo target: `src/lib.rs`, `src/main.rs`, the binaries, tests, examples, benches and build script Cargo finds beside them, and those `Cargo.toml` declares; `pub` items; `use` declarations and module paths in code |
 | [Python](docs/reference/analyzers.md#python) | `pyproject.toml`, `setup.py` / `setup.cfg` and requirements files; packages and namespace packages; public top-level definitions; `import` statements and the `import_module` and `__import__` calls that name their module with a literal, scanned line by line and followed through the names modules bind from others, those under `if TYPE_CHECKING:` apart |
-| [TypeScript / JavaScript](docs/reference/analyzers.md#typescript-and-javascript) | `package.json` packages, workspaces and dependencies; directories and files; exported declarations, CommonJS exports and the globals of scripts; `import`, `export ... from`, `require`, `import()` and test mocks, resolved through tsconfig paths, workspace links and re-exports, imports of types only apart |
+| [TypeScript / JavaScript](docs/reference/analyzers.md#typescript-and-javascript) | `package.json` packages, workspaces and dependencies; directories and files; exported declarations, CommonJS exports and the globals of scripts and of `declare global`; `import`, `export ... from`, `require`, `import()` and test mocks, resolved through tsconfig paths, workspace links and re-exports, imports of types only apart |
 
 Other languages are counted in `summary`, not analyzed. Each analyzer's
 behavior and known gaps are in [analyzers.md](docs/reference/analyzers.md).
@@ -135,7 +135,7 @@ What works today, by the [roadmap](#roadmap) phase it belongs to:
 |---|:-:|:-:|:-:|:-:|
 | Packages and declared dependencies | 0 | ✅ | ✅ | ✅ |
 | Module and file components | 1 | ✅ | ✅ | ✅ |
-| Public symbols with signatures | 1 | ✅ | ✅ | ◐ |
+| Public symbols with signatures | 1 | ✅ | ✅ | ✅ |
 | Imports resolved to the file they load | 1 | ✅ | ✅ | ◐ |
 | Re-exports followed to the defining file | 1 | ✅ | ✅ | ✅ |
 | Names each import takes | 1 | ✅ | ✅ | ✅ |
@@ -160,7 +160,6 @@ The gaps behind the marks:
   name`, is followed only to what takes the name.
 - TS/JS imports: aliases defined only in a bundler configuration or a
   `jsconfig.json` are not followed.
-- TS/JS symbols: declarations inside `declare global { .. }` give none.
 - TS/JS `check`: only `type` written in an import marks it as types only,
   so a type imported without it (`import { Money }` for an interface) can
   close a cycle that `cycles.forbid` reports.
