@@ -1027,6 +1027,49 @@ fn a_file_by_symbol_says_who_takes_each_symbol_and_where_it_is_used() {
 }
 
 #[test]
+fn a_candidate_class_is_a_class_in_python_and_ts_and_a_struct_in_rust() {
+    let ws = scan(&fixture(""));
+    let answer = query(&ws, "Wallet");
+    assert_eq!(answer.found, Found::Candidates, "{}", answer.output);
+    let rows: Vec<&str> = answer
+        .output
+        .lines()
+        .filter(|l| l.contains("::Wallet  "))
+        .collect();
+    assert!(!rows.is_empty(), "{}", answer.output);
+    for row in rows {
+        let python_or_ts = row.contains(".py:") || row.contains(".ts:");
+        assert_eq!(row.contains("  class"), python_or_ts, "{row}");
+        assert!(!python_or_ts || !row.contains("  struct"), "{row}");
+    }
+    // JSON keeps the model's kind
+    let json = query_as(&ws, "Wallet", Format::Json).output;
+    assert!(json.contains("\"symbol_kind\": \"struct\""), "{json}");
+
+    // a TS interface is an interface, not a trait
+    let repo = Repo::new(
+        "interfaces",
+        &[
+            ("package.json", "{\"name\": \"web\"}\n"),
+            ("src/a.ts", "export interface Shape { a: 1 }\n"),
+            ("src/b.ts", "export interface Shape { b: 2 }\n"),
+        ],
+    );
+    let answer = query(&scan(&repo.0), "Shape");
+    let rows: Vec<&str> = answer
+        .output
+        .lines()
+        .filter(|l| l.contains("::Shape  "))
+        .collect();
+    assert_eq!(rows.len(), 2, "{}", answer.output);
+    assert!(
+        rows.iter().all(|r| r.contains("  interface")),
+        "{}",
+        answer.output
+    );
+}
+
+#[test]
 fn used_at_counts_the_uses_in_tests_apart() {
     let repo = Repo::new(
         "used-in-tests",

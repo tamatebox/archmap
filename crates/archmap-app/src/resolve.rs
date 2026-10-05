@@ -14,7 +14,7 @@ use archmap_core::{
 use archmap_scan::ScanReport;
 use serde::Serialize;
 
-use crate::query_text::{component_kind, count, shell_word, symbol_kind};
+use crate::query_text::{component_kind, count, kind_word, shell_word, symbol_kind};
 use crate::target::{
     component_file, directory_target, file_target, find_component, owner_of_shared_path, test_files,
 };
@@ -847,11 +847,7 @@ fn symbol_row(full: &ArchitectureGraph, s: &Symbol) -> String {
             None => e.file.clone(),
         })
         .unwrap_or_default();
-    let mut line = format!(
-        "  {}  {at}  {}",
-        shell_word(s.id.as_str()),
-        symbol_kind(s.kind)
-    );
+    let mut line = format!("  {}  {at}  {}", shell_word(s.id.as_str()), kind_word(s));
     if let Some((by_name, may_use)) = importer_counts(full, s) {
         let _ = write!(line, "  imported by {by_name}, may use {may_use}");
     }

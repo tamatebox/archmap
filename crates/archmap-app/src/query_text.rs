@@ -1164,7 +1164,7 @@ pub(crate) fn symbol_line(symbol: &Symbol) -> String {
     let what = match &symbol.signature {
         Some(signature) if !qualified => signature.clone(),
         Some(signature) => format!("{}: {signature}", symbol.name),
-        None => format!("{} {}", symbol_kind(symbol.kind), symbol.name),
+        None => format!("{} {}", kind_word(symbol), symbol.name),
     };
     match symbol.location() {
         Some(evidence) => format!("{what}  {}", location(evidence)),
@@ -1463,6 +1463,21 @@ pub(crate) fn component_kind(kind: ComponentKind) -> &'static str {
         ComponentKind::Module => "module",
         ComponentKind::Script => "script",
         ComponentKind::External => "external",
+    }
+}
+
+/// What text calls a symbol's kind, in the word of its file's language: a
+/// Python or TS/JS class is a `class` and a TS interface an `interface`,
+/// which the model's kinds call a struct and a trait; JSON keeps the
+/// model's kind.
+pub(crate) fn kind_word(symbol: &Symbol) -> &'static str {
+    let language = symbol
+        .location()
+        .and_then(|e| archmap_scan::language_of(std::path::Path::new(&e.file)));
+    match (symbol.kind, language) {
+        (SymbolKind::Struct, Some("python" | "typescript" | "javascript")) => "class",
+        (SymbolKind::Trait, Some("typescript" | "javascript")) => "interface",
+        (kind, _) => symbol_kind(kind),
     }
 }
 
