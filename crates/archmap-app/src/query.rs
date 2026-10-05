@@ -183,7 +183,7 @@ fn query(ws: &Workspace, request: &QueryRequest) -> Result<Answer> {
     // an issue or a pull request of the work snapshot
     if let Some(item) = crate::work::target(root, target) {
         return Ok(Answer {
-            output: crate::work::answer(ws, item, target, format, verbose)?,
+            output: crate::work::answer(ws, item, target, depth, format, verbose)?,
             found: Found::One,
         });
     }

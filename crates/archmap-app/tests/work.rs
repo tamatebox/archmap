@@ -530,6 +530,16 @@ fn a_true_merge_is_the_pull_requests_own_fact_apart_from_the_commits_counted() {
     ] {
         assert!(text.contains(&line), "{line}\n{text}");
     }
+    // the pull request's code: the merge changes nothing of its own
+    let text = query(&ws, "#7", Format::Text);
+    let expected = format!(
+        "\nCode: 1 file in 1 component\n  \
+         by commit list: src/price.ts\n  \
+         merged as {}, a merge commit, whose own changes are not read\n  \
+         components: price.ts 1 file\n",
+        short(&merge)
+    );
+    assert!(text.contains(&expected), "{text}");
     let json = query(&ws, "src/price.ts", Format::Json);
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     let items = &value["work"]["pull_requests"][0]["items"];
@@ -553,5 +563,192 @@ fn without_a_snapshot_a_file_says_where_the_work_would_come_from() {
     assert!(
         text.contains("\nWork: none (no snapshot at .archmap/github.json)\n"),
         "{text}"
+    );
+}
+
+#[test]
+fn a_pull_request_lists_the_files_of_its_commits_by_kind_apart() {
+    let (repo, _) = shop("code-pull");
+    let text = query(&scan(&repo.dir), "#15", Format::Text);
+    // the commit on a side branch and the one never fetched give no file
+    assert!(
+        text.contains(
+            "\nCode: 2 files in 2 components\n  \
+             by commit list: package.json, src/price.ts\n  \
+             by merge commit: src/price.ts\n  \
+             components: price.ts 1 file, shop 1 file\n\n"
+        ),
+        "{text}"
+    );
+}
+
+#[test]
+fn an_issue_lists_the_files_through_each_pull_request_and_commit_it_links() {
+    let (repo, c) = shop("code-issue");
+    let ws = scan(&repo.dir);
+    let text = query(&ws, "#12", Format::Text);
+    let expected = format!(
+        "\nCode: 2 files in 2 components, through 1 pull request and 1 commit\n  \
+         through #15 pull request (closes, closed_by), 2 of its 4 commits in the local \
+         history, and its merge commit:\n    \
+         package.json, src/price.ts\n  \
+         through commit {} 2026-01-02 (referenced):\n    \
+         src/price.ts\n  \
+         components: price.ts 1 file, shop 1 file\n\n",
+        short(&c[1])
+    );
+    assert!(text.contains(&expected), "{text}");
+    // an issue no work links to code says by which links it looked
+    let text = query(&ws, "#9", Format::Text);
+    assert!(
+        text.contains(
+            "\nCode: no file in the local history\n  (no pull request or commit is linked to \
+             it by closes, linked, closed_by, cross_referenced or referenced)\n"
+        ),
+        "{text}"
+    );
+
+    let json = query(&ws, "#12", Format::Json);
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let code = &value["code"];
+    assert_eq!(code["files"], 2);
+    assert_eq!(
+        code["components"],
+        serde_json::json!([
+            {"id": "shop::src/price.ts", "name": "price.ts", "files": 1},
+            {"id": "shop", "name": "shop", "files": 1},
+        ])
+    );
+    let pull = &code["through"][0];
+    assert_eq!(
+        (
+            pull["kind"].clone(),
+            pull["number"].clone(),
+            pull["links"].clone()
+        ),
+        (
+            "pull_request".into(),
+            15.into(),
+            serde_json::json!(["closes", "closed_by"])
+        )
+    );
+    assert_eq!(pull["by_commit_list"][1]["id"], c[0].as_str());
+    assert_eq!(
+        pull["by_commit_list"][1]["files"],
+        serde_json::json!([
+            {"path": "package.json", "in_head": true},
+            {"path": "src/price.ts", "in_head": true},
+        ])
+    );
+    assert_eq!(pull["by_merge_commit"]["id"], c[3].as_str());
+    let commit = &code["through"][1];
+    assert_eq!(
+        (
+            commit["kind"].clone(),
+            commit["id"].clone(),
+            commit["links"].clone()
+        ),
+        (
+            "commit".into(),
+            c[1].as_str().into(),
+            serde_json::json!(["referenced"])
+        )
+    );
+    assert_eq!(
+        value["unmatched"],
+        serde_json::json!({"merged": 1, "unmatched": 0})
+    );
+}
+
+impl Repo {
+    /// Run `args` (a `git mv` or `git rm`) and commit; the commit's SHA.
+    fn commit_git(&mut self, args: &[&str]) -> String {
+        self.git(args);
+        self.git(&["commit", "-q", "-m", "change"]);
+        self.commits += 1;
+        self.git(&["rev-parse", "HEAD"])
+    }
+}
+
+#[test]
+fn files_are_named_as_head_holds_them_and_unmatched_work_is_counted() {
+    let mut repo = Repo::new("code-moves");
+    repo.write_package();
+    let squashed = repo.commit("src/old.ts", "export const price = 1;\n");
+    let removed = repo.commit("src/gone.ts", "export const gone = 1;\n");
+    repo.commit_git(&["mv", "src/old.ts", "src/new.ts"]);
+    repo.commit_git(&["rm", "-q", "src/gone.ts"]);
+    let item = |kind: &str, number: u64, state: &str| {
+        serde_json::json!({
+            "kind": kind, "number": number, "id": format!("X_{number}"),
+            "title": format!("Item {number}"), "state": state,
+            "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-04T00:00:00Z",
+        })
+    };
+    // #20 was squashed into a commit of HEAD, #22 into one the clone lacks
+    let mut squash = item("pull_request", 20, "merged");
+    squash["merge_commit"] = squashed.clone().into();
+    squash["commits"] = serde_json::json!([MISSING]);
+    let mut lost = item("pull_request", 22, "merged");
+    lost["merge_commit"] = "2222222222222222222222222222222222222222".into();
+    lost["commits"] = serde_json::json!([MISSING]);
+    repo.snapshot(&serde_json::json!({
+        "schema": 1, "source": "github", "host": "github.com", "repository": "acme/shop",
+        "fetched_at": "2026-10-03T09:00:00Z",
+        "range": {"since_rule": "all", "bound": 5000, "issues": 1, "pull_requests": 2},
+        "relation_types": ["closes", "linked", "closed_by", "cross_referenced", "referenced"],
+        "items": [squash, item("issue", 21, "closed"), lost],
+        "relations": [
+            {"type": "closed_by", "from": {"item": 21}, "to": {"commit": removed},
+             "observed": ["ClosedEvent.closer"]},
+            {"type": "referenced", "from": {"commit": MISSING}, "to": {"item": 21},
+             "observed": ["ReferencedEvent"]},
+            // #20 only mentions #21
+            {"type": "cross_referenced", "from": {"item": 20}, "to": {"item": 21},
+             "observed": ["CrossReferencedEvent"]},
+        ],
+    }));
+    let ws = scan(&repo.dir);
+    let text = query(&ws, "#20", Format::Text);
+    assert!(
+        text.contains(
+            "\nCode: 2 files in 2 components\n  \
+             by merge commit: package.json, src/old.ts now src/new.ts\n  \
+             components: new.ts 1 file, shop 1 file\n"
+        ),
+        "{text}"
+    );
+    let unmatched = "\n  unmatched: 1 of the snapshot's 2 merged pull requests matches no \
+                     commit of the history read, so their code is not shown\n";
+    assert!(text.contains(unmatched), "{text}");
+    let text = query(&ws, "#21", Format::Text);
+    // the closing commit first; the files a mention alone reaches counted
+    let expected = format!(
+        "\nCode: 3 files in 2 components, through 1 pull request and 2 commits; 2 of them \
+         only through cross_referenced or referenced links\n  \
+         through commit {} 2026-01-02 (closed_by):\n    \
+         src/gone.ts not in HEAD\n  \
+         through #20 pull request (cross_referenced), 0 of its 1 commit in the local \
+         history, and its merge commit:\n    \
+         package.json, src/old.ts now src/new.ts\n  \
+         through commit {} (referenced), not in the local history\n  \
+         components: shop 2 files, new.ts 1 file\n",
+        short(&removed),
+        short(MISSING)
+    );
+    assert!(text.contains(&expected), "{text}");
+    let text = query(&ws, "#22", Format::Text);
+    assert!(
+        text.contains(
+            "\nCode: no file in the local history\n  no commit of #22 is in the local \
+             history\n"
+        ),
+        "{text}"
+    );
+    let summary = ws.summary(DEFAULT_DEPTH, false);
+    assert!(
+        summary
+            .contains("; 1 of its 2 merged pull requests matches no commit of the history read\n"),
+        "{summary}"
     );
 }

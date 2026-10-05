@@ -24,6 +24,7 @@ mod summary;
 mod target;
 mod views;
 mod work;
+mod work_code;
 mod work_line;
 mod work_section;
 mod work_text;
@@ -191,7 +192,15 @@ impl Workspace {
     /// The Markdown summary at `depth`; `verbose` lists everything.
     pub fn summary(&self, depth: usize, verbose: bool) -> String {
         let work = match self.snapshot() {
-            Ok(Some(snapshot)) => Some(work_line::range_line(snapshot)),
+            Ok(Some(snapshot)) => {
+                let mut line = work_line::range_line(snapshot);
+                let unmatched = work_code::unmatched(snapshot, self.history());
+                if let Some(unmatched) = unmatched.filter(|u| u.unmatched > 0) {
+                    line.push_str("; ");
+                    line.push_str(&work_code::unmatched_line("its ", unmatched));
+                }
+                Some(line)
+            }
             Ok(None) => None,
             Err(error) => Some(format!("unreadable: {error}")),
         };

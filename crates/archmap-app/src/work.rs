@@ -15,6 +15,7 @@ use archmap_core::work::{
 use archmap_scan::history::LocalCommit;
 use serde::Serialize;
 
+use crate::work_code::{self, Code, Unmatched};
 use crate::work_line::{
     date, day, kind_word, plural_word, range_line, short, state_line, state_word,
 };
@@ -64,6 +65,7 @@ pub(crate) fn answer(
     ws: &Workspace,
     target: WorkTarget,
     requested: &str,
+    depth: usize,
     format: Format,
     verbose: bool,
 ) -> Result<String> {
@@ -77,7 +79,10 @@ pub(crate) fn answer(
             return elsewhere(snapshot, requested, format);
         }
     }
-    let view = view(ws, snapshot, target.number, requested);
+    let mut view = view(ws, snapshot, target.number, requested);
+    // the code its work changed, through the commits the history holds
+    view.code = work_code::code(snapshot, ws.history(), ws.graph(), depth, target.number);
+    view.unmatched = work_code::unmatched(snapshot, ws.history());
     Ok(match format {
         Format::Json => crate::json(&view)?,
         Format::Text => text(&view, snapshot, ws.history(), verbose),
@@ -104,6 +109,14 @@ struct WorkView<'a> {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     not_seen: Vec<NotSeen>,
     coverage: Coverage<'a>,
+    /// The files the item's work changed, through the commits the history
+    /// read holds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<Code<'a>>,
+    /// The snapshot's merged pull requests that match no commit of the
+    /// history read, of all its merged ones.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unmatched: Option<Unmatched>,
 }
 
 /// A link of the item.
@@ -303,6 +316,8 @@ fn view<'a>(
         commits,
         merge_commit,
         not_seen,
+        code: None,
+        unmatched: None,
         coverage: Coverage {
             source: &snapshot.source,
             fetched_at: &snapshot.fetched_at,
@@ -460,6 +475,9 @@ fn text(view: &WorkView, snapshot: &Snapshot, history: &History, verbose: bool) 
     if groups.is_empty() && view.item.is_some() {
         let _ = writeln!(out, "\nLinks: none of the types fetched");
     }
+    if let Some(code) = &view.code {
+        truncated |= work_code::render(&mut out, code, verbose);
+    }
 
     let mut not_traced = Vec::new();
     // a range that holds every item leaves only other repositories unseen
@@ -471,6 +489,13 @@ fn text(view: &WorkView, snapshot: &Snapshot, history: &History, verbose: bool) 
         not_traced.push(format!(
             "  outside the range: {} of these links name items the snapshot does not hold",
             view.coverage.outside_range
+        ));
+    }
+    // squash and rebase merges rewrite the SHAs a pull request lists
+    if let Some(unmatched) = view.unmatched.filter(|u| u.unmatched > 0) {
+        not_traced.push(format!(
+            "  unmatched: {}, so their code is not shown",
+            work_code::unmatched_line("the snapshot's ", unmatched)
         ));
     }
     if !snapshot.unavailable.is_empty() {

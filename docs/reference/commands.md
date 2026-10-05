@@ -189,7 +189,9 @@ another (see [work.md](work.md)): its state, the links GitHub records for it
 by type and by the end it is, a pull request's commits matched to the local
 git history by SHA, or why one is not (`no local commit with the same sha`,
 `an ancestor of HEAD beyond the history read`, `in the repository, not in
-HEAD's history`), and in `Not traced` the links its end cannot see. An item
+HEAD's history`), the files those commits changed, and an issue's through
+the pull requests and commits linked to it (`Code`), and in `Not traced` the
+links its end cannot see and the merged pull requests that match no commit. An item
 outside the snapshot's range says so with the links that name it; another
 repository's item, `not in this snapshot (it holds acme/shop)`; without a
 snapshot, where it looked. A file of the same name is read as the file.

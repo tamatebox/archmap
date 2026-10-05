@@ -108,9 +108,15 @@ Merge commit: 9f541d5 matched by sha (2026-01-04)
 Closes: #12 issue, open
 Closed: #12 issue, open, 2026-01-04
 
+Code: 3 files in 2 components
+  by commit list: config/rates.yaml, src/pricing/price.ts
+  by merge commit: src/pricing/round.ts
+  components: pricing 2 files, shop 1 file
+
 Not traced (what this answer may miss):
   closings: seen on the closed issue's timeline, so issues outside the range that #15 closed are not seen
   cross-references: seen on the referenced item's timeline, so references from #15 to items outside the range are not seen
+  unmatched: 3 of the snapshot's 40 merged pull requests match no commit of the history read, so their code is not shown
 ```
 
 The target is `'#N'` or `owner/name#N` (the snapshot's repository only). The
@@ -142,15 +148,55 @@ types its end cannot see, the links that name items outside the range, the
 types the host does not offer, and the ends the fetching account could not
 see.
 
+`Code` follows: the files the item's work changed, as far as the history
+read holds its commits. A pull request lists the files of the commits its
+commit list names and of its merge commit, apart (`by commit list:`, `by
+merge commit:`); a true merge's own changes are not read, so its merge
+commit shows as `merged as 9f541d5, a merge commit, whose own changes are
+not read`. An issue lists them through each pull request it is linked to by
+`closes`, `linked`, `closed_by` or `cross_referenced`, and each commit by
+`closed_by` or `referenced`, other link types and items outside the range
+aside. Those that close it or are linked to it come first, then those that
+only mention it, each newest first, and the heading counts apart the files
+only a mention reaches (`; 4 of them only through cross_referenced or
+referenced links`):
+
+```text
+Code: 3 files in 2 components, through 1 pull request and 1 commit
+  through #15 pull request (closes, closed_by), 2 of its 3 commits in the local history, and its merge commit:
+    config/rates.yaml, src/pricing/price.ts, src/pricing/round.ts
+  through commit 010f709 2026-01-02 (closed_by):
+    src/pricing/price.ts
+  components: pricing 2 files, shop 1 file
+```
+
+Every file a commit changed counts, large commits included, once by the
+path HEAD holds it at: a file a later commit moved shows the path written
+and `now <path>`, and one HEAD no longer holds `not in HEAD`. A line shows 10
+files and `Code` 10 pull requests and commits; `components:` counts the
+files per component at the roll-up depth, and stays whole. `Not traced`
+counts the snapshot's merged pull requests that match no commit of the
+history read, by commit list or merge commit: their code is not shown, as
+after a squash or rebase merge of a branch never fetched, or beyond the
+history read.
+
 JSON (`--format json`) gives the item, every link with its type, its end,
 the other end and what observed it, every commit with `matched_by` and its
 time or a `reason` (`no_local_commit_with_same_sha`, `beyond_history_read`,
-`not_in_head`, `foreign`, `no_history`, `not_looked_up`), and the
-snapshot's coverage.
+`not_in_head`, `foreign`, `no_history`, `not_looked_up`), the snapshot's
+coverage, `code` (the files, each once, `components`, `only_mentions`,
+and `through`: a pull request with its `links`, `commits`,
+`by_commit_list`, `by_merge_commit` and `merged_as`, a commit with its
+`links`, each commit the history read holds with its `time` and `files`,
+each with `path`, `now` and `in_head`) and `unmatched` (the snapshot's
+`merged` pull requests and how many match no commit).
 
 `summary`'s Coverage names the snapshot when there is one (`work: github
 acme/shop, 2 issues and 1 pull request updated since 2025-10-03, fetched
-2026-10-03 09:00 UTC, as visible to the account that fetched`).
+2026-10-03 09:00 UTC, as visible to the account that fetched`), and how
+many of its merged pull requests match no commit of the history read, when
+any (`; 3 of its 40 merged pull requests match no commit of the history
+read`); the history is read for it only when a snapshot exists.
 
 ## `Work` in `impact` and `query`
 

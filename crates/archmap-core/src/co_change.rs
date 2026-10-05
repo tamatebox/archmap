@@ -142,18 +142,7 @@ pub fn co_change(history: &History, targets: &BTreeSet<String>, settings: &Setti
             let key = identity.of(&change.path, settings.follow_renames);
             changed.insert(key, change.path.clone());
         }
-        // what older commits' paths name, after this one
-        for change in &commit.changes {
-            match &change.kind {
-                ChangeKind::Renamed { from, .. } if settings.follow_renames => {
-                    let key = identity.of(&change.path, true);
-                    identity.ends(&change.path, &commit.id);
-                    identity.alias.insert(from.clone(), key);
-                }
-                ChangeKind::Added => identity.ends(&change.path, &commit.id),
-                _ => {}
-            }
-        }
+        identity.after(commit, settings.follow_renames);
         let size = commit.changes.len() + commit.omitted;
         if commit.is_merge() {
             counts.merges += 1;
@@ -257,6 +246,53 @@ pub fn co_change(history: &History, targets: &BTreeSet<String>, settings: &Setti
     }
 }
 
+/// A file a commit changed: the path it wrote, and where HEAD holds that
+/// file now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CommitFile {
+    /// The path the commit wrote.
+    pub path: String,
+    /// Its path at HEAD, or its last path when HEAD no longer holds it,
+    /// when later commits moved it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub now: Option<String>,
+    /// HEAD holds it, at `now` when that is set.
+    pub in_head: bool,
+}
+
+/// The files each of `commits` changed under the root, every change kept
+/// (moves without edits and large commits too), with the renames git
+/// detected followed to HEAD along the commits read, as [`co_change`]
+/// follows them. A commit the history read does not hold is absent.
+pub fn commit_files(
+    history: &History,
+    commits: &BTreeSet<&str>,
+) -> BTreeMap<String, Vec<CommitFile>> {
+    let mut identity = Identity::default();
+    let mut files = BTreeMap::new();
+    for i in topological(&history.commits) {
+        let commit = &history.commits[i];
+        if commits.contains(commit.id.as_str()) {
+            let changed = commit
+                .changes
+                .iter()
+                .map(|change| {
+                    let key = identity.of(&change.path, true);
+                    let shown = identity.display(&key);
+                    CommitFile {
+                        in_head: history.head_files.contains_key(&key),
+                        now: (shown != change.path).then_some(shown),
+                        path: change.path.clone(),
+                    }
+                })
+                .collect();
+            files.insert(commit.id.clone(), changed);
+        }
+        identity.after(commit, true);
+    }
+    files
+}
+
 /// What a file shares with the target: the shared commits newest first,
 /// and its earlier paths in them.
 struct Shared {
@@ -293,6 +329,23 @@ impl Identity {
         let earlier = format!("{path}\u{0}{commit}");
         self.shown.insert(earlier.clone(), path.to_owned());
         self.alias.insert(path.to_owned(), earlier);
+    }
+
+    /// What older commits' paths name, after `commit`: a rename carries
+    /// the old path to the file it became when `follow`, and an add or a
+    /// rename ends what its path named before.
+    fn after(&mut self, commit: &Commit, follow: bool) {
+        for change in &commit.changes {
+            match &change.kind {
+                ChangeKind::Renamed { from, .. } if follow => {
+                    let key = self.of(&change.path, true);
+                    self.ends(&change.path, &commit.id);
+                    self.alias.insert(from.clone(), key);
+                }
+                ChangeKind::Added => self.ends(&change.path, &commit.id),
+                _ => {}
+            }
+        }
     }
 
     fn display(&self, key: &str) -> String {
@@ -549,6 +602,42 @@ mod tests {
                 ("old.ts".into(), 1, 1)
             ]
         );
+    }
+
+    #[test]
+    fn a_commits_files_are_named_as_head_holds_them_now() {
+        let renamed = |from: &str| ChangeKind::Renamed {
+            from: from.into(),
+            similarity: 80,
+        };
+        let h = history(
+            vec![
+                commit("c4", &["c3"], &[("old.ts", A), ("gone.ts", D)]),
+                commit("c3", &["c2"], &[("new.ts", renamed("old.ts"))]),
+                commit("c2", &["c1"], &[("old.ts", M), ("gone.ts", M)]),
+                commit("c1", &[], &[("old.ts", A), ("gone.ts", A)]),
+            ],
+            &["new.ts", "old.ts"],
+        );
+        let files = commit_files(&h, &["c4", "c2", "missing"].into_iter().collect());
+        let file = |path: &str, now: Option<&str>, in_head| CommitFile {
+            path: path.into(),
+            now: now.map(Into::into),
+            in_head,
+        };
+        assert_eq!(
+            files.get("c2").unwrap(),
+            &[
+                file("old.ts", Some("new.ts"), true),
+                file("gone.ts", None, false)
+            ]
+        );
+        // the path an add reuses is another file
+        assert_eq!(
+            files.get("c4").unwrap(),
+            &[file("old.ts", None, true), file("gone.ts", None, false)]
+        );
+        assert!(!files.contains_key("missing"));
     }
 
     #[test]

@@ -205,7 +205,7 @@ comes later.
 | 3 Rules & Declared Architecture | declared components and layers, cycles, forbidden dependencies, drift, CI `check` | done: deny rules, layers, allow lists, coverage, cycles with a file-level reading, undeclared imports, stale declarations; structural signals |
 | 4 Deep Static Analysis | precise symbol resolution, callers and reference graph, type relationships, selective data flow, test-to-code links; on demand for one selected area | started: where a Rust, Python or TS/JS symbol is used, read on demand by `query`, and by `impact` to leave out the imports of its file that never name it; agent traces point first to callers and references, then selective data flow |
 | 5 Cross-system Graph | OpenAPI, Terraform, databases, HTTP, events, CI/build/deploy relationships | planned |
-| 6 Change & Work Graph | 6A local git history: commits, renames and the files changed together; 6B issues, pull requests and their explicit links from a fetched GitHub snapshot; 6C code to work and work to code at query time, Issue → PR → Commit → File | 6A: files changed in the same commits in `impact`; 6B: `fetch github` and `query '#123'`, issues, pull requests and their links from a snapshot ([work.md](docs/reference/work.md)); 6C: the pull requests and issues linked to the commits that changed a file or component in `impact` and `query`; work to code planned |
+| 6 Change & Work Graph | 6A local git history: commits, renames and the files changed together; 6B issues, pull requests and their explicit links from a fetched GitHub snapshot; 6C code to work and work to code at query time, Issue → PR → Commit → File | done: 6A: files changed in the same commits in `impact`; 6B: `fetch github` and `query '#123'`, issues, pull requests and their links from a snapshot ([work.md](docs/reference/work.md)); 6C: the pull requests and issues linked to the commits that changed a file or component in `impact` and `query`, and the files a pull request's or issue's commits changed in `query '#123'` |
 | 7 Semantic Enrichment | LLM naming, responsibilities, intent and other semantic interpretations, stored separately as inferred facts | planned |
 | 8 Agent Interface | plugin and skill for agents; MCP server over the same engine | MCP server (`archmap mcp`), plugin and skill |
 | 9 Incremental / Runtime | incremental scans and caches; runtime traces and other observed execution relationships | planned |
@@ -235,10 +235,11 @@ The roadmap therefore grows in three directions:
 
 Phase 6 keeps facts and views apart. The facts are what the history and
 the work tracker record: commits with their parents, times and changed
-files, and later issues, pull requests and the links GitHub records between
-them. Co-change, churn, shared files and the paths from code to work are
-views computed when a command asks, with settings of their own, never
-stored and never called inferred. Every answer carries what was read (a
+files, and issues, pull requests and the links GitHub records between
+them. Co-change, churn, shared files and the paths between code and work,
+both ways, are views computed when a command asks, with settings of their
+own, never stored and never called inferred: each step of a path shows the
+link or the SHA match it rests on. Every answer carries what was read (a
 shallow clone, a bounded read, a snapshot's range), so a missing link never
 reads as no link. The value lies in linking code and work: why an area
 changed, what changes with it, and which issue and pull request did it.
