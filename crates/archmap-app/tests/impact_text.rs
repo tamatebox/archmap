@@ -800,6 +800,20 @@ fn a_python_star_import_outside_a_package_entry_passes_its_names_on() {
 }
 
 #[test]
+fn no_importers_is_said_only_when_nothing_imports_the_target() {
+    // statements of the whole module that never name the symbol import it
+    let ws = scan(&fixture("rust-uses"));
+    let out = text(&ws, "qualified");
+    assert!(out.contains("never named (3 imports"), "{out}");
+    assert!(!out.contains("no importers"), "{out}");
+    // a package's entry file is imported through the package
+    let ws = scan(&fixture("ts-monorepo"));
+    let out = text(&ws, "packages/core/src/index.ts");
+    assert!(out.contains("\nDirect dependents: 2\n"), "{out}");
+    assert!(!out.contains("no importers"), "{out}");
+}
+
+#[test]
 fn a_component_that_holds_the_target_names_the_files_of_it_reached() {
     let ws = scan(&fixture("simple-ts-project"));
     // the package re-exports the symbol from its own barrel: not the whole

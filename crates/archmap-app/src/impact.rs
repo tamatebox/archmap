@@ -174,6 +174,9 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
     let (mut importers, mut imports_below) = (None, None);
     let (mut symbol_id, mut may_use, mut subpath) = (None, None, None);
     let (mut used_at, mut unnamed) = (None, BTreeSet::new());
+    // statements that take a symbol's file whole, those that never name it
+    // included
+    let mut takes_whole = false;
     let traced: Traced;
     let (at, reach) = match resolve(full, &rolled, root, target)? {
         Resolved::Candidates(candidates) => {
@@ -252,6 +255,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
                         found.recorded,
                         caps.sites,
                     ));
+                    takes_whole = !found.may_use.is_empty();
                     let whole: Vec<(&Edge, &Evidence)> = found
                         .may_use
                         .iter()
@@ -276,6 +280,10 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
 
     let none_found =
         |sites: &Option<ImportSites>| sites.as_ref().is_some_and(|s| s.recorded && s.total == 0);
+    // a file reaches its dependents through the package it is an entry of
+    // too, which names no file
+    let reached =
+        !(reach.direct.is_empty() && reach.transitive.is_empty() && reach.tests.is_empty());
     let subject = match &traced {
         Traced::Component(component) => Subject {
             language: component.language.as_deref(),
@@ -293,7 +301,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
             own: Own::File(file),
             script: owner.is_some_and(|c| c.kind == ComponentKind::Script),
             global: declares_global(full, file),
-            unreached: none_found(&importers) && imports_below.is_none(),
+            unreached: none_found(&importers) && imports_below.is_none() && !reached,
         },
         Traced::Symbol(symbol) => {
             let declared = full.component(&symbol.component);
@@ -304,7 +312,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
                 own: Own::File(symbol.location().map_or("", |e| e.file.as_str())),
                 script: declared.is_some_and(|c| c.kind == ComponentKind::Script),
                 global: symbol.location().is_some_and(Evidence::declares_global),
-                unreached: none_found(&importers) && none_found(&may_use),
+                unreached: none_found(&importers) && !takes_whole && !reached,
             }
         }
     };
