@@ -123,10 +123,7 @@ fn by_symbol(ws: &Workspace, request: &BySymbolRequest) -> Result<Answer> {
             let mut out = String::new();
             let component = view.component.as_ref().and_then(|id| rolled.component(id));
             file_head(&mut out, &file, component, depth);
-            let cap = match verbose {
-                true => usize::MAX,
-                false => MAX_SYMBOLS,
-            };
+            let cap = if verbose { usize::MAX } else { MAX_SYMBOLS };
             let mut truncated = text(&mut out, &result, &file, cap);
             let mut tail = String::new();
             if let Some(found) = &view.not_traced {
@@ -193,7 +190,11 @@ fn importers<'g>(list: Vec<(&'g Edge, &'g Evidence)>) -> Vec<Importer<'g>> {
 fn text(out: &mut String, view: &BySymbolView, file: &str, cap: usize) -> bool {
     let total = view.symbols.len();
     let shown = total.min(cap);
-    let _ = writeln!(out, "\nPublic symbols by use: {}", count(total, shown));
+    let _ = writeln!(
+        out,
+        "\nPublic symbols and their uses: {}",
+        count(total, shown)
+    );
     let width = view
         .symbols
         .iter()
@@ -220,12 +221,16 @@ fn text(out: &mut String, view: &BySymbolView, file: &str, cap: usize) -> bool {
             let files: BTreeSet<&str> =
                 uses.uses.iter().map(|u| u.evidence.file.as_str()).collect();
             let own = uses.uses.iter().filter(|u| u.evidence.file == file).count();
+            let tests = uses.uses.iter().filter(|u| u.evidence.test).count();
             if !uses.uses.is_empty() {
                 let mut part = format!(
                     "used at {} in {}",
                     uses.uses.len(),
                     plural(files.len(), "file")
                 );
+                if tests > 0 {
+                    let _ = write!(part, ", {tests} in tests");
+                }
                 if own > 0 {
                     let _ = write!(part, ", {own} in this file");
                 }
@@ -238,11 +243,26 @@ fn text(out: &mut String, view: &BySymbolView, file: &str, cap: usize) -> bool {
                 parts.push("calls through a value are not read".to_owned());
             }
         }
-        let line = match parts.is_empty() {
-            true => "none found".to_owned(),
-            false => parts.join("; "),
+        let line = if parts.is_empty() {
+            NONE.to_owned()
+        } else {
+            parts.join("; ")
         };
         let _ = writeln!(out, "  {:<width$}  {line}", row.symbol.name);
     }
+    // what the cap leaves out that a reader looks for
+    if shown < total {
+        let none = view.symbols[shown..].iter().filter(|r| unused(r)).count();
+        let _ = writeln!(out, "  {} more, {none} of them {NONE}", total - shown);
+    }
     shown < total
+}
+
+const NONE: &str = "none found";
+
+/// No statement takes the symbol and no use of it was read.
+fn unused(row: &Row) -> bool {
+    row.imported_by.is_empty()
+        && row.may_use.is_empty()
+        && row.used_at.as_ref().is_some_and(|u| u.uses.is_empty())
 }

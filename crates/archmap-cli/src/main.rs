@@ -92,7 +92,7 @@ enum Command {
         snapshot: Option<PathBuf>,
         /// For a file: each public symbol with the statements that take it
         /// and where it is used, its own file included.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "snapshot")]
         by_symbol: bool,
     },
     /// List components that may be affected when a component, file, symbol
@@ -217,10 +217,13 @@ fn main() -> ExitCode {
             verbose,
             snapshot,
             by_symbol,
-        } => match by_symbol {
-            true => commands::by_symbol(&path, &target, depth, format, verbose),
-            false => commands::query(&path, &target, depth, format, verbose, snapshot.as_deref()),
-        },
+        } => {
+            if by_symbol {
+                commands::by_symbol(&path, &target, depth, format, verbose)
+            } else {
+                commands::query(&path, &target, depth, format, verbose, snapshot.as_deref())
+            }
+        }
         Command::Impact {
             target,
             path,

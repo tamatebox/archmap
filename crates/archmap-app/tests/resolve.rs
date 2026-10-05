@@ -806,7 +806,7 @@ fn a_name_taken_from_a_package_answers_with_its_statements_and_uses() {
     assert!(
         answer
             .output
-            .contains("\n  ext:npm:kit::route  a name taken from kit\n"),
+            .contains("\n  ext:npm:kit::route  a name taken from kit  imported by 1\n"),
         "{}",
         answer.output
     );
@@ -824,7 +824,7 @@ fn a_name_taken_from_a_package_answers_with_its_statements_and_uses() {
     assert!(
         answer
             .output
-            .contains("ext:npm:kit::refresh  a name taken from kit"),
+            .contains("ext:npm:kit::refresh  a name taken from kit  imported by 3"),
         "{}",
         answer.output
     );
@@ -938,7 +938,11 @@ fn symbols_that_share_a_name_are_one_candidate_and_verbose_lists_every_one() {
     let ws = scan(&repo.0);
     let answer = query(&ws, "tic");
     let first = answer.output.lines().nth(1).unwrap_or_default();
-    assert_eq!(first, "  tick  3 symbols of that name", "{}", answer.output);
+    assert_eq!(
+        first, "  tick  3 symbols of that name (query tick)",
+        "{}",
+        answer.output
+    );
     assert!(answer.output.contains("showing 10"), "{}", answer.output);
     let json = query_as(&ws, "tic", Format::Json).output;
     assert!(json.contains("\"kind\": \"symbols\""), "{json}");
@@ -1000,12 +1004,12 @@ fn a_file_by_symbol_says_who_takes_each_symbol_and_where_it_is_used() {
     let answer = by_symbol("src/m.ts", Format::Text).unwrap();
     assert!(
         answer.output.contains(
-            "\nPublic symbols by use: 6\n\
+            "\nPublic symbols and their uses: 6\n\
              \x20 a     imported by 2; may use 1; used at 4 in 4 files, 1 in this file\n\
              \x20 b     imported by 1; may use 1; used at 1 in 1 file\n\
              \x20 c     imported by 1; may use 1; used at 1 in 1 file\n\
              \x20 d     imported by 2; may use 1; used at 1 in 1 file\n\
-             \x20 e     imported by 2, 1 in tests; may use 1; used at 2 in 2 files\n\
+             \x20 e     imported by 2, 1 in tests; may use 1; used at 2 in 2 files, 1 in tests\n\
              \x20 self  may use 1; no use found\n"
         ),
         "{}",

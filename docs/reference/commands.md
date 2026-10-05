@@ -147,12 +147,14 @@ a statement that passes the name on (`export { x } from 'pkg'`) is marked
 import name.
 
 With `--by-symbol` (MCP `by_symbol`), `query` on a file lists each public
-symbol of it with how many statements take it by name (`imported by 2, 1 in
-tests`), how many take its file whole (`may use 1`) and where it is used,
-read as for `query <symbol>` (`used at 4 in 3 files, 1 in this file`), or
-`none found`; a method that takes a value says its calls through a value
-are not read. It runs the uses pass for every symbol, on every core. JSON
-gives each symbol with its statements and `used_at`.
+symbol of it, in source order, with how many statements take it by name
+(`imported by 2, 1 in tests`), how many take its file whole (`may use 1`)
+and where it is used, read as for `query <symbol>` (`used at 4 in 3 files,
+1 in tests, 1 in this file`), or `none found`; a capped list says how many
+of the rest are `none found`, and a method that takes a value says its
+calls through a value are not read. It runs the uses pass for every symbol,
+on up to 8 threads, and takes no `--snapshot`. JSON gives each symbol with
+its statements and `used_at`.
 
 For an environment variable (`env:APP_REGION`, or a name in capitals that
 nothing else has) `query` reads on demand the TS/JS files the scan read
@@ -840,8 +842,8 @@ production code before tests, the repository's components before external
 ones, shorter names first. A component that is one file is listed as its
 file, and a name taken from a package as its id, after the repository's
 names. Symbols that share a name are one candidate (`tick  3 symbols of
-that name`; JSON `kind` `symbols` with their `count`), to retry with the
-name. JSON gives these candidates `match` `case` or `contains`. When nothing
+that name (query tick)`; JSON `kind` `symbols` with their `count`), and a
+name taken from a package says how many statements take it. JSON gives these candidates `match` `case` or `contains`. When nothing
 contains the word either, the error says so, with what to do next.
 
 Both commands exit 0 with an answer, 1 with candidates, and 2 when they

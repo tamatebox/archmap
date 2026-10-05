@@ -735,7 +735,7 @@ impl Candidates<'_> {
             lines.push(format!("  {}  directory", shell_word(&format!("./{d}"))));
         }
         for package in &self.taken {
-            lines.push(taken_row(package, target));
+            lines.push(taken_row(full, package, target));
         }
         for line in lines.iter().take(cap) {
             let _ = writeln!(out, "{line}");
@@ -759,10 +759,12 @@ impl Candidates<'_> {
                 Thing::Component(c) => component_row(c),
                 Thing::Symbol(s) => symbol_row(full, s),
                 Thing::File(f) => file_row(f),
-                Thing::Taken(package, name) => taken_row(package, name),
-                Thing::Symbols(name, n) => {
-                    format!("  {}  {n} symbols of that name", shell_word(name))
-                }
+                Thing::Taken(package, name) => taken_row(full, package, name),
+                Thing::Symbols(name, n) => format!(
+                    "  {}  {n} symbols of that name (query {})",
+                    shell_word(name),
+                    shell_word(name)
+                ),
             };
             let _ = writeln!(out, "{row}");
         }
@@ -860,10 +862,16 @@ fn file_row(f: &str) -> String {
     format!("  {}  file", shell_word(f))
 }
 
-/// A name taken from a package as a candidate row: the id to retry with.
-fn taken_row(package: &Component, name: &str) -> String {
+/// A name taken from a package as a candidate row: the id to retry with,
+/// and how many statements take it.
+fn taken_row(full: &ArchitectureGraph, package: &Component, name: &str) -> String {
+    let statements = full
+        .incoming(&package.id)
+        .flat_map(|e| &e.evidence)
+        .filter(|e| e.names.contains(name))
+        .count();
     format!(
-        "  {}  a name taken from {}",
+        "  {}  a name taken from {}  imported by {statements}",
         shell_word(&format!("{}::{name}", package.id)),
         package.name
     )

@@ -143,19 +143,20 @@ impl Server {
         let outside_check = target.clone();
         self.answer(path, Some(&outside_check), move |ws, _| {
             let format = format_or_text(format);
-            let answer = match by_symbol.unwrap_or(false) {
-                true => ws.by_symbol(&BySymbolRequest {
+            let answer = if by_symbol.unwrap_or(false) {
+                ws.by_symbol(&BySymbolRequest {
                     target: &target,
                     depth,
                     format,
                     verbose: false,
-                })?,
-                false => ws.query(&QueryRequest {
+                })?
+            } else {
+                ws.query(&QueryRequest {
                     target: &target,
                     depth,
                     format,
                     verbose: false,
-                })?,
+                })?
             };
             Ok(answer.output)
         })
