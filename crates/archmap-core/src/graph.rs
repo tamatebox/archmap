@@ -652,7 +652,7 @@ impl ArchitectureGraph {
                     for (way, e) in by_name.chain(whole).filter(|(_, e)| tests || !e.test) {
                         start_ways.entry(e.file.as_str()).or_default().push((
                             way,
-                            e.type_only,
+                            Link::of(e),
                             way_of(e),
                         ));
                     }
@@ -706,11 +706,11 @@ impl ArchitectureGraph {
                         if e.file == barrel {
                             continue;
                         }
-                        let loads = Some((vec![barrel], e.type_only));
+                        let loads = Some((vec![barrel], Link::of(e)));
                         start.push((Node::File(e.file.as_str()), 2, loads));
                         start_ways.entry(e.file.as_str()).or_default().push((
                             Way::Through(barrel),
-                            e.type_only,
+                            Link::of(e),
                             vec![barrel],
                         ));
                         if !e.test {
@@ -722,7 +722,7 @@ impl ArchitectureGraph {
                         false => Node::File(e.file.as_str()),
                     };
                     start.extend(statements.iter().map(|e| {
-                        let loads = e.target.is_some().then(|| (way_of(e), e.type_only));
+                        let loads = e.target.is_some().then(|| (way_of(e), Link::of(e)));
                         (node(e), 1, loads)
                     }));
                     production.extend(statements.iter().filter(|e| !e.test).map(node));
@@ -733,7 +733,7 @@ impl ArchitectureGraph {
                         start.push((Node::File(user), 1, None));
                         start_ways.entry(user).or_default().push((
                             Way::Takes(None),
-                            false,
+                            Link::running(!test),
                             Vec::new(),
                         ));
                     }
@@ -831,12 +831,15 @@ impl ArchitectureGraph {
                 .iter()
                 .filter(|(node, _, loads)| {
                     (taken || !blocked(node))
-                        && loads.as_ref().is_none_or(|(loaded, types)| {
-                            *types || !loaded.iter().any(|l| cut.contains(l))
+                        && loads.as_ref().is_none_or(|(loaded, link)| {
+                            link.types || !loaded.iter().any(|l| cut.contains(l))
                         })
                 })
                 .map(|(node, d, loads)| {
-                    let running = *d == 0 || loads.as_ref().is_none_or(|(_, t)| !t);
+                    let running = *d == 0
+                        || loads.as_ref().is_none_or(|(loaded, link)| {
+                            link.values && !loaded.iter().any(|l| cut.contains(l))
+                        });
                     (*node, *d, running && !blocked(node))
                 })
                 .collect();
@@ -1263,10 +1266,10 @@ impl ArchitectureGraph {
                         at.1 |= running;
                     }
                 };
-                for (way, types, loads) in start_ways.get(t).into_iter().flatten() {
-                    let open = *types || cut.is_none_or(|c| !loads.iter().any(|l| c.contains(l)));
-                    if open {
-                        keep(*way, 1, !types);
+                for (way, link, loads) in start_ways.get(t).into_iter().flatten() {
+                    let mocked = cut.is_some_and(|c| loads.iter().any(|l| c.contains(l)));
+                    if link.types || !mocked {
+                        keep(*way, 1, link.values && !mocked);
                     }
                 }
                 for (d, way, running) in walked_ways.get(t).into_iter().flatten() {
@@ -2444,13 +2447,13 @@ struct Walk<'a> {
     runs: BTreeSet<Node<'a>>,
 }
 
-/// How a statement that takes a symbol takes it, whether it takes types
-/// only, and the files it loads on its way to the symbol.
-type StartWay<'a> = (Way<'a>, bool, Vec<&'a str>);
+/// How a statement that takes a symbol takes it, how it depends on what it
+/// loads, and the files it loads on its way to the symbol.
+type StartWay<'a> = (Way<'a>, Link, Vec<&'a str>);
 
 /// Where a walk starts, at what distance, and for a statement that takes a
-/// symbol, the files it loads on its way and whether it takes types only.
-type Start<'a> = (Node<'a>, usize, Option<(Vec<&'a str>, bool)>);
+/// symbol, the files it loads on its way and how it depends on them.
+type Start<'a> = (Node<'a>, usize, Option<(Vec<&'a str>, Link)>);
 
 /// How an importer depends on what it loads: through production code,
 /// through a statement that takes types only, of which a mock replaces

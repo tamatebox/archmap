@@ -1823,4 +1823,35 @@ fn a_test_reaches_a_change_through_the_types_a_mocked_module_exposes_from_it() {
     let tests = section(&answer, "Tests to run again: none");
     assert_eq!(tests.len(), 1, "{answer}");
     assert!(tests[0].contains("tests/typed.test.ts:3"), "{answer}");
+
+    // a test that mocks the changed symbol's own module, and takes a type
+    // the statement that imports the symbol exposes
+    let mut changed = files(
+        "import { Wallet } from './core';\nexport const make = () => new Wallet();\nexport type Made = Wallet;\n",
+    );
+    changed.retain(|(f, _)| f != "tests/value.test.ts");
+    changed.retain(|(f, _)| f != "tests/typed.test.ts");
+    changed.push((
+        "tests/typed.test.ts".to_owned(),
+        "import { vi } from 'vitest';\nimport type { Made } from '../src/runner';\nvi.mock('../src/core', () => ({ helper: vi.fn() }));\nexport let made: Made;\n"
+            .to_owned(),
+    ));
+    let repo = Repo::new("exposed-symbol", &changed);
+    let ws = scan(&repo.0);
+    for target in ["src/core.ts", "Wallet"] {
+        let answer = text(&ws, target);
+        let tests = section(&answer, "Tests to run again: 1");
+        assert!(
+            tests
+                .iter()
+                .any(|l| l.starts_with("  tests/typed.test.ts (")),
+            "{target}: {answer}"
+        );
+    }
+    let answer = text(&ws, "Wallet");
+    assert_eq!(
+        section(&answer, "Tests to run again: 1"),
+        ["  tests/typed.test.ts (through src/runner.ts, types only)"],
+        "{answer}"
+    );
 }
