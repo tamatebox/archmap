@@ -1,0 +1,7 @@
+{
+  "name": "pkgbabel-app",
+  "private": true,
+  "babel": {
+    "plugins": [["module-resolver", { "root": ["./app"] }]]
+  }
+}

@@ -1,0 +1,6 @@
+{
+  // the alias of the old build
+  "plugins": [
+    ["babel-plugin-module-resolver", { "alias": { "~": "./lib" } }],
+  ],
+}

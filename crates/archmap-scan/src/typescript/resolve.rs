@@ -158,6 +158,26 @@ impl ImportResolver {
             }
         };
         let (with, untyped_with) = self.configured(&absolute);
+        // Babel's module resolver finds a bare name in its roots first, where
+        // a file of that path exists
+        if rewritten.is_none() && !is_path(specifier) && !specifier.starts_with('#') {
+            for root in self.bundler.roots(file) {
+                let Some(candidate) = self
+                    .root
+                    .join(root)
+                    .join(specifier)
+                    .to_str()
+                    .map(str::to_owned)
+                else {
+                    continue;
+                };
+                if let Ok(found) = with.resolve_file(&absolute, &candidate) {
+                    if let Ok(rel) = found.path().strip_prefix(&self.root) {
+                        return Resolved::File(rel.to_path_buf());
+                    }
+                }
+            }
+        }
         let mut result = attempt(with, &self.without_tsconfig, problems);
         // the `types` condition of a package the view holds (a linked one,
         // the package's own `imports` and name) can lead to built

@@ -133,3 +133,31 @@ fn a_webpack_alias_matches_a_prefix_or_with_dollar_the_name_alone() {
         set(&["3 Templates/other undeclared"])
     );
 }
+
+#[test]
+fn babel_s_module_resolver_rewrites_its_package_s_imports() {
+    let graph = scan_fixture();
+    // a root holds bare names, an alias a prefix; a regex key and a
+    // package replacement are left out
+    assert_eq!(
+        loads(&graph, "rn-app/src/App.tsx"),
+        set(&[
+            "1 -> rn-app/src/components/Card.tsx",
+            "2 -> rn-app/assets/logo.ts",
+        ])
+    );
+    assert_eq!(
+        unmapped(&graph, "rn-app/src/App.tsx"),
+        set(&["3 @features/home undeclared", "4 lodash undeclared"])
+    );
+    // a `.babelrc` with comments and trailing commas, and the `babel` key
+    // of a package.json
+    assert_eq!(
+        loads(&graph, "legacy-app/main.js"),
+        set(&["1 -> legacy-app/lib/x.js"])
+    );
+    assert_eq!(
+        loads(&graph, "pkgbabel-app/index.js"),
+        set(&["1 -> pkgbabel-app/app/helpers/util.js"])
+    );
+}

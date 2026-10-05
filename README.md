@@ -109,7 +109,7 @@ Details: [commands](docs/reference/commands.md), [MCP server](docs/reference/mcp
 |---|---|
 | [Rust](docs/reference/analyzers.md#rust) | `Cargo.toml` packages and dependencies; module files reached from every Cargo target: `src/lib.rs`, `src/main.rs`, the binaries, tests, examples, benches and build script Cargo finds beside them, and those `Cargo.toml` declares; `pub` items; `use` declarations and module paths in code |
 | [Python](docs/reference/analyzers.md#python) | `pyproject.toml`, `setup.py` / `setup.cfg` and requirements files; packages and namespace packages; public top-level definitions; `import` statements and the `import_module` and `__import__` calls that name their module with a literal, scanned line by line and followed through the names modules bind from others, those under `if TYPE_CHECKING:` apart |
-| [TypeScript / JavaScript](docs/reference/analyzers.md#typescript-and-javascript) | `package.json` packages, workspaces and dependencies; directories and files; exported declarations, CommonJS exports and the globals of scripts and of `declare global`; `import`, `export ... from`, `require`, `import()` and test mocks, resolved through tsconfig paths, workspace links and re-exports, imports of types only apart |
+| [TypeScript / JavaScript](docs/reference/analyzers.md#typescript-and-javascript) | `package.json` packages, workspaces and dependencies; directories and files; exported declarations, CommonJS exports and the globals of scripts and of `declare global`; `import`, `export ... from`, `require`, `import()` and test mocks, resolved through tsconfig and jsconfig paths, Vite, webpack and Babel aliases, workspace links and re-exports, imports of types only apart |
 
 Other languages are counted in `summary`, not analyzed. Each analyzer's
 behavior and known gaps are in [analyzers.md](docs/reference/analyzers.md).
@@ -136,7 +136,7 @@ What works today, by the [roadmap](#roadmap) phase it belongs to:
 | Packages and declared dependencies | 0 | ✅ | ✅ | ✅ |
 | Module and file components | 1 | ✅ | ✅ | ✅ |
 | Public symbols with signatures | 1 | ✅ | ✅ | ✅ |
-| Imports resolved to the file they load | 1 | ✅ | ✅ | ◐ |
+| Imports resolved to the file they load | 1 | ✅ | ✅ | ✅ |
 | Re-exports followed to the defining file | 1 | ✅ | ✅ | ✅ |
 | Names each import takes | 1 | ✅ | ✅ | ✅ |
 | Imports without an edge, with the reason | 1 | ✅ | ✅ | ✅ |
@@ -158,9 +158,6 @@ The gaps behind the marks:
   so `impact` goes on from it to every file that imports it or a module
   below it; one that lists the name, or writes `from .x import name as
   name`, is followed only to what takes the name.
-- TS/JS imports: aliases that a bundler plugin, Babel's module resolver,
-  Metro or a Deno import map defines are not followed, nor bundler
-  aliases relative to the importing file.
 - TS/JS `check`: a value imported without `type` and used only in type
   positions (a class or an enum in annotations, a `typeof` target) counts
   as running, so it can close a cycle that `cycles.forbid` reports.

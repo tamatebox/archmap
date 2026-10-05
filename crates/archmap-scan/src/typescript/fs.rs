@@ -173,7 +173,8 @@ fn without_unloadable_extends(
 
 /// A tsconfig's text as JSON: comments, trailing commas and a byte order
 /// mark allowed.
-fn config(text: &str) -> Option<serde_json::Value> {
+/// A JSON config's value, comments and trailing commas allowed.
+pub(crate) fn config(text: &str) -> Option<serde_json::Value> {
     let mut text = text.trim_start_matches('\u{feff}').to_owned();
     json_strip_comments::strip(&mut text).ok()?;
     serde_json::from_str(&text).ok()

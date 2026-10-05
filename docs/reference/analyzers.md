@@ -332,7 +332,12 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   (`path.resolve(__dirname, 'src')` or `path.join` with `path` imported or required,
   `fileURLToPath(new URL('./src', import.meta.url))`, `new URL(..).pathname`, and for Vite `/src`
   from the config's directory where it sets no `root`); the config itself and the files of a package
-  below it with a `package.json` of its own are outside its aliases; the resolver sees only the
+  below it with a `package.json` of its own are outside its aliases; before those, Babel's
+  `babel-plugin-module-resolver`, which rewrites the source before any bundler sees it, in the
+  package's `babel.config.*`, `.babelrc`, `.babelrc.json` or the `babel` key of its `package.json`:
+  its `alias`, matched the same way, and its `root` directories, where a bare name resolves when
+  a file of that path is there, both relative to the config's directory (a regex key, a package
+  replacement and a glob root count for nothing); the resolver sees only the
   scanned files, so `node_modules` and build output never change the graph,
   and an `extends` it cannot load, in a tsconfig, a jsconfig or a config one extends, is dropped with a
   warning while the file's own `paths` still apply
@@ -531,8 +536,9 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
 - Vue, Svelte and Astro components and GraphQL documents are not code to the analyzer: an import of
   one is an import of a file, as for a stylesheet, and the imports inside them are not read.
 - A tsconfig's `customConditions` count for every file, not only those its config covers.
-- Bundler aliases are read only as `resolve.alias` written in a `vite.config.*` or
-  `webpack.config.*` at a package's top: aliases a plugin adds, a replacement relative to the
+- Aliases are read only from tsconfigs, jsconfigs, and at a package's top the `resolve.alias`
+  written in a `vite.config.*` or `webpack.config.*` and Babel's module resolver: aliases a
+  plugin adds, a bundler's replacement relative to the
   importing file (`'./src'`, which both bundlers resolve again from there) or naming a package
   (`react` to `preact/compat`), a regex `find`, Vite's `root` and a key ending in `$`, a config
   built by `mergeConfig` or spread from another, an array of webpack configs, a webpack config
@@ -540,9 +546,12 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   webpack's `resolve.modules`, `vitest.config.*` with `test.alias` and Vitest workspaces, the
   `webpack(config)` function of `next.config.js`, Nuxt's `alias` and SvelteKit's `kit.alias`
   (which reach a tsconfig only through one the framework generates, which a fresh checkout
-  lacks), Rollup's `@rollup/plugin-alias`, Babel's
-  `babel-plugin-module-resolver`, Metro's `extraNodeModules`, CRA and craco aliases, Jest's
+  lacks), Rollup's `@rollup/plugin-alias`, the `env` overrides and `cwd` option of Babel's module
+  resolver, Metro's `extraNodeModules`, CRA and craco aliases, Jest's
   `moduleNameMapper` and Deno import maps are not read. An import through such an alias is
   `unresolved` when a tsconfig, a jsconfig or a bundler config read declares its pattern, `local
   name` when it names a top directory of the source root (`@components/button`), and `undeclared`
   otherwise.
+- Platform files are not tried: an import of `./Badge` where only `Badge.ios.tsx` and
+  `Badge.android.tsx` exist, which Metro picks by platform and TypeScript reads through the
+  tsconfig's `moduleSuffixes`, resolves to no file (`unresolved`, or `local name` through a root).
