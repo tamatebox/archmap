@@ -533,7 +533,9 @@ file whole and that the uses pass read and found never naming it: they
 take nothing of it, so neither they nor what only they lead to are
 reached, and `Used at` lists them as `never named (1 import of the whole
 module, left out of the reach)`. One whose module the code uses as a
-value, or whose uses were not read, stays, and so does a statement that
+value, or whose uses were not read, stays, as does one in a file that uses
+the symbol through another binding (a Rust inline module's `use super::*`)
+or holds macro calls the scan does not read, and so does a statement that
 takes the symbol by name without a use, which loads the file all the
 same; `--format json` gives `used_at` as `query` does and the statements
 left out as `unnamed`. For a Python package's `__init__.py`, which runs

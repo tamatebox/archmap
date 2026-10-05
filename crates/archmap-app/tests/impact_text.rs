@@ -678,6 +678,59 @@ fn not_traced_names_every_barrel_the_reach_stopped_at() {
 }
 
 #[test]
+fn a_rust_glob_stays_in_the_reach_where_its_file_may_use_the_symbol() {
+    let manifest = |name: &str, dependency: &str| {
+        format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n[dependencies]\n{dependency}")
+    };
+    let files: Vec<(String, String)> = [
+        ("Cargo.toml", "[workspace]\nmembers = [\"lib\", \"app\"]\n".to_owned()),
+        ("lib/Cargo.toml", manifest("lib", "")),
+        ("lib/src/lib.rs", "pub mod shapes;\n".to_owned()),
+        (
+            "lib/src/shapes.rs",
+            "pub fn square(n: u32) -> u32 {\n    n * n\n}\n\npub fn cube(n: u32) -> u32 {\n    n\n}\n"
+                .to_owned(),
+        ),
+        ("app/Cargo.toml", manifest("app", "lib = { path = \"../lib\" }")),
+        ("app/src/lib.rs", "pub mod nested;\npub mod tallied;\n".to_owned()),
+        (
+            // used through an inline module's `use super::*`
+            "app/src/nested.rs",
+            "use lib::shapes::*;\n\nmod inner {\n    use super::*;\n\n    pub fn area(n: u32) -> u32 {\n        square(n)\n    }\n}\n\npub fn area(n: u32) -> u32 {\n    inner::area(n)\n}\n"
+                .to_owned(),
+        ),
+        (
+            // used only inside a macro call that is not read
+            "app/src/tallied.rs",
+            "use lib::shapes::*;\n\nmacro_rules! tally {\n    ($f:ident => $n:expr) => {\n        $f($n)\n    };\n}\n\npub fn four() -> u32 {\n    tally!(square => 2)\n}\n"
+                .to_owned(),
+        ),
+        (
+            "app/tests/area.rs",
+            "#[test]\nfn area() {\n    app::nested::area(2);\n}\n".to_owned(),
+        ),
+        (
+            "app/tests/four.rs",
+            "#[test]\nfn four() {\n    app::tallied::four();\n}\n".to_owned(),
+        ),
+    ]
+    .into_iter()
+    .map(|(file, text)| (file.to_owned(), text))
+    .collect();
+    let repo = Repo::new("rust-globs", &files);
+    let out = text(&scan(&repo.0), "square");
+    assert!(!out.contains("left out of the reach"), "{out}");
+    assert_eq!(
+        section(&out, "Tests to run again: 2"),
+        [
+            "  app/tests/area.rs (through app/src/nested.rs)",
+            "  app/tests/four.rs (through app/src/tallied.rs)"
+        ],
+        "{out}"
+    );
+}
+
+#[test]
 fn a_helper_whose_mock_cuts_its_way_is_no_test_left_out() {
     let files: Vec<(String, String)> = [
         (

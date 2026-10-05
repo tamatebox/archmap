@@ -243,7 +243,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
                 let found = full.symbol_importers(symbol);
                 used_at = uses_of(full, &ws.report, symbol);
                 if let (Some(found), Some(uses)) = (&found, &used_at) {
-                    unnamed = never_named(found, uses);
+                    unnamed = never_named(full, found, uses);
                 }
                 // files that use it through no statement of it take it too
                 let defining = symbol.location().map(|e| e.file.as_str());
@@ -456,16 +456,30 @@ fn render(
 
 /// The statements of `found` that take the symbol's file whole and that the
 /// uses pass read and found never naming it: they take nothing of it. Not a
-/// statement that takes it by name, which loads the file all the same.
-fn never_named(found: &SymbolImporters, uses: &SymbolUses) -> BTreeSet<ImportPlace> {
+/// statement that takes it by name, which loads the file all the same, nor
+/// one in a file that uses the symbol through another binding (a Rust
+/// inline module's `use super::*`) or holds macro calls the scan does not
+/// read, which may take it through any statement there.
+fn never_named(
+    full: &ArchitectureGraph,
+    found: &SymbolImporters,
+    uses: &SymbolUses,
+) -> BTreeSet<ImportPlace> {
     let whole: BTreeSet<(&str, Option<u32>)> = found
         .may_use
         .iter()
         .map(|(_, e)| (e.file.as_str(), e.line))
         .collect();
+    let open: BTreeSet<&str> = uses
+        .uses
+        .iter()
+        .map(|u| u.evidence.file.as_str())
+        .chain(full.unread_macros.iter().map(|m| m.evidence.file.as_str()))
+        .collect();
     uses.unused
         .iter()
         .filter(|e| whole.contains(&(e.file.as_str(), e.line)))
+        .filter(|e| !open.contains(e.file.as_str()))
         .filter_map(|e| {
             Some(ImportPlace {
                 file: e.file.clone(),
