@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Context};
 use archmap_app::{
-    load_rules, CheckRequest, Format, ImpactRequest, QueryRequest, Rules, Workspace, DEFAULT_DEPTH,
-    RULES_FILE,
+    load_rules, BySymbolRequest, CheckRequest, Format, ImpactRequest, QueryRequest, Rules,
+    Workspace, DEFAULT_DEPTH, RULES_FILE,
 };
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -66,6 +66,10 @@ struct QueryArgs {
     /// `text` (default) or `json`.
     #[serde(default)]
     format: Option<OutputFormat>,
+    /// For a file: each public symbol with the statements that take it and
+    /// where it is used.
+    #[serde(default)]
+    by_symbol: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -133,16 +137,26 @@ impl Server {
             path,
             depth,
             format,
+            by_symbol,
         } = args;
         let depth = depth_or_default(depth);
         let outside_check = target.clone();
         self.answer(path, Some(&outside_check), move |ws, _| {
-            let answer = ws.query(&QueryRequest {
-                target: &target,
-                depth,
-                format: format_or_text(format),
-                verbose: false,
-            })?;
+            let format = format_or_text(format);
+            let answer = match by_symbol.unwrap_or(false) {
+                true => ws.by_symbol(&BySymbolRequest {
+                    target: &target,
+                    depth,
+                    format,
+                    verbose: false,
+                })?,
+                false => ws.query(&QueryRequest {
+                    target: &target,
+                    depth,
+                    format,
+                    verbose: false,
+                })?,
+            };
             Ok(answer.output)
         })
         .await

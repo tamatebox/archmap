@@ -4,7 +4,8 @@
 use std::path::{Path, PathBuf};
 
 use archmap_app::{
-    Answer, Format, Found, ImpactRequest, QueryRequest, ScanMode, Workspace, DEFAULT_DEPTH,
+    Answer, BySymbolRequest, Format, Found, ImpactRequest, QueryRequest, ScanMode, Workspace,
+    DEFAULT_DEPTH,
 };
 
 fn fixture(name: &str) -> PathBuf {
@@ -955,6 +956,69 @@ fn symbols_that_share_a_name_are_one_candidate_and_verbose_lists_every_one() {
         every.lines().filter(|l| l.starts_with("  ")).count(),
         13,
         "{every}"
+    );
+}
+
+#[test]
+fn a_file_by_symbol_says_who_takes_each_symbol_and_where_it_is_used() {
+    let repo = Repo::new(
+        "by-symbol",
+        &[
+            ("package.json", "{\"name\": \"web\"}\n"),
+            (
+                "src/m.ts",
+                "export const a = 1, b = 2, c = 3, d = 4, e = 5;\nexport const self = a + 1;\n",
+            ),
+            (
+                "src/u.ts",
+                "import { a, b, c, d, e } from './m';\nexport const u = a + b + c + d + e;\n",
+            ),
+            (
+                "src/w.ts",
+                "import * as m from './m';\nexport const w = m.a;\n",
+            ),
+            (
+                "src/one.ts",
+                "import { a } from './m';\nexport const one = a;\n",
+            ),
+            ("src/dead.ts", "import { d } from './m';\n"),
+            (
+                "tests/m.test.ts",
+                "import { e } from '../src/m';\ntest('e', () => e);\n",
+            ),
+        ],
+    );
+    let ws = scan(&repo.0);
+    let by_symbol = |target: &str, format: Format| {
+        ws.by_symbol(&BySymbolRequest {
+            target,
+            depth: DEFAULT_DEPTH,
+            format,
+            verbose: false,
+        })
+    };
+    let answer = by_symbol("src/m.ts", Format::Text).unwrap();
+    assert!(
+        answer.output.contains(
+            "\nPublic symbols by use: 6\n\
+             \x20 a     imported by 2; may use 1; used at 4 in 4 files, 1 in this file\n\
+             \x20 b     imported by 1; may use 1; used at 1 in 1 file\n\
+             \x20 c     imported by 1; may use 1; used at 1 in 1 file\n\
+             \x20 d     imported by 2; may use 1; used at 1 in 1 file\n\
+             \x20 e     imported by 2, 1 in tests; may use 1; used at 2 in 2 files\n\
+             \x20 self  may use 1; no use found\n"
+        ),
+        "{}",
+        answer.output
+    );
+    let json = by_symbol("src/m.ts", Format::Json).unwrap().output;
+    assert!(json.contains("\"symbols\": ["), "{json}");
+    assert!(json.contains("\"used_at\": {"), "{json}");
+    // a component of several files is no file
+    let err = by_symbol("src", Format::Text).err().unwrap();
+    assert!(
+        err.to_string().contains("by symbol takes one file"),
+        "{err}"
     );
 }
 

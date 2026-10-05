@@ -9,6 +9,7 @@
 //! The commands are `Workspace` methods in their own modules (`query`,
 //! `impact`, `check`), which depend on this file and never the other way.
 
+mod by_symbol;
 mod check;
 mod co_change;
 mod fetch;
@@ -35,6 +36,7 @@ use archmap_core::ArchitectureGraph;
 use archmap_scan::{ScanOptions, ScanReport};
 use serde::Serialize;
 
+pub use by_symbol::BySymbolRequest;
 pub use check::{load_rules, CheckAnswer, Rules, RULES_FILE};
 pub use fetch::{fetch_github, FetchRequest, DEFAULT_MAX_ITEMS};
 pub use target::reject_outside;

@@ -131,6 +131,7 @@ archmap query src/shop/users.py --path ../some-python-repo                 # one
 archmap query shop.users --path ../some-python-repo                        # the same file
 archmap query src/lib/money.ts --path fixtures/simple-ts-project
 archmap query lib/money.ts --path fixtures/simple-ts-project               # the same file by name
+archmap query src/lib/money.ts --by-symbol --path fixtures/simple-ts-project
 archmap query '#123'                     # an issue or pull request of the work snapshot
 archmap query acme/shop#123 --snapshot ../shop-github.json
 ```
@@ -144,6 +145,14 @@ a statement that passes the name on (`export { x } from 'pkg'`) is marked
 `(export)`, and `Not traced` says its file's importers are not read
 (`relays`). `impact` starts from the same statements, as from those of an
 import name.
+
+With `--by-symbol` (MCP `by_symbol`), `query` on a file lists each public
+symbol of it with how many statements take it by name (`imported by 2, 1 in
+tests`), how many take its file whole (`may use 1`) and where it is used,
+read as for `query <symbol>` (`used at 4 in 3 files, 1 in this file`), or
+`none found`; a method that takes a value says its calls through a value
+are not read. It runs the uses pass for every symbol, on every core. JSON
+gives each symbol with its statements and `used_at`.
 
 For an environment variable (`env:APP_REGION`, or a name in capitals that
 nothing else has) `query` reads on demand the TS/JS files the scan read

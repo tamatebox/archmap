@@ -44,7 +44,7 @@ fn edges_at_depth(
         .collect()
 }
 
-fn file_view<'a>(
+pub(crate) fn file_view<'a>(
     full: &'a ArchitectureGraph,
     depth: usize,
     requested: &'a str,

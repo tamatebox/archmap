@@ -90,6 +90,10 @@ enum Command {
         /// root's `.archmap/github.json`.
         #[arg(long)]
         snapshot: Option<PathBuf>,
+        /// For a file: each public symbol with the statements that take it
+        /// and where it is used, its own file included.
+        #[arg(long)]
+        by_symbol: bool,
     },
     /// List components that may be affected when a component, file, symbol
     /// or import name changes.
@@ -212,7 +216,11 @@ fn main() -> ExitCode {
             format,
             verbose,
             snapshot,
-        } => commands::query(&path, &target, depth, format, verbose, snapshot.as_deref()),
+            by_symbol,
+        } => match by_symbol {
+            true => commands::by_symbol(&path, &target, depth, format, verbose),
+            false => commands::query(&path, &target, depth, format, verbose, snapshot.as_deref()),
+        },
         Command::Impact {
             target,
             path,

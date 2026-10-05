@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result};
-use archmap_app::{Answer, CheckRequest, Found, ImpactRequest, QueryRequest, ScanMode, Workspace};
+use archmap_app::{
+    Answer, BySymbolRequest, CheckRequest, Found, ImpactRequest, QueryRequest, ScanMode, Workspace,
+};
 
 use crate::output::{render, OutputFormat, ReportFormat};
 
@@ -106,6 +108,24 @@ pub fn query(
         workspace = workspace.with_snapshot(snapshot);
     }
     let answer = workspace.query(&QueryRequest {
+        target,
+        depth,
+        format: format.into(),
+        verbose,
+    })?;
+    Ok(print_answer(answer))
+}
+
+pub fn by_symbol(
+    path: &str,
+    target: &str,
+    depth: usize,
+    format: ReportFormat,
+    verbose: bool,
+) -> Result<ExitCode> {
+    // fails before scanning; the shared layer checks again for every interface
+    archmap_app::reject_outside(Path::new(path), target)?;
+    let answer = run_scan(path, ScanMode::Full)?.by_symbol(&BySymbolRequest {
         target,
         depth,
         format: format.into(),

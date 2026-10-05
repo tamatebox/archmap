@@ -46,7 +46,7 @@ favor of tool parameters and server configuration. Targets are paths
 | tool | parameters |
 |---|---|
 | `summary` | `path?`, `depth?` |
-| `query` | `target`, `path?`, `depth?`, `format?` (`text` or `json`) |
+| `query` | `target`, `path?`, `depth?`, `format?` (`text` or `json`), `by_symbol?` |
 | `impact` | `target`, `path?`, `depth?`, `format?`, `verbose?` |
 | `check` | `path?`, `config?`, `depth?`, `format?` |
 
