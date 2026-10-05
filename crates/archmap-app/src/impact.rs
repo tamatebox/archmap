@@ -672,6 +672,12 @@ fn import_name_impact<'a>(
     // a test that imports the name itself is one to run again anyway
     let mut left_out = std::mem::take(&mut reach.left_out);
     left_out.retain(|file, _| !tests.contains(file));
+    // the barrels past which the reach went on by names only
+    let not_traced =
+        barrels(full, None, &reach.barrels, &tests, usize::MAX).map(|found| NotTraced {
+            barrels: Some(found),
+            ..NotTraced::default()
+        });
     let statements = imports.iter().map(|i| (&i.from, &i.evidence));
     let importers = sites(full, depth, statements, true, caps.sites);
     let counted = counts(importers.shown.iter());
@@ -696,7 +702,7 @@ fn import_name_impact<'a>(
         unnamed: BTreeSet::new(),
         instance_method: false,
         co_change: None,
-        not_traced: None,
+        not_traced,
         about: About::ImportName,
     }
 }
@@ -794,6 +800,23 @@ fn test_files(
             }),
         }
     }
+    // a helper, an example or a bench whose mock cuts its way is no test
+    // left out
+    let no_tests: BTreeSet<String> =
+        archmap_scan::test_kinds(report, left_out.keys().map(String::as_str))
+            .into_iter()
+            .filter(|(_, kind)| {
+                !matches!(
+                    kind,
+                    archmap_scan::TestKind::Test | archmap_scan::TestKind::Conftest
+                )
+            })
+            .map(|(file, _)| file.to_owned())
+            .collect();
+    let left_out: BTreeMap<String, Vec<Evidence>> = left_out
+        .into_iter()
+        .filter(|(file, _)| !no_tests.contains(file))
+        .collect();
     // a helper counts the tests listed that load it
     let listed: BTreeSet<&str> = files.iter().map(|t| t.file.as_str()).collect();
     for helper in &mut not_tests {

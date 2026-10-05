@@ -678,6 +678,66 @@ fn not_traced_names_every_barrel_the_reach_stopped_at() {
 }
 
 #[test]
+fn a_helper_whose_mock_cuts_its_way_is_no_test_left_out() {
+    let files: Vec<(String, String)> = [
+        (
+            "package.json",
+            r#"{"name": "helper-mock", "devDependencies": {"vitest": "1.0.0"}}"#,
+        ),
+        ("src/wrap.ts", "export const wrap = (): number => 1;\n"),
+        (
+            "tests/util.ts",
+            "import { vi } from 'vitest';\nimport { wrap } from '../src/wrap';\n\n\
+             vi.mock('../src/wrap', () => ({ zzz: 1 }));\n\n\
+             export const fromUtil = (): number => wrap();\n",
+        ),
+        (
+            "tests/a.test.ts",
+            "import { fromUtil } from './util';\n\nfromUtil();\n",
+        ),
+    ]
+    .into_iter()
+    .map(|(file, text)| (file.to_owned(), text.to_owned()))
+    .collect();
+    let repo = Repo::new("helper-mock", &files);
+    let out = text(&scan(&repo.0), "src/wrap.ts");
+    assert_eq!(
+        section(&out, "Tests to run again: 1"),
+        ["  tests/a.test.ts (through tests/util.ts)"],
+        "{out}"
+    );
+}
+
+#[test]
+fn an_import_name_names_the_barrels_its_reach_stopped_at() {
+    let files: Vec<(String, String)> = [
+        ("package.json", r#"{"name": "names-barrel"}"#),
+        (
+            "src/schema.ts",
+            "import { z } from 'undeclared-lib';\n\nexport const schema = z;\n",
+        ),
+        ("src/extra.ts", "export const extra = 5;\n"),
+        (
+            "src/index.ts",
+            "export * from './schema';\nexport * from './extra';\n",
+        ),
+        (
+            "src/other.ts",
+            "import { extra } from './index';\n\nexport const other = extra;\n",
+        ),
+    ]
+    .into_iter()
+    .map(|(file, text)| (file.to_owned(), text.to_owned()))
+    .collect();
+    let repo = Repo::new("names-barrel", &files);
+    let out = text(&scan(&repo.0), "undeclared-lib");
+    assert!(
+        out.contains("whatever else loads that file: src/index.ts:1\n"),
+        "{out}"
+    );
+}
+
+#[test]
 fn a_changed_barrel_is_no_dependent_of_the_change_nor_a_barrel_it_passes() {
     // the package's barrels change with it: none of its files is a
     // dependent of the package

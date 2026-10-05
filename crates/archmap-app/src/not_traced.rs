@@ -894,7 +894,7 @@ mod tests {
     }
 
     #[test]
-    fn a_relayed_entry_is_named_at_the_re_export_of_the_nearest_file_it_came_from() {
+    fn a_barrel_is_named_at_the_re_export_of_the_nearest_file_it_came_from() {
         let re_export = |line: u32, target: &str| {
             Edge::new("pkg", "pkg", EdgeKind::Import).with_evidence(
                 Evidence::new("pkg/__init__.py")
@@ -912,14 +912,14 @@ mod tests {
             ..Default::default()
         };
         let named = |from: &[&str]| {
-            let relayed = BTreeMap::from([(
+            let reached = BTreeMap::from([(
                 "pkg/__init__.py".to_owned(),
                 from.iter().map(|f| (*f).to_owned()).collect(),
             )]);
             let found = barrels(
                 &full,
                 Some(Narrowed::File("pkg/z.py")),
-                &relayed,
+                &reached,
                 &BTreeSet::new(),
                 usize::MAX,
             )
@@ -933,14 +933,14 @@ mod tests {
         assert_eq!(named(&[]), (1, Some(1), vec![1, 2, 3]));
         // the target's own re-export stays first, though the walk reaches
         // the target's file again further on (files that import each other)
-        let relayed = BTreeMap::from([(
+        let reached = BTreeMap::from([(
             "pkg/__init__.py".to_owned(),
             vec!["pkg/a.py".to_owned(), "pkg/c.py".to_owned()],
         )]);
         let found = barrels(
             &full,
             Some(Narrowed::File("pkg/c.py")),
-            &relayed,
+            &reached,
             &BTreeSet::new(),
             usize::MAX,
         )
