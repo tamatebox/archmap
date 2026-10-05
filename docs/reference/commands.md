@@ -788,7 +788,9 @@ target's own imports without an edge stay under `Not mapped`.
   the target. A call whose name starts with text that leads to a known path
   (`` import(`./pages/${name}`) ``, `import_module(f"plugins.{name}")`)
   counts only for a target at or below that path, or a directory that holds
-  it, and says so (`(below src/pages/)`, JSON `below`). Production code comes
+  it, and says so (`(below src/pages/)`, JSON `below`), and for a file that
+  loading one runs first, a Python package's `__init__.py` above the path
+  (`(below app/plugins/, which runs it first)`, JSON `runs_first`). Production code comes
   first, and test code is marked `(test)`.
 - `named_like`: imports without an edge (`local name`, `unresolved`) that
   may be the target unresolved, or for a symbol its file (a test that

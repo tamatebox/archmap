@@ -324,6 +324,32 @@ fn what_declare_global_declares_says_that_no_import_names_its_uses() {
 }
 
 #[test]
+fn a_computed_import_counts_for_the_packages_it_runs_first_and_says_so() {
+    let root = std::env::temp_dir().join(format!("archmap-first-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    for (path, text) in [
+        ("pyproject.toml", "[project]\nname = \"loaders\"\n"),
+        ("app/__init__.py", ""),
+        ("app/plugins/__init__.py", ""),
+        (
+            "tools/loader.py",
+            "import importlib\n\n\ndef load(name):\n    return importlib.import_module(f\"app.plugins.{name}\")\n",
+        ),
+    ] {
+        let file = root.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, text).unwrap();
+    }
+    let ws = scan(&root);
+    let text = query(&ws, "app/__init__.py", Format::Text);
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(
+        text.contains("tools/loader.py:5 (below app/plugins/, which runs it first)"),
+        "{text}"
+    );
+}
+
+#[test]
 fn a_global_says_so_where_importers_are_unknown() {
     // no import of this language names a file, so importers are unknown
     let root = std::env::temp_dir().join(format!("archmap-globals-{}", std::process::id()));

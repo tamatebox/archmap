@@ -447,6 +447,10 @@ pub(crate) struct DynamicCall {
     /// analyzer knows the static start of the name it computes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) below: Option<String>,
+    /// The target is no file below that path but one that loading any of
+    /// them runs first (a Python package's `__init__.py` above it).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) runs_first: bool,
     /// The call is test code.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub(crate) test: bool,
@@ -574,6 +578,14 @@ pub(crate) fn not_traced(
             line: d.evidence.line,
             call: d.call.clone(),
             below: d.prefix.as_ref().and_then(|p| p.path.clone()),
+            // the target is a file that loading below the path runs first
+            runs_first: match &subject.place {
+                Some(Place::File(place)) => d
+                    .prefix
+                    .as_ref()
+                    .is_some_and(|p| p.first.iter().any(|f| f == place)),
+                _ => false,
+            },
             test: d.evidence.test,
         })
         .collect();

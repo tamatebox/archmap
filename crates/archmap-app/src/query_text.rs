@@ -1346,8 +1346,14 @@ pub(crate) fn not_traced(
                 if c.test {
                     at.push_str(" (test)");
                 }
-                if let Some(below) = &c.below {
-                    let _ = write!(at, " (below {below})");
+                match (&c.below, c.runs_first) {
+                    (Some(below), true) => {
+                        let _ = write!(at, " (below {below}, which runs it first)");
+                    }
+                    (Some(below), false) => {
+                        let _ = write!(at, " (below {below})");
+                    }
+                    (None, _) => {}
                 }
                 at
             })
