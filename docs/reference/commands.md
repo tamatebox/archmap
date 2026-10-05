@@ -41,7 +41,7 @@ contains:
   and `imports without an edge`, counted in statements per reason with those
   in test code (`extra or dev dependency 2 (1 in tests)`), each under the
   language of the file that writes it; the languages no analyzer reads, such as
-  `not analyzed  sql: 145  notebook: 68`; the number of TS/JS `scripts`, files
+  `not analyzed  sql: 4  notebook: 2`; the number of TS/JS `scripts`, files
   without imports or exports whose declarations are used without an import;
   the number of `dynamic imports` and
   the components that make them; the number of Rust `macro calls not read`,
