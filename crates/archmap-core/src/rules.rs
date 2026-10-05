@@ -395,8 +395,9 @@ struct Loaded<'g> {
 /// subtree), so a rule can require going through a facade, which a rule
 /// of its own then covers. A Rust `pub use` of the module's own subtree is
 /// no import, so the statement counts toward the component that defines
-/// the name. A statement with evidence of its own for the re-export's
-/// component is shown by it alone.
+/// the name, unless a re-export further on is one: the analyzer's `via`
+/// names the first import on the way. A statement with evidence of its own
+/// for the re-export's component is shown by it alone.
 fn loaded_dependencies(graph: &ArchitectureGraph) -> Vec<Loaded<'_>> {
     fn place(at: &str) -> Option<(&str, u32)> {
         let (file, line) = at.rsplit_once(':')?;

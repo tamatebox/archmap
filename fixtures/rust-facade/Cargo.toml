@@ -1,0 +1,3 @@
+[workspace]
+members = ["pantry", "kitchen"]
+resolver = "2"

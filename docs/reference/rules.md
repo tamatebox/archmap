@@ -71,7 +71,11 @@ through a TS/JS barrel (`export ... from`) or a Rust `pub use` of another
 crate or of a module outside the re-exporting module's subtree. A Rust
 `pub use` of the module's own subtree (`pub use infra::Repo` in `lib.rs`) is
 no import, so a `use crate::Repo` elsewhere still counts toward `infra`,
-where the name is defined: otherwise no rule could see that dependency. A
+where the name is defined: otherwise no rule could see that dependency.
+When the walk then passes a re-export that is an import (`pub use
+facade::Repo` in `lib.rs`, over `pub use crate::infra::Repo` in
+`facade.rs`), the statement counts toward the first such import on its way
+(`facade`), which its note names. A
 statement whose only evidence goes through a re-export (its `via`
 evidence, see [graph.md](graph.md)) is listed by that evidence, which names
 the defining file after the arrow and the re-export in its note. `query`,

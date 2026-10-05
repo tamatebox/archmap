@@ -52,8 +52,9 @@ into the model in [graph.md](graph.md); how the commands present it is in
   `crate::`, `self::`, `super::`, other internal crates, re-exports, globs (which bring in only
   what the importing module can see) and `#[macro_export]` macros; the evidence names that
   module's file and the scope (`local` inside a function body, `module` elsewhere), and the note
-  names the first `use` in another file the path went through, usually a re-export
-  (`use via crates/archmap-core/src/lib.rs:22`); an external crate is an edge without a file
+  names the first `use` in another file the path went through that is an import of its own, else
+  the first such `use` (a re-export of a module's own subtree is none, see below), usually a
+  re-export (`use via crates/archmap-core/src/lib.rs:22`); an external crate is an edge without a file
 - a module path written in code, in a signature, a type, a pattern, an expression,
   `#[derive(..)]` or the arguments of a macro call that are expressions, an expression and a
   pattern, or items (`vec![Box::new(rust::RustAnalyzer)]`, `write!(out, "{}", crate::x::y(..))`,

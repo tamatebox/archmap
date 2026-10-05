@@ -714,9 +714,33 @@ pub(super) enum Resolved {
     Nothing,
 }
 
-/// The first `use` declaration in another file that a path went through:
-/// file index and line.
+/// The `use` declaration in another file that a path went through: file
+/// index and line.
 pub(super) type Via = (usize, u32);
+
+/// The `use` declarations in other files a path went through: the first,
+/// and the first that is an import of its own, as the graph records it (a
+/// re-export of the module's own subtree is none).
+#[derive(Debug, Clone, Copy, Default)]
+struct Ways {
+    first: Option<Via>,
+    import: Option<Via>,
+}
+
+impl Ways {
+    /// The one evidence names: the first import on the way, which the
+    /// path loads as `deny`, `layers` and `allow` count it, else the first.
+    fn named(self) -> Option<Via> {
+        self.import.or(self.first)
+    }
+
+    /// Take what a later part of the walk went through where nothing earlier
+    /// did.
+    fn then(&mut self, later: Ways) {
+        self.first = self.first.or(later.first);
+        self.import = self.import.or(later.import);
+    }
+}
 
 /// Resolution state of one path: where it started, the declarations being
 /// followed (so that a cycle of them ends), and the glob lookups made so
@@ -731,7 +755,7 @@ struct Walk {
 enum GlobLookup {
     /// In progress further up: counts as not found.
     Pending,
-    Done(Option<(Pos, Option<Via>)>),
+    Done(Option<(Pos, Ways)>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -775,9 +799,9 @@ impl<'a> Resolver<'a> {
     /// Resolve `decl`, written in module `node`.
     pub fn resolve(&self, node: usize, decl: &UseDecl) -> Resolved {
         let mut walk = self.walk(node);
-        let mut via = None;
+        let mut via = Ways::default();
         let pos = self.path(node, &decl.path, decl.leading_colon, &mut via, &mut walk);
-        resolved(pos, via)
+        resolved(pos, via.named())
     }
 
     /// Resolve a module path written in code in module `node`. It counts only
@@ -789,14 +813,14 @@ impl<'a> Resolver<'a> {
             return Resolved::Nothing;
         };
         let mut walk = self.walk(node);
-        let mut via = None;
+        let mut via = Ways::default();
         let pos = if path.leading_colon {
             self.crate_named(node, first)
         } else {
             self.first_direct(node, first, &mut walk)
         };
         let pos = self.rest(pos, rest, node, &mut via, &mut walk);
-        resolved(pos, via)
+        resolved(pos, via.named())
     }
 
     /// The type an `impl` in module `node` is for, as the file that defines
@@ -809,7 +833,7 @@ impl<'a> Resolver<'a> {
         leading_colon: bool,
     ) -> Option<(usize, String)> {
         let mut walk = self.walk(node);
-        let mut via = None;
+        let mut via = Ways::default();
         match self.path(node, segments, leading_colon, &mut via, &mut walk) {
             Pos::Item(m, name) => Some((self.forest.nodes[m].file, name)),
             _ => None,
@@ -835,7 +859,7 @@ impl<'a> Resolver<'a> {
         at: usize,
         segments: &[String],
         leading_colon: bool,
-        via: &mut Option<Via>,
+        via: &mut Ways,
         walk: &mut Walk,
     ) -> Pos {
         let Some((first, rest)) = segments.split_first() else {
@@ -856,7 +880,7 @@ impl<'a> Resolver<'a> {
         mut pos: Pos,
         segments: &[String],
         at: usize,
-        via: &mut Option<Via>,
+        via: &mut Ways,
         walk: &mut Walk,
     ) -> Pos {
         for segment in segments {
@@ -899,14 +923,17 @@ impl<'a> Resolver<'a> {
         if let Some(pos) = self.extern_crate(at, name) {
             return pos;
         }
-        if self.glob(at, name, at, &mut None, walk).is_some() {
+        if self
+            .glob(at, name, at, &mut Ways::default(), walk)
+            .is_some()
+        {
             return Pos::Nothing;
         }
         self.other_package(at, name)
             .unwrap_or_else(|| self.unknown_crate(at, name))
     }
 
-    fn first(&self, at: usize, name: &str, via: &mut Option<Via>, walk: &mut Walk) -> Pos {
+    fn first(&self, at: usize, name: &str, via: &mut Ways, walk: &mut Walk) -> Pos {
         let node = &self.forest.nodes[at];
         match name {
             "crate" => node.root.map_or(Pos::Nothing, Pos::Module),
@@ -925,14 +952,7 @@ impl<'a> Resolver<'a> {
     }
 
     /// Look `name` up in module `m` for a path written in module `from`.
-    fn step(
-        &self,
-        m: usize,
-        name: &str,
-        from: usize,
-        via: &mut Option<Via>,
-        walk: &mut Walk,
-    ) -> Pos {
+    fn step(&self, m: usize, name: &str, from: usize, via: &mut Ways, walk: &mut Walk) -> Pos {
         match name {
             "super" => self.forest.nodes[m]
                 .parent
@@ -958,7 +978,7 @@ impl<'a> Resolver<'a> {
         m: usize,
         name: &str,
         from: usize,
-        via: &mut Option<Via>,
+        via: &mut Ways,
         walk: &mut Walk,
     ) -> Option<Pos> {
         let node = &self.forest.nodes[m];
@@ -977,12 +997,17 @@ impl<'a> Resolver<'a> {
         // A declaration does not resolve through itself (`extern crate a;`),
         // and a cycle of declarations falls back to what `m` defines.
         if let Some(decl) = alias.filter(|_| !walk.active.contains(&key)) {
-            if via.is_none() && node.file != walk.origin {
-                *via = Some((node.file, decl.line));
-            }
+            let here = (node.file != walk.origin).then_some((node.file, decl.line));
+            let mut inner = Ways::default();
             walk.active.push(key);
-            let pos = self.path(m, &decl.path, decl.leading_colon, via, walk);
+            let pos = self.path(m, &decl.path, decl.leading_colon, &mut inner, walk);
             walk.active.pop();
+            via.then(Ways {
+                first: here.or(inner.first),
+                import: here
+                    .filter(|_| self.imports(m, decl, &pos))
+                    .or(inner.import),
+            });
             return Some(pos);
         }
         if facts.items.contains(name) {
@@ -1004,7 +1029,7 @@ impl<'a> Resolver<'a> {
         m: usize,
         name: &str,
         from: usize,
-        via: &mut Option<Via>,
+        via: &mut Ways,
         walk: &mut Walk,
     ) -> Option<Pos> {
         let key = (m, name.to_owned(), self.sees_private(from, m));
@@ -1019,9 +1044,7 @@ impl<'a> Resolver<'a> {
             }
         };
         let (pos, this) = found?;
-        if via.is_none() {
-            *via = this;
-        }
+        via.then(this);
         Some(pos)
     }
 
@@ -1031,17 +1054,18 @@ impl<'a> Resolver<'a> {
         name: &str,
         open: bool,
         walk: &mut Walk,
-    ) -> Option<(Pos, Option<Via>)> {
+    ) -> Option<(Pos, Ways)> {
         let file = self.forest.nodes[m].file;
-        let mut found: Option<(Pos, Option<Via>)> = None;
+        let mut found: Option<(Pos, Ways)> = None;
         for decl in &self.facts(m).uses {
             // only what the path's module can see: private globs of another
             // module import nothing for it
             if !decl.glob || decl.scope != Scope::Module || !(open || decl.reexport) {
                 continue;
             }
-            let mut inner = None;
-            let hit = match self.path(m, &decl.path, decl.leading_colon, &mut inner, walk) {
+            let mut inner = Ways::default();
+            let globbed = self.path(m, &decl.path, decl.leading_colon, &mut inner, walk);
+            let hit = match globbed {
                 Pos::Module(g) if g != m => self
                     .local(g, name, m, &mut inner, walk)
                     .or_else(|| self.glob(g, name, m, &mut inner, walk)),
@@ -1050,14 +1074,36 @@ impl<'a> Resolver<'a> {
             let Some(pos) = hit else {
                 continue;
             };
-            let this = (file != walk.origin).then_some((file, decl.line)).or(inner);
+            let here = (file != walk.origin).then_some((file, decl.line));
+            let this = Ways {
+                first: here.or(inner.first),
+                import: here
+                    .filter(|_| self.imports(m, decl, &globbed))
+                    .or(inner.import),
+            };
             match &found {
                 None => found = Some((pos, this)),
                 Some((earlier, _)) if *earlier == pos => {}
-                Some(_) => return Some((Pos::Item(m, name.to_owned()), None)),
+                Some(_) => return Some((Pos::Item(m, name.to_owned()), Ways::default())),
             }
         }
         found
+    }
+
+    /// Whether `decl`, written in module `m`, is an import of its own where
+    /// it leads to `pos`, as the graph records it: not a name of `m`'s own
+    /// file, nor a re-export of the subtree of that file's module, which
+    /// shapes what the module offers.
+    fn imports(&self, m: usize, decl: &UseDecl, pos: &Pos) -> bool {
+        match pos {
+            Pos::Module(target) | Pos::Item(target, _) => {
+                let file_module = self.forest.file_module(m);
+                self.forest.nodes[*target].file != self.forest.nodes[m].file
+                    && !(decl.reexport && self.forest.is_descendant(*target, file_module))
+            }
+            Pos::Crate(id) => *id != self.packages[self.forest.nodes[m].package].id,
+            Pos::DevOnly(_) | Pos::Nothing => false,
+        }
     }
 
     /// A crate the manifest declares, or the package's own library.
@@ -1674,7 +1720,37 @@ pub use self::Loop2 as Loop;
             vec![
                 // `a` keeps its own `use` private: nothing is found
                 row("crate::Hidden", "src/lib.rs"),
-                row("crate::Shown", "src/b.rs via src/lib.rs:4"),
+                // the crate root's glob of its subtree is no import, `a`'s
+                // re-export is
+                row("crate::Shown", "src/b.rs via src/a.rs:2"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_use_names_the_first_import_on_its_way() {
+        let packages = [package("p", "", &[])];
+        let files = files(
+            &[
+                (
+                    "src/lib.rs",
+                    "mod a;\nmod b;\nmod c;\nmod x;\npub use x::Item;\n",
+                ),
+                ("src/a.rs", "pub use crate::b::Item;\n"),
+                ("src/b.rs", "pub struct Item;\n"),
+                ("src/x.rs", "pub use crate::a::Item;\n"),
+                ("src/c.rs", "use crate::x::Item;\nuse crate::Item;\n"),
+            ],
+            &packages,
+        );
+        let forest = forest(&files, &packages);
+        assert_eq!(
+            resolved(&forest, &files, &packages, "src/c.rs"),
+            vec![
+                // both re-exports are imports: the first
+                row("crate::x::Item", "src/b.rs via src/x.rs:1"),
+                // past the crate root's re-export of its subtree
+                row("crate::Item", "src/b.rs via src/x.rs:1"),
             ]
         );
     }
