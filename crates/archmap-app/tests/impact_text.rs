@@ -1855,3 +1855,32 @@ fn a_test_reaches_a_change_through_the_types_a_mocked_module_exposes_from_it() {
         "{answer}"
     );
 }
+
+#[test]
+fn a_file_that_takes_a_relay_whole_says_which_relay_it_goes_through() {
+    let files: Vec<(String, String)> = [
+        ("package.json", "{ \"name\": \"shop\" }"),
+        (
+            "src/charge.ts",
+            "export function pay(n: number) { return n; }\n",
+        ),
+        // imports the name and exports it apart
+        (
+            "src/wallet.ts",
+            "import { pay } from './charge';\nexport { pay };\n",
+        ),
+        (
+            "src/cart.ts",
+            "import * as wallet from './wallet';\nexport const total = wallet.pay(1);\n",
+        ),
+    ]
+    .into_iter()
+    .map(|(f, t)| (f.to_owned(), t.to_owned()))
+    .collect();
+    let repo = Repo::new("relay-whole", &files);
+    let answer = text(&scan(&repo.0), "pay");
+    assert!(
+        answer.contains("  cart.ts  2 steps, through src/wallet.ts\n"),
+        "{answer}"
+    );
+}

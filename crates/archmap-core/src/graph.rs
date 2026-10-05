@@ -573,6 +573,8 @@ impl ArchitectureGraph {
         // for a symbol, how the files of its statements take it, whether the
         // statement takes types only, and the file it loads
         let mut start_ways: BTreeMap<&str, Vec<StartWay>> = BTreeMap::new();
+        // a start two steps away, by the barrel it takes whole
+        let mut start_through: BTreeMap<Node, Node> = BTreeMap::new();
         let target = match seed {
             ChangeSeed::File(file) => {
                 start.push((Node::File(file), 0, None));
@@ -708,6 +710,7 @@ impl ArchitectureGraph {
                         }
                         let loads = Some((vec![barrel], Link::of(e)));
                         start.push((Node::File(e.file.as_str()), 2, loads));
+                        start_through.insert(Node::File(e.file.as_str()), Node::Passes(barrel));
                         start_ways.entry(e.file.as_str()).or_default().push((
                             Way::Through(barrel),
                             Link::of(e),
@@ -872,6 +875,9 @@ impl ArchitectureGraph {
                 if let Entry::Vacant(slot) = distance.entry(node) {
                     slot.insert(d);
                     queue.push_back(node);
+                    if let Some(&barrel) = start_through.get(&node).filter(|_| d == 2) {
+                        parent.insert(node, barrel);
+                    }
                 }
             }
             while let Some(node) = queue.pop_front() {
