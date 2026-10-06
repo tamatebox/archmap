@@ -177,6 +177,32 @@ fn a_constant_in_a_pattern_is_used_and_binds_nothing() {
 }
 
 #[test]
+fn an_item_of_the_same_name_in_an_inline_module_is_another() {
+    let report = report();
+    // a test module's helper of the same name calls the crate's own
+    assert_eq!(
+        shown(&uses_of(&report, "wallet::parse")),
+        ["wallet/src/lib.rs:17:16 call as super::parse (test)"]
+    );
+    // `inner::charge` is the inline module's, not the file's
+    let charge = uses_of(&report, "wallet::pay::charge");
+    assert_eq!(shown(&charge), ["wallet/src/pay.rs:12:23 call"]);
+    assert_eq!(places(&charge.unused), ["wallet/src/lib.rs:10"]);
+    assert_eq!(
+        shown(&uses_of(&report, "wallet::pay::inner::charge")),
+        [
+            "wallet/src/lib.rs:10:17 call as pay::inner::charge",
+            "wallet/src/pay.rs:12:12 call as inner::charge"
+        ]
+    );
+    // a method of an `impl` written through an alias is its type's
+    assert_eq!(
+        shown(&uses_of(&report, "wallet::ops::Purchase::make")),
+        ["wallet/src/lib.rs:10:42 call as model::Order::make"]
+    );
+}
+
+#[test]
 fn every_listed_statement_ends_in_one_of_the_lists() {
     let report = report();
     let graph = &report.graph;

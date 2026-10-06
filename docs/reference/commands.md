@@ -409,7 +409,11 @@ scan resolves them), so a call through a name a re-export gives it
 the `use` declaration that brings its first name in. A path in an
 expression or a pattern names a value last, so a call reaches the function
 a module shares its name with (`parse(..)` beside `mod parse; pub use
-parse::parse;`). A parameter or a
+parse::parse;`). A path counts when it reaches the module that defines the
+symbol, so an item of the same name in an inline module (a test module's
+helper) is another, and a method is reached through its type, also where
+its `impl` names the type by an alias (`impl Purchase` after `use
+crate::model::Order as Purchase`). A parameter or a
 pattern's binding hides the name only where the language binds it (an
 `if let`, `while let`, match arm or `for` binding in its branch, a `let`
 binding after the statement), and so do a block's own items and a

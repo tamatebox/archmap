@@ -14,15 +14,23 @@ use archmap_core::{
 };
 use syn::visit::{self, Visit};
 
-use super::source::{cfg_test, name, use_decls, visit_arguments, NOT_CODE};
+use super::source::{cfg_test, name, use_decls, visit_arguments, UseDecl, NOT_CODE};
 use super::tree::{Ns, Resolved, Resolver};
 use super::{text_hash, Index};
 use crate::context::display_path;
+
+/// An item a path reaches: the file that defines it, the module of that
+/// file (its index in `RustFile::modules`), and its name there.
+type Item = (usize, usize, String);
 
 /// What a use must resolve to.
 struct Target {
     /// The file that defines the item (for a method, its type).
     file: usize,
+    /// The module of that file that defines it, so that an item of the
+    /// same name in an inline module is another; `None` when the scan
+    /// cannot place it, and any module of the file counts.
+    module: Option<usize>,
     /// The item's name there (for a method, its type's).
     name: String,
     /// A method's name, for `Type::method` symbols.
@@ -43,10 +51,10 @@ pub(crate) fn read(
     statements: &[&Evidence],
     out: &mut SymbolUses,
 ) {
-    let Some(target) = target(index, symbol) else {
+    let resolver = Resolver::new(&index.forest, &index.files, &index.packages);
+    let Some(target) = target(index, &resolver, symbol) else {
         return;
     };
-    let resolver = Resolver::new(&index.forest, &index.files, &index.packages);
     let names = names(index, &target);
     // the statements' files, and every file of the crate that defines it
     let mut files: BTreeSet<usize> = statements
@@ -136,8 +144,9 @@ fn file_index(index: &Index, rel: &str) -> Option<usize> {
 }
 
 /// The item a use resolves to: the symbol's own, or for a method
-/// (`Type::method`) its type's, in the file that defines the type.
-fn target(index: &Index, symbol: &Symbol) -> Option<Target> {
+/// (`Type::method`) its type's, in the file and module that define the
+/// type.
+fn target(index: &Index, resolver: &Resolver, symbol: &Symbol) -> Option<Target> {
     if symbol.kind == SymbolKind::Module {
         return None;
     }
@@ -157,16 +166,91 @@ fn target(index: &Index, symbol: &Symbol) -> Option<Target> {
         .find(|e| e.note.as_deref() == Some("impl"))
         .and_then(|e| e.target.as_deref())
         .unwrap_or(&location.file);
+    let file = file_index(index, file)?;
+    // the declaration, in the module of its file that holds it
+    let at = file_index(index, &location.file)?;
+    let declared = index.files[at]
+        .parsed
+        .modules
+        .iter()
+        .enumerate()
+        .find_map(|(module, facts)| {
+            let decl = facts
+                .symbols
+                .iter()
+                .find(|s| s.name == symbol.name && Some(s.line) == location.line)?;
+            Some((module, decl))
+        });
+    // an item is defined where it is declared; a method's type where the
+    // path of its `impl` reaches it, as the scan resolved it
+    let (module, name) = match (&member, declared) {
+        (None, Some((module, _))) => (Some(module), name),
+        (Some(_), Some((module, decl))) => {
+            let reached = decl.owner.as_ref().and_then(|ty| {
+                nodes_of(index, at, module).into_iter().find_map(|node| {
+                    reach(
+                        index,
+                        resolver,
+                        node,
+                        &ty.segments,
+                        ty.leading_colon,
+                        Ns::Type,
+                    )
+                })
+            });
+            match reached {
+                Some((f, module, item)) if f == file => (Some(module), item),
+                _ => (None, name),
+            }
+        }
+        (_, None) => (None, name),
+    };
     let instance = member.is_some() && symbol.signature.as_deref().is_some_and(takes_self);
     let pattern =
         member.is_none() && matches!(symbol.kind, SymbolKind::Constant | SymbolKind::Struct);
     Some(Target {
-        file: file_index(index, file)?,
+        file,
+        module,
         name,
         member,
         instance,
         pattern,
     })
+}
+
+/// The item `segments`, written in module node `node`, reach, as the scan
+/// resolves a `use` of that path, the last name looked up in `ns`; `None`
+/// when they reach no item of the repository.
+fn reach(
+    index: &Index,
+    resolver: &Resolver,
+    node: usize,
+    segments: &[String],
+    leading_colon: bool,
+    ns: Ns,
+) -> Option<Item> {
+    let decl = UseDecl {
+        path: segments.to_vec(),
+        binds: None,
+        glob: false,
+        leading_colon,
+        reexport: false,
+        line: 0,
+        scope: archmap_core::Scope::Module,
+        test: false,
+        note: "use",
+    };
+    match resolver.resolve_in(node, &decl, ns) {
+        Resolved::Module {
+            node,
+            name: Some(name),
+            ..
+        } => {
+            let module = &index.forest.nodes[node];
+            Some((module.file, module.module, name))
+        }
+        _ => None,
+    }
 }
 
 /// Whether a Rust function's signature takes `self` first (`&self`,
@@ -320,10 +404,7 @@ enum Origin {
     Hidden,
     /// A block's `use` or glob at `line`, and what the path reaches through
     /// it.
-    Block {
-        reached: Vec<(usize, String)>,
-        line: u32,
-    },
+    Block { reached: Vec<Item>, line: u32 },
     /// The module's own names, as the resolver reads them.
     Module,
 }
@@ -379,11 +460,11 @@ impl Walker<'_> {
                 let reached = match &bound.reached {
                     // an item, which later segments stay at
                     Some((module, Some(item))) => {
-                        vec![(self.index.forest.nodes[*module].file, item.clone())]
+                        let at = &self.index.forest.nodes[*module];
+                        vec![(at.file, at.module, item.clone())]
                     }
                     Some((module, None)) if !rest.is_empty() => self
-                        .resolver
-                        .resolve_item(*module, rest, false, namespace(value))
+                        .reach(*module, rest, false, value)
                         .into_iter()
                         .collect(),
                     _ => Vec::new(),
@@ -394,10 +475,7 @@ impl Walker<'_> {
                 };
             }
             for &(module, line) in &frame.globs {
-                let found = self
-                    .resolver
-                    .resolve_item(module, segments, false, namespace(value));
-                if let Some(found) = found {
+                if let Some(found) = self.reach(module, segments, false, value) {
                     return Origin::Block {
                         reached: vec![found],
                         line,
@@ -409,12 +487,7 @@ impl Walker<'_> {
     }
 
     /// The files and items `segments`, written here, reach.
-    fn resolves(
-        &self,
-        segments: &[String],
-        leading_colon: bool,
-        value: bool,
-    ) -> Vec<(usize, String)> {
+    fn resolves(&self, segments: &[String], leading_colon: bool, value: bool) -> Vec<Item> {
         let origin = match leading_colon {
             true => Origin::Module,
             false => self.origin(segments, value),
@@ -425,16 +498,26 @@ impl Walker<'_> {
             Origin::Module => self
                 .nodes
                 .iter()
-                .filter_map(|&node| {
-                    self.resolver
-                        .resolve_item(node, segments, leading_colon, namespace(value))
-                })
+                .filter_map(|&node| self.reach(node, segments, leading_colon, value))
                 .collect(),
         }
     }
 
-    fn is_target(&self, file: usize, name: &str) -> bool {
-        file == self.target.file && name == self.target.name
+    fn reach(
+        &self,
+        node: usize,
+        segments: &[String],
+        leading_colon: bool,
+        value: bool,
+    ) -> Option<Item> {
+        let ns = namespace(value);
+        reach(self.index, self.resolver, node, segments, leading_colon, ns)
+    }
+
+    fn is_target(&self, (file, module, name): &Item) -> bool {
+        *file == self.target.file
+            && *name == self.target.name
+            && self.target.module.is_none_or(|m| m == *module)
     }
 
     /// The segments of a path written here that name the target (for a
@@ -455,7 +538,7 @@ impl Walker<'_> {
         };
         self.resolves(named, leading_colon, value)
             .iter()
-            .any(|(file, name)| self.is_target(*file, name))
+            .any(|item| self.is_target(item))
             .then_some((named, value))
     }
 
@@ -489,9 +572,8 @@ impl Walker<'_> {
             .find(|d| {
                 let path: Vec<String> = d.path.iter().chain(named).cloned().collect();
                 self.nodes.iter().any(|&node| {
-                    self.resolver
-                        .resolve_item(node, &path, d.leading_colon, namespace(value))
-                        .is_some_and(|(file, name)| self.is_target(file, &name))
+                    self.reach(node, &path, d.leading_colon, value)
+                        .is_some_and(|item| self.is_target(&item))
                 })
             })
             .map(|d| place(d.line))
@@ -788,7 +870,7 @@ impl<'ast> Visit<'ast> for Walker<'_> {
                         let leading = p.path.leading_colon.is_some();
                         w.resolves(&segments, leading, false)
                             .iter()
-                            .any(|(file, name)| w.is_target(*file, name))
+                            .any(|item| w.is_target(item))
                     }
                     _ => false,
                 };
