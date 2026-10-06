@@ -152,11 +152,17 @@ With `--by-symbol` (MCP `by_symbol`), `query` on a file lists each public
 symbol of it, in source order, with how many statements take it by name
 (`imported by 2, 1 in tests`), how many take its file whole (`may use 1`)
 and where it is used, read as for `query <symbol>` (`used at 4 in 3 files,
-1 in tests, 1 in this file`), or `none found`; a capped list says how many
-of the rest are `none found`, and a method that takes a value says its
-calls through a value are not read. It runs the uses pass for every symbol,
-on up to 8 threads, and takes no `--snapshot`. JSON gives each symbol with
-its statements and `used_at`.
+1 in tests, 1 in this file`), `no use found` when statements take it and
+no use was read, or `none found` when nothing takes or uses it; a capped
+list says how many of the rest are `none found`, and a method that takes a
+value says its calls through a value are not read. `Not traced` gives what
+`query <file>` gives there, that the file is a script too, then what
+`query <symbol>` gives there for each symbol listed (`whole module`,
+`uses`, `subclasses`, `values`, ...), each line once under the symbols it
+holds for (`formatPrice, Wallet, +6 more:`). It runs the uses pass for
+every symbol, on up to 8 threads, and takes no `--snapshot`. JSON gives
+each symbol with its statements, `used_at` and `not_traced`, and the
+file's `not_traced`.
 
 For an environment variable (`env:APP_REGION`, or a name in capitals that
 nothing else has) `query` reads on demand the TS/JS files the scan read

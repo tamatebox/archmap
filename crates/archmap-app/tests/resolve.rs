@@ -1075,6 +1075,80 @@ fn a_file_by_symbol_says_who_takes_each_symbol_and_where_it_is_used() {
 }
 
 #[test]
+fn a_file_by_symbol_says_what_query_on_each_symbol_could_not_follow() {
+    let by_symbol = |ws: &Workspace, target: &str, format: Format| {
+        ws.by_symbol(&BySymbolRequest {
+            target,
+            depth: DEFAULT_DEPTH,
+            format,
+            verbose: false,
+        })
+        .unwrap()
+        .output
+    };
+    // a statement not read leaves `no use found` open
+    let repo = Repo::new(
+        "by-symbol-gaps",
+        &[
+            ("package.json", "{\"name\": \"shop\"}\n"),
+            (
+                "src/money.ts",
+                "export function formatPrice(n: number): string {\n  return `${n}`;\n}\n",
+            ),
+            (
+                "src/app.ts",
+                "import { formatPrice } from './money'; import * as m from '../src/money';\n\
+                 export const a = formatPrice(1) + m.formatPrice(2);\n",
+            ),
+        ],
+    );
+    let ws = scan(&repo.0);
+    let text = by_symbol(&ws, "src/money.ts", Format::Text);
+    assert!(
+        text.ends_with(
+            "\n  formatPrice  may use 1; no use found\n\
+             \nNot traced (what this answer may miss):\n  \
+             formatPrice:\n    \
+             uses: not read in 1 place: src/app.ts:1 (ambiguous statement)\n"
+        ),
+        "{text}"
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&by_symbol(&ws, "src/money.ts", Format::Json)).unwrap();
+    assert_eq!(
+        json["symbols"][0]["not_traced"]["uses"]["total"], 1,
+        "{json}"
+    );
+    // a line that holds for several symbols comes once, under them
+    let ws = scan(&fixture("ts-uses"));
+    let text = by_symbol(&ws, "src/money.ts", Format::Text);
+    assert!(
+        text.contains(
+            "\n  formatPrice, Wallet, Wallet.open, +5 more:\n    \
+             whole module: 3 places use the module as a value, which may use this: \
+             scripts/lazy.mjs:7, src/app.ts:8, tests/partial.test.ts:4 (test)\n    \
+             uses: not read in 1 place: src/two.ts:1 (ambiguous statement)\n  \
+             Wallet.open, Wallet.pay, Wallet.settle, +1 more:\n    subclasses: "
+        ),
+        "{text}"
+    );
+    // a script says it is one, as `query` on the file says where its
+    // importers would be
+    let ws = scan(&fixture("ts-globals"));
+    let text = by_symbol(&ws, "src/boot.js", Format::Text);
+    assert!(
+        text.ends_with(
+            "\nNot traced (what this answer may miss):\n  \
+             a script: its declarations are global, so no import names what uses them\n"
+        ),
+        "{text}"
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&by_symbol(&ws, "src/boot.js", Format::Json)).unwrap();
+    assert!(json["not_traced"]["script"].is_string(), "{json}");
+}
+
+#[test]
 fn a_candidate_class_is_a_class_in_python_and_ts_and_a_struct_in_rust() {
     let ws = scan(&fixture(""));
     let answer = query(&ws, "Wallet");

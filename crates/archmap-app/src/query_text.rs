@@ -25,7 +25,7 @@ use crate::views::{
 /// Default caps, lifted by `--verbose`.
 const MAX_SYMBOLS: usize = 30;
 const MAX_NEIGHBORS: usize = 30;
-const MAX_LOCATIONS: usize = 3;
+pub(crate) const MAX_LOCATIONS: usize = 3;
 const MAX_IMPORTERS: usize = 5;
 pub(crate) const MAX_USE_FILES: usize = 10;
 

@@ -8,8 +8,11 @@ use anyhow::{bail, Result};
 use archmap_core::{Edge, Evidence, Symbol, SymbolUses};
 use serde::Serialize;
 
+use crate::not_traced::{with_uses, NotTraced};
 use crate::query::{file_view, instance_method, uses_of};
-use crate::query_text::{count, file_head, marks, not_traced, plural};
+use crate::query_text::{
+    count, file_head, marks, not_traced, plural, with_more, MAX_LOCATIONS, NOT_TRACED,
+};
 use crate::resolve::{resolve, Resolved};
 use crate::target::{component_file, reject_outside, unquote};
 use crate::views::Importer;
@@ -50,6 +53,10 @@ struct Row<'a> {
     /// uses pass reads.
     #[serde(skip_serializing_if = "Option::is_none")]
     used_at: Option<SymbolUses>,
+    /// What the uses pass could not follow for it, as `query <symbol>`
+    /// names it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    not_traced: Option<NotTraced>,
 }
 
 #[derive(Debug, Serialize)]
@@ -58,6 +65,9 @@ struct BySymbolView<'a> {
     depth: usize,
     file: String,
     symbols: Vec<Row<'a>>,
+    /// What could reach the file unseen, as `query <file>` names it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    not_traced: Option<&'a NotTraced>,
 }
 
 fn by_symbol(ws: &Workspace, request: &BySymbolRequest) -> Result<Answer> {
@@ -103,11 +113,15 @@ fn by_symbol(ws: &Workspace, request: &BySymbolRequest) -> Result<Answer> {
                 Some(found) => (importers(found.by_name), importers(found.may_use)),
                 None => (Vec::new(), Vec::new()),
             };
+            let not_traced = used_at
+                .as_ref()
+                .and_then(|uses| with_uses(None, uses, instance_method(symbol)));
             Row {
                 symbol,
                 imported_by,
                 may_use,
                 used_at,
+                not_traced,
             }
         })
         .collect();
@@ -116,6 +130,7 @@ fn by_symbol(ws: &Workspace, request: &BySymbolRequest) -> Result<Answer> {
         depth,
         file: file.clone(),
         symbols: rows,
+        not_traced: view.not_traced.as_ref(),
     };
     let output = match format {
         Format::Json => crate::json(&result)?,
@@ -123,12 +138,18 @@ fn by_symbol(ws: &Workspace, request: &BySymbolRequest) -> Result<Answer> {
             let mut out = String::new();
             let component = view.component.as_ref().and_then(|id| rolled.component(id));
             file_head(&mut out, &file, component, depth);
-            let cap = if verbose { usize::MAX } else { MAX_SYMBOLS };
+            let (cap, locations) = match verbose {
+                true => (usize::MAX, usize::MAX),
+                false => (MAX_SYMBOLS, MAX_LOCATIONS),
+            };
             let mut truncated = text(&mut out, &result, &file, cap);
+            // no line says who imports the file: a script says so here
             let mut tail = String::new();
-            if let Some(found) = &view.not_traced {
-                truncated |= not_traced(&mut tail, found, cap, true, false, true);
+            if let Some(found) = result.not_traced {
+                truncated |= not_traced(&mut tail, found, locations, true, true, true);
             }
+            let shown = result.symbols.len().min(cap);
+            truncated |= symbol_gaps(&mut tail, &result.symbols[..shown], locations);
             marks(&mut out, &tail);
             out.push_str(&tail);
             if truncated {
@@ -256,6 +277,52 @@ fn text(out: &mut String, view: &BySymbolView, file: &str, cap: usize) -> bool {
         let _ = writeln!(out, "  {} more, {none} of them {NONE}", total - shown);
     }
     shown < total
+}
+
+/// What `query <symbol>` names under `Not traced` for each of `rows`, as
+/// it writes it (`cap` locations a line): each line once, under the
+/// symbols it holds for, since most hold for every symbol a statement
+/// takes. Returns whether some were left out.
+fn symbol_gaps(out: &mut String, rows: &[Row], cap: usize) -> bool {
+    let mut truncated = false;
+    // each line with the symbols it holds for, in source order
+    let mut lines: Vec<(String, Vec<&str>)> = Vec::new();
+    for row in rows {
+        let Some(found) = &row.not_traced else {
+            continue;
+        };
+        let mut text = String::new();
+        truncated |= not_traced(&mut text, found, cap, false, false, false);
+        for line in text.lines().filter(|l| l.starts_with("  ")) {
+            let name = row.symbol.name.as_str();
+            match lines.iter_mut().find(|(l, _)| l == line) {
+                Some((_, names)) => names.push(name),
+                None => lines.push((line.to_owned(), vec![name])),
+            }
+        }
+    }
+    let mut groups: Vec<(Vec<&str>, Vec<String>)> = Vec::new();
+    for (line, names) in lines {
+        match groups.iter_mut().find(|(n, _)| *n == names) {
+            Some((_, group)) => group.push(line),
+            None => groups.push((names, vec![line])),
+        }
+    }
+    if groups.is_empty() {
+        return truncated;
+    }
+    if !out.contains(NOT_TRACED) {
+        let _ = writeln!(out, "\n{NOT_TRACED}");
+    }
+    for (names, group) in groups {
+        let shown: Vec<String> = names.iter().take(cap).map(|n| (*n).to_owned()).collect();
+        truncated |= shown.len() < names.len();
+        let _ = writeln!(out, "  {}:", with_more(&shown, names.len()));
+        for line in group {
+            let _ = writeln!(out, "  {line}");
+        }
+    }
+    truncated
 }
 
 const NONE: &str = "none found";
