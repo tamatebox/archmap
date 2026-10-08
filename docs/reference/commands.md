@@ -433,10 +433,13 @@ pay as settle`), a module bound whole (`charge.pay`,
 `store.billing.charge.pay`, `from store.billing import charge`), the name a
 package's `__init__.py` passes the symbol on as, renamed or not, a star
 import of a module whose `__all__` lists it (or that has none), or the
-symbol's own definition. A method gets the uses through its class and the
-first parameter of its class's other methods, `self` or `cls`, apart from
-a static method's (`Used at: through the class and self only: ...`);
-calling a class is `(new)`; an annotation is `(type)`, a string annotation
+symbol's own definition. `from store.billing import pay` binds the module
+`store/billing/pay.py` even where it defines `pay`, so `pay.pay()` is the
+use, unless the package's `__init__.py` binds `pay` itself, which the
+statement then gets (`from .pay import pay`: the function). A method
+gets the uses through its class and the first parameter of its class's
+other methods, `self` or `cls`, apart from a static method's (`Used at:
+through the class and self only: ...`); calling a class is `(new)`; an annotation is `(type)`, a string annotation
 (`w: "Wallet"`) too, apart from the strings of `Literal[...]`, and the
 fields of an f-string are code. Where nothing tells which binding code
 reads, a statement's otherwise unused binding is no negative fact but

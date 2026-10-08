@@ -359,14 +359,29 @@ impl Pass<'_> {
                         }
                         for &e in &evidence {
                             let offered = self.offered(e);
-                            if offered.as_deref() == Some(taken) {
+                            let file = loaded(e);
+                            // `from shop import pay` takes the module
+                            // `shop/pay.py`, unless the package binds the
+                            // name itself: then what it binds
+                            let submodule = module_name(file).as_deref() == Some(taken)
+                                && !names_module(from, &read.path, file);
+                            let attribute = match submodule {
+                                true => match self.package_binds(file, taken) {
+                                    PackageBinding::Nothing => {
+                                        if let Some(offered) = offered {
+                                            let path = [&[offered], rest].concat();
+                                            bind(&mut bound, name, path, 1);
+                                        }
+                                        continue;
+                                    }
+                                    PackageBinding::Attribute(attribute) => attribute,
+                                    PackageBinding::Other => continue,
+                                },
+                                false => taken.to_owned(),
+                            };
+                            if offered.as_ref() == Some(&attribute) {
                                 bind(&mut bound, name, rest.to_vec(), 0);
-                            } else if module_name(loaded(e)).as_deref() == Some(taken) {
-                                // a submodule
-                                if let Some(offered) = offered {
-                                    bind(&mut bound, name, [&[offered], rest].concat(), 1);
-                                }
-                            } else if offered.is_none() && named == 1 {
+                            } else if offered.is_none() && named == 1 && !submodule {
                                 // the one name it takes leads to the symbol
                                 // under a name given on the way
                                 bind(&mut bound, name, rest.to_vec(), 0);
@@ -517,6 +532,95 @@ impl Pass<'_> {
             false => one(offered),
         }
     }
+
+    /// What the `__init__.py` of the package around the module `file`
+    /// binds `name`, the module's own name, to: `from package import name`
+    /// gets that before it would load the module.
+    fn package_binds(&self, file: &str, name: &str) -> PackageBinding {
+        let path = Path::new(file);
+        let module = match path.file_stem().and_then(|s| s.to_str()) {
+            Some("__init__") => path.parent(),
+            _ => Some(path),
+        };
+        let Some(package) = module.and_then(Path::parent) else {
+            return PackageBinding::Nothing;
+        };
+        let Ok(text) = std::fs::read_to_string(self.root.join(package).join("__init__.py")) else {
+            return PackageBinding::Nothing;
+        };
+        let source = scan_source(&text);
+        if source.module_names.contains(name) {
+            return PackageBinding::Other;
+        }
+        let mut binds = Vec::new();
+        for import in &source.imports {
+            if import.local || import.in_class || import.type_only {
+                continue;
+            }
+            for (taken, bound) in import.names.iter().zip(&import.bound) {
+                if bound == name {
+                    binds.push((import, taken));
+                }
+            }
+        }
+        match binds.as_slice() {
+            [] => PackageBinding::Nothing,
+            // `from . import pay`: the module itself
+            [(import, taken)] if import.module.is_empty() && *taken == name => {
+                PackageBinding::Nothing
+            }
+            // `from .pay import pay`: a name of the module
+            [(import, taken)]
+                if import.module.rsplit('.').next() == Some(name) && *taken != WHOLE_MODULE =>
+            {
+                PackageBinding::Attribute((*taken).clone())
+            }
+            _ => PackageBinding::Other,
+        }
+    }
+}
+
+/// What a package's `__init__.py` binds the name of a module below it to.
+enum PackageBinding {
+    /// Nothing else: the name holds the module.
+    Nothing,
+    /// That name of the module (`from .pay import pay`).
+    Attribute(String),
+    /// Something the pass does not follow.
+    Other,
+}
+
+/// Whether `file` is the module that the `from` statement in `importer`
+/// names (`shop/pay.py` for `from shop.pay import pay`, or for `from .pay
+/// import pay` in `shop/app.py`), rather than a module below it.
+fn names_module(from: &ast::StmtImportFrom, importer: &str, file: &str) -> bool {
+    let parts = |path: &Path| -> Vec<String> {
+        path.iter()
+            .map(|part| part.to_string_lossy().into_owned())
+            .collect()
+    };
+    let mut module = parts(&Path::new(file).with_extension(""));
+    if module.last().is_some_and(|part| part == "__init__") {
+        module.pop();
+    }
+    let named: Vec<String> = from
+        .module
+        .iter()
+        .flat_map(|m| m.as_str().split('.'))
+        .map(str::to_owned)
+        .collect();
+    if from.level == 0 {
+        return module.ends_with(&named);
+    }
+    // a relative name, from the importer's package
+    let mut base = Path::new(importer).parent().map(parts).unwrap_or_default();
+    for _ in 1..from.level {
+        if base.pop().is_none() {
+            return false;
+        }
+    }
+    base.extend(named);
+    module == base
 }
 
 /// The file whose names a statement's evidence takes: the first file a

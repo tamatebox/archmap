@@ -329,7 +329,8 @@ into the model in [graph.md](graph.md); how the commands present it is in
   directly, a helper reached only through a `sys.path` entry added at runtime that the scan does not
   read (pytest's `pythonpath`), or a module loaded by name (`pytest_plugins`).
 - `from pkg import name` where `pkg/name.py` exists takes that submodule whole, even when
-  `pkg/__init__.py` has `from .name import name`, which makes `pkg.name` the object it imports.
+  `pkg/__init__.py` has `from .name import name`, which makes `pkg.name` the object it imports;
+  `Used at` reads the `__init__.py` for that and finds the uses of the object.
 - Only `if TYPE_CHECKING:` and `if <module>.TYPE_CHECKING:` mark imports as types only: an import
   in the `else:` of `if not TYPE_CHECKING:`, under a condition that combines `TYPE_CHECKING` with
   others, or under an alias (`if TC:`) or `if MYPY:` counts as running.

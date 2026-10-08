@@ -459,6 +459,47 @@ fn a_package_that_wraps_a_name_it_imports_binds_it_again_rather_than_passing_it_
 }
 
 #[test]
+fn from_a_package_a_module_of_the_symbols_name_is_the_module_unless_the_package_binds_it() {
+    let project = Project::new(
+        "submodule",
+        &[
+            ("till/__init__.py", ""),
+            ("till/pay.py", "def pay(amount):\n    return amount\n"),
+            (
+                "till/app.py",
+                "from till import pay\n\n\ndef run():\n    return pay.pay(1)\n\n\n\
+                 def keep():\n    return [pay]\n",
+            ),
+            ("till/relative.py", "from . import pay\n\npay.pay(2)\n"),
+            // the module's name, not the module
+            ("till/named.py", "from .pay import pay\n\npay(3)\n"),
+            ("till/absolute.py", "from till.pay import pay\n\npay(4)\n"),
+            // a package that binds the name of its module to the function
+            ("till/fees/__init__.py", "from .levy import levy\n"),
+            (
+                "till/fees/levy.py",
+                "def levy(amount):\n    return amount\n",
+            ),
+            ("till/levied.py", "from till.fees import levy\n\nlevy(5)\n"),
+        ],
+    );
+    let pay = uses_of(&project.report, "pay");
+    assert_eq!(
+        shown(&pay),
+        [
+            "till/absolute.py:3:1 call via 1",
+            "till/app.py:5:16 call as pay.pay via 1",
+            "till/named.py:3:1 call via 1",
+            "till/relative.py:3:5 call as pay.pay via 1",
+        ]
+    );
+    // the module as a value
+    assert_eq!(places(&pay.escapes), ["till/app.py:9"]);
+    let levy = uses_of(&project.report, "levy");
+    assert_eq!(shown(&levy), ["till/levied.py:3:1 call via 1"]);
+}
+
+#[test]
 fn every_statement_read_ends_in_one_of_the_lists() {
     for name in [
         "python-uses",
