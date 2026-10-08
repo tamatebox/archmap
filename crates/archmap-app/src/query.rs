@@ -7,12 +7,13 @@ use std::collections::BTreeSet;
 use anyhow::{Context, Result};
 use archmap_core::{
     ArchitectureGraph, Component, ComponentId, ComponentKind, Edge, EdgeKind, Evidence, Symbol,
-    SymbolUses, UnreadReason, WHOLE_MODULE,
+    SymbolKind, SymbolUses, UnreadReason, WHOLE_MODULE,
 };
 
 use crate::co_change::Changed;
 use crate::not_traced::{
     holds_global, not_traced, with_uses, EnvGaps, NotTraced, Own, Place, Spot, Spots, Subject,
+    TRAIT_VALUES, VALUES,
 };
 use crate::resolve::{imports_subpath, resolve, Resolved};
 use crate::target::{component_file, fold, namesakes, reject_outside, unquote, AtDepth};
@@ -346,7 +347,7 @@ fn package_name_view<'a>(
         }),
         ..NotTraced::default()
     });
-    not_traced = with_uses(not_traced, &used_at, false);
+    not_traced = with_uses(not_traced, &used_at, None);
     PackageNameView {
         requested,
         depth,
@@ -433,7 +434,7 @@ fn symbol_view<'a>(
     let used_at = uses_of(full, report, symbol);
     let instance_method = used_at.is_some() && instance_method(symbol);
     if let Some(found) = &used_at {
-        not_traced = with_uses(not_traced, found, instance_method);
+        not_traced = with_uses(not_traced, found, values_note(symbol));
     }
     SymbolView {
         symbol,
@@ -501,6 +502,20 @@ pub(crate) fn instance_method(symbol: &Symbol) -> bool {
         // Rust `Type::method` whose first parameter is `self`
         (_, true) => archmap_scan::takes_self(signature),
         _ => false,
+    }
+}
+
+/// What `Not traced` says of the calls through values the uses pass does
+/// not read for `symbol`: those of a method that takes a value, or of a
+/// trait's methods, which values of the types that implement it call where
+/// a statement brings it into scope.
+pub(crate) fn values_note(symbol: &Symbol) -> Option<&'static str> {
+    if instance_method(symbol) {
+        Some(VALUES)
+    } else if symbol.kind == SymbolKind::Trait {
+        Some(TRAIT_VALUES)
+    } else {
+        None
     }
 }
 

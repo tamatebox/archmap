@@ -15,7 +15,7 @@ use crate::not_traced::{
     barrels, declares_global, holds_global, not_traced, routes, with_uses, EnvGaps, Narrowed,
     NotTraced, Own, Place, Subject,
 };
-use crate::query::{instance_method, package_name_statements, uses_of};
+use crate::query::{instance_method, package_name_statements, uses_of, values_note};
 use crate::resolve::{imports_subpath, resolve, Resolved};
 use crate::target::{component_file, fold, namesakes, reject_outside, unquote};
 use crate::views::{
@@ -226,7 +226,7 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
                 .collect();
             let mut result =
                 importers_impact(full, &ws.report, depth, target, &named, &taking, caps);
-            result.not_traced = with_uses(result.not_traced, &uses, false);
+            result.not_traced = with_uses(result.not_traced, &uses, None);
             result.used_at = Some(uses);
             result.unnamed = unnamed;
             result.about = About::PackageName(package, name);
@@ -454,7 +454,11 @@ fn impact(ws: &Workspace, request: &ImpactRequest) -> Result<Answer> {
         _ => false,
     };
     if let Some(uses) = &used_at {
-        not_traced = with_uses(not_traced, uses, instance);
+        let values = match &traced {
+            Traced::Symbol(symbol) => values_note(symbol),
+            _ => None,
+        };
+        not_traced = with_uses(not_traced, uses, values);
     }
     // the barrels past which the reach went on by names only
     let narrowed = match &traced {

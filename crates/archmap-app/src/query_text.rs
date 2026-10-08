@@ -14,7 +14,7 @@ use archmap_core::{
     UnmappedReason, UseRole, WHOLE_MODULE,
 };
 
-use crate::not_traced::{NotTraced, Spots};
+use crate::not_traced::{NotTraced, Spots, TRAIT_VALUES};
 use crate::pairs::{Counted, Pairs};
 
 use crate::views::{
@@ -1556,12 +1556,15 @@ pub(crate) fn not_traced(
                 })
                 .collect();
             truncated |= places.len() < v.total;
-            let _ = write!(
-                line,
-                "; {} of the type or its module may make them: {}",
-                plural(v.total, "import"),
-                with_more(&places, v.total)
-            );
+            let imports = plural(v.total, "import");
+            let places = with_more(&places, v.total);
+            let _ = match v.note {
+                TRAIT_VALUES => write!(line, "; brought into scope by {imports}: {places}"),
+                _ => write!(
+                    line,
+                    "; {imports} of the type or its module may make them: {places}"
+                ),
+            };
         }
         lines.push(line);
     }

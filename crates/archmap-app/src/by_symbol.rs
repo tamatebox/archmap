@@ -5,11 +5,11 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use anyhow::{bail, Result};
-use archmap_core::{Edge, Evidence, Symbol, SymbolUses};
+use archmap_core::{Edge, Evidence, Symbol, SymbolKind, SymbolUses};
 use serde::Serialize;
 
 use crate::not_traced::{with_uses, NotTraced};
-use crate::query::{file_view, instance_method, uses_of};
+use crate::query::{file_view, instance_method, uses_of, values_note};
 use crate::query_text::{
     count, file_head, marks, not_traced, plural, with_more, MAX_LOCATIONS, NOT_TRACED,
 };
@@ -115,7 +115,7 @@ fn by_symbol(ws: &Workspace, request: &BySymbolRequest) -> Result<Answer> {
             };
             let not_traced = used_at
                 .as_ref()
-                .and_then(|uses| with_uses(None, uses, instance_method(symbol)));
+                .and_then(|uses| with_uses(None, uses, values_note(symbol)));
             Row {
                 symbol,
                 imported_by,
@@ -239,6 +239,9 @@ fn text(out: &mut String, view: &BySymbolView, file: &str, cap: usize) -> bool {
             parts.push(format!("may use {}", row.may_use.len()));
         }
         if let Some(uses) = &row.used_at {
+            // a trait that statements bring into scope, whose methods values
+            // may call
+            let in_scope = row.symbol.kind == SymbolKind::Trait && !uses.values.is_empty();
             let files: BTreeSet<&str> =
                 uses.uses.iter().map(|u| u.evidence.file.as_str()).collect();
             let own = uses.uses.iter().filter(|u| u.evidence.file == file).count();
@@ -256,12 +259,15 @@ fn text(out: &mut String, view: &BySymbolView, file: &str, cap: usize) -> bool {
                     let _ = write!(part, ", {own} in this file");
                 }
                 parts.push(part);
-            } else if !parts.is_empty() && !instance_method(row.symbol) {
+            } else if !parts.is_empty() && !instance_method(row.symbol) && !in_scope {
                 parts.push("no use found".to_owned());
             }
-            // what the uses pass reads of a method that takes a value
+            // what the uses pass reads of a method that takes a value, and
+            // of a trait's methods where statements bring it into scope
             if instance_method(row.symbol) {
                 parts.push("calls through a value are not read".to_owned());
+            } else if in_scope {
+                parts.push("calls of its methods through values are not read".to_owned());
             }
         }
         let line = if parts.is_empty() {

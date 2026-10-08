@@ -386,6 +386,11 @@ pub(crate) fn barrels(
 pub(crate) const VALUES: &str =
     "calls through a value of the type (x.m()) need its type, which is not read";
 
+/// What a `values` line says of a Rust trait, whose methods values of the
+/// types that implement it call where a `use` brings it into scope.
+pub(crate) const TRAIT_VALUES: &str =
+    "calls of its methods through values of the types that implement it are not read";
+
 #[derive(Debug, Serialize)]
 pub(crate) struct Values {
     pub(crate) note: &'static str,
@@ -431,11 +436,13 @@ pub(crate) struct UnreadSpot {
 
 /// `found` with what the uses pass for a symbol could not follow: the
 /// places its module escapes, the names it is passed on as, the files not
-/// read, and for a method that is not static, the calls through values.
+/// read, and the calls through values that `values` names (see
+/// [`crate::query::values_note`]): of a method that is not static, or of a
+/// trait's methods where statements bring it into scope.
 pub(crate) fn with_uses(
     found: Option<NotTraced>,
     uses: &SymbolUses,
-    instance_method: bool,
+    values: Option<&'static str>,
 ) -> Option<NotTraced> {
     let mut found = found.unwrap_or_default();
     // a string that names the symbol, or a static member's class used as
@@ -486,7 +493,9 @@ pub(crate) fn with_uses(
                 .collect(),
         });
     }
-    if instance_method {
+    // a method that takes a value always says so, a trait only where
+    // statements bring it into scope
+    if let Some(note) = values.filter(|&note| note == VALUES || !uses.values.is_empty()) {
         let mut spots: Vec<Spot> = uses
             .values
             .iter()
@@ -500,7 +509,7 @@ pub(crate) fn with_uses(
         // two statements on one line are one place
         spots.dedup_by(|a, b| a.file == b.file && a.line == b.line);
         found.values = Some(Values {
-            note: VALUES,
+            note,
             total: spots.len(),
             shown: spots,
         });

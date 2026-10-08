@@ -153,7 +153,9 @@ symbol of it, in source order, with how many statements take it by name
 (`imported by 2, 1 in tests`), how many take its file whole (`may use 1`)
 and where it is used, read as for `query <symbol>` (`used at 4 in 3 files,
 1 in tests, 1 in this file`), `no use found` when statements take it and
-no use was read, or `none found` when nothing takes or uses it; a capped
+no use was read (for a trait that statements bring into scope, that calls
+of its methods through values are not read), or `none found` when nothing
+takes or uses it; a capped
 list says how many of the rest are `none found`, and a method that takes a
 value says its calls through a value are not read. `Not traced` gives what
 `query <file>` gives there, that the file is a script too, then what
@@ -428,7 +430,8 @@ type, where an `impl` of it or a bound names it (`T: Method`, a `where`
 clause, `dyn Method`, `impl Method`, a supertrait); a statement that brings
 it into scope (`use crate::method::Method as _;`, a glob) without such a
 use is no negative fact but `values`, since values of the types that
-implement it call its methods (`card.fee()`) unseen. A method taking `self`
+implement it call its methods (`card.fee()`) unseen, and `Not traced` lists
+them (`brought into scope by N imports`). A method taking `self`
 gets the uses through its type and `self` (`Used at: through the type and
 self only: ...`): `self.m()`, `Self::m()`, `Type::m()`. A file whose text
 changed since the scan is not read (`changed since the scan`).
@@ -997,7 +1000,8 @@ target's own imports without an edge stay under `Not mapped`.
   read, with why.
 - `values`: for a method that is not static, what reading calls through a
   value of its type needs, and the statements that bind its class without
-  another use read.
+  another use read; for a Rust trait, the statements that bring it into
+  scope without another use read, whose methods values may call.
 - `subclasses`: for a class member, the places that extend its class, whose
   calls through a subclass are not read.
 - `barrels`: for `impact`, the re-exports past which it follows only what

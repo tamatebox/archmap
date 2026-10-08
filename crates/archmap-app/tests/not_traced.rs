@@ -3,7 +3,9 @@
 
 use std::path::{Path, PathBuf};
 
-use archmap_app::{Format, ImpactRequest, QueryRequest, ScanMode, Workspace, DEFAULT_DEPTH};
+use archmap_app::{
+    BySymbolRequest, Format, ImpactRequest, QueryRequest, ScanMode, Workspace, DEFAULT_DEPTH,
+};
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -584,4 +586,34 @@ fn a_static_member_names_where_its_class_is_used_as_a_value() {
         impact["tests"]["files"][0]["file"], "tests/boot.test.ts",
         "{impact}"
     );
+}
+
+#[test]
+fn a_rust_trait_lists_the_statements_that_bring_it_into_scope() {
+    // `use crate::method::Method as _;` lets `card.fee()` call it unseen;
+    // `use crate::method;` binds the module whole and calls only `flat`
+    let ws = scan(&fixture("rust-uses"));
+    let text = query(&ws, "wallet::method::Method", Format::Text);
+    assert!(
+        text.contains(
+            "  values: calls of its methods through values of the types that implement it \
+             are not read; brought into scope by 1 import: wallet/src/fees.rs:3\n"
+        ),
+        "{text}"
+    );
+    let rows = ws
+        .by_symbol(&BySymbolRequest {
+            target: "wallet/src/method.rs",
+            depth: DEFAULT_DEPTH,
+            format: Format::Text,
+            verbose: false,
+        })
+        .unwrap()
+        .output;
+    assert!(
+        rows.contains("Method  imported by 3; may use 1; used at 6 in 2 files; calls of its methods through values are not read"),
+        "{rows}"
+    );
+    let impact = impact(&ws, "wallet::method::Method");
+    assert_eq!(impact["not_traced"]["values"]["total"], 1, "{impact}");
 }
