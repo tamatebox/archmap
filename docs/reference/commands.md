@@ -435,12 +435,15 @@ package's `__init__.py` passes the symbol on as, renamed or not, a star
 import of a module whose `__all__` lists it (or that has none), or the
 symbol's own definition. `from store.billing import pay` binds the module
 `store/billing/pay.py` even where it defines `pay`, so `pay.pay()` is the
-use, unless the package's `__init__.py` binds `pay` itself, which the
-statement then gets (`from .pay import pay`: the function). A method
-gets the uses through its class and the first parameter of its class's
-other methods, `self` or `cls`, apart from a static method's (`Used at:
-through the class and self only: ...`); calling a class is `(new)`; an annotation is `(type)`, a string annotation
-(`w: "Wallet"`) too, apart from the strings of `Literal[...]`, and the
+use, unless the package's `__init__.py` binds `pay` itself: `from .pay
+import pay` there makes it the function, which the statement then gets,
+another binding there (`pay = ..`, `from store.billing import pay`) leaves the
+statement `no path to the symbol`, and a star import or a module
+`__getattr__` there is not read as one. A method gets the uses through its
+class and the first parameter of its class's other methods, `self` or
+`cls`, apart from a static method's (`Used at: through the class and self
+only: ...`); calling a class is `(new)`; an annotation is `(type)`, a
+string annotation (`w: "Wallet"`) too, apart from the strings of `Literal[...]`, and the
 fields of an f-string are code. Where nothing tells which binding code
 reads, a statement's otherwise unused binding is no negative fact but
 `unread`: a name its scope binds again (an import and a later `def` of the
@@ -467,7 +470,10 @@ or the module bound whole), so its statement is `passed_on`, never `never
 used`, unless the module binds the name again, as a package's
 `__init__.py` that wraps what it imports does (`pay = traced(pay)`): what
 it offers is then the other binding, so the statement is `name bound
-again`. A module bound
+again`; one in a module that reaches names by computed ones is `names
+reached dynamically`, and an import a function makes for the module
+(`global pay`) is no relay, since it binds only when the function runs. A
+module bound
 whole that the code passes as a value or reads a dunder of
 (`charge.__dict__`) is a `whole module` place in `Not traced`, and a string
 that names the symbol by its module's dotted path

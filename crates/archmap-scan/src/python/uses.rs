@@ -275,25 +275,33 @@ impl Pass<'_> {
             let package = read.path == "__init__.py" || read.path.ends_with("/__init__.py");
             let taken = self.imported.get(read.path.as_str());
             let takes = |name: &str| taken.is_some_and(|names| names.contains(name));
-            let offers = walker.bindings.iter().any(|b| {
-                b.line == Some(line)
-                    && b.scope.is_none()
-                    && (package
-                        || read.lists(&b.name)
-                        || takes(&b.name)
-                        || takes(WHOLE_MODULE)
-                        || b.star && taken.is_some() && read.exports(&b.name))
-            });
+            // an import a function makes for the module (`global pay`) binds
+            // only when the function runs, and its evidence leads no other
+            // file on by name, so it is no relay
+            let at_load = evidence
+                .iter()
+                .all(|e| e.scope != Some(archmap_core::Scope::Local));
+            let offers = at_load
+                && walker.bindings.iter().any(|b| {
+                    b.line == Some(line)
+                        && b.scope.is_none()
+                        && (package
+                            || read.lists(&b.name)
+                            || takes(&b.name)
+                            || takes(WHOLE_MODULE)
+                            || b.star && taken.is_some() && read.exports(&b.name))
+                });
+            // what the module offers by the name may be another binding,
+            // which its own code made (`pay = traced(pay)`) or reaches by a
+            // computed name, before it is the import passed on
             if walker.rebound.contains(&line) {
-                // what the module offers by the name may be another
-                // binding, which its own code made (`pay = traced(pay)`)
                 out.unread.push(unread(UnreadReason::Rebound));
-            } else if offers || evidence.iter().any(|e| e.passes_on()) {
-                out.passed_on.push(first.clone());
             } else if read.syntax_error {
                 out.unread.push(unread(UnreadReason::ParseError));
             } else if walker.dynamic || may_bind.contains(&line) {
                 out.unread.push(unread(UnreadReason::DynamicAccess));
+            } else if offers || evidence.iter().any(|e| e.passes_on()) {
+                out.passed_on.push(first.clone());
             } else if target.tail.len() == 2 {
                 // values or subclasses of the class may reach the method
                 out.values.push(first.clone());

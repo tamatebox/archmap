@@ -459,6 +459,38 @@ fn a_package_that_wraps_a_name_it_imports_binds_it_again_rather_than_passing_it_
 }
 
 #[test]
+fn a_module_passes_a_name_on_only_where_nothing_reaches_it_by_another_way() {
+    let project = Project::new(
+        "relays",
+        &[
+            ("till/__init__.py", ""),
+            ("till/wallet.py", "def pay(amount):\n    return amount\n"),
+            // its own code may call it by a computed name
+            (
+                "till/api.py",
+                "from till.wallet import pay\n\n\n\
+                 def checkout(name):\n    return globals()[name](1)\n",
+            ),
+            ("till/app.py", "from till.api import pay\n"),
+            // a function binds it for the module, only when it runs
+            (
+                "till/lazy.py",
+                "def load():\n    global pay\n    from till.wallet import pay\n\n\nload()\n",
+            ),
+            ("till/shop.py", "from till.lazy import pay\n\npay(1)\n"),
+        ],
+    );
+    let pay = uses_of(&project.report, "pay");
+    assert!(pay.passed_on.is_empty(), "{:#?}", pay.passed_on);
+    assert_eq!(
+        unread(&pay),
+        [("till/api.py".into(), Some(1), UnreadReason::DynamicAccess)]
+    );
+    // app.py takes it and calls nothing
+    assert_eq!(places(&pay.unused), ["till/app.py:1", "till/lazy.py:3"]);
+}
+
+#[test]
 fn from_a_package_a_module_of_the_symbols_name_is_the_module_unless_the_package_binds_it() {
     let project = Project::new(
         "submodule",

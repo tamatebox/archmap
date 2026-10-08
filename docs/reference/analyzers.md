@@ -274,11 +274,12 @@ into the model in [graph.md](graph.md); how the commands present it is in
   can hold a secret
 - source files are scanned structurally line by line, not parsed; function bodies are read only for
   imports; a `conftest.py` is also parsed with Ruff's parser (below) to read what it adds to `sys.path`
-- on demand, for the one symbol that `query` asks about, the file that defines it and the files of the
-  statements that import it are parsed with Ruff's parser (`ruff_python_parser`, pinned to an exact
-  version, since it is published as an internal component of Ruff), and each name in them is resolved
-  with Python's scope rules (`Used at`, see [commands.md](commands.md#query)); a file over 4 MB is not
-  parsed. A call that names its module with a literal binds that module as an import does: to the
+- on demand, for the one symbol that `query` asks about, the file that defines it, the files of the
+  statements that import it, and the `__init__.py` of a package whose module a `from` import names
+  by the module's own name (`from shop import pay` beside `shop/pay.py`) are parsed with Ruff's
+  parser (`ruff_python_parser`, pinned to an exact version, since it is published as an internal
+  component of Ruff), and each name in them is resolved with Python's scope rules (`Used at`, see
+  [commands.md](commands.md#query)); a file over 4 MB is not parsed. A call that names its module with a literal binds that module as an import does: to the
   name a statement assigns its value to (`m = import_module("shop.mail")`), or as the call itself
   (`import_module("shop.mail").send()`), `__import__` the package its name starts with; one whose
   value goes on (returned, an argument) uses the module as a value, and one standing alone names
@@ -306,7 +307,9 @@ into the model in [graph.md](graph.md); how the commands present it is in
   or whose `__all__` is built at runtime (`__all__ += other.__all__`), is no barrel for a file target,
   since it may use what it imports: `impact` on the file goes on from it file by file, to every
   importer of it and whatever imports a module below it. For a symbol, the uses pass reads it, and
-  one whose code never uses the name is a barrel for that symbol. One that lists a name it imports only for what loading its module registers (a
+  one whose code never uses the name is a barrel for that symbol, as is any module whose
+  module-level import of the name another file takes it from, unless the module binds the name
+  again, reaches names by computed ones, or binds it only in a function (`global pay`). One that lists a name it imports only for what loading its module registers (a
   class a decorator adds to a registry) passes it on all the same, so what uses the registry through
   the package is not reached from a change to that module, and the `__init__.py` shows only in
   `impact`'s `barrels:` line.
