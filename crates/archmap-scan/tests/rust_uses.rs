@@ -203,6 +203,32 @@ fn an_item_of_the_same_name_in_an_inline_module_is_another() {
 }
 
 #[test]
+fn a_trait_is_used_where_it_is_implemented_and_bound() {
+    let report = report();
+    let found = uses_of(&report, "wallet::method::Method");
+    assert_eq!(
+        shown(&found),
+        [
+            // `impl Method for Card`, `T: Method`, `dyn Method`, `impl
+            // Method` and a `where` clause
+            "wallet/src/card.rs:5:6 type via 1",
+            "wallet/src/card.rs:11:17 type via 1",
+            "wallet/src/card.rs:15:27 type via 1",
+            "wallet/src/card.rs:19:25 type via 1",
+            "wallet/src/card.rs:25:8 type via 1",
+            // through a glob
+            "wallet/src/cash.rs:6:6 type via 1",
+        ],
+        "{:#?}",
+        shown(&found)
+    );
+    // a `use` that brings it into scope lets values call its methods
+    // unseen; the module bound whole does not
+    assert_eq!(places(&found.values), ["wallet/src/fees.rs:3"]);
+    assert_eq!(places(&found.unused), ["wallet/src/fees.rs:2"]);
+}
+
+#[test]
 fn every_listed_statement_ends_in_one_of_the_lists() {
     let report = report();
     let graph = &report.graph;

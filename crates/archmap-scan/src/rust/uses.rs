@@ -40,6 +40,9 @@ struct Target {
     /// A constant or a struct: a plain name in a pattern that reaches it
     /// is a path pattern, no binding.
     pattern: bool,
+    /// A trait: values call its methods (`card.fee()`) where a `use` brings
+    /// it into scope, which no path shows.
+    trait_item: bool,
 }
 
 /// Read the uses of the Rust `symbol` into `out`. `statements` are those
@@ -112,7 +115,7 @@ pub(crate) fn read(
         walker.visit_file(&parsed);
         uses.extend(walker.uses);
     }
-    end_statements(index, &target, statements, &uses, out);
+    end_statements(index, &target, &names, statements, &uses, out);
     out.uses.extend(uses);
     for found in &mut out.uses {
         if found.binding.as_deref() == Some(symbol.name.as_str()) {
@@ -208,6 +211,7 @@ fn target(index: &Index, resolver: &Resolver, symbol: &Symbol) -> Option<Target>
     let instance = member.is_some() && symbol.signature.as_deref().is_some_and(takes_self);
     let pattern =
         member.is_none() && matches!(symbol.kind, SymbolKind::Constant | SymbolKind::Struct);
+    let trait_item = member.is_none() && symbol.kind == SymbolKind::Trait;
     Some(Target {
         file,
         module,
@@ -215,6 +219,7 @@ fn target(index: &Index, resolver: &Resolver, symbol: &Symbol) -> Option<Target>
         member,
         instance,
         pattern,
+        trait_item,
     })
 }
 
@@ -321,11 +326,12 @@ fn nodes_of(index: &Index, file: usize, module: usize) -> Vec<usize> {
 }
 
 /// Every statement `query` listed ends in one list: a use through it, a
-/// re-export that only passes the symbol on, a value of a method's type,
-/// or never used.
+/// re-export that only passes the symbol on, a value of a method's type or
+/// of a trait's implementors, or never used. `names` are the target's.
 fn end_statements(
     index: &Index,
     target: &Target,
+    names: &BTreeSet<String>,
     statements: &[&Evidence],
     uses: &[SymbolUse],
     out: &mut SymbolUses,
@@ -350,17 +356,29 @@ fn end_statements(
         if ended {
             continue;
         }
-        let reexport = file_index(index, &statement.file).is_some_and(|f| {
-            index.files[f]
-                .parsed
-                .modules
-                .iter()
-                .flat_map(|m| &m.uses)
-                .any(|d| d.line == line && d.reexport)
-        });
-        if reexport {
+        let decls: Vec<&UseDecl> = file_index(index, &statement.file)
+            .map(|f| {
+                index.files[f]
+                    .parsed
+                    .modules
+                    .iter()
+                    .flat_map(|m| &m.uses)
+                    .filter(|d| d.line == line)
+                    .collect()
+            })
+            .unwrap_or_default();
+        // a glob or a `use` of the trait itself (`as _` too) may bring it
+        // into scope for calls through values; a module bound whole does
+        // not, and a path in code names what it uses
+        let in_scope = target.trait_item
+            && word != "path"
+            && (decls.is_empty()
+                || decls
+                    .iter()
+                    .any(|d| d.glob || d.path.last().is_some_and(|n| names.contains(n))));
+        if decls.iter().any(|d| d.reexport) {
             out.passed_on.push((*statement).clone());
-        } else if target.instance {
+        } else if target.instance || in_scope {
             out.values.push((*statement).clone());
         } else {
             out.unused.push((*statement).clone());
@@ -876,7 +894,14 @@ impl<'ast> Visit<'ast> for Walker<'_> {
                 };
                 // `Self` is the type in an impl of a trait for it too
                 let outer = std::mem::replace(&mut w.in_impl, of_target);
-                visit::visit_item_impl(w, imp);
+                w.visit_generics(&imp.generics);
+                // the trait it implements
+                if let Some((_, path, _)) = &imp.trait_ {
+                    w.path(path, UseRole::Type, false);
+                    w.arguments(path);
+                }
+                w.visit_type(&imp.self_ty);
+                imp.items.iter().for_each(|i| w.visit_impl_item(i));
                 w.in_impl = outer;
             })
         });
@@ -1031,6 +1056,13 @@ impl<'ast> Visit<'ast> for Walker<'_> {
             }
         }
         self.arguments(&t.path);
+    }
+
+    /// A trait in a bound (`T: Method`, `where`, `dyn Method`, `impl
+    /// Method`, a supertrait).
+    fn visit_trait_bound(&mut self, b: &'ast syn::TraitBound) {
+        self.path(&b.path, UseRole::Type, false);
+        self.arguments(&b.path);
     }
 
     fn visit_pat_tuple_struct(&mut self, p: &'ast syn::PatTupleStruct) {

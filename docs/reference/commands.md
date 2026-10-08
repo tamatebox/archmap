@@ -398,7 +398,8 @@ statement it goes through (`uses`), and the statements that end otherwise:
 `unused`, `escapes` (noted `class` where a static member's class is used
 as a value), `renamed` (passed on under another name), `passed_on`
 (only re-exported), `values` (a
-member's class bound, which values or subclasses may reach it through),
+member's class bound, which values or subclasses may reach it through, or
+a Rust trait brought into scope, whose methods values call),
 `subclasses`, `mocked` and `unread`.
 In Rust, each path in code is resolved where it is written, in the
 module that encloses it, by the resolver the scan built (inline modules,
@@ -422,7 +423,12 @@ alone in a pattern is a use. The file that defines the symbol and every
 file of its crate are read as well as the importers, since unit tests
 import nothing from their own crate, and only those that hold one of its
 names are parsed. Inside an `impl` of a type, its own or a trait's,
-`Self { .. }` and `Self(..)` are uses of the type. A method taking `self`
+`Self { .. }` and `Self(..)` are uses of the type. A trait is used, as a
+type, where an `impl` of it or a bound names it (`T: Method`, a `where`
+clause, `dyn Method`, `impl Method`, a supertrait); a statement that brings
+it into scope (`use crate::method::Method as _;`, a glob) without such a
+use is no negative fact but `values`, since values of the types that
+implement it call its methods (`card.fee()`) unseen. A method taking `self`
 gets the uses through its type and `self` (`Used at: through the type and
 self only: ...`): `self.m()`, `Self::m()`, `Type::m()`. A file whose text
 changed since the scan is not read (`changed since the scan`).

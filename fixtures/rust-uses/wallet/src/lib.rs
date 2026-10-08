@@ -22,3 +22,8 @@ mod tests {
         assert_eq!(parse("1"), 1);
     }
 }
+
+pub mod card;
+pub mod cash;
+pub mod fees;
+pub mod method;

@@ -783,6 +783,45 @@ fn a_rust_file_whose_macro_rules_body_may_use_the_symbol_stays_in_the_reach() {
 }
 
 #[test]
+fn a_rust_trait_reaches_what_implements_it_through_a_glob() {
+    let files: Vec<(String, String)> = [
+        (
+            "Cargo.toml",
+            "[package]\nname = \"pay\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        ("src/lib.rs", "pub mod card;\npub mod method;\n"),
+        (
+            "src/method.rs",
+            "pub trait Method {\n    fn fee(&self) -> u32;\n}\n\npub fn flat() -> u32 {\n    1\n}\n",
+        ),
+        (
+            "src/card.rs",
+            "use crate::method::*;\n\npub struct Card;\n\nimpl Method for Card {\n    fn fee(&self) -> u32 {\n        flat()\n    }\n}\n",
+        ),
+        (
+            "tests/t.rs",
+            "use pay::card::Card;\n\n#[test]\nfn makes() {\n    let _ = Card;\n}\n",
+        ),
+    ]
+    .into_iter()
+    .map(|(file, text)| (file.to_owned(), text.to_owned()))
+    .collect();
+    let repo = Repo::new("rust-trait-glob", &files);
+    let out = text(&scan(&repo.0), "pay::method::Method");
+    assert!(!out.contains("left out of the reach"), "{out}");
+    assert_eq!(
+        section(&out, "Used at: 1 in 1 file (1 type)"),
+        ["  src/card.rs:5 (type)"],
+        "{out}"
+    );
+    assert_eq!(
+        section(&out, "Tests to run again: 1"),
+        ["  tests/t.rs (through src/card.rs)"],
+        "{out}"
+    );
+}
+
+#[test]
 fn a_python_package_that_only_relays_a_symbol_leads_on_by_its_name() {
     let files = |init: &str| -> Vec<(String, String)> {
         [

@@ -119,11 +119,12 @@ into the model in [graph.md](graph.md); how the commands present it is in
 
 ### Rust known gaps
 
-- `Used at` does not read a method called through a value of its type (`x.weight()`), through a
-  trait (`<Edge as Trait>::m`, `Trait::m(&x)`), an item named inside a string (`println!("{MAX}")`
-  captures `MAX`), or code in doc comments, which `cargo test` runs as doc tests; a struct's or an
-  enum's generic parameters that shadow a type's name are not told apart, and a macro whose
-  arguments are not code stays under `Not traced` (`macros`).
+- `Used at` does not read a method called through a value of its type (`x.weight()`), a trait's
+  method called through a value (`card.fee()`, so a `use` that only brings the trait into scope is
+  under `values`), a method called through a trait (`<Edge as Trait>::m`, `Trait::m(&x)`), an item
+  named inside a string (`println!("{MAX}")` captures `MAX`), or code in doc comments, which `cargo
+  test` runs as doc tests; a struct's or an enum's generic parameters that shadow a type's name are
+  not told apart, and a macro whose arguments are not code stays under `Not traced` (`macros`).
 
 - The arguments of a macro call that are neither expressions, an expression and a pattern, nor
   items (`json!({ .. })`, a DSL), those of a macro whose arguments are no code of the calling
