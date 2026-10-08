@@ -446,7 +446,10 @@ pay as settle`), a module bound whole (`charge.pay`,
 `store.billing.charge.pay`, `from store.billing import charge`), the name a
 package's `__init__.py` passes the symbol on as, renamed or not, a star
 import of a module whose `__all__` lists it (or that has none), or the
-symbol's own definition. `from store.billing import pay` binds the module
+symbol's own definition. A call to `import_module` or `__import__` that
+names its module with a literal binds it as an import does (`m =
+import_module("store.billing.charge")`, then `m.pay()`). `from
+store.billing import pay` binds the module
 `store/billing/pay.py` even where it defines `pay`, so `pay.pay()` is the
 use, unless the package's `__init__.py` binds `pay` itself: `from .pay
 import pay` there makes it the function, which the statement then gets,

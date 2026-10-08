@@ -414,7 +414,6 @@ impl<'g> Pass<'g, '_> {
         }
     }
 
-    /// The bindings one statement makes for the symbol, followed.
     /// The bindings one statement makes for the symbol, followed. Every
     /// statement ends somewhere: in a use, an escape, `renamed`,
     /// `passed_on`, `unused` or `unread`.
@@ -829,9 +828,6 @@ fn aliases(body: &[Statement], local: &str, exported: &str) -> Vec<String> {
     aliases
 }
 
-/// Follow every reference to a binding along `rests`, the paths from it to
-/// the symbol (`[]`: the binding is the symbol). Returns whether a reference
-/// passes the binding on, by an export, rather than using it.
 /// The binding of `name` in a top-level `declare global` of the file, which
 /// the code inside the block resolves to.
 fn in_declare_global(read: &Read, name: &str) -> Option<SymbolId> {
@@ -898,6 +894,9 @@ fn global_members(read: &Read, name: &str, uses: &mut Vec<SymbolUse>) {
     }
 }
 
+/// Follow every reference to a binding along `rests`, the paths from it to
+/// the symbol (`[]`: the binding is the symbol). Returns whether a reference
+/// passes the binding on, by an export, rather than using it.
 fn follow_binding(
     read: &Read,
     symbol: SymbolId,

@@ -56,8 +56,10 @@ pub struct SymbolUse {
     /// `import { formatPrice as fp }`, `m.formatPrice`, `this.pay`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binding: Option<String>,
-    /// The import statement whose binding the use goes through; none in the
-    /// file that defines the symbol.
+    /// The import statement whose binding the use goes through; none for a
+    /// use through the symbol's own definition, while a statement of the
+    /// defining file that imports its own items (a Rust `mod tests { use
+    /// super::*; }`) is one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub statement: Option<ImportPlace>,
 }
@@ -86,8 +88,8 @@ impl PartialOrd for SymbolUse {
     }
 }
 
-/// A statement that passes the symbol on under another name: what takes
-/// that name is not among the uses.
+/// A statement that passes the symbol on under another name; the uses
+/// through that name are read where its importers take it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Renamed {
     pub evidence: Evidence,
