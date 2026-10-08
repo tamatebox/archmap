@@ -159,7 +159,7 @@ value says its calls through a value are not read. `Not traced` gives what
 `query <file>` gives there, that the file is a script too, then what
 `query <symbol>` gives there for each symbol listed (`whole module`,
 `uses`, `subclasses`, `values`, ...), each line once under the symbols it
-holds for (`formatPrice, Wallet, +6 more:`). It runs the uses pass for
+holds for (`formatPrice, Wallet, Wallet.open, +5 more:`). It runs the uses pass for
 every symbol, on up to 8 threads, and takes no `--snapshot`. JSON gives
 each symbol with its statements, `used_at` and `not_traced`, and the
 file's `not_traced`.
@@ -325,8 +325,8 @@ whole; where a module is one declaration, `module.exports = logger` or
 `export = Engine`, a binding of it whole is that declaration, so
 `logger.info()` after `const logger = require('./logger')` uses `logger`,
 as do `import { info } from './logger'` and `typeof
-import('./logger').info` where they take the member, and `Engine.boot()` after `import Engine = require('./engine')` uses
-`Engine.boot`), through a static member of a module bound whole (`m.formatPrice`,
+import('./logger').info` where they take the member, and `Engine.boot()`
+after `import Engine = require('./engine')` uses `Engine.boot`), through a static member of a module bound whole (`m.formatPrice`,
 `m['formatPrice']`, `(m as any).formatPrice`), through the names a barrel
 or the defining file passes the symbol on as, renamed or not, and the
 namespaces a barrel passes on (`money.formatPrice`), or to the symbol's own
@@ -382,10 +382,10 @@ member, `Not traced` names the places that extend its class
 a file that extends the class is never `never used` either. For a static
 member, it names the places that use its class as a value (`class values`:
 `make(Wallet)`, `const W = Wallet`, `Wallet[key]`, `make(m.Wallet)`), where
-code may call the member through it unseen; constructing the class, an
-`instanceof` and a type name call no static member and count for nothing,
-and a statement whose class is used that way is never `never used`. `Not traced` also names the
-places that use the symbol's module as a value (`whole module`: passed as an
+code may call the member through it unseen, so a statement whose class is
+used as a value is never `never used`; constructing the class, an
+`instanceof` and a type name call no static member and count for nothing.
+`Not traced` also names the places that use the symbol's module as a value (`whole module`: passed as an
 argument, `ns[key]`, the promise of an `import()` not awaited), which may use
 it unseen; and the statements whose
 uses were not read, with why (`uses`): two statements on one line that load
