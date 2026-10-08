@@ -742,11 +742,13 @@ pub(super) enum Ns {
 
 /// The `use` declarations in other files a path went through: the first,
 /// and the first that is an import of its own, as the graph records it (a
-/// re-export of the module's own subtree is none).
+/// re-export of the module's own subtree is none); and whether it went
+/// through one of the file it started in, which takes the name itself.
 #[derive(Debug, Clone, Copy, Default)]
 struct Ways {
     first: Option<Via>,
     import: Option<Via>,
+    own: bool,
 }
 
 impl Ways {
@@ -761,6 +763,7 @@ impl Ways {
     fn then(&mut self, later: Ways) {
         self.first = self.first.or(later.first);
         self.import = self.import.or(later.import);
+        self.own |= later.own;
     }
 }
 
@@ -923,6 +926,75 @@ impl<'a> Resolver<'a> {
             Pos::Item(m, name) => Some((self.forest.nodes[m].file, name)),
             _ => None,
         }
+    }
+
+    /// Where a path written in code in module `node` leads when a glob
+    /// `use` of the module brings its first name in (`pay(1)` beside `use
+    /// shop::*;`): that glob, and the path resolved as if the glob had named
+    /// it, its last name looked up in `ns`. `None` when the module defines
+    /// the name or a `use` of it binds the name (in a function body too), a
+    /// crate comes first, globs disagree, or the glob reaches it through
+    /// another `use` of the same file (an inline module's `use super::*`),
+    /// which takes it itself.
+    pub fn through_glob(
+        &self,
+        node: usize,
+        segments: &[String],
+        ns: Ns,
+    ) -> Option<(&'a UseDecl, Resolved)> {
+        let (first, rest) = segments.split_first()?;
+        if matches!(first.as_str(), "crate" | "self" | "super" | "Self") {
+            return None;
+        }
+        let first_ns = if rest.is_empty() { ns } else { Ns::Type };
+        let facts = self.facts(node);
+        let mut walk = self.walk(node);
+        let bound = facts
+            .uses
+            .iter()
+            .any(|u| u.binds.as_deref() == Some(first.as_str()));
+        let own = self.local(node, first, node, first_ns, &mut Ways::default(), &mut walk);
+        let crate_named = first_ns == Ns::Type
+            && (STANDARD.contains(&first.as_str()) || self.extern_crate(node, first).is_some());
+        if bound || own.is_some() || crate_named {
+            return None;
+        }
+        let mut found: Option<(&'a UseDecl, Pos, Ways)> = None;
+        let globs = facts
+            .uses
+            .iter()
+            .filter(|u| u.glob && u.scope == Scope::Module);
+        for decl in globs {
+            let mut via = Ways::default();
+            let globbed = self.path(
+                node,
+                &decl.path,
+                decl.leading_colon,
+                Ns::Type,
+                &mut via,
+                &mut walk,
+            );
+            let hit = match globbed {
+                Pos::Module(g) if g != node => self
+                    .local(g, first, node, first_ns, &mut via, &mut walk)
+                    .or_else(|| self.glob(g, first, node, first_ns, &mut via, &mut walk)),
+                _ => None,
+            };
+            let Some(hit) = hit else {
+                continue;
+            };
+            let pos = self.rest(hit, rest, node, ns, &mut via, &mut walk);
+            if via.own {
+                return None;
+            }
+            match &found {
+                None => found = Some((decl, pos, via)),
+                Some((_, earlier, _)) if *earlier == pos => {}
+                Some(_) => return None,
+            }
+        }
+        let (decl, pos, via) = found?;
+        Some((decl, resolved(pos, via.named())))
     }
 
     fn walk(&self, node: usize) -> Walk {
@@ -1136,6 +1208,7 @@ impl<'a> Resolver<'a> {
                 import: here
                     .filter(|_| self.imports(m, decl, &pos))
                     .or(inner.import),
+                own: here.is_none() || inner.own,
             });
             return Some(pos);
         }
@@ -1219,6 +1292,7 @@ impl<'a> Resolver<'a> {
                 import: here
                     .filter(|_| self.imports(m, decl, &globbed))
                     .or(inner.import),
+                own: here.is_none() || inner.own,
             };
             match &found {
                 None => found = Some((pos, this)),

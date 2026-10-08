@@ -21,6 +21,9 @@
 //! - a module path written in code (`crate::graph::build(..)`, `child::run()`)
 //!   is an `Import` too, noted `path`, once per file and target, unless its
 //!   first name came from a `use`, whose edge already shows the dependency
+//! - a name that a glob `use` brings in and the code writes (`pay(1)` beside
+//!   `use shop::*;`) is taken by that glob as if it had named it, through
+//!   re-exports to the file that defines it
 //! - a re-export from the subtree of the file's own module (`pub use
 //!   child::Item`) is how the module presents its contents, a relation other
 //!   than an import: it is followed when resolving other paths, never an edge
@@ -476,6 +479,61 @@ fn source_pass(
             if target_file == node.file {
                 continue;
             }
+            taken
+                .entry((
+                    decl.line,
+                    decl.scope,
+                    note(decl.note, via, &files),
+                    in_test,
+                    target_file,
+                ))
+                .or_default()
+                .insert(name.unwrap_or_else(|| WHOLE_MODULE.to_owned()));
+        }
+        // a name that a glob brings in (`pay(1)` beside `use shop::*;`) is
+        // taken as if the glob had named it, so a re-export leads to the file
+        // that defines it; a name in test code adds nothing to production's
+        let written = facts.names.iter().map(|w| {
+            // a macro's name is looked up where no module is
+            let ns = if w.value || w.macro_call {
+                Ns::Value
+            } else {
+                Ns::Type
+            };
+            (std::slice::from_ref(&w.name), ns, w.test, w.macro_call)
+        });
+        let in_paths = facts.paths.iter().filter(|p| !p.leading_colon).map(|p| {
+            let ns = if p.value { Ns::Value } else { Ns::Type };
+            (&p.segments[..], ns, p.test, false)
+        });
+        for (segments, ns, test, macro_call) in written.chain(in_paths) {
+            let Some((decl, found)) = resolver.through_glob(n, segments, ns) else {
+                continue;
+            };
+            let Resolved::Module {
+                node: target,
+                via,
+                name,
+            } = found
+            else {
+                continue;
+            };
+            // a macro called by its name is the glob's only when it reaches a
+            // `#[macro_export]` macro, not a function of the same name
+            let exported = |name: &String| {
+                forest
+                    .macros
+                    .iter()
+                    .any(|((_, macro_name), &at)| at == target && macro_name == name)
+            };
+            if macro_call && !name.as_ref().is_some_and(exported) {
+                continue;
+            }
+            let in_test = node.test || decl.test || test_target;
+            if ((node.test || test) && !in_test) || !records(&forest, n, decl, target) {
+                continue;
+            }
+            let target_file = forest.nodes[target].file;
             taken
                 .entry((
                     decl.line,

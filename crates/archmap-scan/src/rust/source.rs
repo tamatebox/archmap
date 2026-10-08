@@ -5,7 +5,9 @@
 //!
 //! This is a structural scan. Function bodies are parsed by `syn` but only
 //! visited for `use` declarations and module paths, both recorded with local
-//! scope; which item a path names, calls and data flow are not recorded.
+//! scope, and, for a module with a glob `use`, for the names the glob may
+//! bring in, apart from those a binding hides; which item a path names,
+//! calls and data flow are not recorded.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -69,6 +71,9 @@ pub(super) struct ModuleFacts {
     /// Paths in code that may name a module, outside `use` declarations,
     /// those in the arguments of macro calls included.
     pub paths: Vec<PathRef>,
+    /// The other names code writes first in a path, which a glob `use` of
+    /// the module may bring in: kept only when the module has one.
+    pub names: BTreeSet<NameRef>,
     /// Macro calls whose arguments are neither expressions nor items, so
     /// the paths in them are not read.
     pub unread_macros: Vec<MacroCall>,
@@ -170,6 +175,21 @@ pub(super) struct PathRef {
     pub test: bool,
 }
 
+/// A name code writes alone (`pay(1)`, `Receipt`) or first in a path that
+/// names no module (`Receipt::new`), where no binding of a parameter or a
+/// pattern and no item of a block of that name hides it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct NameRef {
+    pub name: String,
+    /// Written alone in an expression or a pattern: a value.
+    pub value: bool,
+    /// The name of a macro called (`settle!(..)`), which only a macro
+    /// answers, never a module or a function of that name.
+    pub macro_call: bool,
+    /// In `#[cfg(test)]` or `#[test]` code.
+    pub test: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ModDecl {
     pub name: String,
@@ -252,9 +272,12 @@ fn collect(items: &[Item], module: usize, file: &mut RustFile) {
             Paths {
                 out: &mut facts.paths,
                 unread: &mut facts.unread_macros,
+                names: &mut facts.names,
                 scope: Scope::Module,
                 test,
                 value: false,
+                frames: Vec::new(),
+                binding: None,
             }
             .visit_item(item);
         }
@@ -405,6 +428,15 @@ fn collect(items: &[Item], module: usize, file: &mut RustFile) {
             _ => {}
         }
     }
+    // only a glob brings names in
+    let facts = &mut file.modules[module];
+    if !facts
+        .uses
+        .iter()
+        .any(|u| u.glob && u.scope == Scope::Module)
+    {
+        facts.names.clear();
+    }
 }
 
 /// The module being collected, whether its `pub` items are symbols, and
@@ -473,10 +505,91 @@ fn local_uses(block: &Block, module: &mut ModuleFacts, test: bool) {
 struct Paths<'a> {
     out: &'a mut Vec<PathRef>,
     unread: &'a mut Vec<MacroCall>,
+    names: &'a mut BTreeSet<NameRef>,
     scope: Scope,
     test: bool,
     /// The next path is an expression's, whose last name is a value.
     value: bool,
+    /// What the scopes around the walk bind, innermost last.
+    frames: Vec<Bound>,
+    /// The names the pattern being read binds, while one is read.
+    binding: Option<BTreeSet<String>>,
+}
+
+/// What one scope of code binds: the bindings of parameters and patterns,
+/// which hide a name written alone in an expression, and a block's items,
+/// which hide any name.
+struct Bound {
+    locals: BTreeSet<String>,
+    items: BTreeSet<String>,
+}
+
+impl Paths<'_> {
+    /// Read a pattern: the paths it names, and the names it binds.
+    fn pattern(&mut self, pat: &syn::Pat) -> BTreeSet<String> {
+        let outer = self.binding.replace(BTreeSet::new());
+        self.visit_pat(pat);
+        std::mem::replace(&mut self.binding, outer).unwrap_or_default()
+    }
+
+    /// Walk in a scope that binds `locals`.
+    fn bound(&mut self, locals: BTreeSet<String>, walk: impl FnOnce(&mut Self)) {
+        self.frames.push(Bound {
+            locals,
+            items: BTreeSet::new(),
+        });
+        walk(self);
+        self.frames.pop();
+    }
+
+    /// A function: its parameters are bound in its body.
+    fn function(&mut self, sig: &syn::Signature, block: Option<&Block>) {
+        let outer = self.binding.replace(BTreeSet::new());
+        self.visit_signature(sig);
+        let params = std::mem::replace(&mut self.binding, outer).unwrap_or_default();
+        if let Some(block) = block {
+            self.bound(params, |p| p.visit_block(block));
+        }
+    }
+
+    /// Keep the first name of `path` among the names a glob may bring in,
+    /// unless a scope around hides it.
+    fn name(&mut self, path: &Path, value: bool) {
+        let Some(first) = path.segments.first() else {
+            return;
+        };
+        let first = name(&first.ident);
+        let alone = value && path.segments.len() == 1;
+        let keyword = matches!(first.as_str(), "crate" | "self" | "super" | "Self");
+        let hidden = self
+            .frames
+            .iter()
+            .any(|f| f.items.contains(&first) || (alone && f.locals.contains(&first)));
+        if keyword || hidden || PRIMITIVES.contains(&first.as_str()) {
+            return;
+        }
+        self.names.insert(NameRef {
+            name: first,
+            value: alone,
+            macro_call: false,
+            test: self.test,
+        });
+    }
+
+    /// Keep the name of a macro called by its name alone among the names a
+    /// glob may bring in, unless an item of a block around hides it.
+    fn macro_name(&mut self, called: &syn::Ident) {
+        let called = name(called);
+        if self.frames.iter().any(|f| f.items.contains(&called)) {
+            return;
+        }
+        self.names.insert(NameRef {
+            name: called,
+            value: false,
+            macro_call: true,
+            test: self.test,
+        });
+    }
 }
 
 impl<'ast> Visit<'ast> for Paths<'_> {
@@ -485,17 +598,13 @@ impl<'ast> Visit<'ast> for Paths<'_> {
     /// `assert_eq!(..)`, `thread_local! { .. }`); any other form is recorded
     /// as not read.
     fn visit_macro(&mut self, mac: &'ast syn::Macro) {
-        syn::visit::visit_macro(self, mac);
-        let mut inner = Paths {
-            out: &mut *self.out,
-            unread: &mut *self.unread,
-            scope: self.scope,
-            test: self.test,
-            value: false,
-        };
+        match mac.path.get_ident() {
+            Some(called) => self.macro_name(called),
+            None => syn::visit::visit_macro(self, mac),
+        }
         let last = mac.path.segments.last();
         let code = last.is_none_or(|s| !NOT_CODE.contains(&s.ident.to_string().as_str()));
-        if !(code && visit_arguments(&mac.tokens, &mut inner)) {
+        if !(code && visit_arguments(&mac.tokens, self)) {
             let mut names = BTreeSet::new();
             path_names(mac.tokens.clone(), &mut names);
             self.unread.push(MacroCall {
@@ -535,6 +644,8 @@ impl<'ast> Visit<'ast> for Paths<'_> {
                 scope: self.scope,
                 test: self.test,
             });
+        } else if path.leading_colon.is_none() {
+            self.name(path, value);
         }
         // generic arguments hold paths of their own
         syn::visit::visit_path(self, path);
@@ -542,22 +653,115 @@ impl<'ast> Visit<'ast> for Paths<'_> {
 
     fn visit_block(&mut self, block: &'ast Block) {
         let outer = std::mem::replace(&mut self.scope, Scope::Local);
+        let items = block
+            .stmts
+            .iter()
+            .filter_map(|s| match s {
+                syn::Stmt::Item(item) => item_name(item),
+                _ => None,
+            })
+            .collect();
+        self.frames.push(Bound {
+            locals: BTreeSet::new(),
+            items,
+        });
         syn::visit::visit_block(self, block);
+        self.frames.pop();
         self.scope = outer;
     }
 
     fn visit_item_fn(&mut self, f: &'ast syn::ItemFn) {
         let outer = self.test;
         self.test |= cfg_test(&f.attrs);
-        syn::visit::visit_item_fn(self, f);
+        f.attrs.iter().for_each(|a| self.visit_attribute(a));
+        self.function(&f.sig, Some(&f.block));
         self.test = outer;
     }
 
     fn visit_impl_item_fn(&mut self, f: &'ast syn::ImplItemFn) {
         let outer = self.test;
         self.test |= cfg_test(&f.attrs);
-        syn::visit::visit_impl_item_fn(self, f);
+        f.attrs.iter().for_each(|a| self.visit_attribute(a));
+        self.function(&f.sig, Some(&f.block));
         self.test = outer;
+    }
+
+    fn visit_trait_item_fn(&mut self, f: &'ast syn::TraitItemFn) {
+        f.attrs.iter().for_each(|a| self.visit_attribute(a));
+        self.function(&f.sig, f.default.as_ref());
+    }
+
+    // what a binding hides: after a `let`, in a closure's body, a match
+    // arm, a `for` body, and the rest of the condition and the branch of an
+    // `if let` and a `while let`
+    fn visit_local(&mut self, local: &'ast syn::Local) {
+        if let Some(init) = &local.init {
+            self.visit_expr(&init.expr);
+            if let Some((_, diverge)) = &init.diverge {
+                self.visit_expr(diverge);
+            }
+        }
+        let names = self.pattern(&local.pat);
+        if let Some(frame) = self.frames.last_mut() {
+            frame.locals.extend(names);
+        }
+    }
+
+    fn visit_expr_closure(&mut self, c: &'ast syn::ExprClosure) {
+        let mut params = BTreeSet::new();
+        for input in &c.inputs {
+            params.extend(self.pattern(input));
+        }
+        self.visit_return_type(&c.output);
+        self.bound(params, |p| p.visit_expr(&c.body));
+    }
+
+    fn visit_arm(&mut self, arm: &'ast syn::Arm) {
+        let names = self.pattern(&arm.pat);
+        self.bound(names, |p| {
+            if let Some((_, guard)) = &arm.guard {
+                p.visit_expr(guard);
+            }
+            p.visit_expr(&arm.body);
+        });
+    }
+
+    fn visit_expr_for_loop(&mut self, f: &'ast syn::ExprForLoop) {
+        self.visit_expr(&f.expr);
+        let names = self.pattern(&f.pat);
+        self.bound(names, |p| p.visit_block(&f.body));
+    }
+
+    fn visit_expr_if(&mut self, e: &'ast syn::ExprIf) {
+        self.bound(BTreeSet::new(), |p| {
+            p.visit_expr(&e.cond);
+            p.visit_block(&e.then_branch);
+        });
+        if let Some((_, other)) = &e.else_branch {
+            self.visit_expr(other);
+        }
+    }
+
+    fn visit_expr_while(&mut self, e: &'ast syn::ExprWhile) {
+        self.bound(BTreeSet::new(), |p| {
+            p.visit_expr(&e.cond);
+            p.visit_block(&e.body);
+        });
+    }
+
+    fn visit_expr_let(&mut self, l: &'ast syn::ExprLet) {
+        self.visit_expr(&l.expr);
+        let names = self.pattern(&l.pat);
+        if let Some(frame) = self.frames.last_mut() {
+            frame.locals.extend(names);
+        }
+    }
+
+    fn visit_pat_ident(&mut self, p: &'ast syn::PatIdent) {
+        if let Some(names) = &mut self.binding {
+            names.insert(name(&p.ident));
+        }
+        syn::visit::visit_pat_ident(self, p);
     }
 
     fn visit_attribute(&mut self, attr: &'ast Attribute) {
@@ -576,6 +780,24 @@ impl<'ast> Visit<'ast> for Paths<'_> {
     fn visit_item_use(&mut self, _: &'ast ItemUse) {}
     fn visit_item_mod(&mut self, _: &'ast syn::ItemMod) {}
     fn visit_vis_restricted(&mut self, _: &'ast syn::VisRestricted) {}
+}
+
+/// The name an item of a block binds, which hides a name a glob brings in.
+fn item_name(item: &Item) -> Option<String> {
+    let ident = match item {
+        Item::Const(i) => &i.ident,
+        Item::Enum(i) => &i.ident,
+        Item::Fn(i) => &i.sig.ident,
+        Item::Mod(i) => &i.ident,
+        Item::Static(i) => &i.ident,
+        Item::Struct(i) => &i.ident,
+        Item::Trait(i) => &i.ident,
+        Item::Type(i) => &i.ident,
+        Item::Union(i) => &i.ident,
+        Item::Macro(i) => i.ident.as_ref()?,
+        _ => return None,
+    };
+    Some(name(ident))
 }
 
 /// The segments of `path` when it may name a module: see [`PathRef`].
@@ -1153,6 +1375,44 @@ mod platform;
         assert_eq!(d.declared[0].name, "e");
         let g = &file.modules[file.modules[root.inline["f"]].inline["g"]];
         assert!(!g.public && g.symbols.is_empty());
+    }
+
+    #[test]
+    fn a_module_with_a_glob_keeps_the_names_its_code_writes_that_nothing_binds() {
+        let file = parse_file(
+            "\
+use shop::*;
+pub fn f(given: u32) -> Receipt {
+    let paid = pay(given);
+    let refund = 1;
+    let _ = refund;
+    let total = |fee: u32| fee + paid;
+    match total(1) {
+        bill => {
+            let _ = bill;
+        }
+    }
+    {
+        fn local() {}
+        local();
+    }
+    Receipt::new(paid)
+}
+",
+        )
+        .unwrap();
+        let names: Vec<(&str, bool)> = file.modules[0]
+            .names
+            .iter()
+            .map(|n| (n.name.as_str(), n.value))
+            .collect();
+        // a parameter, a `let`, a closure's parameter, a match arm's binding
+        // and a block's item hide a name; a type and a path's first name
+        // are no value
+        assert_eq!(names, [("Receipt", false), ("pay", true)]);
+        // without a glob there is nothing to bring the names in
+        let file = parse_file("pub fn f() -> u32 {\n    pay(1)\n}\n").unwrap();
+        assert!(file.modules[0].names.is_empty());
     }
 
     #[test]

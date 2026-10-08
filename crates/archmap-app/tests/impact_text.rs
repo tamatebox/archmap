@@ -1776,6 +1776,21 @@ fn a_test_that_calls_a_function_a_module_shares_its_name_with_takes_the_function
 }
 
 #[test]
+fn a_test_that_globs_a_module_reaches_what_it_re_exports_from_its_subtree() {
+    // `use market::*;` and `pay(1)`, `market` re-exporting `charge::pay`; a
+    // test whose binding hides the name is no taker
+    let ws = scan(&fixture("rust-globs"));
+    for target in ["src/charge.rs", "market::charge::pay"] {
+        let answer = text(&ws, target);
+        assert!(
+            answer.contains("  tests/root_glob.rs (takes it"),
+            "{target}: {answer}"
+        );
+        assert!(!answer.contains("tests/shadowed.rs"), "{target}: {answer}");
+    }
+}
+
+#[test]
 fn a_test_reaches_a_change_through_the_types_a_mocked_module_exposes_from_it() {
     let files = |runner: &str| -> Vec<(String, String)> {
         [
