@@ -1519,8 +1519,13 @@ fn a_require_of_a_module_that_is_the_symbol_stays_in_the_reach() {
     let ws = scan(&fixture("ts-module-value"));
     let out = text(&ws, "logger");
     assert_eq!(
-        section(&out, "Direct dependents: 2"),
-        ["  app.js  1 import", "  held.js  1 import"],
+        section(&out, "Direct dependents: 4"),
+        [
+            "  app.js  1 import",
+            "  held.js  1 import",
+            "  named.mjs  1 import",
+            "  typed.ts  1 import"
+        ],
         "{out}"
     );
     assert_eq!(

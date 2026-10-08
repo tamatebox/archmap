@@ -432,8 +432,8 @@ fn a_module_that_is_one_declaration_gives_it_to_require() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/ts-module-value");
     let report = scan(&root, &ScanOptions::default()).unwrap();
     // `module.exports = logger`: `require` binds the symbol itself, so a
-    // member read through the binding is a use, and a destructuring takes
-    // the symbol
+    // member read through the binding is a use, and a destructuring, a
+    // named import and a type of a member take the symbol
     let logger = uses_of(&report, "logger");
     assert_eq!(
         shown(&logger),
@@ -441,6 +441,8 @@ fn a_module_that_is_one_declaration_gives_it_to_require() {
             "src/app.js:2:1 read via 1",
             "src/held.js:1:18 read via 1",
             "src/logger.js:6:18 read",
+            "src/named.mjs:1:10 read as info via 1",
+            "src/typed.ts:1:46 type via 1",
         ],
         "{:#?}",
         shown(&logger)

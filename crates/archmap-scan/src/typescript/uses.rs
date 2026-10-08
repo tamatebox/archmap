@@ -468,6 +468,19 @@ impl<'g> Pass<'g, '_> {
                 AstKind::ImportDeclaration(d) => {
                     for specifier in d.specifiers.iter().flatten() {
                         let (local, rests) = match specifier {
+                            // a name that a module which is the symbol
+                            // (`module.exports = logger`) does not offer is
+                            // a member of it, read where the import takes it
+                            ImportDeclarationSpecifier::ImportSpecifier(s)
+                                if paths.contains(&Vec::new())
+                                    && starting(&paths, &s.imported.name()).is_empty() =>
+                            {
+                                let typed = d.import_kind.is_type() || s.import_kind.is_type();
+                                let role = if typed { UseRole::Type } else { UseRole::Read };
+                                let binding = Some(s.imported.name().to_string());
+                                uses.push(make_use(read, s.imported.span(), role, binding));
+                                continue;
+                            }
                             ImportDeclarationSpecifier::ImportSpecifier(s) => {
                                 (&s.local, starting(&paths, &s.imported.name()))
                             }
@@ -506,11 +519,16 @@ impl<'g> Pass<'g, '_> {
                         qualifier_names(qualifier, &mut names);
                     }
                     // the module, or a namespace on the way, whole in a type
-                    // (`typeof import('./money')`) holds the symbol's type
+                    // (`typeof import('./money')`) holds the symbol's type,
+                    // and a name past the symbol is inside it (`typeof
+                    // import('./logger').info` for `module.exports = logger`)
                     let holds = paths
                         .iter()
                         .any(|p| p.len() > names.len() && p.starts_with(&names));
-                    if paths.contains(&names) || holds {
+                    let inside = paths
+                        .iter()
+                        .any(|p| p.len() < names.len() && names.starts_with(p));
+                    if paths.contains(&names) || holds || inside {
                         let shown = match &t.qualifier {
                             Some(TSImportTypeQualifier::Identifier(i)) => i.span,
                             Some(TSImportTypeQualifier::QualifiedName(q)) => q.right.span,

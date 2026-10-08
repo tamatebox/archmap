@@ -323,8 +323,9 @@ default import, `import x = require()`, a CommonJS `require`, an `import()`
 or `vi.importActual()` awaited, and a destructuring of a module bound
 whole; where a module is one declaration, `module.exports = logger` or
 `export = Engine`, a binding of it whole is that declaration, so
-`logger.info()` after `const logger = require('./logger')` uses `logger`
-and `Engine.boot()` after `import Engine = require('./engine')` uses
+`logger.info()` after `const logger = require('./logger')` uses `logger`,
+as do `import { info } from './logger'` and `typeof
+import('./logger').info` where they take the member, and `Engine.boot()` after `import Engine = require('./engine')` uses
 `Engine.boot`), through a static member of a module bound whole (`m.formatPrice`,
 `m['formatPrice']`, `(m as any).formatPrice`), through the names a barrel
 or the defining file passes the symbol on as, renamed or not, and the
