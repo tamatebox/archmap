@@ -284,18 +284,20 @@ fn view<'a>(
     // a type seen from one end only: this item, as the other end, sees none
     // of the links whose seeing end is outside the range; only the ends an
     // item of its kind can be (a pull request closes, an issue is
-    // duplicated)
+    // duplicated). An item the snapshot does not hold sees none of those
+    // its own end records, whatever its kind.
     let kind = item.map(|i| i.kind);
     let not_seen = snapshot
         .relation_types
         .iter()
         .filter_map(|&relation| {
-            let end = match relation.seen_from() {
-                SeenFrom::Both => return None,
-                SeenFrom::From => End::To,
-                SeenFrom::To => End::From,
+            let end = match (relation.seen_from(), item) {
+                (SeenFrom::Both, _) => return None,
+                (SeenFrom::From, Some(_)) | (SeenFrom::To, None) => End::To,
+                (SeenFrom::To, Some(_)) | (SeenFrom::From, None) => End::From,
             };
             let applies = match relation {
+                _ if item.is_none() => true,
                 RelationType::ClosedBy => kind == Some(ItemKind::PullRequest),
                 RelationType::DuplicateOf => kind == Some(ItemKind::Issue),
                 RelationType::CrossReferenced => kind.is_some(),
@@ -482,8 +484,24 @@ fn text(view: &WorkView, snapshot: &Snapshot, history: &History, verbose: bool) 
     let mut not_traced = Vec::new();
     // a range that holds every item leaves only other repositories unseen
     let whole = snapshot.range.updated_since.is_none() && !snapshot.range.reached_bound;
-    for gap in &view.not_seen {
-        not_traced.push(format!("  {}", not_seen_line(gap, view.number, whole)));
+    match view.item {
+        Some(_) => {
+            for gap in &view.not_seen {
+                not_traced.push(format!("  {}", not_seen_line(gap, view.number, whole)));
+            }
+        }
+        // its own end was not fetched: what only that end records is unseen
+        None if !view.not_seen.is_empty() => {
+            let types: Vec<&str> = view.not_seen.iter().map(|g| g.kind.as_str()).collect();
+            not_traced.push(format!(
+                "  own end: the snapshot does not hold #{}, so its {} links, which only its \
+                 own end records, are not seen, and its other links only where the other end \
+                 is in the snapshot",
+                view.number,
+                types.join(", ")
+            ));
+        }
+        None => {}
     }
     if view.coverage.outside_range > 0 {
         not_traced.push(format!(

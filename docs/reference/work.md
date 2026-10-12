@@ -146,7 +146,12 @@ each end as `#12 issue, open`, `#40 (outside the fetched range)` or
 and says `(open now)` when the issue was reopened. `Not traced` names the
 types its end cannot see, the links that name items outside the range, the
 types the host does not offer, and the ends the fetching account could not
-see.
+see. For an item the snapshot does not hold, its own end was not fetched:
+`Not traced` names the types only that end records (`own end: the snapshot
+does not hold #40, so its closed_by, cross_referenced, referenced,
+duplicate_of links ... are not seen`), its other links are seen only where
+the other end is in the snapshot, and `Code` says that no pull request in
+the snapshot closes it or is linked to it, never that no link exists.
 
 `Code` follows: the files the item's work changed, as far as the history
 read holds its commits. A pull request lists the files of the commits its
@@ -184,7 +189,9 @@ JSON (`--format json`) gives the item, every link with its type, its end,
 the other end and what observed it, every commit with `matched_by` and its
 time or a `reason` (`no_local_commit_with_same_sha`, `beyond_history_read`,
 `not_in_head`, `foreign`, `no_history`, `not_looked_up`), the snapshot's
-coverage, `code` (the files, each once, `components`, `only_mentions`,
+coverage, `not_seen` (each link type the item's end cannot see, with the
+end the item would be: for an item the snapshot does not hold, the types
+only its own end records), `code` (the files, each once, `components`, `only_mentions`,
 and `through`: a pull request with its `links`, `commits`,
 `by_commit_list`, `by_merge_commit` and `merged_as`, a commit with its
 `links`, each commit the history read holds with its `time` and `files`,

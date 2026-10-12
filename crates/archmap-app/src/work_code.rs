@@ -41,6 +41,9 @@ pub(crate) struct Code<'a> {
     /// a pull request, itself; those that close or are linked to the item
     /// first.
     through: Vec<Way<'a>>,
+    /// The snapshot holds the item, so its own end's links were read.
+    #[serde(skip)]
+    held: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -276,6 +279,7 @@ pub(crate) fn code<'a>(
         no_component,
         only_mentions,
         through: ways,
+        held: snapshot.item(number).is_some(),
     })
 }
 
@@ -376,11 +380,19 @@ pub(crate) fn render(out: &mut String, code: &Code, verbose: bool) -> bool {
     }
     let _ = writeln!(out, "{heading}");
     if code.through.is_empty() {
-        let _ = writeln!(
-            out,
-            "  (no pull request or commit is linked to it by closes, linked, closed_by, \
-             cross_referenced or referenced)"
-        );
+        // without its own end, only links its other ends record were read
+        let _ = match code.held {
+            true => writeln!(
+                out,
+                "  (no pull request or commit is linked to it by closes, linked, closed_by, \
+                 cross_referenced or referenced)"
+            ),
+            false => writeln!(
+                out,
+                "  (no pull request in the snapshot closes it or is linked to it; links its \
+                 own end records were not fetched)"
+            ),
+        };
         return false;
     }
     let mut truncated = false;

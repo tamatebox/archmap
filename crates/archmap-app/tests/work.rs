@@ -265,6 +265,43 @@ fn an_item_outside_the_snapshot_or_its_repository_says_so() {
         "{text}"
     );
     assert!(text.contains("\nSub-issues: #12 issue, open\n"), "{text}");
+    // its own end was not fetched: no link is said to be missing, and what
+    // only that end records is named as not seen
+    assert!(
+        !text.contains("no pull request or commit is linked"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "\n  (no pull request in the snapshot closes it or is linked to it; links its own \
+             end records were not fetched)\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "\n  own end: the snapshot does not hold #40, so its closed_by, cross_referenced, \
+             referenced, duplicate_of links, which only its own end records, are not seen, and \
+             its other links only where the other end is in the snapshot\n"
+        ),
+        "{text}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&query(&ws, "#40", Format::Json)).unwrap();
+    let not_seen: Vec<(&str, &str)> = json["not_seen"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| (g["type"].as_str().unwrap(), g["end"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        not_seen,
+        [
+            ("closed_by", "from"),
+            ("cross_referenced", "to"),
+            ("referenced", "to"),
+            ("duplicate_of", "from")
+        ]
+    );
     assert_eq!(
         query(&ws, "acme/web#4", Format::Text),
         "acme/web#4: not in this snapshot (it holds acme/shop)\n"
