@@ -21,7 +21,10 @@ commit message is read.
 
 - **Bound:** the first 10,000 commits that change the root, in git's
   default order from HEAD (newest committer date first). A longer history
-  stops there, said in the answer.
+  stops there, said in the answer. A commit keeps at most 1,000 of its
+  changes: every rename, so a move of many files still ties each to its
+  earlier path, then the others by path; the rest are counted, and an
+  answer whose target they may hold says so.
 - **Renames:** git's detection, `-M50%` with a rename limit of 1,000
   (`-l1000`): where a commit deletes or adds more files than that as
   candidates, git finds exact renames only, said in the answer. A merge commit is read for its parents only, never compared with
@@ -103,7 +106,9 @@ data, files in different languages kept in step.
   not read` (a file of a submodule HEAD holds, checked out),
   `none: no commit changed <file>`, `none: no commit read changed <file>,
   and older commits were not read` (a bounded read or a shallow clone),
-  that it changed only in commits left out, or, for commits that changed
+  that it changed only in commits left out, each with `and 2 commits over
+  1000 files, whose files were not all read, may have` when commits past
+  the cap keep none of the target's files, or, for commits that changed
   nothing but the target's files (a component that holds them all), `none,
   in the 7 commits that changed shop's 42 files: they changed nothing
   else`.
@@ -125,7 +130,8 @@ whether it was reached, how `renames` were detected, skipped paths),
 boundaries), `target_commits`, `target_large` (the commits that changed
 the target and were left out for their size, when any), every file with every shared commit's full
 SHA and time (`files`, with `own`, `in_head`, `submodule` and `earlier`),
-and `none` with why when no counted commit changed the target.
+and `none` with why when no counted commit changed the target
+(`not_all_read` counting the commits past the cap that may have).
 
 ## Known limits
 

@@ -75,12 +75,23 @@ pub enum NoCommit {
     /// The target lies inside a submodule HEAD holds: its commits are the
     /// submodule's own, whose history is not read.
     InSubmodule { submodule: String },
-    /// It changed only in commits left out for their size.
-    OnlyLeftOut { large: usize },
+    /// It changed only in commits left out for their size; `not_all_read`
+    /// as below.
+    OnlyLeftOut {
+        large: usize,
+        #[serde(skip_serializing_if = "is_zero")]
+        not_all_read: usize,
+    },
     /// No commit read changed it; `older` when the read stopped at its
     /// bound or at a shallow clone's boundary, whose changes are not read,
-    /// so older commits may have.
-    NoneRead { older: bool },
+    /// so older commits may have; `not_all_read` counts the commits whose
+    /// changes were not all kept (past the reader's cap) and whose kept
+    /// changes hold no target file: they may have changed one.
+    NoneRead {
+        older: bool,
+        #[serde(skip_serializing_if = "is_zero")]
+        not_all_read: usize,
+    },
 }
 
 /// The commits read and how many were counted or left out.
@@ -127,6 +138,9 @@ pub fn co_change(history: &History, targets: &BTreeSet<String>, settings: &Setti
     // per counted commit (newest first): the identities it changed
     let mut counted: Vec<(&Commit, BTreeMap<String, String>)> = Vec::new();
     let mut large_touching = 0;
+    // commits whose changes were not all kept and whose kept ones hold no
+    // target file: it may be among the others
+    let mut not_all_read = 0;
     for &i in &order {
         let commit = &history.commits[i];
         // the identities of the paths as this commit leaves them
@@ -147,13 +161,17 @@ pub fn co_change(history: &History, targets: &BTreeSet<String>, settings: &Setti
         }
         identity.after(commit, settings.follow_renames);
         let size = commit.changes.len() + commit.omitted;
+        let touches = changed.keys().any(|k| targets.contains(k));
+        if commit.omitted > 0 && !touches && !commit.is_merge() && !commit.boundary {
+            not_all_read += 1;
+        }
         if commit.is_merge() {
             counts.merges += 1;
         } else if commit.boundary {
             counts.boundaries += 1;
         } else if size > settings.max_files {
             counts.large += 1;
-            if changed.keys().any(|k| targets.contains(k)) {
+            if touches {
                 large_touching += 1;
             }
         } else {
@@ -249,10 +267,12 @@ pub fn co_change(history: &History, targets: &BTreeSet<String>, settings: &Setti
         } else if large_touching > 0 {
             NoCommit::OnlyLeftOut {
                 large: large_touching,
+                not_all_read,
             }
         } else {
             NoCommit::NoneRead {
                 older: history.reached_bound || counts.boundaries > 0,
+                not_all_read,
             }
         }
     });
@@ -569,7 +589,13 @@ mod tests {
         assert_eq!(shown(&view), [("rates.yaml".into(), 1, 1)]);
         // only in a left-out commit: said so
         let only = co_change(&h, &targets(&["f0.ts"]), &Settings::default());
-        assert_eq!(only.none, Some(NoCommit::OnlyLeftOut { large: 1 }));
+        assert_eq!(
+            only.none,
+            Some(NoCommit::OnlyLeftOut {
+                large: 1,
+                not_all_read: 0
+            })
+        );
     }
 
     #[test]
@@ -691,7 +717,13 @@ mod tests {
         bounded.head_files.insert("b.ts".into(), HeadEntry::File);
         bounded.reached_bound = true;
         let old = co_change(&bounded, &targets(&["b.ts"]), &Settings::default());
-        assert_eq!(old.none, Some(NoCommit::NoneRead { older: true }));
+        assert_eq!(
+            old.none,
+            Some(NoCommit::NoneRead {
+                older: true,
+                not_all_read: 0
+            })
+        );
         // a shallow clone's boundary shows its whole tree as added: what
         // changed there is not known
         let mut shallow = history(
@@ -703,7 +735,38 @@ mod tests {
         );
         shallow.commits[1].boundary = true;
         let cut = co_change(&shallow, &targets(&["b.ts"]), &Settings::default());
-        assert_eq!(cut.none, Some(NoCommit::NoneRead { older: true }));
+        assert_eq!(
+            cut.none,
+            Some(NoCommit::NoneRead {
+                older: true,
+                not_all_read: 0
+            })
+        );
+    }
+
+    #[test]
+    fn commits_not_read_whole_may_have_changed_the_target() {
+        // a commit past the reader's cap keeps some of its changes only
+        let mut big = commit("c1", &[], &[("a.ts", A)]);
+        big.omitted = 2_000;
+        let h = history(vec![big], &["a.ts", "z.ts"]);
+        let z = co_change(&h, &targets(&["z.ts"]), &Settings::default());
+        assert_eq!(
+            z.none,
+            Some(NoCommit::NoneRead {
+                older: false,
+                not_all_read: 1
+            })
+        );
+        // where its kept changes hold the target, it is no maybe
+        let a = co_change(&h, &targets(&["a.ts"]), &Settings::default());
+        assert_eq!(
+            a.none,
+            Some(NoCommit::OnlyLeftOut {
+                large: 1,
+                not_all_read: 0
+            })
+        );
     }
 
     #[test]

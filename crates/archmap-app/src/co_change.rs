@@ -250,14 +250,46 @@ fn no_commit(none: &NoCommit, label: &str, max_files: usize, kind: &str) -> Stri
         NoCommit::InSubmodule { submodule } => {
             format!("{label} is inside the submodule {submodule}, whose own history is not read")
         }
-        NoCommit::NoneRead { older: true } => {
-            format!("no {kind} read changed {label}, and older commits were not read")
+        NoCommit::NoneRead {
+            older,
+            not_all_read,
+        } => {
+            let mut line = match (older, not_all_read) {
+                (false, 0) => format!("no {kind} changed {label}"),
+                _ => format!("no {kind} read changed {label}"),
+            };
+            if *not_all_read > 0 {
+                let _ = write!(
+                    line,
+                    ", and {} over {} files, whose files were not all read, may have",
+                    plural(*not_all_read, "commit"),
+                    archmap_scan::history::MAX_CHANGES
+                );
+            }
+            if *older {
+                line.push_str(", and older commits were not read");
+            }
+            line
         }
-        NoCommit::NoneRead { older: false } => format!("no {kind} changed {label}"),
-        NoCommit::OnlyLeftOut { large } => format!(
-            "{label} changed only in commits left out ({} over {max_files} files)",
-            plural(*large, "commit")
-        ),
+        NoCommit::OnlyLeftOut {
+            large,
+            not_all_read,
+        } => {
+            let mut line = format!(
+                "{label} changed only in commits left out ({} over {max_files} files",
+                plural(*large, "commit")
+            );
+            if *not_all_read > 0 {
+                let _ = write!(
+                    line,
+                    ", and {} over {} files, whose files were not all read, may have too",
+                    plural(*not_all_read, "commit"),
+                    archmap_scan::history::MAX_CHANGES
+                );
+            }
+            line.push(')');
+            line
+        }
     }
 }
 

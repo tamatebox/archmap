@@ -29,9 +29,11 @@ const SIMILARITY: u8 = 50;
 /// renames only.
 const RENAME_LIMIT: u32 = 1000;
 
-/// Changes kept per commit; past it, a commit keeps the first ones by path
-/// and counts the rest, so one vendoring or codemod commit cannot hold
-/// hundreds of thousands of paths.
+/// Changes kept per commit; past it, a commit keeps every rename, so a
+/// move of many files still ties each to its earlier path, and the first
+/// other changes by path, and counts the rest, so one vendoring or codemod
+/// commit cannot hold hundreds of thousands of paths. A move of that many
+/// files does hold them all: following moves is worth what they take.
 pub const MAX_CHANGES: usize = 1_000;
 
 /// Variables that would point git at another repository, carry a caller's
@@ -500,8 +502,16 @@ fn parse_log(bytes: &[u8]) -> (Vec<Commit>, usize) {
             }
         }
         changes.sort();
-        let omitted = changes.len().saturating_sub(MAX_CHANGES);
-        changes.truncate(MAX_CHANGES);
+        // every rename stays, and the other changes fill what is left
+        let (mut kept, mut others): (Vec<Change>, Vec<Change>) = changes
+            .into_iter()
+            .partition(|c| matches!(c.kind, ChangeKind::Renamed { .. }));
+        let room = MAX_CHANGES.saturating_sub(kept.len());
+        let omitted = others.len().saturating_sub(room);
+        others.truncate(room);
+        kept.append(&mut others);
+        kept.sort();
+        let changes = kept;
         commits.push(Commit {
             id: id.to_owned(),
             parents,
@@ -615,7 +625,7 @@ mod tests {
     }
 
     #[test]
-    fn a_huge_commit_keeps_the_first_changes_and_counts_the_rest() {
+    fn a_huge_commit_keeps_its_renames_and_the_first_changes_and_counts_the_rest() {
         let mut log = b"\x1eaaa\x1f1\0\n".to_vec();
         for n in 0..MAX_CHANGES + 5 {
             log.extend(format!("A\0f{n:05}.ts\0").as_bytes());
@@ -624,6 +634,28 @@ mod tests {
         assert_eq!(commits[0].changes.len(), MAX_CHANGES);
         assert_eq!(commits[0].omitted, 5);
         assert_eq!(commits[0].changes[0].path, "f00000.ts");
+        // a rename past the cap stays, and takes the place of another change
+        let mut log = b"\x1eaaa\x1f1\0\n".to_vec();
+        for n in 0..MAX_CHANGES {
+            log.extend(format!("A\0f{n:05}.ts\0").as_bytes());
+        }
+        log.extend(b"R100\0old/z.ts\0z/z.ts\0");
+        let (commits, _) = parse_log(&log);
+        assert_eq!(commits[0].changes.len(), MAX_CHANGES);
+        assert_eq!(commits[0].omitted, 1);
+        assert!(commits[0]
+            .changes
+            .iter()
+            .any(|c| c.path == "z/z.ts" && matches!(c.kind, ChangeKind::Renamed { .. })));
+        // renames past the cap all stay
+        let mut log = b"\x1eaaa\x1f1\0\n".to_vec();
+        for n in 0..MAX_CHANGES + 5 {
+            log.extend(format!("R100\0old/f{n:05}.ts\0new/f{n:05}.ts\0").as_bytes());
+        }
+        log.extend(b"A\0notes.md\0");
+        let (commits, _) = parse_log(&log);
+        assert_eq!(commits[0].changes.len(), MAX_CHANGES + 5);
+        assert_eq!(commits[0].omitted, 1);
     }
 
     #[test]

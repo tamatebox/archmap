@@ -474,6 +474,45 @@ fn a_submodule_changed_with_the_target_is_marked() {
 }
 
 #[test]
+fn a_commit_past_the_change_cap_keeps_its_moves_and_says_what_it_may_hide() {
+    // 1,100 files at once, more than the reader keeps per commit: the last
+    // by path, `z/late.ts` among them, are counted, not kept
+    let mut repo = Repo::new("cap");
+    repo.write("package.json", "{ \"name\": \"shop\" }\n");
+    for n in 1..=1_100 {
+        repo.write(
+            &format!("src/f{n:04}.ts"),
+            &format!("export const f{n} = {n};\n"),
+        );
+    }
+    repo.write("z/late.ts", "export const late = 1;\n");
+    repo.commit();
+    repo.write("src/f1100.ts", "export const f1100 = 0;\n");
+    repo.write("notes.md", "edited with f1100\n");
+    repo.commit();
+    // every file moves at once: the moves are kept, so the history goes on
+    repo.git(&["mv", "src", "pkg"]);
+    repo.commit();
+    let moved = impact(&repo.dir, "pkg/f1100.ts", Format::Text);
+    assert!(
+        section(&moved)
+            .iter()
+            .any(|l| l.starts_with("  notes.md  1 of the target's 1, 1 of its own 1:")),
+        "{moved}"
+    );
+    // a file only the part not kept holds: the answer never says that no
+    // commit changed it
+    let late = impact(&repo.dir, "z/late.ts", Format::Text);
+    assert!(
+        late.contains(
+            "none: no commit read changed z/late.ts, and 1 commit over 1000 files, whose \
+             files were not all read, may have"
+        ),
+        "{late}"
+    );
+}
+
+#[test]
 fn a_file_inside_a_submodule_says_its_history_is_not_read() {
     let mut repo = Repo::new("in-submodule");
     repo.write("package.json", "{ \"name\": \"shop\" }\n");
