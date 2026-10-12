@@ -212,8 +212,9 @@ pub struct SymbolUses {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unused: Vec<Evidence>,
     /// Places where a binding of the symbol's module whole is used other than
-    /// by a static name (passed as a value, `ns[key]`): the module escapes
-    /// there, so that code may use the symbol. Noted `class` where a static
+    /// by a static name (passed as a value, `ns[key]`, a Rust `macro_rules!`
+    /// body's `c::$f`): the module escapes there, so that code may use the
+    /// symbol. Noted `class` where a static
     /// member's class escapes instead (`make(Wallet)`), and `string` where
     /// a string names the symbol (Python).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

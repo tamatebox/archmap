@@ -309,3 +309,46 @@ fn a_symbol_no_pass_reads_lists_its_files_as_unread() {
         .iter()
         .all(|u| u.reason == archmap_core::UnreadReason::LanguageNotRead && u.line.is_none()));
 }
+
+#[test]
+fn a_call_of_a_macro_whose_body_names_the_symbol_uses_it() {
+    // `fixtures/rust-macros`: `settle!` pastes `$crate::charge::pay($n)`,
+    // `checkout!` pastes `settle!`, `call!`, `invoke!` and `here!` paste a
+    // member of `charge` (bound as `c` in `alias.rs` and in a block of
+    // `local.rs`) that the call gives, `dispatch!(c, ..)` is given the
+    // module, and `double!` names nothing of `charge`
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/rust-macros");
+    let report = scan(&root, &ScanOptions::default()).unwrap();
+    let pay = uses_of(&report, "till::charge::pay");
+    assert_eq!(
+        shown(&pay),
+        [
+            "src/bill.rs:3:5 read as settle!",
+            "src/cart.rs:4:5 read as settle!",
+            "src/order.rs:2:5 read as checkout!"
+        ]
+    );
+    // the module escapes where a member of it is left to the call, which
+    // ends the statement it goes through
+    assert_eq!(
+        places(&pay.escapes),
+        [
+            "src/alias.rs:6",
+            "src/local.rs:6",
+            "src/pass.rs:11",
+            "src/pick.rs:6"
+        ]
+    );
+    // no other statement names it: the macros' paths go through none, and
+    // `double!` names nothing of it
+    assert_eq!(places(&pay.unused), ["src/cart.rs:1", "src/other.rs:1"]);
+    // a macro that names something else is no use of it
+    let refund = uses_of(&report, "till::charge::refund");
+    assert_eq!(
+        shown(&refund),
+        [
+            "src/cart.rs:4:26 call as charge::refund via 1",
+            "src/other.rs:11:21 call as charge::refund via 1"
+        ]
+    );
+}

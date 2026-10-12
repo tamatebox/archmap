@@ -457,9 +457,13 @@ pub(crate) fn uses_of(
     let symbol = full.symbol(&symbol.id).unwrap_or(symbol);
     let mut found = archmap_scan::symbol_uses(report, symbol);
     // a file that uses the symbol through none of its statements of the
-    // symbol (through a Rust inline module's `use super::*`) or holds macro
-    // calls the scan does not read may take it through any of them: none of
-    // them is unused
+    // symbol (through a Rust inline module's `use super::*`, a call of a
+    // `macro_rules!` macro whose body names it) or holds macro calls the
+    // scan does not read may take it through any of them: none of them is
+    // unused. A `macro_rules!` definition is no such call: its body is code
+    // each call pastes, which the uses pass reads where a call is written,
+    // and a path of it to the symbol's module whose member a call gives
+    // (`charge::$f`) is an escape that ends its statement.
     let defining = symbol.location().map(|e| e.file.as_str());
     let listed: BTreeSet<(String, u32)> = full
         .symbol_importers(symbol)
@@ -477,7 +481,12 @@ pub(crate) fn uses_of(
                 .is_none_or(|at| !listed.contains(&(at.file.clone(), at.line)))
         })
         .map(|u| u.evidence.file.clone())
-        .chain(full.unread_macros.iter().map(|m| m.evidence.file.clone()))
+        .chain(
+            full.unread_macros
+                .iter()
+                .filter(|m| m.name != "macro_rules")
+                .map(|m| m.evidence.file.clone()),
+        )
         .collect();
     found.unused.retain(|e| !open.contains(&e.file));
     let unread_language = found

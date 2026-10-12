@@ -83,15 +83,22 @@ pub(crate) fn read(
             .filter(|n| roots.contains(&n.root))
             .map(|n| n.file),
     );
+    let macros = naming_macros(index, root, &files, &target, &names);
     let mut uses = Vec::new();
+    let mut escaped = Vec::new();
     for file in files {
         let rel = display_path(&index.files[file].rel);
         let Ok(text) = std::fs::read_to_string(root.join(&index.files[file].rel)) else {
             out.unread.push(unread(&rel, UnreadReason::FileGone));
             continue;
         };
-        // a file that names none of them uses none of them
-        if !names.iter().any(|n| text.contains(n.as_str())) {
+        // a file that names none of them, nor a macro that does, uses none
+        // of them
+        if !names
+            .iter()
+            .chain(&macros)
+            .any(|n| text.contains(n.as_str()))
+        {
             continue;
         }
         if text_hash(&text) != index.files[file].hash {
@@ -114,12 +121,17 @@ pub(crate) fn read(
             frames: vec![Frame::default()],
             binding: None,
             in_impl: false,
+            macros: &macros,
             uses: Vec::new(),
+            escapes: Vec::new(),
+            escaped: Vec::new(),
         };
         walker.visit_file(&parsed);
         uses.extend(walker.uses);
+        out.escapes.extend(walker.escapes);
+        escaped.extend(walker.escaped);
     }
-    end_statements(index, &target, &names, statements, &uses, out);
+    end_statements(index, &target, &names, statements, &uses, &escaped, out);
     out.uses.extend(uses);
     for found in &mut out.uses {
         if found.binding.as_deref() == Some(symbol.name.as_str()) {
@@ -249,18 +261,7 @@ fn reach(
     leading_colon: bool,
     ns: Ns,
 ) -> Option<Item> {
-    let decl = UseDecl {
-        path: segments.to_vec(),
-        binds: None,
-        glob: false,
-        leading_colon,
-        reexport: false,
-        line: 0,
-        scope: archmap_core::Scope::Module,
-        test: false,
-        note: "use",
-    };
-    match resolver.resolve_in(node, &decl, ns) {
+    match resolver.resolve_in(node, &path_decl(segments, leading_colon), ns) {
         Resolved::Module {
             node,
             name: Some(name),
@@ -270,6 +271,96 @@ fn reach(
             Some((module.file, module.module, name))
         }
         _ => None,
+    }
+}
+
+/// The module `segments`, written in module node `node`, name, as the
+/// scan resolves a `use` of that path: its file and its module there.
+fn module_of(
+    index: &Index,
+    resolver: &Resolver,
+    node: usize,
+    segments: &[String],
+) -> Option<(usize, usize)> {
+    match resolver.resolve_in(node, &path_decl(segments, false), Ns::Type) {
+        Resolved::Module {
+            node, name: None, ..
+        } => {
+            let module = &index.forest.nodes[node];
+            Some((module.file, module.module))
+        }
+        _ => None,
+    }
+}
+
+/// A path as a `use` of it would write it, for the resolver.
+fn path_decl(segments: &[String], leading_colon: bool) -> UseDecl {
+    UseDecl {
+        path: segments.to_vec(),
+        binds: None,
+        glob: false,
+        leading_colon,
+        reexport: false,
+        line: 0,
+        scope: archmap_core::Scope::Module,
+        test: false,
+        note: "use",
+    }
+}
+
+/// The paths a `macro_rules!` body writes whose next segment a metavariable
+/// gives (`charge::$f`, `$crate::charge::$f`): the segments before it, and
+/// where the path starts.
+fn open_paths(tokens: proc_macro2::TokenStream, out: &mut Vec<(Vec<String>, proc_macro2::Span)>) {
+    use proc_macro2::{Spacing, TokenTree};
+    let trees: Vec<TokenTree> = tokens.into_iter().collect();
+    let punct =
+        |i: usize, c: char| matches!(trees.get(i), Some(TokenTree::Punct(p)) if p.as_char() == c);
+    let colons = |i: usize| {
+        matches!(trees.get(i), Some(TokenTree::Punct(p)) if p.as_char() == ':' && p.spacing() == Spacing::Joint)
+            && punct(i + 1, ':')
+    };
+    let ident = |i: usize| match trees.get(i) {
+        Some(TokenTree::Ident(id)) => Some(id),
+        _ => None,
+    };
+    let mut i = 0;
+    while i < trees.len() {
+        if let TokenTree::Group(group) = &trees[i] {
+            open_paths(group.stream(), out);
+            i += 1;
+            continue;
+        }
+        // a path starts at a name no `$` or `::` comes before, or at `$crate`
+        let start = match ident(i) {
+            Some(id) if !(i >= 1 && punct(i - 1, '$')) && !(i >= 2 && colons(i - 2)) => {
+                Some((name(id), id.span(), i + 1))
+            }
+            _ if punct(i, '$') && ident(i + 1).is_some_and(|id| id == "crate") => {
+                Some(("crate".to_owned(), trees[i].span(), i + 2))
+            }
+            _ => None,
+        };
+        let Some((first, span, mut next)) = start else {
+            i += 1;
+            continue;
+        };
+        let mut segments = vec![first];
+        while colons(next) {
+            match ident(next + 2) {
+                Some(id) => {
+                    segments.push(name(id));
+                    next += 3;
+                }
+                None => {
+                    if punct(next + 2, '$') {
+                        out.push((segments.clone(), span));
+                    }
+                    break;
+                }
+            }
+        }
+        i = next;
     }
 }
 
@@ -327,6 +418,77 @@ fn names(index: &Index, target: &Target) -> BTreeSet<String> {
     names
 }
 
+/// The `macro_rules!` macros defined in `files` whose bodies name the
+/// target (its method, for a method) or a macro that does, as an
+/// identifier anywhere: each call pastes that code where it is written, so
+/// a call may use it. Bodies are not resolved, so a name of something else
+/// counts too.
+fn naming_macros(
+    index: &Index,
+    root: &Path,
+    files: &BTreeSet<usize>,
+    target: &Target,
+    names: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    /// Each definition's name and the identifiers its body holds.
+    struct Definitions(Vec<(String, BTreeSet<String>)>);
+    impl<'ast> Visit<'ast> for Definitions {
+        fn visit_item_macro(&mut self, item: &'ast syn::ItemMacro) {
+            if let Some(ident) = &item.ident {
+                if item.mac.path.is_ident("macro_rules") {
+                    let mut held = BTreeSet::new();
+                    identifiers(item.mac.tokens.clone(), &mut held);
+                    self.0.push((name(ident), held));
+                }
+            }
+        }
+    }
+    let mut definitions = Definitions(Vec::new());
+    for &file in files {
+        let Ok(text) = std::fs::read_to_string(root.join(&index.files[file].rel)) else {
+            continue;
+        };
+        if !text.contains("macro_rules") || text_hash(&text) != index.files[file].hash {
+            continue;
+        }
+        if let Ok(parsed) = syn::parse_file(&text) {
+            definitions.visit_file(&parsed);
+        }
+    }
+    let mut wanted = match &target.member {
+        Some(member) => BTreeSet::from([member.clone()]),
+        None => names.clone(),
+    };
+    // a macro that calls one that names it pastes that call too
+    let mut found = BTreeSet::new();
+    loop {
+        let more: Vec<String> = definitions
+            .0
+            .iter()
+            .filter(|(macro_name, held)| !found.contains(macro_name) && !held.is_disjoint(&wanted))
+            .map(|(macro_name, _)| macro_name.clone())
+            .collect();
+        if more.is_empty() {
+            return found;
+        }
+        wanted.extend(more.iter().cloned());
+        found.extend(more);
+    }
+}
+
+/// The identifiers `tokens` hold, at any depth.
+fn identifiers(tokens: proc_macro2::TokenStream, out: &mut BTreeSet<String>) {
+    for tree in tokens {
+        match tree {
+            proc_macro2::TokenTree::Ident(ident) => {
+                out.insert(name(&ident));
+            }
+            proc_macro2::TokenTree::Group(group) => identifiers(group.stream(), out),
+            _ => {}
+        }
+    }
+}
+
 /// The nodes of module `module` of file `file`: one per crate that loads
 /// the file.
 fn nodes_of(index: &Index, file: usize, module: usize) -> Vec<usize> {
@@ -349,6 +511,7 @@ fn end_statements(
     names: &BTreeSet<String>,
     statements: &[&Evidence],
     uses: &[SymbolUse],
+    escaped: &[ImportPlace],
     out: &mut SymbolUses,
 ) {
     let used_files: BTreeSet<&str> = uses.iter().map(|u| u.evidence.file.as_str()).collect();
@@ -356,11 +519,12 @@ fn end_statements(
         let Some(line) = statement.line else {
             continue;
         };
-        let used = uses.iter().any(|u| {
-            u.statement
-                .as_ref()
-                .is_some_and(|s| s.file == statement.file && s.line == line)
-        });
+        let through = |s: &ImportPlace| s.file == statement.file && s.line == line;
+        // used, or its module escapes: its escape in the file ends it
+        let used = uses
+            .iter()
+            .any(|u| u.statement.as_ref().is_some_and(through))
+            || escaped.iter().any(through);
         let word = statement
             .note
             .as_deref()
@@ -461,7 +625,14 @@ struct Walker<'a> {
     binding: Option<BTreeSet<String>>,
     /// Inside an `impl` whose type is the target's: its own or a trait's.
     in_impl: bool,
+    /// The `macro_rules!` macros whose bodies name the target.
+    macros: &'a BTreeSet<String>,
     uses: Vec<SymbolUse>,
+    /// Where the target's module escapes: a path to it whose member the
+    /// code does not write (`charge::$f` in a `macro_rules!` body).
+    escapes: Vec<Evidence>,
+    /// The statements those paths go through, which may use the target.
+    escaped: Vec<ImportPlace>,
 }
 
 impl Walker<'_> {
@@ -610,6 +781,57 @@ impl Walker<'_> {
                 })
             })
             .map(|d| place(d.line))
+    }
+
+    /// Record where a path written here names the target's module (or a
+    /// method's type) and leaves its member to the code that runs (a
+    /// `macro_rules!` body's `charge::$f`, a module passed to a macro), with
+    /// the statement it goes through.
+    fn escape(&mut self, segments: &[String], span: proc_macro2::Span) {
+        let reached: Vec<(usize, usize)> = match self.origin(segments, false) {
+            Origin::Hidden => Vec::new(),
+            Origin::Block { .. } => self.block_module(segments).into_iter().collect(),
+            Origin::Module => self
+                .nodes
+                .iter()
+                .filter_map(|&node| module_of(self.index, self.resolver, node, segments))
+                .collect(),
+        };
+        let module = reached.iter().any(|&(file, module)| {
+            file == self.target.file && self.target.module.is_none_or(|m| m == module)
+        });
+        let type_of_method = self.target.member.is_some()
+            && self
+                .resolves(segments, false, false)
+                .iter()
+                .any(|item| self.is_target(item));
+        if !module && !type_of_method {
+            return;
+        }
+        let evidence = Evidence::new(self.rel)
+            .at_line(span.start().line as u32)
+            .in_test(self.test());
+        self.escapes.push(evidence);
+        self.escaped.extend(self.statement(segments, false, false));
+    }
+
+    /// The module `segments` name where a block's `use` binds their first
+    /// name: its file and its module there.
+    fn block_module(&self, segments: &[String]) -> Option<(usize, usize)> {
+        let (first, rest) = segments.split_first()?;
+        let bound = self
+            .frames
+            .iter()
+            .rev()
+            .find_map(|frame| frame.uses.iter().find(|u| &u.name == first))?;
+        let (node, None) = bound.reached.clone()? else {
+            return None;
+        };
+        if rest.is_empty() {
+            let module = &self.index.forest.nodes[node];
+            return Some((module.file, module.module));
+        }
+        module_of(self.index, self.resolver, node, rest)
     }
 
     /// `Self` in an `impl` of the target's type: `Self::m` for its method,
@@ -1111,8 +1333,42 @@ impl<'ast> Visit<'ast> for Walker<'_> {
         p.fields.iter().for_each(|f| self.visit_pat(&f.pat));
     }
 
+    /// A `macro_rules!` definition: each call pastes its body, whose paths
+    /// resolve where the call is written. A path of it that names the
+    /// target's module here with a member a call gives (`charge::$f`) lets
+    /// a call in this file take the target through that module's binding.
+    fn visit_item_macro(&mut self, item: &'ast syn::ItemMacro) {
+        if item.ident.is_none() || !item.mac.path.is_ident("macro_rules") {
+            return visit::visit_item_macro(self, item);
+        }
+        let mut open = Vec::new();
+        open_paths(item.mac.tokens.clone(), &mut open);
+        for (segments, span) in open {
+            self.escape(&segments, span);
+        }
+    }
+
     fn visit_macro(&mut self, mac: &'ast syn::Macro) {
         let last = mac.path.segments.last();
+        // a name passed alone, which the macro may write a path with
+        // (`dispatch!(c, pay, 1)` for `$m::$f($n)`)
+        let trees: Vec<proc_macro2::TokenTree> = mac.tokens.clone().into_iter().collect();
+        let comma = |t: Option<&proc_macro2::TokenTree>| matches!(t, Some(proc_macro2::TokenTree::Punct(p)) if p.as_char() == ',');
+        for (i, tree) in trees.iter().enumerate() {
+            let proc_macro2::TokenTree::Ident(ident) = tree else {
+                continue;
+            };
+            let before = i == 0 || comma(trees.get(i - 1));
+            let after = i + 1 == trees.len() || comma(trees.get(i + 1));
+            if before && after {
+                self.escape(&[name(ident)], ident.span());
+            }
+        }
+        // a macro whose body names the target pastes that use here
+        if let Some(called) = last.filter(|s| self.macros.contains(&name(&s.ident))) {
+            let binding = Some(format!("{}!", name(&called.ident)));
+            self.push(called.ident.span(), UseRole::Read, binding, None);
+        }
         let code = last.is_none_or(|s| !NOT_CODE.contains(&s.ident.to_string().as_str()));
         if code {
             visit_arguments(&mac.tokens, self);

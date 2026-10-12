@@ -783,6 +783,42 @@ fn a_rust_file_whose_macro_rules_body_may_use_the_symbol_stays_in_the_reach() {
 }
 
 #[test]
+fn a_rust_file_that_calls_a_macro_whose_body_names_the_symbol_stays_in_the_reach() {
+    // `fixtures/rust-macros`: `settle!` pastes `$crate::charge::pay($n)`,
+    // `checkout!` pastes `settle!`; `pick.rs`, `alias.rs` and `local.rs`
+    // define macros that paste a member of `charge`, by its name or the one
+    // the file or a block binds, which the call gives, and `pass.rs` passes
+    // the module to one;
+    // `other.rs` defines `double!`, which names nothing of `charge`
+    let out = text(&scan(&fixture("rust-macros")), "till::charge::pay");
+    assert_eq!(
+        section(&out, "Tests to run again: 7"),
+        [
+            "  tests/alias.rs (through src/alias.rs)",
+            "  tests/bill.rs (through src/bill.rs)",
+            "  tests/cart.rs (through src/cart.rs)",
+            "  tests/local.rs (through src/local.rs)",
+            "  tests/order.rs (through src/order.rs)",
+            "  tests/pass.rs (through src/pass.rs)",
+            "  tests/pick.rs (through src/pick.rs)"
+        ],
+        "{out}"
+    );
+    for line in [
+        // the answer names the macro that keeps the file
+        "  src/bill.rs:3 (read) as settle!\n",
+        "  src/cart.rs:4 (read) as settle!\n",
+        "  src/order.rs:2 (read) as checkout!\n",
+        "  never named (1 import of the whole module, left out of the reach): src/other.rs:1\n",
+        // and the places that keep the others
+        "  whole module: 4 places use the module as a value, which may use this: \
+         src/alias.rs:6, src/local.rs:6, src/pass.rs:11, +1 more\n",
+    ] {
+        assert!(out.contains(line), "missing {line:?} in:\n{out}");
+    }
+}
+
+#[test]
 fn a_rust_trait_reaches_what_implements_it_through_a_glob() {
     let files: Vec<(String, String)> = [
         (

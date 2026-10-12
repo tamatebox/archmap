@@ -107,7 +107,12 @@ fn a_name_a_glob_brings_in_is_used_through_the_glob() {
             })
             .collect()
     };
-    assert_eq!(uses("market::charge::pay"), ["tests/root_glob.rs:5 via 1"]);
+    // `settle!(3)` pastes the `$crate::pay($n)` of its body, through no
+    // statement
+    assert_eq!(
+        uses("market::charge::pay"),
+        ["tests/root_glob.rs:5 via 1", "tests/root_glob.rs:8 via 0"]
+    );
     assert_eq!(
         uses("market::charge::refund"),
         [

@@ -137,8 +137,16 @@ into the model in [graph.md](graph.md); how the commands present it is in
   of a `macro_rules!` definition, whose code each call pastes, are not read; such a call (a
   definition as a call of `macro_rules!`) is recorded with the names its `a::b` paths write,
   `summary` counts the calls, `Not traced` lists the ones that name the target (its module, or its
-  crate for the library's root), and `Used at` never counts a statement of a file that holds one
-  as never used. A module's own use
+  crate for the library's root), and `Used at` never counts a statement of a file that holds one,
+  a definition aside, as never used. For `Used at`, the body of a definition in the files it reads
+  is searched for the symbol's name (its method's, for a method), or a macro whose body has it, as
+  an identifier, not resolved: a call of such a macro is a use where it is written (`settle!(1)`,
+  `as settle!`), so any item or macro of that name makes one, and a call from a file that reads no
+  statement of the symbol and is no file of its crate is not found. A path of a definition's body
+  that reaches the symbol's module where it is written and leaves the member to a call (`c::$f`
+  after `use crate::charge as c;`), and the module's name passed alone to a macro (`dispatch!(c,
+  pay, 1)`), are escapes of the module (`whole_module` under `Not traced`), which end the statement
+  the path goes through. A module's own use
   of what it re-exports is not read either, so `query` and `impact` miss those dependents.
 - `#[path]` modules belong to their package without a module tree, and a target whose root lies
   outside its package directory (`path = "../shared/tool.rs"`) is not read.

@@ -339,7 +339,10 @@ them. A type query of what holds the symbol, its module or its class
 (`typeof m`, `keyof typeof m`, `typeof import('./money')`), is a use as a
 type too, since that type holds the type of every export or member. Names
 in comments and strings are no uses, nor is an export specifier, which
-passes a name on. Each use is marked by what it does:
+passes a name on. A call of a Rust `macro_rules!` macro whose body names
+the symbol, or a macro that does, is a use where the call is written
+(`settle!(1)`, `(read) as settle!`), since each call pastes that body
+there. Each use is marked by what it does:
 `(call)`, `(new)`, `(jsx)` for a JSX element's name, `(type)`, or `(read)`
 for any other (passed as a value, assigned, compared), then `(test)`; it
 ends in `as <name>` when the code names it otherwise. The heading counts the
@@ -664,7 +667,8 @@ reached, and `Used at` lists them as `never named (1 import of the whole
 module, left out of the reach)`. One whose module the code uses as a
 value, or whose uses were not read, stays, as does one in a file that uses
 the symbol through another binding (a Rust inline module's `use super::*`)
-or holds macro calls the scan does not read, and so does a statement that
+or holds macro calls the scan does not read (a `macro_rules!` definition
+aside), and so does a statement that
 takes the symbol by name without a use, which loads the file all the
 same; `--format json` gives `used_at` as `query` does and the statements
 left out as `unnamed`. For a Python package's `__init__.py`, which runs
@@ -990,11 +994,12 @@ target's own imports without an edge stay under `Not mapped`.
   for a Python package's `__init__.py` that an
   import of a module below it runs first.
 - `macros`: Rust macro calls whose arguments were not read (`json!`, a DSL,
-  `macro_rules!`, whose definition's body may use what its file imports)
+  `macro_rules!`, whose definition's body each call pastes)
   and whose `a::b` paths write the target's name (its module's, or its
   crate's for a crate root). A name match, not a use of it.
 - `whole_module`: for a symbol, places where a binding of its module whole
-  is used other than by a static name (passed as a value, `ns[key]`), where
+  is used other than by a static name (passed as a value, `ns[key]`, a Rust
+  `macro_rules!` body's `c::$f` or a module passed alone to a macro), where
   code may use it unseen (see `Used at` under [query](#query)).
 - `class_values`: for a static member, places where its class is used as a
   value (passed, kept in a variable, `C[key]`), where code may call it
