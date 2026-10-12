@@ -913,7 +913,7 @@ fn status(repo: &Repo, repository: &str, attempt: &str) {
         serde_json::json!({
             "schema": 1, "source": "github", "host": "github.com", "repository": repository,
             "last_attempt_at": attempt,
-            "last_error": {"kind": "rate_limit", "message": "GraphQL: API rate limit exceeded for user ID 7."},
+            "last_error": {"kind": "rate_limit", "message": "GitHub answered HTTP 200 with errors RATE_LIMITED"},
             "next_retry_at": "2026-10-04T11:00:00Z", "consecutive_failures": 2,
         })
         .to_string(),
@@ -926,8 +926,8 @@ fn a_failed_refresh_after_the_snapshot_is_said_beside_it() {
     let (repo, _) = shop("refresh");
     status(&repo, "acme/shop", "2026-10-04T10:00:00Z");
     let ws = scan(&repo.dir);
-    let line = "the last attempt, 2026-10-04 10:00 UTC, failed (rate limit): GraphQL: API rate \
-                limit exceeded for user ID 7.; no automatic attempt before 2026-10-04 11:00 UTC";
+    let line = "the last attempt, 2026-10-04 10:00 UTC, failed (rate limit): GitHub answered HTTP \
+                200 with errors RATE_LIMITED; no automatic attempt before 2026-10-04 11:00 UTC";
     let summary = ws.summary(DEFAULT_DEPTH, false);
     assert!(
         summary.contains(&format!(
@@ -949,6 +949,41 @@ fn a_failed_refresh_after_the_snapshot_is_said_beside_it() {
         json["work"]["refresh"]["next_retry_at"], "2026-10-04T11:00:00Z",
         "{json}"
     );
+}
+
+/// A status an earlier archmap or a hand wrote, with words a fetch no
+/// longer keeps.
+#[test]
+fn a_recorded_message_is_said_with_no_absolute_path_or_token() {
+    let (repo, _) = shop("refresh-private");
+    std::fs::write(
+        repo.dir.join(".archmap/github.status.json"),
+        serde_json::json!({
+            "schema": 1, "source": "github", "host": "github.com", "repository": "acme/shop",
+            "last_attempt_at": "2026-10-04T10:00:00Z",
+            "last_error": {"kind": "other", "message": "gh failed: open /home/some one/.config/gh/hosts.yml: denied (token ghp_secret0123)"},
+            "next_retry_at": "2026-10-04T10:05:00Z", "consecutive_failures": 1,
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let ws = scan(&repo.dir);
+    let summary = ws.summary(DEFAULT_DEPTH, false);
+    assert!(
+        summary.contains("failed (error): gh failed: open [path]: denied (token [redacted]);"),
+        "{summary}"
+    );
+    for answer in [
+        summary,
+        query(&ws, "#12", Format::Text),
+        query(&ws, "#12", Format::Json),
+        query(&ws, "src/price.ts", Format::Json),
+    ] {
+        assert!(
+            !answer.contains("/home/") && !answer.contains("some one") && !answer.contains("ghp_"),
+            "{answer}"
+        );
+    }
 }
 
 #[test]

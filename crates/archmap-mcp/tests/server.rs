@@ -364,11 +364,11 @@ async fn a_failed_refresh_is_read_once_recorded_and_the_server_never_fetches() {
         ".archmap/github.status.json",
         r#"{"schema": 1, "source": "github", "host": "github.com", "repository": "acme/shop",
             "last_attempt_at": "2026-10-04T10:00:00Z",
-            "last_error": {"kind": "network", "message": "gh failed: timeout"},
+            "last_error": {"kind": "network", "message": "no answer came from GitHub"},
             "next_retry_at": "2026-10-04T10:05:00Z", "consecutive_failures": 1}"#,
     );
-    let line = "the last attempt, 2026-10-04 10:00 UTC, failed (network): gh failed: timeout; \
-                no automatic attempt before 2026-10-04 10:05 UTC";
+    let line = "the last attempt, 2026-10-04 10:00 UTC, failed (network): no answer came from \
+                GitHub; no automatic attempt before 2026-10-04 10:05 UTC";
     let text = ok(&summary().await);
     assert!(
         text.contains(&format!("\nwork refresh: {line}\n")),

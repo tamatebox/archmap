@@ -199,7 +199,10 @@ impl Workspace {
     pub(crate) fn failed_refresh(&self) -> Option<views::RefreshView> {
         let path = archmap_scan::work::status_path(&self.snapshot_path);
         let status = archmap_scan::work::read_status(&path)?;
-        let error = status.last_error.clone()?;
+        let mut error = status.last_error.clone()?;
+        // as the fetch recorded it; again for a file another archmap or a
+        // hand wrote
+        error.message = archmap_scan::work::github::redact(&error.message);
         if let Ok(Some(snapshot)) = self.snapshot() {
             let same = status.host == snapshot.host
                 && status.repository.eq_ignore_ascii_case(&snapshot.repository);

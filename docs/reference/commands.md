@@ -731,7 +731,8 @@ counted; left out 1 over 30 files; renames -M50%`), or why nothing was
 Changing together is a fact of the history, never proof of a dependency.
 `Work` follows: the pull requests and items the work snapshot links to
 those same commits, by commit list or merge commit and then by link type,
-or one line saying there is no snapshot; see
+or one line saying there is no snapshot (and one more when a fetch
+failed); see
 [work.md](work.md#work-in-impact-and-query).
 `Not traced` ends the answer as in `query`, and gives a script's note and a
 `declare global` one too,
@@ -884,11 +885,11 @@ MCP server does not offer it.
 What was done goes to stdout with exit code 0: the snapshot written, or,
 for an automatic refresh, nothing to do (fresh, waiting, or another fetch
 running). Nothing written goes to stderr with exit code 1: a failed
-fetch, gh not logged in to another host included (its message, then
-`.archmap/github.json is as it was; the failure (network) is recorded in
-.archmap/github.status.json: no automatic attempt before ...`), a fetch
-asked for while another runs, or an automatic refresh
-that will not overwrite a snapshot it cannot read. Exit code 2 is an
+fetch, a login gh cannot confirm for another host included (its message,
+then `.archmap/github.json is as it was; the failure (network) is recorded
+in .archmap/github.status.json: no automatic attempt before ...`), a fetch
+asked for while another runs, or an automatic refresh that will not
+overwrite a snapshot it cannot read. Exit code 2 is an
 invocation error: a wrong flag, date or duration, no repository to name,
 or a lock that cannot be taken.
 

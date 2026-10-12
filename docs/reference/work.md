@@ -91,8 +91,13 @@ that runs it often, from several sessions at once. It updates as
 only when the snapshot's last fetch (`fetched_at`, whole or update) is
 older than the limit and no wait after a failure runs; otherwise it asks
 GitHub nothing and says why (`fresh: .archmap/github.json was fetched
-2026-10-04 09:30 UTC, within 30m: nothing fetched`). With no snapshot it
-fetches one whole. It never overwrites a snapshot it cannot read, whether
+2026-10-04 09:30 UTC, within 30m: nothing fetched`). A snapshot is fresh
+only as what the fetch asks for: one of another source, host or
+repository, or fetched with the other title setting or another bound, is
+updated however recent, which fetches it whole and says why, as
+`--update` does. One whose fetch time cannot be read (edited by hand) is
+never fresh either, and is fetched whole. With no snapshot it fetches one
+whole. It never overwrites a snapshot it cannot read, whether
 of a newer format, corrupt or unreadable: it says which and that a fetch
 asked for replaces it.
 
@@ -113,13 +118,26 @@ cannot be created) is an error, never taken for another fetch.
 which only a fetch writes: the source, host and repository, the account
 the attempt ran as when it learned it, when the attempt began, and after a
 failure its kind (`rate_limit`, `secondary_rate_limit`, `auth`, `network`,
-`other`), its message with no token or credentials, `next_retry_at` and
-`consecutive_failures`. A success clears the failure; a failure leaves the
+`other`), what it left that is safe to keep (`message`), `next_retry_at`
+and `consecutive_failures`. The message holds facts, never gh's or
+GitHub's words, which may name local paths, accounts or more: for a
+request the HTTP status and the codes of the errors GraphQL names
+(`GitHub answered HTTP 200 with errors RATE_LIMITED`, `no answer came from
+GitHub`, `gh could not be run`); for a login gh cannot confirm, the host;
+for a snapshot that could not be written, the file system's own message,
+which names no path. The fetch prints gh's words, and reads the kind from
+them, with tokens, the credentials of URLs and absolute paths taken out
+(`[redacted]`, `[path]`; a path runs to a quote, a bracket, `,`, `;`, `:`
+or ` (`, spaces included). Answers take the same out of a status written
+another way. A success clears the failure; a failure leaves the
 snapshot as it was. A status of another host or repository, as after `-o`
 names one file for another `--repo`, is no wait of this one, and the next
 attempt replaces it. A failure that began no later than the snapshot's
 fetch is past, as after a fetch wrote the snapshot and stopped before its
-status: no refresh waits on it or counts it.
+status: no refresh waits on it or counts it. A failure cannot be placed
+against a snapshot whose fetch time cannot be read, so with such a
+snapshot no failure is waited on, counted or shown: every refresh tries a
+whole fetch until one succeeds.
 
 **Waiting after a failure.** Automatic refreshes wait 5 minutes after a
 failure, doubled with each failure in a row up to 6 hours, and at least a
@@ -127,11 +145,20 @@ minute. For a rate limit they follow GitHub's guidance: the failed
 response's `retry-after` first; for a limit spent (`x-ratelimit-remaining:
 0`) its `x-ratelimit-reset`; for the primary limit without those headers,
 the reset `gh api rate_limit` gives, which counts against no primary
-limit. That endpoint is never asked after a secondary limit: it may count
+limit. A time these give stands as it is, sooner than the backoff when it
+says so; one already past is no time, and the next source is read. gh
+prints the headers of a failed response too, an HTTP error's and a
+GraphQL error's alike. That endpoint is never asked after a secondary limit: it may count
 toward one and cannot tell when one ends, so a secondary limit without
 headers waits as other failures do, exponentially longer each time. A
 fetch asked for (`archmap fetch github`, with or without `--update`)
 ignores the wait and is recorded the same way.
+
+**Logins.** A host other than github.com is asked `gh auth status` first.
+When gh reports no login for it, the attempt fails as an authentication
+failure; when gh fails otherwise, the failure is of no known kind, or the
+network's after a timeout: gh reports a host it cannot reach as an invalid
+token, so its words do not tell the two apart.
 
 **Accounts.** Failures in a row count per account: a failure as another
 account than the last one's counts from one. The account is the one the
@@ -144,8 +171,8 @@ line says so); a fetch asked for sees it at once.
 **What answers say.** A failed attempt that began after the snapshot's
 fetch, for the snapshot's host and repository, shows beside it: in
 `summary`'s Coverage (`work refresh: the last attempt, 2026-10-04 10:00
-UTC, failed (rate limit): GraphQL: API rate limit exceeded for user ID 7.;
-no automatic attempt before 2026-10-04 11:00 UTC`, after `work: none (no
+UTC, failed (rate limit): GitHub answered HTTP 200 with errors
+RATE_LIMITED; no automatic attempt before 2026-10-04 11:00 UTC`, after `work: none (no
 snapshot at .archmap/github.json)` when no fetch has succeeded yet), as a
 `refresh:` line in `query '#N'` and in the Work section, and as `refresh`
 in their JSON (`last_attempt_at`, `error` with `kind` and `message`,
@@ -369,8 +396,9 @@ lower number, so the same HEAD and snapshot give the same order. The text shows 
 of each kind and 3 items per pull request, 3 commits linked to nothing,
 each list counted (`pull requests: 6, showing 5`); `--verbose` lifts the
 caps. Item states are as of the fetch. Without a snapshot the section is
-one line, `Work: none (no snapshot at .archmap/github.json)`, and `query`
-reads no history for it. JSON gives `work` with `state` (`read`,
+one line, `Work: none (no snapshot at .archmap/github.json)`, followed by
+a `refresh:` line when a fetch failed (see [Automatic
+refreshes](#automatic-refreshes)), and `query` reads no history for it. JSON gives `work` with `state` (`read`,
 `no_snapshot`, `unreadable`, `no_history`), the counts, every pull request
 with its connecting commits by kind, `merged_as` and its `items` (each
 with its `other` end, when the snapshot holds it its `kind`, `state` and

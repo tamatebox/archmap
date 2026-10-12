@@ -62,28 +62,43 @@ pub struct RateHints {
     pub reset: Option<i64>,
 }
 
+/// What gh's last call gave, as facts safe to keep and show: the HTTP
+/// status, the codes of the errors GitHub's GraphQL answer names, and the
+/// rate-limit headers; never a message's words.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Response {
+    /// `None` when no HTTP answer came.
+    pub status: Option<u16>,
+    /// Each error's `type` or `extensions.code` (`RATE_LIMITED`,
+    /// `NOT_FOUND`, `undefinedField`), sorted, once each.
+    pub errors: Vec<String>,
+    pub hints: RateHints,
+}
+
 /// The gh CLI as the transport for a host: `gh api graphql --include
-/// --input -`, the request on stdin, prompts off. It keeps the rate-limit
-/// headers of the last response, failed or not, so a failure can say when
-/// to retry. Its error message is passed on, without token shapes; nothing
-/// of its environment is.
+/// --input -`, the request on stdin, prompts off. It keeps what the last
+/// response was, failed or not (gh prints the headers of a failed one
+/// too), so a failure can say when to retry and be recorded without gh's
+/// words. Its error message is passed on, without token shapes; nothing of
+/// its environment is.
 #[derive(Debug)]
 pub struct Gh {
     host: String,
-    /// The headers of the last response gh gave.
-    pub hints: Option<RateHints>,
+    /// What the last call gave; `None` when gh could not be run.
+    pub last: Option<Response>,
 }
 
 impl Gh {
     pub fn new(host: &str) -> Self {
         Gh {
             host: host.to_owned(),
-            hints: None,
+            last: None,
         }
     }
 
     /// One request.
     pub fn call(&mut self, request: &Value) -> Result<Value, String> {
+        self.last = None;
         let host = self.host.as_str();
         let mut child = Command::new("gh")
             .args([
@@ -118,7 +133,11 @@ impl Gh {
             .wait_with_output()
             .map_err(|e| format!("running gh: {e}"))?;
         let (headers, answer) = response(&out.stdout);
-        self.hints = Some(rate_hints(&headers));
+        self.last = Some(Response {
+            status: status_code(&out.stdout),
+            errors: error_codes(answer),
+            hints: rate_hints(&headers),
+        });
         if !out.status.success() {
             let message = String::from_utf8_lossy(&out.stderr);
             let first = redact(message.lines().next().unwrap_or("").trim());
@@ -161,6 +180,40 @@ pub fn response(out: &[u8]) -> (Vec<(String, String)>, &[u8]) {
         .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned()))
         .collect();
     (headers, &out[at + len..])
+}
+
+/// The HTTP status of what `gh api --include` printed.
+pub fn status_code(out: &[u8]) -> Option<u16> {
+    if !out.starts_with(b"HTTP/") {
+        return None;
+    }
+    let line = out.split(|b| *b == b'\n').next()?;
+    let line = String::from_utf8_lossy(line);
+    line.split_whitespace().nth(1)?.parse().ok()
+}
+
+/// The codes of the errors a GraphQL answer names: each error's `type`, else
+/// its `extensions.code`, when it is a plain identifier of at most 40
+/// characters; never their messages.
+pub fn error_codes(body: &[u8]) -> Vec<String> {
+    let Ok(answer) = serde_json::from_slice::<Value>(body) else {
+        return Vec::new();
+    };
+    let mut codes: Vec<String> = answer["errors"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e["type"].as_str().or(e["extensions"]["code"].as_str()))
+        .filter(|code| {
+            !code.is_empty()
+                && code.len() <= 40
+                && code.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        })
+        .map(str::to_owned)
+        .collect();
+    codes.sort();
+    codes.dedup();
+    codes
 }
 
 /// The rate-limit headers among `headers`.
@@ -242,8 +295,9 @@ pub fn classify(message: &str) -> FailureKind {
     }
 }
 
-/// `message` without anything shaped like a GitHub token or the
-/// credentials of a URL, as a status file or an answer may keep it.
+/// `message` without anything shaped like a GitHub token or another long
+/// token, the credentials of a URL, or an absolute path of the local file
+/// system (`[path]`), as a status file or an answer may keep it.
 pub fn redact(message: &str) -> String {
     const PREFIXES: [&str; 6] = ["github_pat_", "ghp_", "gho_", "ghu_", "ghs_", "ghr_"];
     let mut out = String::with_capacity(message.len());
@@ -280,7 +334,84 @@ pub fn redact(message: &str) -> String {
         };
     }
     cleaned.push_str(rest);
-    cleaned
+    without_paths(&without_long_tokens(&cleaned))
+}
+
+/// `message` with each word of 32 or more letters, digits, `_` and `-`
+/// that holds both letters and digits as `[redacted]`: a token of a shape
+/// not known, as an enterprise host or another tool may give.
+fn without_long_tokens(message: &str) -> String {
+    let mut out = String::with_capacity(message.len());
+    let mut word = String::new();
+    let flush = |word: &mut String, out: &mut String| {
+        let secret = word.chars().count() >= 32
+            && word.chars().any(|c| c.is_ascii_alphabetic())
+            && word.chars().any(|c| c.is_ascii_digit());
+        out.push_str(if secret { "[redacted]" } else { word });
+        word.clear();
+    };
+    for c in message.chars() {
+        if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+            word.push(c);
+        } else {
+            flush(&mut word, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut word, &mut out);
+    out
+}
+
+/// `message` with each absolute path of the local file system as `[path]`:
+/// a Unix path, a Windows path or a `file:` URL that starts a word, up to
+/// a quote, a bracket, `,`, `;`, `:`, ` (` or the end of the line. A path
+/// may hold spaces, so the words after one on its line go with it unless
+/// one of those ends it first. A path relative to the root stays, and so
+/// does a URL of the network.
+fn without_paths(message: &str) -> String {
+    let chars: Vec<char> = message.chars().collect();
+    let starts_word =
+        |i: usize| i == 0 || chars[i - 1].is_whitespace() || "([{\"'`=<,".contains(chars[i - 1]);
+    let delimits = |c: char| ")]}\"'`>,;:".contains(c);
+    let ends = |c: char| c.is_whitespace() || delimits(c);
+    // where a path that runs to `i` stops
+    let ends_at = |i: usize| {
+        let c = chars[i];
+        c == '\n' || c == '\r' || delimits(c) || (c == ' ' && chars.get(i + 1) == Some(&'('))
+    };
+    let at = |i: usize| chars.get(i).copied();
+    let mut out = String::with_capacity(message.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let rest: String = chars[i..chars.len().min(i + 7)].iter().collect();
+        // how much of the start to pass before a `:` ends the path
+        let start = if !starts_word(i) {
+            None
+        } else if chars[i] == '/' && at(i + 1).is_some_and(|c| c != '/' && !ends(c)) {
+            Some(1)
+        } else if chars[i].is_ascii_alphabetic()
+            && at(i + 1) == Some(':')
+            && matches!(at(i + 2), Some('\\' | '/'))
+        {
+            Some(3)
+        } else if rest.eq_ignore_ascii_case("file://") {
+            Some(7)
+        } else {
+            None
+        };
+        let Some(skip) = start else {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        };
+        let mut end = i + skip;
+        while end < chars.len() && !ends_at(end) {
+            end += 1;
+        }
+        out.push_str("[path]");
+        i = end;
+    }
+    out
 }
 
 /// What the host offers and who the fetch runs as.
@@ -389,17 +520,9 @@ pub fn update(
         return whole("its last whole fetch is older than the limit");
     }
     let repository = format!("{}/{}", options.owner, options.name);
-    if previous.source != "github"
-        || previous.host != options.host
-        || !previous.repository.eq_ignore_ascii_case(&repository)
-    {
-        return whole("the snapshot is of another repository");
-    }
-    if previous.no_titles == options.titles {
-        return whole("the snapshot was fetched with the other title setting");
-    }
-    if previous.range.bound != options.max_items {
-        return whole("the snapshot was fetched with another bound");
+    let asked = (options.titles, options.max_items);
+    if let Some(reason) = fetched_otherwise(previous, &options.host, &repository, asked) {
+        return whole(reason);
     }
     let Some(since) = crate::work::seconds(&previous.fetched_at) else {
         return whole("the snapshot's fetch time is unreadable");
@@ -439,6 +562,30 @@ pub fn update(
     let mut snapshot = Box::new(previous.clone());
     snapshot.merge(changes);
     Ok(Update::Merged { snapshot, read })
+}
+
+/// Why `previous` is not a snapshot of what a fetch of `repository` on
+/// `host` with `(titles, max_items)` asks for, as far as the file tells:
+/// another source, host or repository, the other title setting or another
+/// bound. `None` when it is.
+pub fn fetched_otherwise(
+    previous: &Snapshot,
+    host: &str,
+    repository: &str,
+    (titles, max_items): (bool, usize),
+) -> Option<&'static str> {
+    if previous.source != "github"
+        || previous.host != host
+        || !previous.repository.eq_ignore_ascii_case(repository)
+    {
+        Some("the snapshot is of another repository")
+    } else if previous.no_titles == titles {
+        Some("the snapshot was fetched with the other title setting")
+    } else if previous.range.bound != max_items {
+        Some("the snapshot was fetched with another bound")
+    } else {
+        None
+    }
 }
 
 /// The same account: by its numeric id when both have one, which stays
@@ -1192,6 +1339,94 @@ mod tests {
         ] {
             assert_eq!(classify(message), kind, "{message}");
         }
+    }
+
+    #[test]
+    fn a_message_keeps_no_absolute_path_and_no_long_token() {
+        for (message, kept) in [
+            (
+                "gh failed: open /Users/someone/.config/gh/hosts.yml: permission denied",
+                "gh failed: open [path]: permission denied",
+            ),
+            (
+                "[path]: writing it: Permission denied (os error 13)",
+                "[path]: writing it: Permission denied (os error 13)",
+            ),
+            (
+                "/srv/someone/shop/github.json: writing it: Read-only file system",
+                "[path]: writing it: Read-only file system",
+            ),
+            (
+                "writing it: C:\\Users\\someone\\shop\\github.json (os error 5)",
+                "writing it: [path] (os error 5)",
+            ),
+            (
+                "reading 'file:///home/someone/x.json' failed",
+                "reading '[path]' failed",
+            ),
+            // a path with spaces goes whole, up to what ends it
+            (
+                "gh failed: open /Users/some one/My Config/gh/hosts.yml: permission denied",
+                "gh failed: open [path]: permission denied",
+            ),
+            (
+                "writing it: C:\\Users\\some one\\shop\\github.json (os error 5)",
+                "writing it: [path] (os error 5)",
+            ),
+            (
+                "could not read /home/some one/x.json\nsecond line",
+                "could not read [path]\nsecond line",
+            ),
+            (
+                "open \"/Users/some one/x.json\" and /tmp/other dir/y.json",
+                "open \"[path]\" and [path]",
+            ),
+            (
+                "bad credential 0123456789abcdef0123456789abcdef01234567 given",
+                "bad credential [redacted] given",
+            ),
+            // what stays: paths below the root, URLs, addresses, words
+            (
+                ".archmap/github.json: writing it: No space left on device",
+                ".archmap/github.json: writing it: No space left on device",
+            ),
+            (
+                "Post \"https://api.github.com/graphql\": proxyconnect tcp: dial tcp \
+                 127.0.0.1:9: connect: connection refused",
+                "Post \"https://api.github.com/graphql\": proxyconnect tcp: dial tcp \
+                 127.0.0.1:9: connect: connection refused",
+            ),
+            (
+                "gh failed: HTTP 404: Not Found (https://ghe.example.com/api/graphql) a / b",
+                "gh failed: HTTP 404: Not Found (https://ghe.example.com/api/graphql) a / b",
+            ),
+            (
+                "the token in GH_ENTERPRISE_TOKEN is invalid",
+                "the token in GH_ENTERPRISE_TOKEN is invalid",
+            ),
+        ] {
+            assert_eq!(redact(message), kept, "{message}");
+        }
+    }
+
+    #[test]
+    fn a_response_gives_its_status_and_its_errors_codes_never_their_words() {
+        let out = b"HTTP/2.0 200 OK\r\nX-Ratelimit-Remaining: 0\r\n\r\n{\"errors\": [\
+            {\"type\": \"RATE_LIMITED\", \"message\": \"API rate limit exceeded for user ID 7.\"},\
+            {\"extensions\": {\"code\": \"undefinedField\"}, \"message\": \"Field 'x' doesn't exist\"},\
+            {\"type\": \"RATE_LIMITED\"},\
+            {\"type\": \"not a code\"}]}";
+        assert_eq!(status_code(out), Some(200));
+        let (_, body) = response(out);
+        assert_eq!(error_codes(body), ["RATE_LIMITED", "undefinedField"]);
+        assert_eq!(
+            status_code(b"HTTP/2.0 401 Unauthorized\r\n\r\n{}"),
+            Some(401)
+        );
+        // no HTTP answer: gh printed nothing, or a body alone
+        assert_eq!(status_code(b""), None);
+        assert_eq!(status_code(b"{\"data\": {}}"), None);
+        assert!(error_codes(b"not json").is_empty());
     }
 
     #[test]
