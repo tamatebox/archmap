@@ -457,6 +457,51 @@ fn a_submodule_changed_with_the_target_is_marked() {
         text.contains("\nMarks: (submodule) a git submodule, not a file\n"),
         "{text}"
     );
+    // neither an uncommitted `.gitmodules` nor the repository's config
+    // hides it: the history read is the commits'
+    repo.write(
+        ".gitmodules",
+        "[submodule \"lib\"]\n\tpath = vendor/lib\n\turl = ./x\n\tignore = all\n",
+    );
+    repo.git(&["config", "diff.ignoreSubmodules", "all"]);
+    let hidden = impact(&repo.dir, "src/a.ts", Format::Text);
+    assert!(
+        section(&hidden).iter().any(
+            |l| l.starts_with("  vendor/lib (submodule)  1 of the target's 2, 1 of its own 1:")
+        ),
+        "{hidden}"
+    );
+}
+
+#[test]
+fn a_file_inside_a_submodule_says_its_history_is_not_read() {
+    let mut repo = Repo::new("in-submodule");
+    repo.write("package.json", "{ \"name\": \"shop\" }\n");
+    repo.write("src/a.ts", "export const a = 1;\n");
+    repo.commit();
+    // HEAD holds `vendor/widget` as a submodule, checked out: its files are
+    // the submodule's commits, not this repository's
+    let commit = repo.git(&["rev-parse", "HEAD"]);
+    let link = format!("160000,{commit},vendor/widget");
+    repo.git(&["update-index", "--add", "--cacheinfo", &link]);
+    repo.git(&["commit", "-q", "-m", "widget"]);
+    repo.commits += 1;
+    repo.write("vendor/widget/index.ts", "export const widget = 1;\n");
+    let text = impact(&repo.dir, "vendor/widget/index.ts", Format::Text);
+    assert!(
+        text.contains(
+            "none: vendor/widget/index.ts is inside the submodule vendor/widget, whose own \
+             history is not read"
+        ),
+        "{text}"
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&impact(&repo.dir, "vendor/widget/index.ts", Format::Json)).unwrap();
+    assert_eq!(
+        json["co_change"]["none"],
+        serde_json::json!({"why": "in_submodule", "submodule": "vendor/widget"}),
+        "{json}"
+    );
 }
 
 #[test]

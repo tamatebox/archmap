@@ -228,6 +228,9 @@ fn log_args(bound: usize, renames: Renames) -> Vec<String> {
         "--no-color",
         "--no-ext-diff",
         "--no-textconv",
+        // `diff.ignoreSubmodules`, and `.gitmodules` even uncommitted, may
+        // hide a submodule's changes otherwise
+        "--ignore-submodules=none",
         "--no-show-signature",
         "--diff-merges=off",
         "--full-history",

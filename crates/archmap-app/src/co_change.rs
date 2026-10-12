@@ -247,6 +247,9 @@ fn no_commit(none: &NoCommit, label: &str, max_files: usize, kind: &str) -> Stri
             "HEAD does not hold {label}, so no commit changed it yet (uncommitted changes are \
              not read)"
         ),
+        NoCommit::InSubmodule { submodule } => {
+            format!("{label} is inside the submodule {submodule}, whose own history is not read")
+        }
         NoCommit::NoneRead { older: true } => {
             format!("no {kind} read changed {label}, and older commits were not read")
         }

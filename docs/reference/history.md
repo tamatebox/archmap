@@ -38,9 +38,10 @@ Reading never reaches the network and runs no program the repository
 configures: git runs with lazy fetching, filesystem monitors, external
 diffs, text conversion, pagers and prompts off, replace refs ignored, its
 output settings pinned (so a user's `diff.renames` or `log.follow` changes
-nothing), and environment variables that point git at another repository
-dropped. The user's own git configuration is kept, `safe.directory`
-included. The answer for the same HEAD is the same.
+nothing, and neither `diff.ignoreSubmodules` nor a `.gitmodules`, committed
+or not, hides a submodule's changes), and environment variables that point
+git at another repository dropped. The user's own git configuration is
+kept, `safe.directory` included. The answer for the same HEAD is the same.
 
 Without a history the answer says why: `not a git repository`, `git not
 found`, `dubious ownership: see git's safe.directory` (git refuses a
@@ -98,6 +99,8 @@ data, files in different languages kept in step.
   path; no minimum. The history line names the order. A file HEAD no
   longer holds is left out of the text.
 - **None:** `none: HEAD does not hold <file>, so no commit changed it yet`,
+  `none: <file> is inside the submodule vendor/widget, whose own history is
+  not read` (a file of a submodule HEAD holds, checked out),
   `none: no commit changed <file>`, `none: no commit read changed <file>,
   and older commits were not read` (a bounded read or a shallow clone),
   that it changed only in commits left out, or, for commits that changed

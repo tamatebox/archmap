@@ -67,11 +67,14 @@ pub struct CoChanged {
 }
 
 /// Why no counted commit changed the target.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "why")]
 pub enum NoCommit {
     /// HEAD holds none of the target's files: not committed yet.
     NotInHead,
+    /// The target lies inside a submodule HEAD holds: its commits are the
+    /// submodule's own, whose history is not read.
+    InSubmodule { submodule: String },
     /// It changed only in commits left out for their size.
     OnlyLeftOut { large: usize },
     /// No commit read changed it; `older` when the read stopped at its
@@ -224,7 +227,25 @@ pub fn co_change(history: &History, targets: &BTreeSet<String>, settings: &Setti
 
     let none = target_commits.is_empty().then(|| {
         if !targets.iter().any(|t| history.head_files.contains_key(t)) {
-            NoCommit::NotInHead
+            // committed in a submodule's own repository, if inside one
+            let submodules: Vec<&String> = history
+                .head_files
+                .iter()
+                .filter(|(_, entry)| **entry == HeadEntry::Submodule)
+                .map(|(path, _)| path)
+                .collect();
+            let holding = targets.iter().find_map(|t| {
+                submodules.iter().find(|s| {
+                    t.strip_prefix(s.as_str())
+                        .is_some_and(|r| r.starts_with('/'))
+                })
+            });
+            match holding {
+                Some(submodule) => NoCommit::InSubmodule {
+                    submodule: (*submodule).clone(),
+                },
+                None => NoCommit::NotInHead,
+            }
         } else if large_touching > 0 {
             NoCommit::OnlyLeftOut {
                 large: large_touching,
@@ -645,6 +666,27 @@ mod tests {
         let h = history(vec![commit("c1", &[], &[("a.ts", A)])], &["a.ts"]);
         let new = co_change(&h, &targets(&["new.ts"]), &Settings::default());
         assert_eq!(new.none, Some(NoCommit::NotInHead));
+        // inside a submodule HEAD holds, not one of a sibling's name
+        let mut sub = h.clone();
+        sub.head_files
+            .insert("vendor/widget".into(), HeadEntry::Submodule);
+        let inside = co_change(
+            &sub,
+            &targets(&["vendor/widget/index.ts"]),
+            &Settings::default(),
+        );
+        assert_eq!(
+            inside.none,
+            Some(NoCommit::InSubmodule {
+                submodule: "vendor/widget".into()
+            })
+        );
+        let sibling = co_change(
+            &sub,
+            &targets(&["vendor/widget2/index.ts"]),
+            &Settings::default(),
+        );
+        assert_eq!(sibling.none, Some(NoCommit::NotInHead));
         let mut bounded = h.clone();
         bounded.head_files.insert("b.ts".into(), HeadEntry::File);
         bounded.reached_bound = true;
