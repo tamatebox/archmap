@@ -27,6 +27,11 @@ pub(crate) struct ExportTable {
     /// Engine`. `require` and `import x = require()` give it rather than a
     /// namespace that holds it; `exports.default = ..` gives no such value.
     pub module_value: Option<String>,
+    /// The default export is `module.exports` whole, as an `import` takes
+    /// it from a CommonJS module that declares no default of its own
+    /// (`module.exports = { pad }`, `exports.rate = 1`): its other exports
+    /// are members of the default.
+    pub default_is_module: bool,
     /// The names the file declares only as types: interfaces and type
     /// aliases that no value of the same name merges with. The compiler
     /// erases an import or a re-export that takes nothing else.
@@ -178,7 +183,8 @@ impl<'a> Definitions<'a> {
 
     /// The name a statement that takes `name` from `file` records: `name`
     /// itself, except that a default export goes by the name its
-    /// declaration in `file` gives, and a name `file` does not export, from
+    /// declaration in `file` gives, or as the whole module when it is
+    /// `module.exports` whole, and a name `file` does not export, from
     /// a module that is one declaration (`module.exports = logger`), by
     /// that declaration's. A default that `file` re-exports, whole
     /// or not, stays `default`: `file` declares no name for it, and the
@@ -258,7 +264,8 @@ impl<'a> Index<'a> {
     }
 
     /// `name` as `file` declares it: a default export by the name its
-    /// declaration gives, when it gives one, and a name it does not export
+    /// declaration gives, when it gives one, or as the whole module when
+    /// it is `module.exports` whole, and a name it does not export
     /// by the declaration the module is, of which it is a member (`info`
     /// of `const { info } = require('./logger')` for `module.exports =
     /// logger`).
@@ -267,6 +274,7 @@ impl<'a> Index<'a> {
             return name;
         };
         let value = match name.as_str() {
+            "default" if exports.default_is_module => Some(WHOLE_MODULE.to_owned()),
             "default" => exports.default_name.clone(),
             WHOLE_MODULE => None,
             _ if exports.names.contains_key(&name) => None,
@@ -472,6 +480,7 @@ mod tests {
                 stars: stars.iter().map(|&(i, l)| (i, l, false)).collect(),
                 default_name: None,
                 module_value: None,
+                default_is_module: false,
                 types: BTreeSet::new(),
                 type_exports: BTreeSet::new(),
             },

@@ -470,6 +470,38 @@ fn a_module_that_is_one_declaration_gives_it_to_require() {
 }
 
 #[test]
+fn the_default_of_a_commonjs_module_is_module_exports_whole() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/ts-module-value");
+    let report = scan(&root, &ScanOptions::default()).unwrap();
+    // `module.exports = { pad, trim }`: imported as the default, taken as
+    // `default` from a namespace and from an awaited `import()`
+    let pad = uses_of(&report, "pad");
+    assert_eq!(
+        shown(&pad),
+        [
+            "src/esm.mjs:3:22 call as fmt.pad via 1",
+            "src/fmt.js:7:20 read",
+            "src/ns.mjs:3:30 call as fmt.default.pad via 1",
+        ]
+    );
+    let trim = uses_of(&report, "trim");
+    assert_eq!(
+        shown(&trim),
+        [
+            "src/dyn.mjs:1:53 call as default.trim via 1",
+            "src/fmt.js:7:25 read",
+        ]
+    );
+    // `exports.rate = 1`, which sets no default
+    let rate = uses_of(&report, "rate");
+    assert_eq!(shown(&rate), ["src/rated.mjs:3:20 read as r.rate via 1"]);
+    // each statement takes the module whole, and one that reads another
+    // member never names the symbol
+    assert_eq!(places(&pad.unused), ["src/dyn.mjs:1"]);
+    assert_eq!(places(&trim.unused), ["src/esm.mjs:1", "src/ns.mjs:1"]);
+}
+
+#[test]
 fn a_static_member_may_be_called_where_its_class_is_used_as_a_value() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/ts-static-members");
     let report = scan(&root, &ScanOptions::default()).unwrap();

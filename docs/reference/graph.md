@@ -35,8 +35,9 @@ records both.
 
 `names` says what the statement takes from `target`, as `target` exports
 it: a default export goes by the name its declaration in `target` gives
-(`default` when `target` declares none or re-exports it), `*` stands for
-the whole module (a namespace import, `export *`), and no names with a
+(`default` when `target` declares none or re-exports it, `*` when it is a
+CommonJS module's `module.exports` whole), `*` stands for the whole module
+(a namespace import, `export *`), and no names with a
 `target` means the statement only loads the file (a side-effect import). A
 Python statement that binds a module (`import pkg.sub`, `from pkg import
 sub`) takes the names its file reads through it (`sub.pay`), and `*` when

@@ -425,7 +425,8 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
 - every import and re-export statement records the names it takes from the file it loads (see
   [graph.md](graph.md)): the exported name for a named import (`a` for `import { a as b }`) and for
   `export { a } from`, the name the loaded file's default export declares for a default import (`limitOf`
-  for `export default function limitOf`, `default` when it declares none or re-exports it), `*` for a
+  for `export default function limitOf`, `default` when it declares none or re-exports it, `*` from a
+  CommonJS module that declares no default of its own, whose default is `module.exports` whole), `*` for a
   namespace import, `import x = require()` and
   `export *`, none for a side-effect import; from a module that is one declaration (`module.exports =
   logger`, `export = Engine`), a name it does not export is a member of that declaration, so
@@ -531,7 +532,11 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
   `module.exports.pad = ..` as `pad`, each property of `module.exports = { .. }`, and the function,
   class or local declaration that `module.exports` or `exports.default` is, also as the default
   export; a local declaration keeps its own kind, line and signature, as with `export { a as b }`,
-  and the `exports.a = void 0` placeholders that compilers write give nothing
+  and the `exports.a = void 0` placeholders that compilers write give nothing. A module that declares
+  no default of its own (`module.exports = { pad }`, `exports.rate = 1`) gives `module.exports` whole
+  as its default, as Node gives it to an `import`, so `import fmt from`, the `default` of a
+  namespace (`fmt.default.pad`) and of an `import()` take the whole module, and `Used at` reads its
+  members through them
 - a file TypeScript reads as a script, whose top-level declarations are global, gives every
   top-level declaration as a symbol and is a `script` component when it is a component of its own,
   and `summary` counts scripts in Coverage; a file is a script unless it has an `import` or `export`

@@ -260,12 +260,13 @@ impl<'g> Pass<'g, '_> {
         let mut found = BTreeSet::new();
         if module == self.defining {
             found.insert(self.tail.clone());
-            let (default, value) = self
+            let (default, value, whole) = self
                 .parsed(module)
                 .map(|p| {
                     (
                         p.exports.default_name.clone(),
                         p.exports.module_value.clone(),
+                        p.exports.default_is_module,
                     )
                 })
                 .unwrap_or_default();
@@ -274,6 +275,15 @@ impl<'g> Pass<'g, '_> {
             // that name (`[]`, `["boot"]`)
             if value.as_ref() == Some(&self.tail[0]) {
                 found.insert(self.tail[1..].to_vec());
+            }
+            // a CommonJS module's default, to an `import`, is
+            // `module.exports` whole, which holds the symbol
+            if whole {
+                found.insert(
+                    std::iter::once("default".to_owned())
+                        .chain(self.tail.clone())
+                        .collect(),
+                );
             }
             let names = default
                 .filter(|d| d == &self.tail[0])

@@ -1590,6 +1590,73 @@ fn each_test_to_run_again_says_how_it_reaches_the_symbol() {
 }
 
 #[test]
+fn a_commonjs_module_s_default_reaches_its_members_tests() {
+    // `module.exports = { pad, trim }` and `exports.rate = 1` declare no
+    // default: an `import` takes `module.exports` whole as one
+    let mut files: Vec<(String, String)> = [
+        (
+            "package.json",
+            "{ \"name\": \"fmt\", \"devDependencies\": { \"vitest\": \"1.0.0\" } }",
+        ),
+        (
+            "src/fmt.js",
+            "function pad(s) { return s; }\nfunction trim(s) { return s; }\nmodule.exports = { pad, trim };\n",
+        ),
+        (
+            "src/esm.mjs",
+            "import fmt from './fmt.js';\nexport const a = fmt.pad('x');\n",
+        ),
+        (
+            "src/ns.mjs",
+            "import * as fmt from './fmt.js';\nexport const b = fmt.default.pad('x');\n",
+        ),
+        (
+            "src/dyn.mjs",
+            "export const c = (await import('./fmt.js')).default.trim('x');\n",
+        ),
+        ("src/rate.js", "exports.rate = 1;\n"),
+        (
+            "src/rated.mjs",
+            "import r from './rate.js';\nexport const d = r.rate;\n",
+        ),
+    ]
+    .into_iter()
+    .map(|(file, text)| (file.to_owned(), text.to_owned()))
+    .collect();
+    for name in ["esm", "ns", "dyn", "rated"] {
+        files.push((
+            format!("tests/{name}.test.mjs"),
+            format!("import '../src/{name}.mjs';\n"),
+        ));
+    }
+    let repo = Repo::new("commonjs-default", &files);
+    let ws = scan(&repo.0);
+    for (target, heading, tests) in [
+        (
+            "pad",
+            "Tests to run again: 2",
+            vec![
+                "  tests/esm.test.mjs (through src/esm.mjs)",
+                "  tests/ns.test.mjs (through src/ns.mjs)",
+            ],
+        ),
+        (
+            "trim",
+            "Tests to run again: 1",
+            vec!["  tests/dyn.test.mjs (through src/dyn.mjs)"],
+        ),
+        (
+            "rate",
+            "Tests to run again: 1",
+            vec!["  tests/rated.test.mjs (through src/rated.mjs)"],
+        ),
+    ] {
+        let out = text(&ws, target);
+        assert_eq!(section(&out, heading), tests, "{out}");
+    }
+}
+
+#[test]
 fn a_require_of_a_module_that_is_the_symbol_stays_in_the_reach() {
     // `module.exports = logger`: `logger.info()` through the binding of
     // `require` uses it, so the caller and its test stay; a binding

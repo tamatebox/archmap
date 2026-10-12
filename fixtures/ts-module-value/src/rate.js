@@ -1,0 +1,1 @@
+exports.rate = 1;

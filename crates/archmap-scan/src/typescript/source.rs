@@ -241,6 +241,7 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
     // once every binding is known: (local name, exported name, line, type
     // only).
     let mut exported: Vec<(String, String, u32, bool)> = Vec::new();
+    let mut commonjs = CommonJs::default();
     for statement in &parsed.program.body {
         let start = statement.span().start;
         let line = lines.line(start);
@@ -467,7 +468,7 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
                 exported.push((local, "default".to_owned(), line, false));
             }
             Statement::ExpressionStatement(e) if javascript => {
-                commonjs_exports(&source, &e.expression, &locals, &mut file);
+                commonjs_exports(&source, &e.expression, &locals, &mut file, &mut commonjs);
             }
             // `export = Engine`: the module is the declaration, which an
             // import takes as its default
@@ -483,6 +484,15 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
             }
             _ => {}
         }
+    }
+    // to an `import`, a CommonJS module that declares no default of its
+    // own gives `module.exports` whole as its default
+    if commonjs.exports && !commonjs.own_default && !exported.iter().any(|e| e.1 == "default") {
+        file.exports.default_is_module = true;
+        file.exports
+            .names
+            .entry("default".to_owned())
+            .or_insert(Export::Local);
     }
     // the declarations `export { .. }` exports, by their local names
     let exported_locals: BTreeSet<String> = exported.iter().map(|(l, ..)| l.clone()).collect();
@@ -656,6 +666,16 @@ pub(crate) fn parse(path: &Path, text: &str) -> Result<ParsedFile, String> {
     Ok(file)
 }
 
+/// What a file's top-level CommonJS exports say of its default export.
+#[derive(Default)]
+struct CommonJs {
+    /// It exports through `module.exports` or `exports`.
+    exports: bool,
+    /// It declares a default of its own: `exports.default = ..`, or
+    /// `module.exports = ` a declaration.
+    own_default: bool,
+}
+
 /// The symbols and export-table entries of a top-level CommonJS export:
 /// `exports.a = ..`, `module.exports.a = ..` and `module.exports = ..`, the
 /// last also as the default export. The `exports.a = exports.b = void 0`
@@ -665,6 +685,7 @@ fn commonjs_exports(
     expression: &Expression,
     locals: &BTreeMap<String, Vec<ExportedSymbol>>,
     file: &mut ParsedFile,
+    commonjs: &mut CommonJs,
 ) {
     let mut targets = Vec::new();
     let mut value = expression;
@@ -679,6 +700,7 @@ fn commonjs_exports(
         return;
     }
     for (target, start) in targets {
+        commonjs.exports = true;
         match target {
             Some(name) if name != "default" => {
                 file.symbols
@@ -701,6 +723,7 @@ fn commonjs_exports(
                     }
                     _ => None,
                 };
+                commonjs.own_default |= target.is_some() || declared.is_some();
                 if let Some(symbols) = declared {
                     if file.exports.default_name.is_none() {
                         file.exports.default_name = Some(symbols[0].name.clone());
@@ -2983,6 +3006,32 @@ export default local;
         for name in ["a", "b"] {
             assert_eq!(file.exports.names.get(name), Some(&Export::Local), "{name}");
         }
+    }
+
+    #[test]
+    fn a_commonjs_module_without_a_default_of_its_own_gives_itself() {
+        let whole = |text: &str| {
+            let file = parse(Path::new("m.js"), text).unwrap();
+            let default = file.exports.names.contains_key("default");
+            (file.exports.default_is_module, default)
+        };
+        // `module.exports` whole is what an `import` takes as the default
+        assert_eq!(whole("module.exports = { pad };\n"), (true, true));
+        assert_eq!(whole("module.exports = make();\n"), (true, true));
+        assert_eq!(whole("exports.rate = 1;\n"), (true, true));
+        // a default of its own: the declaration, `exports.default`
+        assert_eq!(
+            whole("function logger() {}\nmodule.exports = logger;\n"),
+            (false, true)
+        );
+        assert_eq!(whole("exports.default = {};\n"), (false, true));
+        assert_eq!(
+            whole("exports.rate = 1;\nexports.default = { rate: 2 };\n"),
+            (false, true)
+        );
+        // no CommonJS export, or only the placeholders compilers write
+        assert_eq!(whole("export const rate = 1;\n"), (false, false));
+        assert_eq!(whole("exports.a = void 0;\n"), (false, false));
     }
 
     #[test]
