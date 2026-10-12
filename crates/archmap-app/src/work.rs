@@ -109,6 +109,10 @@ struct WorkView<'a> {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     not_seen: Vec<NotSeen>,
     coverage: Coverage<'a>,
+    /// The last attempt at fetching, when it failed after the snapshot's
+    /// fetch: a diagnosis of the snapshot, apart from what it says.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    refresh: Option<crate::views::RefreshView>,
     /// The files the item's work changed, through the commits the history
     /// read holds.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -317,6 +321,7 @@ fn view<'a>(
         repository: &snapshot.repository,
         number,
         item,
+        refresh: ws.failed_refresh(),
         relations: linked,
         commits,
         merge_commit,
@@ -422,6 +427,13 @@ fn text(view: &WorkView, snapshot: &Snapshot, history: &History, verbose: bool) 
         }
     }
     let _ = writeln!(out, "  snapshot: {}", range_line(snapshot));
+    if let Some(refresh) = &view.refresh {
+        let _ = writeln!(
+            out,
+            "  refresh: {}",
+            crate::work_line::refresh_line(refresh)
+        );
+    }
 
     if let Some(item) = view.item.filter(|i| i.kind == ItemKind::PullRequest) {
         let matched = view
@@ -693,15 +705,31 @@ fn not_seen_line(gap: &NotSeen, number: u64, whole: bool) -> String {
 /// Without a snapshot: the answer says so and where it looked.
 fn no_snapshot(ws: &Workspace, requested: &str, format: Format) -> Result<String> {
     let path = ws.snapshot_path();
+    let refresh = ws.failed_refresh();
     Ok(match format {
-        Format::Json => crate::json(&serde_json::json!({
-            "requested": requested,
-            "snapshot": null,
-            "looked_at": path,
-        }))?,
-        Format::Text => format!(
-            "{requested}: no work snapshot\n  looked at {path} (`archmap fetch github` writes one)\n"
-        ),
+        Format::Json => {
+            let mut answer = serde_json::json!({
+                "requested": requested,
+                "snapshot": null,
+                "looked_at": path,
+            });
+            if let Some(refresh) = &refresh {
+                answer["refresh"] = serde_json::to_value(refresh)?;
+            }
+            crate::json(&answer)?
+        }
+        Format::Text => {
+            let mut text = format!(
+                "{requested}: no work snapshot\n  looked at {path} (`archmap fetch github` writes one)\n"
+            );
+            if let Some(refresh) = &refresh {
+                text.push_str(&format!(
+                    "  refresh: {}\n",
+                    crate::work_line::refresh_line(refresh)
+                ));
+            }
+            text
+        }
     })
 }
 

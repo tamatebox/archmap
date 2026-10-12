@@ -447,6 +447,7 @@ fn a_fetch_takes_its_host_from_origin_only_on_github_com() {
         output: None,
         update: false,
         full_if_older_than: "24h",
+        if_older_than: None,
     };
     // refused before anything runs: no gh, nothing written
     let error = archmap_app::fetch_github(&repo.dir, &request)
@@ -484,6 +485,8 @@ fn a_fetch_takes_its_host_from_origin_only_on_github_com() {
     .unwrap_err()
     .to_string();
     assert!(error.contains("--since takes a date"), "{error}");
+    // refused before the snapshot's lock is taken
+    assert!(!repo.dir.join(".archmap").exists());
     // credentials an `origin` carries never reach the error, whether its
     // repository is read from it or not
     for (url, shown) in [
@@ -899,5 +902,106 @@ fn files_are_named_as_head_holds_them_and_unmatched_work_is_counted() {
         summary
             .contains("; 1 of its 2 merged pull requests matches no commit of the history read\n"),
         "{summary}"
+    );
+}
+
+/// Write a refresh status beside the snapshot.
+fn status(repo: &Repo, repository: &str, attempt: &str) {
+    std::fs::create_dir_all(repo.dir.join(".archmap")).unwrap();
+    std::fs::write(
+        repo.dir.join(".archmap/github.status.json"),
+        serde_json::json!({
+            "schema": 1, "source": "github", "host": "github.com", "repository": repository,
+            "last_attempt_at": attempt,
+            "last_error": {"kind": "rate_limit", "message": "GraphQL: API rate limit exceeded for user ID 7."},
+            "next_retry_at": "2026-10-04T11:00:00Z", "consecutive_failures": 2,
+        })
+        .to_string(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_failed_refresh_after_the_snapshot_is_said_beside_it() {
+    let (repo, _) = shop("refresh");
+    status(&repo, "acme/shop", "2026-10-04T10:00:00Z");
+    let ws = scan(&repo.dir);
+    let line = "the last attempt, 2026-10-04 10:00 UTC, failed (rate limit): GraphQL: API rate \
+                limit exceeded for user ID 7.; no automatic attempt before 2026-10-04 11:00 UTC";
+    let summary = ws.summary(DEFAULT_DEPTH, false);
+    assert!(
+        summary.contains(&format!(
+            "fetched 2026-10-03 09:00 UTC, as visible to the account that fetched\nwork refresh: \
+             {line}\n"
+        )),
+        "{summary}"
+    );
+    let item = query(&ws, "#12", Format::Text);
+    assert!(item.contains(&format!("\n  refresh: {line}\n")), "{item}");
+    let json: serde_json::Value = serde_json::from_str(&query(&ws, "#12", Format::Json)).unwrap();
+    assert_eq!(json["refresh"]["consecutive_failures"], 2, "{json}");
+    assert_eq!(json["refresh"]["error"]["kind"], "rate_limit", "{json}");
+    let file = query(&ws, "src/price.ts", Format::Text);
+    assert!(file.contains(&format!("\n  refresh: {line}\n")), "{file}");
+    let json: serde_json::Value =
+        serde_json::from_str(&query(&ws, "src/price.ts", Format::Json)).unwrap();
+    assert_eq!(
+        json["work"]["refresh"]["next_retry_at"], "2026-10-04T11:00:00Z",
+        "{json}"
+    );
+}
+
+#[test]
+fn a_failure_older_than_the_snapshot_or_of_another_repository_is_not_said() {
+    // a fetch that wrote the snapshot and stopped before its status: the
+    // failure before it is past
+    let (repo, _) = shop("refresh-past");
+    status(&repo, "acme/shop", "2026-10-03T08:00:00Z");
+    let ws = scan(&repo.dir);
+    for answer in [
+        ws.summary(DEFAULT_DEPTH, false),
+        query(&ws, "#12", Format::Text),
+        query(&ws, "#12", Format::Json),
+        query(&ws, "src/price.ts", Format::Text),
+        query(&ws, "src/price.ts", Format::Json),
+    ] {
+        assert!(
+            !answer.contains("refresh:") && !answer.contains("\"refresh\""),
+            "{answer}"
+        );
+    }
+    let (other, _) = shop("refresh-other");
+    status(&other, "acme/web", "2026-10-04T10:00:00Z");
+    let ws = scan(&other.dir);
+    assert!(!ws.summary(DEFAULT_DEPTH, false).contains("refresh:"));
+    assert!(!query(&ws, "#12", Format::Text).contains("refresh:"));
+}
+
+#[test]
+fn a_failed_first_fetch_is_said_where_the_snapshot_would_be() {
+    let mut repo = Repo::new("refresh-none");
+    repo.write_package();
+    repo.commit("src/a.ts", "export const a = 1;\n");
+    status(&repo, "acme/shop", "2026-10-04T10:00:00Z");
+    let ws = scan(&repo.dir);
+    let summary = ws.summary(DEFAULT_DEPTH, false);
+    assert!(
+        summary.contains(
+            "\nwork: none (no snapshot at .archmap/github.json)\nwork refresh: the last \
+             attempt, 2026-10-04 10:00 UTC, failed (rate limit): "
+        ),
+        "{summary}"
+    );
+    let item = query(&ws, "#3", Format::Text);
+    assert!(
+        item.contains("\n  refresh: the last attempt, 2026-10-04 10:00 UTC, failed"),
+        "{item}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&query(&ws, "#3", Format::Json)).unwrap();
+    assert_eq!(json["refresh"]["error"]["kind"], "rate_limit", "{json}");
+    let file = query(&ws, "src/a.ts", Format::Text);
+    assert!(
+        file.contains("\n  refresh: the last attempt, 2026-10-04 10:00 UTC, failed"),
+        "{file}"
     );
 }

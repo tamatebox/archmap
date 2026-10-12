@@ -142,6 +142,26 @@ pub(crate) fn date(time: i64) -> String {
     format!("{year:04}-{month:02}-{day:02}")
 }
 
+/// A failed attempt at fetching as one line: when, what kind, the first
+/// line of its message, and the time before which no automatic attempt
+/// runs.
+pub(crate) fn refresh_line(refresh: &crate::views::RefreshView) -> String {
+    let message = refresh.error.message.lines().next().unwrap_or("");
+    let message: String = match message.chars().count() > 160 {
+        true => message.chars().take(160).chain("…".chars()).collect(),
+        false => message.to_owned(),
+    };
+    let mut line = format!(
+        "the last attempt, {}, failed ({}): {message}",
+        utc_minute(&refresh.last_attempt_at),
+        refresh.error.kind.as_str()
+    );
+    if let Some(next) = &refresh.next_retry_at {
+        let _ = write!(line, "; no automatic attempt before {}", utc_minute(next));
+    }
+    line
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -83,12 +83,13 @@ files a scan would walk, with their size, modification time and (on Unix)
 change time, and the `site-packages` directories of the virtualenvs the
 Python analyzer reads, the git HEAD with whether the clone is shallow, and
 the size and modification time of the work snapshot (`.archmap/github.json`,
-which the walk skips).
+which the walk skips) and of its refresh status
+(`.archmap/github.status.json`).
 When the stamp matches the one taken before the kept
 graph's scan, the graph answers; otherwise the root is scanned again, so an
 edit, a new file, a deleted or renamed file, or a package installed into
-`.venv`, a commit, a checkout, `git fetch --unshallow` or a new work
-snapshot shows in the next answer. The stamp goes by sizes and times, so an
+`.venv`, a commit, a checkout, `git fetch --unshallow`, a new work
+snapshot or a failed refresh shows in the next answer. The stamp goes by sizes and times, so an
 edit that keeps a file's size and lands within the file system's timestamp
 resolution of the previous stamp is seen only with the next change. A
 failed scan keeps nothing, and the next call tries again; a target outside
@@ -96,8 +97,9 @@ the root fails before any scan. Calls run one at a time, so two calls on one roo
 once, and a call on a very large root holds the others until its scan ends.
 Nothing is written to disk; `.archmap/graph.json` is never read, while
 `.archmap/github.json` is, by `'#N'` targets, the Work sections of `query`
-and `impact`, and `summary`'s Coverage; the server never reaches the network
-and fetches nothing. The uses
+and `impact`, and `summary`'s Coverage, and so is the status beside it, to
+say that the last refresh failed; the server never reaches the network,
+fetches nothing and takes no fetch's lock. The uses
 of a symbol that `query` lists are read from the files when it asks, after
 the stamp, so they read the same files as the graph; for Rust, the module
 trees the scan built are kept beside the graph to resolve them, which adds

@@ -41,7 +41,7 @@ use serde::Serialize;
 
 pub use by_symbol::BySymbolRequest;
 pub use check::{load_rules, CheckAnswer, Rules, RULES_FILE};
-pub use fetch::{fetch_github, FetchRequest, DEFAULT_MAX_ITEMS};
+pub use fetch::{fetch_github, FetchRequest, Fetched, Outcome, DEFAULT_MAX_ITEMS};
 pub use target::reject_outside;
 
 /// Depth that `summary`, `query` and `impact` roll up to unless told
@@ -192,8 +192,32 @@ impl Workspace {
         })
     }
 
+    /// The last attempt at fetching the snapshot, when it failed after the
+    /// snapshot was fetched: a status older than the snapshot (left by an
+    /// attempt before a later success, or by one interrupted between the
+    /// two writes) or of another repository never shows.
+    pub(crate) fn failed_refresh(&self) -> Option<views::RefreshView> {
+        let path = archmap_scan::work::status_path(&self.snapshot_path);
+        let status = archmap_scan::work::read_status(&path)?;
+        let error = status.last_error.clone()?;
+        if let Ok(Some(snapshot)) = self.snapshot() {
+            let same = status.host == snapshot.host
+                && status.repository.eq_ignore_ascii_case(&snapshot.repository);
+            if !(same && fetch::after_fetch(&status, snapshot)) {
+                return None;
+            }
+        }
+        Some(views::RefreshView {
+            last_attempt_at: status.last_attempt_at,
+            error,
+            next_retry_at: status.next_retry_at,
+            consecutive_failures: status.consecutive_failures,
+        })
+    }
+
     /// The Markdown summary at `depth`; `verbose` lists everything.
     pub fn summary(&self, depth: usize, verbose: bool) -> String {
+        let refresh = self.failed_refresh();
         let work = match self.snapshot() {
             Ok(Some(snapshot)) => {
                 let mut line = work_line::range_line(snapshot);
@@ -204,9 +228,16 @@ impl Workspace {
                 }
                 Some(line)
             }
-            Ok(None) => None,
+            Ok(None) => refresh
+                .as_ref()
+                .map(|_| format!("none (no snapshot at {})", self.snapshot_path())),
             Err(error) => Some(format!("unreadable: {error}")),
         };
+        // a diagnosis of the snapshot on a line of its own
+        let work = work.map(|line| match &refresh {
+            Some(refresh) => format!("{line}\nwork refresh: {}", work_line::refresh_line(refresh)),
+            None => line,
+        });
         summary::render(
             self.graph(),
             &self.report.root,

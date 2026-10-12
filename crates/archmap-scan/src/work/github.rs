@@ -14,8 +14,8 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 use archmap_core::work::{
-    Account, Item, ItemKind, ItemState, NotVisible, Range, Ref, Relation, RelationType, SinceRule,
-    Snapshot, WORK_SCHEMA,
+    Account, FailureKind, Item, ItemKind, ItemState, NotVisible, Range, Ref, Relation,
+    RelationType, SinceRule, Snapshot, WORK_SCHEMA,
 };
 use serde_json::{json, Value};
 
@@ -50,13 +50,51 @@ pub struct FetchOptions {
 /// One GraphQL request (`{"query", "variables"}`) to its response's JSON.
 pub type Run<'a> = dyn FnMut(&Value) -> Result<Value, String> + 'a;
 
-/// The gh CLI as the transport for `host`: `gh api graphql --input -`, the
-/// request on stdin, prompts off. Its error message is passed on; nothing
+/// What GitHub's response headers said of its rate limits.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RateHints {
+    /// `retry-after`: seconds to wait before retrying.
+    pub retry_after: Option<i64>,
+    /// `x-ratelimit-remaining`.
+    pub remaining: Option<i64>,
+    /// `x-ratelimit-reset`: when the primary limit resets, in seconds since
+    /// the epoch.
+    pub reset: Option<i64>,
+}
+
+/// The gh CLI as the transport for a host: `gh api graphql --include
+/// --input -`, the request on stdin, prompts off. It keeps the rate-limit
+/// headers of the last response, failed or not, so a failure can say when
+/// to retry. Its error message is passed on, without token shapes; nothing
 /// of its environment is.
-pub fn gh(host: &str) -> impl FnMut(&Value) -> Result<Value, String> + '_ {
-    move |request: &Value| {
+#[derive(Debug)]
+pub struct Gh {
+    host: String,
+    /// The headers of the last response gh gave.
+    pub hints: Option<RateHints>,
+}
+
+impl Gh {
+    pub fn new(host: &str) -> Self {
+        Gh {
+            host: host.to_owned(),
+            hints: None,
+        }
+    }
+
+    /// One request.
+    pub fn call(&mut self, request: &Value) -> Result<Value, String> {
+        let host = self.host.as_str();
         let mut child = Command::new("gh")
-            .args(["api", "graphql", "--hostname", host, "--input", "-"])
+            .args([
+                "api",
+                "graphql",
+                "--include",
+                "--hostname",
+                host,
+                "--input",
+                "-",
+            ])
             .env("GH_PROMPT_DISABLED", "1")
             .env("NO_COLOR", "1")
             .stdin(Stdio::piped())
@@ -79,16 +117,170 @@ pub fn gh(host: &str) -> impl FnMut(&Value) -> Result<Value, String> + '_ {
         let out = child
             .wait_with_output()
             .map_err(|e| format!("running gh: {e}"))?;
+        let (headers, answer) = response(&out.stdout);
+        self.hints = Some(rate_hints(&headers));
         if !out.status.success() {
             let message = String::from_utf8_lossy(&out.stderr);
-            let first = message.lines().next().unwrap_or("").trim();
-            return Err(format!(
-                "gh failed: {first} (log in with `gh auth login --hostname {host}`, or set \
-                 GH_TOKEN)"
-            ));
+            let first = redact(message.lines().next().unwrap_or("").trim());
+            // the way out of a login problem, for that problem only
+            return Err(match classify(&first) {
+                FailureKind::Auth => format!(
+                    "gh failed: {first} (log in with `gh auth login --hostname {host}`, or set \
+                     GH_TOKEN)"
+                ),
+                _ => format!("gh failed: {first}"),
+            });
         }
-        serde_json::from_slice(&out.stdout).map_err(|e| format!("gh answered no JSON: {e}"))
+        serde_json::from_slice(answer).map_err(|e| format!("gh answered no JSON: {e}"))
     }
+}
+
+/// The headers and the body of what `gh api --include` printed: a status
+/// line and headers up to a blank line, then the body; all body when it
+/// starts otherwise.
+pub fn response(out: &[u8]) -> (Vec<(String, String)>, &[u8]) {
+    if !out.starts_with(b"HTTP/") {
+        return (Vec::new(), out);
+    }
+    let split = [&b"\r\n\r\n"[..], &b"\n\n"[..]]
+        .iter()
+        .filter_map(|sep| {
+            out.windows(sep.len())
+                .position(|w| w == *sep)
+                .map(|at| (at, sep.len()))
+        })
+        .min();
+    let Some((at, len)) = split else {
+        return (Vec::new(), &out[out.len()..]);
+    };
+    let head = String::from_utf8_lossy(&out[..at]);
+    let headers = head
+        .lines()
+        .skip(1)
+        .filter_map(|line| line.split_once(':'))
+        .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned()))
+        .collect();
+    (headers, &out[at + len..])
+}
+
+/// The rate-limit headers among `headers`.
+pub fn rate_hints(headers: &[(String, String)]) -> RateHints {
+    let number = |name: &str| {
+        headers
+            .iter()
+            .find(|(n, _)| n == name)
+            .and_then(|(_, v)| v.parse::<i64>().ok())
+    };
+    RateHints {
+        retry_after: number("retry-after"),
+        remaining: number("x-ratelimit-remaining"),
+        reset: number("x-ratelimit-reset"),
+    }
+}
+
+/// When GitHub's GraphQL rate limit of the account gh uses on `host`
+/// resets (seconds since the epoch), asked of the REST `rate_limit`
+/// endpoint, which counts against no primary limit, though it may against
+/// the secondary one; `None` when it cannot tell.
+pub fn rate_limit_reset(host: &str) -> Option<i64> {
+    let out = Command::new("gh")
+        .args(["api", "rate_limit", "--hostname", host])
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let answer: Value = serde_json::from_slice(&out.stdout).ok()?;
+    answer["resources"]["graphql"]["reset"].as_i64()
+}
+
+/// What a failed fetch ran into, as far as its message tells: the words
+/// GitHub and gh use for a rate limit, a login or access problem, and the
+/// network or the servers; anything else is `Other`.
+pub fn classify(message: &str) -> FailureKind {
+    let m = message.to_ascii_lowercase();
+    let any = |words: &[&str]| words.iter().any(|w| m.contains(w));
+    if any(&["secondary rate limit", "abuse detection"]) {
+        FailureKind::SecondaryRateLimit
+    } else if any(&["rate limit", "ratelimit", "rate_limited"]) {
+        FailureKind::RateLimit
+    } else if any(&[
+        "http 401",
+        "bad credentials",
+        "requires authentication",
+        "not logged in",
+        "gh auth login",
+        "authentication",
+        "http 403",
+        "resource not accessible",
+        "saml",
+        "token",
+    ]) {
+        FailureKind::Auth
+    } else if any(&[
+        // a host name not found; GraphQL says `Could not resolve to a
+        // Repository` of a repository missing or hidden, which is no network's
+        "could not resolve host",
+        "no such host",
+        "timeout",
+        "timed out",
+        "connect",
+        "network",
+        "http 500",
+        "http 502",
+        "http 503",
+        "http 504",
+        "unexpected eof",
+        "tls",
+    ]) {
+        FailureKind::Network
+    } else {
+        FailureKind::Other
+    }
+}
+
+/// `message` without anything shaped like a GitHub token or the
+/// credentials of a URL, as a status file or an answer may keep it.
+pub fn redact(message: &str) -> String {
+    const PREFIXES: [&str; 6] = ["github_pat_", "ghp_", "gho_", "ghu_", "ghs_", "ghr_"];
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while !rest.is_empty() {
+        let found = PREFIXES
+            .iter()
+            .filter_map(|p| rest.find(p).map(|at| (at, p.len())))
+            .min();
+        let Some((at, len)) = found else {
+            out.push_str(rest);
+            break;
+        };
+        out.push_str(&rest[..at]);
+        let tail = &rest[at + len..];
+        let end = tail
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(tail.len());
+        out.push_str("[redacted]");
+        rest = &tail[end..];
+    }
+    // `scheme://user:secret@host` keeps `scheme://host`
+    let mut cleaned = String::with_capacity(out.len());
+    let mut rest = out.as_str();
+    while let Some(at) = rest.find("://") {
+        cleaned.push_str(&rest[..at + 3]);
+        let after = &rest[at + 3..];
+        let authority_end = after
+            .find(|c: char| c == '/' || c.is_whitespace())
+            .unwrap_or(after.len());
+        rest = match after[..authority_end].rfind('@') {
+            Some(at) => &after[at + 1..],
+            None => after,
+        };
+    }
+    cleaned.push_str(rest);
+    cleaned
 }
 
 /// What the host offers and who the fetch runs as.
@@ -955,4 +1147,82 @@ fn next(connection: &Value) -> Option<String> {
 
 fn string(value: &Value) -> String {
     value.as_str().unwrap_or_default().to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failure_is_classified_by_its_words() {
+        for (message, kind) in [
+            (
+                "GraphQL: API rate limit exceeded for user ID 1.",
+                FailureKind::RateLimit,
+            ),
+            (
+                "You have exceeded a secondary rate limit.",
+                FailureKind::SecondaryRateLimit,
+            ),
+            ("gh failed: HTTP 401: Bad credentials", FailureKind::Auth),
+            (
+                "To get started with GitHub CLI, please run:  gh auth login",
+                FailureKind::Auth,
+            ),
+            (
+                "gh failed: error connecting to api.github.com",
+                FailureKind::Network,
+            ),
+            ("gh failed: HTTP 502: Bad Gateway", FailureKind::Network),
+            // a repository that does not exist or is hidden is no network failure
+            (
+                "gh failed: GraphQL: Could not resolve to a Repository with the name \
+                 'acme/shopx'. (repository)",
+                FailureKind::Other,
+            ),
+            (
+                "gh failed: dial tcp: lookup api.github.com: no such host",
+                FailureKind::Network,
+            ),
+            (
+                "curl: (6) Could not resolve host: ghe.example.com",
+                FailureKind::Network,
+            ),
+            ("something else", FailureKind::Other),
+        ] {
+            assert_eq!(classify(message), kind, "{message}");
+        }
+    }
+
+    #[test]
+    fn a_message_keeps_no_token_or_credentials() {
+        assert_eq!(
+            redact("bad token ghp_ABCdef123 and github_pat_11AA_bb, then ghs_x."),
+            "bad token [redacted] and [redacted], then [redacted]."
+        );
+        assert_eq!(
+            redact("fetching https://ci:secret@ghe.example.com/api failed"),
+            "fetching https://ghe.example.com/api failed"
+        );
+        assert_eq!(redact("no secret here"), "no secret here");
+    }
+
+    #[test]
+    fn a_response_with_headers_gives_its_rate_limits_and_its_body() {
+        let out = b"HTTP/2.0 200 OK\r\nX-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 1790000000\r\nRetry-After: 60\r\n\r\n{\"data\":{}}";
+        let (headers, body) = response(out);
+        assert_eq!(body, b"{\"data\":{}}");
+        assert_eq!(
+            rate_hints(&headers),
+            RateHints {
+                retry_after: Some(60),
+                remaining: Some(0),
+                reset: Some(1_790_000_000)
+            }
+        );
+        // a body alone, as an older gh or a stub prints it
+        let (headers, body) = response(b"{\"data\":{}}");
+        assert!(headers.is_empty());
+        assert_eq!(body, b"{\"data\":{}}");
+    }
 }

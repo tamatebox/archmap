@@ -181,3 +181,15 @@ fn a_new_work_snapshot_changes_the_stamp_though_the_walk_skips_it() {
         std::fs::write(root.join(".archmap/graph.json"), "{}").unwrap();
     }));
 }
+
+#[test]
+fn a_refresh_status_changes_the_stamp_and_its_lock_does_not() {
+    let repo = Repo::new("status");
+    assert!(changes(&repo, |root| {
+        std::fs::create_dir_all(root.join(".archmap")).unwrap();
+        std::fs::write(root.join(".archmap/github.status.json"), "{}").unwrap();
+    }));
+    assert!(!changes(&repo, |root| {
+        std::fs::write(root.join(".archmap/github.json.lock"), "").unwrap();
+    }));
+}

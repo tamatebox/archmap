@@ -839,6 +839,7 @@ archmap fetch github                          # the root's origin on github.com,
 archmap fetch github --repo acme/shop --since 2026-01-01
 archmap fetch github --repo ghe.example.com/acme/shop --no-titles -o ../shop-github.json
 archmap fetch github --update                 # only what changed since the snapshot's fetch
+archmap fetch github --if-older-than 30m      # as a hook runs it: only when stale, one at a time
 ```
 
 `fetch github` writes the work snapshot that `query '#N'`, the Work
@@ -867,10 +868,29 @@ printing how many (`updated .archmap/github.json with 3 items changed since
 ... (fetched whole: the snapshot was fetched as another account): ...`),
 when the snapshot was fetched another way or by another account, when more
 items changed than the bound reads, or when its last whole fetch is older
-than `--full-if-older-than` (`30m`, `24h`, `7d`; 24h by default). What a
-snapshot holds, the link types, what each fetch asks GitHub and what an
-update cannot see are in [work.md](work.md). It is the only
-command that reaches the network; the MCP server does not offer it.
+than `--full-if-older-than` (`30m`, `24h`, `7d`; 24h by default).
+`--if-older-than 30m` (not with `--since` or `--all`) is an automatic
+refresh: an update only when the snapshot's last fetch is older than the
+limit and no wait after a failure runs, else nothing asked (`fresh: ...`,
+`waiting: ...`). Every fetch of a snapshot takes a lock beside it, and one
+that finds another fetch running asks nothing (`busy: ...` for an
+automatic refresh); each attempt is recorded in
+`.archmap/github.status.json`, which answers read to say that the last
+attempt failed. What a snapshot holds, the link types, what each fetch asks
+GitHub, what an update cannot see and how automatic refreshes wait are in
+[work.md](work.md). It is the only command that reaches the network; the
+MCP server does not offer it.
+
+What was done goes to stdout with exit code 0: the snapshot written, or,
+for an automatic refresh, nothing to do (fresh, waiting, or another fetch
+running). Nothing written goes to stderr with exit code 1: a failed
+fetch, gh not logged in to another host included (its message, then
+`.archmap/github.json is as it was; the failure (network) is recorded in
+.archmap/github.status.json: no automatic attempt before ...`), a fetch
+asked for while another runs, or an automatic refresh
+that will not overwrite a snapshot it cannot read. Exit code 2 is an
+invocation error: a wrong flag, date or duration, no repository to name,
+or a lock that cannot be taken.
 
 ## How a target is found
 

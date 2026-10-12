@@ -21,17 +21,30 @@ const MAX_UNLINKED: usize = 3;
 /// The section as text; whether a list was capped.
 pub(crate) fn render(out: &mut String, section: &WorkSection, verbose: bool) -> bool {
     let caps = |n: usize| if verbose { usize::MAX } else { n };
+    // a failed attempt at fetching, on a line apart from what was read
+    let refresh = |out: &mut String| {
+        if let Some(refresh) = &section.refresh {
+            let _ = writeln!(
+                out,
+                "  refresh: {}",
+                crate::work_line::refresh_line(refresh)
+            );
+        }
+    };
     let links = match &section.state {
         WorkState::NoSnapshot => {
             let _ = writeln!(out, "\nWork: none (no snapshot at {})", section.snapshot);
+            refresh(out);
             return false;
         }
         WorkState::Unreadable { error } => {
             let _ = writeln!(out, "\nWork: not read ({error})");
+            refresh(out);
             return false;
         }
         WorkState::NoHistory => {
             let _ = writeln!(out, "\nWork: none (no local history to match commits in)");
+            refresh(out);
             return false;
         }
         WorkState::Read(links) => links,
@@ -188,6 +201,7 @@ pub(crate) fn render(out: &mut String, section: &WorkSection, verbose: bool) -> 
         }
         None => "states as of the fetch",
     };
+    refresh(out);
     let _ = writeln!(out, "  work: {}; {states}", links.coverage.line);
     truncated
 }

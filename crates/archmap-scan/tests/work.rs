@@ -6,7 +6,7 @@ use std::process::Command;
 
 use archmap_core::work::RelationType;
 use archmap_scan::history::{local_commits, LocalCommit};
-use archmap_scan::work::read;
+use archmap_scan::work::{read, ReadError};
 
 fn temp(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("archmap-work-{name}-{}", std::process::id()));
@@ -52,13 +52,26 @@ fn a_snapshot_is_read_sorted_with_a_link_seen_from_both_ends_as_one() {
     );
     assert_eq!(snapshot.relations.len(), 1);
     assert_eq!(snapshot.relations[0].observed.len(), 2);
-    // another schema is refused with what to do
+    // another schema is refused with what to do, a newer one told apart
     std::fs::write(&path, SNAPSHOT.replace("\"schema\": 1", "\"schema\": 2")).unwrap();
     let error = read(&path).unwrap_err();
+    assert_eq!(error, ReadError::Schema { found: Some(2) });
+    assert!(error.is_newer());
+    let text = error.to_string();
     assert!(
-        error.contains("schema 2") && error.contains("fetch it again"),
-        "{error}"
+        text.contains("schema 2") && text.contains("fetch it again"),
+        "{text}"
     );
+    std::fs::write(&path, SNAPSHOT.replace("\"schema\": 1,", "")).unwrap();
+    let unnamed = read(&path).unwrap_err();
+    assert_eq!(unnamed, ReadError::Schema { found: None });
+    assert!(!unnamed.is_newer());
+    // not JSON, and a path no file can be read at
+    std::fs::write(&path, "{").unwrap();
+    assert!(matches!(read(&path), Err(ReadError::Corrupt(_))));
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    assert!(matches!(read(&path), Err(ReadError::Unreadable(_))));
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

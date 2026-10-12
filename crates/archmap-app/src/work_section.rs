@@ -46,6 +46,7 @@ pub(crate) fn section<'a>(ws: &'a Workspace, co: &CoChangeSection) -> WorkSectio
     WorkSection {
         snapshot: ws.snapshot_path(),
         state,
+        refresh: ws.failed_refresh(),
         label: co.label.clone(),
     }
 }
@@ -62,6 +63,7 @@ pub(crate) fn for_query<'a>(
         Ok(None) => WorkSection {
             snapshot: ws.snapshot_path(),
             state: WorkState::NoSnapshot,
+            refresh: ws.failed_refresh(),
             label: String::new(),
         },
         Err(error) => WorkSection {
@@ -69,6 +71,7 @@ pub(crate) fn for_query<'a>(
             state: WorkState::Unreadable {
                 error: error.clone(),
             },
+            refresh: ws.failed_refresh(),
             label: String::new(),
         },
     }

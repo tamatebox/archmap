@@ -57,6 +57,71 @@ pub struct Snapshot {
     pub not_visible: NotVisible,
 }
 
+/// How the fetches of a snapshot have gone, kept apart from it: what an
+/// automatic refresh waits on after a failure, and what answers say of the
+/// last failed attempt. A success clears the error.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefreshStatus {
+    pub schema: u32,
+    pub source: String,
+    pub host: String,
+    /// `owner/name`.
+    pub repository: String,
+    /// The account the last attempt ran as, when it learned it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<Account>,
+    /// When the last attempt began (UTC).
+    pub last_attempt_at: String,
+    /// Why the last attempt failed; `None` after a success.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<RefreshError>,
+    /// No automatic attempt before this time (UTC).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_retry_at: Option<String>,
+    /// Failed attempts in a row.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub consecutive_failures: usize,
+}
+
+/// The status file's format version.
+pub const STATUS_SCHEMA: u32 = 1;
+
+/// A failed attempt: what kind of failure, and its message, with no
+/// credentials or tokens.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefreshError {
+    pub kind: FailureKind,
+    pub message: String,
+}
+
+/// What a failed attempt ran into, as far as its message tells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureKind {
+    /// The tracker's primary rate limit: points or requests per hour.
+    RateLimit,
+    /// GitHub's secondary rate limit, against bursts, whose end its
+    /// `rate_limit` endpoint does not tell.
+    SecondaryRateLimit,
+    /// No login, a bad or expired token, or no access.
+    Auth,
+    /// The network or the tracker's servers.
+    Network,
+    Other,
+}
+
+impl FailureKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FailureKind::RateLimit => "rate limit",
+            FailureKind::SecondaryRateLimit => "secondary rate limit",
+            FailureKind::Auth => "authentication",
+            FailureKind::Network => "network",
+            FailureKind::Other => "error",
+        }
+    }
+}
+
 /// A tracker account: its login and, when the tracker gives it, its
 /// numeric id, which stays when the login is renamed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

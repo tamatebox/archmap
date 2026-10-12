@@ -560,6 +560,10 @@ pub struct WorkSection<'a> {
     pub snapshot: String,
     #[serde(flatten)]
     pub state: WorkState<'a>,
+    /// The last attempt at fetching, when it failed after the snapshot's
+    /// fetch: a diagnosis of the snapshot, apart from what it says.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh: Option<RefreshView>,
     /// How the heading names the target.
     #[serde(skip)]
     pub(crate) label: String,
@@ -697,4 +701,15 @@ pub struct WorkCoverage<'a> {
     pub range: &'a Range,
     #[serde(skip)]
     pub(crate) line: String,
+}
+
+/// A failed attempt at fetching the work snapshot, as answers give it: no
+/// account, no age.
+#[derive(Debug, Clone, Serialize)]
+pub struct RefreshView {
+    pub last_attempt_at: String,
+    pub error: archmap_core::work::RefreshError,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_retry_at: Option<String>,
+    pub consecutive_failures: usize,
 }

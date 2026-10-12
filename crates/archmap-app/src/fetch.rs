@@ -2,14 +2,25 @@
 //! The only command that reaches the network; no interface but the CLI
 //! offers it.
 
+use std::cell::RefCell;
 use std::path::Path;
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use archmap_core::history::HistoryState;
-use archmap_core::work::SinceRule;
-use archmap_scan::work::github::{fetch, gh, update, FetchOptions, Update};
-use archmap_scan::work::{read, remote_repository, utc, without_credentials, write, DEFAULT_PATH};
+use archmap_core::work::{
+    Account, FailureKind, RefreshError, RefreshStatus, SinceRule, Snapshot, STATUS_SCHEMA,
+};
+use archmap_scan::work::github::{
+    classify, fetch, rate_limit_reset, redact, update, FetchOptions, Gh, RateHints, Run, Update,
+};
+use archmap_scan::work::{
+    lock, read, read_status, remote_repository, seconds, status_path, utc, without_credentials,
+    write, write_status, Locked, ReadError, DEFAULT_PATH,
+};
+use serde_json::Value;
+
+use crate::work_line::{plural_word, range_line, utc_minute};
 
 /// Items read per kind unless told otherwise.
 pub const DEFAULT_MAX_ITEMS: usize = 5_000;
@@ -38,6 +49,48 @@ pub struct FetchRequest<'a> {
     /// For an update: fetch whole when the last whole fetch is older than
     /// this (`30m`, `24h`, `7d`).
     pub full_if_older_than: &'a str,
+    /// An automatic refresh: update only when the snapshot's last fetch is
+    /// older than this, and no failure's backoff is running.
+    pub if_older_than: Option<&'a str>,
+}
+
+/// What `fetch github` did, and what to print.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fetched {
+    pub message: String,
+    pub outcome: Outcome,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    /// The snapshot was written.
+    Written,
+    /// An automatic refresh found nothing to do: the snapshot is fresh, a
+    /// failure's backoff runs, or another fetch holds the snapshot.
+    Skipped,
+    /// Nothing was written, which the caller asked for: the fetch failed
+    /// (the status says so), another fetch holds the snapshot, or an
+    /// automatic refresh met a snapshot it does not overwrite.
+    NotWritten,
+}
+
+/// The first wait after a failure, doubled with each failure in a row.
+const BACKOFF: i64 = 300;
+/// The longest wait after failures.
+const MAX_BACKOFF: i64 = 6 * 3_600;
+
+/// What a fetch reaches outside the repository: GitHub through a
+/// transport and the rate-limit facts it gives, gh's logins, and the clock.
+/// `fetch github` gives the real ones; tests give their own.
+pub(crate) struct Env<'a> {
+    pub(crate) run: Box<Run<'a>>,
+    /// The rate-limit headers of the last response.
+    pub(crate) hints: Box<dyn Fn() -> Option<RateHints> + 'a>,
+    /// When GitHub's primary limit resets, from its `rate_limit` endpoint.
+    pub(crate) primary_reset: Box<dyn FnMut() -> Option<i64> + 'a>,
+    /// Whether gh holds a login for a host other than github.com.
+    pub(crate) logged_in: Box<dyn FnMut(&str) -> bool + 'a>,
+    pub(crate) now: i64,
 }
 
 /// A duration as `fetch github` takes it: a whole number of seconds,
@@ -62,16 +115,106 @@ pub fn duration(text: &str) -> Result<i64> {
     }
 }
 
-/// Fetch, write the snapshot, and say what was written.
-pub fn fetch_github(root: &Path, request: &FetchRequest) -> Result<String> {
-    let (host, owner, name) = repository(root, request.repo)?;
-    let now_secs = std::time::SystemTime::now()
+/// Fetch, write the snapshot, and say what was done.
+pub fn fetch_github(root: &Path, request: &FetchRequest) -> Result<Fetched> {
+    let repository = repository(root, request.repo)?;
+    let host = repository.0.clone();
+    let gh = RefCell::new(Gh::new(&host));
+    let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    // a wrong limit fails before anything runs, whether it is used or not
+    let mut env = Env {
+        run: Box::new(|request| gh.borrow_mut().call(request)),
+        hints: Box::new(|| gh.borrow().hints),
+        primary_reset: Box::new(|| rate_limit_reset(&host)),
+        logged_in: Box::new(logged_in),
+        now,
+    };
+    fetch_with(root, request, repository, &mut env)
+}
+
+/// `fetch_github` with what it reaches outside the repository given.
+/// Everything is decided under the snapshot's lock, from the snapshot and
+/// the status as they are then.
+pub(crate) fn fetch_with(
+    root: &Path,
+    request: &FetchRequest,
+    (host, owner, name): (String, String, String),
+    env: &mut Env,
+) -> Result<Fetched> {
+    // wrong durations and dates fail before anything runs, whether used or not
     let full_limit = duration(request.full_if_older_than)?;
-    let (since, since_rule) = since(root, request, now_secs)?;
+    let ttl = request.if_older_than.map(duration).transpose()?;
+    request.since.map(given_since).transpose()?;
+    let automatic = ttl.is_some();
+    let repository = format!("{owner}/{name}");
+    let path = match request.output {
+        Some(path) => path.to_path_buf(),
+        None => root.join(DEFAULT_PATH),
+    };
+    let shown = relative(root, &path);
+    let status_file = status_path(&path);
+    let status_shown = relative(root, &status_file);
+    let _lock = match lock(&path).map_err(|e| anyhow!("{shown}: {e}"))? {
+        Locked::Held(file) => file,
+        Locked::Busy => {
+            let busy = format!("another archmap fetch is updating {shown}: nothing fetched");
+            return Ok(match automatic {
+                true => skipped(format!("busy: {busy}")),
+                false => not_written(busy),
+            });
+        }
+    };
+    let previous = read(&path);
+    // what the last attempts at this repository left since the snapshot: a
+    // failure no later than its fetch is past, since a fetch wrote the
+    // snapshot after it, and may have stopped before writing its status
+    let status = read_status(&status_file).filter(|s| {
+        s.source == "github"
+            && s.host == host
+            && s.repository.eq_ignore_ascii_case(&repository)
+            && match &previous {
+                Ok(Some(snapshot)) => after_fetch(s, snapshot),
+                _ => true,
+            }
+    });
+    if let (Some(ttl), Some(limit)) = (ttl, request.if_older_than) {
+        match &previous {
+            Ok(Some(snapshot)) => {
+                if seconds(&snapshot.fetched_at).is_some_and(|at| at > env.now - ttl) {
+                    return Ok(skipped(format!(
+                        "fresh: {shown} was fetched {}, within {limit}: nothing fetched",
+                        utc_minute(&snapshot.fetched_at)
+                    )));
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                return Ok(not_written(format!(
+                    "{shown}: {error}: an automatic refresh never overwrites a snapshot it \
+                     cannot read, so nothing was fetched; `archmap fetch github` fetches it again"
+                )))
+            }
+        }
+        if let Some((status, next)) = status
+            .as_ref()
+            .and_then(|s| Some((s, waiting(s, env.now)?)))
+        {
+            let kind = status
+                .last_error
+                .as_ref()
+                .map_or("error", |e| e.kind.as_str());
+            return Ok(skipped(format!(
+                "waiting: the last attempt, {}, failed ({kind}); no automatic attempt before \
+                 {}, and a change of account is not seen until then: nothing fetched \
+                 (`archmap fetch github` tries now)",
+                utc_minute(&status.last_attempt_at),
+                utc_minute(next)
+            )));
+        }
+    }
+    let (since, since_rule) = since(root, request, env.now)?;
     let mut options = FetchOptions {
         host: host.clone(),
         owner,
@@ -80,57 +223,250 @@ pub fn fetch_github(root: &Path, request: &FetchRequest) -> Result<String> {
         since_rule,
         max_items: request.max_items,
         titles: request.titles,
-        now: utc(now_secs),
+        now: utc(env.now),
         // a margin for a local clock ahead of GitHub's
-        reread_since: utc(now_secs - 300),
+        reread_since: utc(env.now - 300),
     };
-    let path = match request.output {
-        Some(path) => path.to_path_buf(),
-        None => root.join(DEFAULT_PATH),
-    };
-    let shown = path
-        .strip_prefix(root)
-        .unwrap_or(&path)
-        .display()
-        .to_string();
-    let mut run = gh(&host);
-    // an update when the snapshot allows one, else why it is fetched whole
-    let whole = match request.update {
-        false => None,
-        true => Some(match read(&path) {
-            Ok(None) => "there is no snapshot".to_owned(),
-            Err(_) => "the snapshot could not be read".to_owned(),
-            Ok(Some(previous)) => {
-                let whole_after = utc(now_secs - full_limit);
-                match update(&options, &mut run, &previous, &whole_after)
-                    .map_err(anyhow::Error::msg)?
-                {
-                    Update::Merged { snapshot, read } => {
-                        write(&path, &snapshot).map_err(anyhow::Error::msg)?;
-                        return Ok(format!(
-                            "updated {shown} with {} changed since {}: {}\n",
-                            crate::work_line::plural_word(read, "item", "items"),
-                            crate::work_line::utc_minute(&previous.fetched_at),
-                            crate::work_line::range_line(&snapshot)
-                        ));
-                    }
-                    Update::Whole { reason } => {
-                        over_range(&mut options, &previous.range);
-                        reason
-                    }
-                }
+    // the account this attempt runs as, as the host answers; none when the
+    // attempt stops before it learns it
+    let mut account: Option<Account> = None;
+    // a host gh holds no login for fails as an attempt does, and waits
+    let outcome = if host != "github.com" && !(env.logged_in)(&host) {
+        Err(format!(
+            "gh is not logged in to {host}: `gh auth login --hostname {host}` first"
+        ))
+    } else {
+        let run = &mut env.run;
+        let mut learn = |request: &Value| -> Result<Value, String> {
+            let answer = run(request)?;
+            let schema = request["query"]
+                .as_str()
+                .is_some_and(|q| q.starts_with("query Schema"));
+            if schema {
+                account = answer["data"]["viewer"]["login"]
+                    .as_str()
+                    .map(|login| Account {
+                        login: login.to_owned(),
+                        id: answer["data"]["viewer"]["databaseId"].as_u64(),
+                    });
             }
+            Ok(answer)
+        };
+        let update_wanted = request.update || automatic;
+        let whole_after = utc(env.now - full_limit);
+        attempt(
+            &mut options,
+            &mut learn,
+            update_wanted,
+            &previous,
+            &whole_after,
+            &path,
+            &shown,
+        )
+    };
+    let started = utc(env.now);
+    match outcome {
+        Ok(message) => {
+            // after the snapshot: a status older than it never shows
+            let recorded = write_status(
+                &status_file,
+                &RefreshStatus {
+                    schema: STATUS_SCHEMA,
+                    source: "github".to_owned(),
+                    host,
+                    repository,
+                    account,
+                    last_attempt_at: started,
+                    last_error: None,
+                    next_retry_at: None,
+                    consecutive_failures: 0,
+                },
+            );
+            let message = match recorded {
+                Ok(()) => message,
+                Err(e) => format!("{message}\n  the attempt is not recorded: {status_shown}: {e}"),
+            };
+            Ok(Fetched {
+                message,
+                outcome: Outcome::Written,
+            })
+        }
+        Err(error) => {
+            let message = redact(&error);
+            let kind = classify(&message);
+            // the same account failing again waits longer; an account the
+            // attempt did not learn is no other account's failure
+            let failures = match &status {
+                Some(s) if s.last_error.is_some() && !other_account(&s.account, &account) => {
+                    s.consecutive_failures + 1
+                }
+                _ => 1,
+            };
+            let backoff = (BACKOFF << (failures - 1).min(16)).min(MAX_BACKOFF);
+            let hints = (env.hints)();
+            let next = retry_at(kind, hints, &mut env.primary_reset, env.now, backoff);
+            let recorded = write_status(
+                &status_file,
+                &RefreshStatus {
+                    schema: STATUS_SCHEMA,
+                    source: "github".to_owned(),
+                    host,
+                    repository,
+                    account,
+                    last_attempt_at: started,
+                    last_error: Some(RefreshError {
+                        kind,
+                        message: message.clone(),
+                    }),
+                    next_retry_at: Some(utc(next)),
+                    consecutive_failures: failures,
+                },
+            );
+            let note = match recorded {
+                Ok(()) => format!(
+                    "recorded in {status_shown}: no automatic attempt before {}",
+                    utc_minute(&utc(next))
+                ),
+                Err(e) => format!("not recorded: {status_shown}: {e}"),
+            };
+            Ok(not_written(format!(
+                "{message}\n  {shown} is as it was; the failure ({}) is {note}",
+                kind.as_str()
+            )))
+        }
+    }
+}
+
+/// One fetch: an update when one is wanted and the snapshot allows it,
+/// else whole; the snapshot written; what to print.
+fn attempt(
+    options: &mut FetchOptions,
+    run: &mut Run,
+    update_wanted: bool,
+    previous: &Result<Option<Snapshot>, ReadError>,
+    whole_after: &str,
+    path: &Path,
+    shown: &str,
+) -> Result<String, String> {
+    let written = |e: String| format!("{shown}: {e}");
+    let whole = match update_wanted {
+        false => None,
+        true => Some(match previous {
+            Ok(None) => "there is no snapshot".to_owned(),
+            Err(error) if error.is_newer() => "the snapshot has a newer format".to_owned(),
+            Err(_) => "the snapshot could not be read".to_owned(),
+            Ok(Some(previous)) => match update(options, run, previous, whole_after)? {
+                Update::Merged { snapshot, read } => {
+                    write(path, &snapshot).map_err(written)?;
+                    return Ok(format!(
+                        "updated {shown} with {} changed since {}: {}",
+                        plural_word(read, "item", "items"),
+                        utc_minute(&previous.fetched_at),
+                        range_line(&snapshot)
+                    ));
+                }
+                Update::Whole { reason } => {
+                    over_range(options, &previous.range);
+                    reason
+                }
+            },
         }),
     };
-    let snapshot = fetch(&options, &mut run).map_err(anyhow::Error::msg)?;
-    write(&path, &snapshot).map_err(anyhow::Error::msg)?;
+    let snapshot = fetch(options, run)?;
+    write(path, &snapshot).map_err(written)?;
     let why = whole
         .map(|reason| format!(" (fetched whole: {reason})"))
         .unwrap_or_default();
-    Ok(format!(
-        "wrote {shown}{why}: {}\n",
-        crate::work_line::range_line(&snapshot)
-    ))
+    Ok(format!("wrote {shown}{why}: {}", range_line(&snapshot)))
+}
+
+/// Whether the attempt `status` records began after `snapshot` was
+/// fetched. Answers and refreshes read a failure only then, since the
+/// status is written after the snapshot.
+pub(crate) fn after_fetch(status: &RefreshStatus, snapshot: &Snapshot) -> bool {
+    matches!(
+        (seconds(&status.last_attempt_at), seconds(&snapshot.fetched_at)),
+        (Some(attempt), Some(fetched)) if attempt > fetched
+    )
+}
+
+/// When a failed attempt's backoff ends, if it has not.
+fn waiting(status: &RefreshStatus, now: i64) -> Option<&str> {
+    status.last_error.as_ref()?;
+    status
+        .next_retry_at
+        .as_deref()
+        .filter(|next| seconds(next).is_some_and(|at| at > now))
+}
+
+/// Two accounts both known and not the same one.
+fn other_account(a: &Option<Account>, b: &Option<Account>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => match (a.id, b.id) {
+            (Some(x), Some(y)) => x != y,
+            _ => !a.login.eq_ignore_ascii_case(&b.login),
+        },
+        _ => false,
+    }
+}
+
+/// When to try again after a failure, after GitHub's guidance: a
+/// `retry-after` header first; at a limit spent, its reset; for the
+/// primary limit, else, the reset its `rate_limit` endpoint gives, which
+/// counts against no primary limit (never asked for a secondary one, which
+/// it may count against and cannot tell the end of); else `backoff`, at
+/// least a minute.
+fn retry_at(
+    kind: FailureKind,
+    hints: Option<RateHints>,
+    primary_reset: &mut dyn FnMut() -> Option<i64>,
+    now: i64,
+    backoff: i64,
+) -> i64 {
+    let fallback = now + backoff.max(60);
+    let hints = hints.unwrap_or_default();
+    let limited = matches!(
+        kind,
+        FailureKind::RateLimit | FailureKind::SecondaryRateLimit
+    );
+    if !limited {
+        return fallback;
+    }
+    if let Some(after) = hints.retry_after.filter(|s| *s > 0) {
+        return now + after;
+    }
+    if let Some(reset) = hints
+        .reset
+        .filter(|r| *r > now && hints.remaining == Some(0))
+    {
+        return reset;
+    }
+    match kind {
+        FailureKind::RateLimit => primary_reset().filter(|r| *r > now).unwrap_or(fallback),
+        _ => fallback,
+    }
+}
+
+fn skipped(message: String) -> Fetched {
+    Fetched {
+        message,
+        outcome: Outcome::Skipped,
+    }
+}
+
+fn not_written(message: String) -> Fetched {
+    Fetched {
+        message,
+        outcome: Outcome::NotWritten,
+    }
+}
+
+/// `path` relative to the root when it is inside it, with `/`.
+fn relative(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
 }
 
 /// A whole fetch in place of a refused update reads the snapshot's own
@@ -143,8 +479,8 @@ fn over_range(options: &mut FetchOptions, range: &archmap_core::work::Range) {
 /// The host, owner and name to fetch. The root's `origin` names only a
 /// github.com repository: a clone can name any host, and gh would send it
 /// the token it keeps for that host. Another host, an SSH alias of
-/// github.com included, must be named, and be one gh is logged in to; the
-/// error says what `origin` names.
+/// github.com included, must be named, and be one gh is logged in to (asked
+/// once a fetch runs); the error says what `origin` names.
 fn repository(root: &Path, repo: Option<&str>) -> Result<(String, String, String)> {
     let Some(repo) = repo else {
         let url = archmap_scan::history::origin_url(root)
@@ -175,10 +511,8 @@ fn repository(root: &Path, repo: Option<&str>) -> Result<(String, String, String
             (*owner).to_owned(),
             (*name).to_owned(),
         )),
+        // whether gh holds a login for it is asked once a fetch runs
         [host, owner, name] if valid(host) && valid(owner) && valid(name) => {
-            if *host != "github.com" && !logged_in(host) {
-                bail!("gh is not logged in to {host}: `gh auth login --hostname {host}` first");
-            }
             Ok(((*host).to_owned(), (*owner).to_owned(), (*name).to_owned()))
         }
         _ => bail!("--repo takes OWNER/NAME or HOST/OWNER/NAME, not `{repo}`"),
@@ -202,18 +536,7 @@ fn since(root: &Path, request: &FetchRequest, now: i64) -> Result<(Option<String
         return Ok((None, SinceRule::All));
     }
     if let Some(date) = request.since {
-        let given = match date.len() {
-            10 => format!("{date}T00:00:00Z"),
-            _ => date.to_owned(),
-        };
-        let shape = given.len() == 20
-            && given.as_bytes()[4] == b'-'
-            && given.as_bytes()[10] == b'T'
-            && given.ends_with('Z');
-        if !shape {
-            bail!("--since takes a date (2026-01-31) or a UTC time (2026-01-31T09:00:00Z)");
-        }
-        return Ok((Some(given), SinceRule::Given));
+        return Ok((Some(given_since(date)?), SinceRule::Given));
     }
     let history = archmap_scan::history::read(root, archmap_scan::history::DEFAULT_BOUND);
     let deep = matches!(history.state, HistoryState::Read { shallow: false, .. })
@@ -230,9 +553,743 @@ fn since(root: &Path, request: &FetchRequest, now: i64) -> Result<(Option<String
     }
 }
 
+/// `--since` as a UTC time.
+fn given_since(date: &str) -> Result<String> {
+    let given = match date.len() {
+        10 => format!("{date}T00:00:00Z"),
+        _ => date.to_owned(),
+    };
+    let shape = given.len() == 20
+        && given.as_bytes()[4] == b'-'
+        && given.as_bytes()[10] == b'T'
+        && given.ends_with('Z');
+    if !shape {
+        bail!("--since takes a date (2026-01-31) or a UTC time (2026-01-31T09:00:00Z)");
+    }
+    Ok(given)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+    use std::path::PathBuf;
+
+    use serde_json::json;
+
+    /// 2026-09-22 07:20 UTC
+    const T0: i64 = 1_790_061_600;
+    const HOUR: i64 = 3_600;
+
+    /// GitHub as a test sees it: answers to a fetch of a repository with no
+    /// items, as the account `viewer`, until `answered` requests have been
+    /// answered and every later one fails with `error`; the rate-limit
+    /// facts a failure leaves; and what was asked.
+    struct World {
+        now: i64,
+        viewer: Option<(&'static str, u64)>,
+        answered: usize,
+        error: Option<&'static str>,
+        hints: Option<RateHints>,
+        reset: Option<i64>,
+        calls: Cell<usize>,
+        resets: Cell<usize>,
+    }
+
+    fn world(now: i64) -> World {
+        World {
+            now,
+            viewer: Some(("fetcher", 7)),
+            answered: 0,
+            error: None,
+            hints: None,
+            reset: None,
+            calls: Cell::new(0),
+            resets: Cell::new(0),
+        }
+    }
+
+    impl World {
+        fn failing(now: i64, answered: usize, error: &'static str) -> World {
+            World {
+                answered,
+                error: Some(error),
+                ..world(now)
+            }
+        }
+
+        fn env(&self) -> Env<'_> {
+            Env {
+                run: Box::new(|request| {
+                    let asked = self.calls.get();
+                    self.calls.set(asked + 1);
+                    match self.error {
+                        Some(error) if asked >= self.answered => Err(error.to_owned()),
+                        _ => Ok(answer(request, self.viewer)),
+                    }
+                }),
+                hints: Box::new(|| self.hints),
+                primary_reset: Box::new(|| {
+                    self.resets.set(self.resets.get() + 1);
+                    self.reset
+                }),
+                logged_in: Box::new(|_| true),
+                now: self.now,
+            }
+        }
+
+        fn fetch(&self, root: &Path, request: &FetchRequest) -> Fetched {
+            self.try_fetch(root, request).unwrap()
+        }
+
+        fn try_fetch(&self, root: &Path, request: &FetchRequest) -> Result<Fetched> {
+            let repository = ("github.com".into(), "acme".into(), "shop".into());
+            fetch_with(root, request, repository, &mut self.env())
+        }
+    }
+
+    fn answer(request: &Value, viewer: Option<(&str, u64)>) -> Value {
+        let query = request["query"].as_str().unwrap_or_default();
+        let empty = json!({"pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": []});
+        if query.starts_with("query Schema") {
+            let viewer = viewer.map(|(login, id)| json!({"login": login, "databaseId": id}));
+            json!({"data": {"issue": {"fields": []}, "pull": {"fields": []}, "viewer": viewer}})
+        } else if query.starts_with("query Issues") {
+            json!({"data": {"repository": {"nameWithOwner": "acme/shop", "issues": empty}}})
+        } else if query.starts_with("query PullRequests") {
+            json!({"data": {"repository": {"pullRequests": empty}}})
+        } else {
+            panic!("unexpected request: {query}")
+        }
+    }
+
+    /// Every request names its date, so that no test reads the history:
+    /// a process another test thread starts holds a copy of this thread's
+    /// lock until it runs its program, and the lock would read as busy.
+    fn plain() -> FetchRequest<'static> {
+        FetchRequest {
+            repo: None,
+            since: Some("2026-01-01"),
+            all: false,
+            max_items: 100,
+            titles: true,
+            output: None,
+            update: false,
+            full_if_older_than: "24h",
+            if_older_than: None,
+        }
+    }
+
+    fn automatic(limit: &'static str) -> FetchRequest<'static> {
+        FetchRequest {
+            if_older_than: Some(limit),
+            ..plain()
+        }
+    }
+
+    fn updating() -> FetchRequest<'static> {
+        FetchRequest {
+            update: true,
+            ..plain()
+        }
+    }
+
+    /// An empty root, with a snapshot fetched whole at `fetched` unless
+    /// `None`.
+    fn root(name: &str, fetched: Option<i64>) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("archmap-fetch-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        if let Some(at) = fetched {
+            let done = world(at).fetch(&dir, &plain());
+            assert_eq!(done.outcome, Outcome::Written, "{}", done.message);
+        }
+        dir
+    }
+
+    fn snapshot(root: &Path) -> Snapshot {
+        read(&root.join(DEFAULT_PATH)).unwrap().unwrap()
+    }
+
+    fn status(root: &Path) -> Option<RefreshStatus> {
+        read_status(&status_path(&root.join(DEFAULT_PATH)))
+    }
+
+    fn bytes(root: &Path) -> Vec<u8> {
+        std::fs::read(root.join(DEFAULT_PATH)).unwrap()
+    }
+
+    #[test]
+    fn a_snapshot_within_the_limit_is_not_fetched_again() {
+        let root = root("fresh", Some(T0));
+        let world = world(T0 + 1_799);
+        let done = world.fetch(&root, &automatic("30m"));
+        assert_eq!(
+            done,
+            skipped(
+                "fresh: .archmap/github.json was fetched 2026-09-22 07:20 UTC, within 30m: \
+                 nothing fetched"
+                    .into()
+            )
+        );
+        assert_eq!(world.calls.get(), 0);
+        assert_eq!(snapshot(&root).fetched_at, utc(T0));
+    }
+
+    #[test]
+    fn a_snapshot_past_the_limit_is_updated() {
+        let root = root("stale", Some(T0));
+        let world = world(T0 + 1_800);
+        let done = world.fetch(&root, &automatic("30m"));
+        assert_eq!(done.outcome, Outcome::Written);
+        assert!(
+            done.message.starts_with(
+                "updated .archmap/github.json with 0 items changed since 2026-09-22 07:20 UTC: "
+            ),
+            "{}",
+            done.message
+        );
+        assert!(world.calls.get() > 0);
+        let after = snapshot(&root);
+        assert_eq!(after.fetched_at, utc(T0 + 1_800));
+        assert_eq!(after.whole_fetched_at, Some(utc(T0)));
+        let status = status(&root).unwrap();
+        assert_eq!(status.last_error, None);
+        assert_eq!(status.last_attempt_at, utc(T0 + 1_800));
+    }
+
+    #[test]
+    fn an_automatic_refresh_still_fetches_whole_past_the_whole_limit() {
+        let root = root("whole-limit", Some(T0));
+        let done = world(T0 + 25 * HOUR).fetch(&root, &automatic("30m"));
+        assert!(
+            done.message
+                .contains(" (fetched whole: its last whole fetch is older than the limit): "),
+            "{}",
+            done.message
+        );
+        assert_eq!(snapshot(&root).whole_fetched_at, Some(utc(T0 + 25 * HOUR)));
+        // with no snapshot, it fetches one whole
+        let empty = self::root("whole-none", None);
+        let done = world(T0).fetch(&empty, &automatic("30m"));
+        assert!(
+            done.message
+                .contains(" (fetched whole: there is no snapshot): "),
+            "{}",
+            done.message
+        );
+        // a fetch with neither flag fetches whole, however fresh the snapshot
+        let done = world(T0 + 60).fetch(&root, &plain());
+        assert!(
+            done.message.starts_with("wrote .archmap/github.json: "),
+            "{}",
+            done.message
+        );
+        assert_eq!(snapshot(&root).whole_fetched_at, Some(utc(T0 + 60)));
+    }
+
+    #[test]
+    fn another_fetch_holding_the_snapshot_stops_a_fetch_before_it_asks_anything() {
+        let root = root("busy", Some(T0));
+        let held = lock(&root.join(DEFAULT_PATH)).unwrap();
+        assert!(matches!(held, Locked::Held(_)));
+        let world = world(T0 + 2 * HOUR);
+        // an automatic refresh has nothing to do
+        assert_eq!(
+            world.fetch(&root, &automatic("30m")),
+            skipped(
+                "busy: another archmap fetch is updating .archmap/github.json: nothing fetched"
+                    .into()
+            )
+        );
+        // a fetch asked for did not happen
+        for request in [plain(), updating()] {
+            assert_eq!(
+                world.fetch(&root, &request),
+                not_written(
+                    "another archmap fetch is updating .archmap/github.json: nothing fetched"
+                        .into()
+                )
+            );
+        }
+        assert_eq!(world.calls.get(), 0);
+        assert_eq!(snapshot(&root).fetched_at, utc(T0));
+        // the lock file stays, and the next fetch takes it
+        drop(held);
+        assert!(root.join(".archmap/github.json.lock").is_file());
+        assert_eq!(
+            world.fetch(&root, &automatic("30m")).outcome,
+            Outcome::Written
+        );
+    }
+
+    #[test]
+    fn what_a_fetch_decides_it_decides_from_the_snapshot_and_status_under_the_lock() {
+        let root = root("recheck", Some(T0));
+        let path = root.join(DEFAULT_PATH);
+        let later = world(T0 + 2 * HOUR);
+        // while another fetch holds the lock, it writes a fresh snapshot
+        let held = lock(&path).unwrap();
+        let mut fresh = snapshot(&root);
+        fresh.fetched_at = utc(T0 + 2 * HOUR - 60);
+        write(&path, &fresh).unwrap();
+        drop(held);
+        assert!(later
+            .fetch(&root, &automatic("30m"))
+            .message
+            .starts_with("fresh: "));
+        // or fails and records it
+        let held = lock(&path).unwrap();
+        let mut stale = fresh.clone();
+        stale.fetched_at = utc(T0);
+        write(&path, &stale).unwrap();
+        write_status(
+            &status_path(&path),
+            &RefreshStatus {
+                schema: STATUS_SCHEMA,
+                source: "github".into(),
+                host: "github.com".into(),
+                repository: "acme/shop".into(),
+                account: None,
+                last_attempt_at: utc(T0 + 2 * HOUR - 60),
+                last_error: Some(RefreshError {
+                    kind: FailureKind::Network,
+                    message: "gh failed: timeout".into(),
+                }),
+                next_retry_at: Some(utc(T0 + 2 * HOUR + 240)),
+                consecutive_failures: 1,
+            },
+        )
+        .unwrap();
+        drop(held);
+        assert!(later
+            .fetch(&root, &automatic("30m"))
+            .message
+            .starts_with("waiting: "));
+        assert_eq!(later.calls.get(), 0);
+    }
+
+    #[test]
+    fn a_lock_that_cannot_be_taken_is_an_error_not_another_fetch() {
+        let root = root("lock-error", None);
+        std::fs::write(root.join("file"), "").unwrap();
+        let output = root.join("file/github.json");
+        let world = world(T0);
+        for request in [
+            automatic("30m"),
+            FetchRequest {
+                output: Some(&output),
+                ..plain()
+            },
+        ] {
+            let request = FetchRequest {
+                output: Some(&output),
+                ..request
+            };
+            let error = world.try_fetch(&root, &request).unwrap_err().to_string();
+            assert!(
+                error.starts_with("file/github.json: creating its directory: "),
+                "{error}"
+            );
+        }
+        assert_eq!(world.calls.get(), 0);
+    }
+
+    #[test]
+    fn a_failure_keeps_the_snapshot_and_waits_longer_each_time() {
+        let root = root("failure", Some(T0));
+        let before = bytes(&root);
+        let first = T0 + 2 * HOUR;
+        let world = World::failing(first, 1, "gh failed: HTTP 502: Bad Gateway");
+        let done = world.fetch(&root, &automatic("30m"));
+        assert_eq!(
+            done,
+            not_written(
+                "gh failed: HTTP 502: Bad Gateway\n  .archmap/github.json is as it was; the \
+                 failure (network) is recorded in .archmap/github.status.json: no automatic \
+                 attempt before 2026-09-22 09:25 UTC"
+                    .into()
+            )
+        );
+        assert_eq!(bytes(&root), before);
+        let recorded = status(&root).unwrap();
+        assert_eq!(recorded.consecutive_failures, 1);
+        assert_eq!(recorded.next_retry_at, Some(utc(first + 300)));
+        assert_eq!(recorded.last_attempt_at, utc(first));
+        assert_eq!(recorded.last_error.unwrap().kind, FailureKind::Network);
+        // the viewer answered before the failure
+        assert_eq!(recorded.account.unwrap().login, "fetcher");
+        // within the backoff, nothing is asked
+        let waiting = self::world(first + 299);
+        let done = waiting.fetch(&root, &automatic("30m"));
+        assert_eq!(
+            done,
+            skipped(
+                "waiting: the last attempt, 2026-09-22 09:20 UTC, failed (network); no \
+                 automatic attempt before 2026-09-22 09:25 UTC, and a change of account is not \
+                 seen until then: nothing fetched (`archmap fetch github` tries now)"
+                    .into()
+            )
+        );
+        assert_eq!(waiting.calls.get(), 0);
+        // past it, a second failure waits twice as long
+        let second = first + 300;
+        World::failing(second, 1, "gh failed: timeout").fetch(&root, &automatic("30m"));
+        let recorded = status(&root).unwrap();
+        assert_eq!(recorded.consecutive_failures, 2);
+        assert_eq!(recorded.next_retry_at, Some(utc(second + 600)));
+        assert_eq!(bytes(&root), before);
+        // a fetch asked for runs within the backoff, and its success clears it
+        let asked = self::world(second + 1);
+        let done = asked.fetch(&root, &updating());
+        assert_eq!(done.outcome, Outcome::Written, "{}", done.message);
+        assert!(asked.calls.get() > 0);
+        let recorded = status(&root).unwrap();
+        assert_eq!(
+            (
+                recorded.last_error,
+                recorded.next_retry_at,
+                recorded.consecutive_failures
+            ),
+            (None, None, 0)
+        );
+        assert_eq!(
+            self::world(second + 2)
+                .fetch(&root, &automatic("30m"))
+                .outcome,
+            Outcome::Skipped
+        );
+    }
+
+    #[test]
+    fn a_host_gh_holds_no_login_for_fails_as_an_attempt_does_and_waits() {
+        let root = root("login", None);
+        let asked = Cell::new(0);
+        let attempt = |now| {
+            let world = world(now);
+            let mut env = Env {
+                logged_in: Box::new(|_| {
+                    asked.set(asked.get() + 1);
+                    false
+                }),
+                ..world.env()
+            };
+            let repository = ("ghe.example.com".into(), "acme".into(), "shop".into());
+            let done = fetch_with(&root, &automatic("30m"), repository, &mut env).unwrap();
+            drop(env);
+            assert_eq!(world.calls.get(), 0);
+            done
+        };
+        let done = attempt(T0);
+        assert_eq!(
+            done,
+            not_written(
+                "gh is not logged in to ghe.example.com: `gh auth login --hostname \
+                 ghe.example.com` first\n  .archmap/github.json is as it was; the failure \
+                 (authentication) is recorded in .archmap/github.status.json: no automatic \
+                 attempt before 2026-09-22 07:25 UTC"
+                    .into()
+            )
+        );
+        let recorded = status(&root).unwrap();
+        assert_eq!(recorded.host, "ghe.example.com");
+        assert_eq!(recorded.last_error.unwrap().kind, FailureKind::Auth);
+        assert_eq!(asked.get(), 1);
+        // the next refresh within the wait asks gh nothing, not even its login
+        assert!(attempt(T0 + 60).message.starts_with("waiting: "));
+        assert_eq!(asked.get(), 1);
+    }
+
+    #[test]
+    fn the_backoff_stops_doubling_at_six_hours() {
+        let root = root("cap", Some(T0));
+        let mut now = T0 + 2 * HOUR;
+        for _ in 0..10 {
+            World::failing(now, 1, "gh failed: timeout").fetch(&root, &automatic("30m"));
+            now = seconds(&status(&root).unwrap().next_retry_at.unwrap()).unwrap();
+        }
+        let recorded = status(&root).unwrap();
+        assert_eq!(recorded.consecutive_failures, 10);
+        assert_eq!(
+            seconds(&recorded.next_retry_at.unwrap()).unwrap()
+                - seconds(&recorded.last_attempt_at).unwrap(),
+            MAX_BACKOFF
+        );
+    }
+
+    #[test]
+    fn a_rate_limit_waits_as_github_says_when_it_says() {
+        let root = root("rate", Some(T0));
+        let now = T0 + 2 * HOUR;
+        // the response's retry-after first
+        let world = World {
+            hints: Some(RateHints {
+                retry_after: Some(120),
+                remaining: Some(0),
+                reset: Some(now + 900),
+            }),
+            reset: Some(now + 1_800),
+            ..World::failing(now, 1, "GraphQL: API rate limit exceeded for user ID 7.")
+        };
+        world.fetch(&root, &automatic("30m"));
+        let recorded = status(&root).unwrap();
+        assert_eq!(recorded.last_error.unwrap().kind, FailureKind::RateLimit);
+        assert_eq!(recorded.next_retry_at, Some(utc(now + 120)));
+        assert_eq!(world.resets.get(), 0);
+    }
+
+    #[test]
+    fn when_to_try_again_follows_the_headers_then_the_primary_reset_then_the_backoff() {
+        let now = T0;
+        let none = &mut || -> Option<i64> { panic!("asked the rate_limit endpoint") };
+        let at = |retry_after, remaining, reset| {
+            Some(RateHints {
+                retry_after,
+                remaining,
+                reset,
+            })
+        };
+        // retry-after, for either limit
+        for kind in [FailureKind::RateLimit, FailureKind::SecondaryRateLimit] {
+            assert_eq!(
+                retry_at(kind, at(Some(90), None, None), none, now, 300),
+                now + 90
+            );
+        }
+        // a limit spent resets when its headers say
+        assert_eq!(
+            retry_at(
+                FailureKind::SecondaryRateLimit,
+                at(None, Some(0), Some(now + 700)),
+                none,
+                now,
+                300
+            ),
+            now + 700
+        );
+        // a reset with requests left is not this limit's end
+        assert_eq!(
+            retry_at(
+                FailureKind::SecondaryRateLimit,
+                at(None, Some(5), Some(now + 700)),
+                none,
+                now,
+                300
+            ),
+            now + 300
+        );
+        // without headers, the primary limit asks the endpoint, and the
+        // secondary never does: it cannot tell that limit's end
+        let asked = Cell::new(0);
+        let mut endpoint = || {
+            asked.set(asked.get() + 1);
+            Some(now + 1_000)
+        };
+        assert_eq!(
+            retry_at(FailureKind::RateLimit, None, &mut endpoint, now, 300),
+            now + 1_000
+        );
+        assert_eq!(asked.get(), 1);
+        assert_eq!(
+            retry_at(
+                FailureKind::SecondaryRateLimit,
+                None,
+                &mut endpoint,
+                now,
+                300
+            ),
+            now + 300
+        );
+        assert_eq!(asked.get(), 1);
+        // an endpoint that answers nothing, or a reset past, waits the backoff
+        assert_eq!(
+            retry_at(FailureKind::RateLimit, None, &mut || None, now, 600),
+            now + 600
+        );
+        assert_eq!(
+            retry_at(
+                FailureKind::RateLimit,
+                None,
+                &mut || Some(now - 1),
+                now,
+                600
+            ),
+            now + 600
+        );
+        // other failures wait the backoff, whatever the headers, and at least a minute
+        assert_eq!(
+            retry_at(
+                FailureKind::Auth,
+                at(Some(5), Some(0), Some(now + 9)),
+                none,
+                now,
+                300
+            ),
+            now + 300
+        );
+        assert_eq!(
+            retry_at(FailureKind::Network, None, none, now, 10),
+            now + 60
+        );
+    }
+
+    #[test]
+    fn a_failure_before_the_viewer_answers_is_no_accounts_and_another_account_starts_again() {
+        let root = root("account", Some(T0));
+        let path = root.join(DEFAULT_PATH);
+        let failed = |account: Option<Account>, failures| RefreshStatus {
+            schema: STATUS_SCHEMA,
+            source: "github".into(),
+            host: "github.com".into(),
+            repository: "acme/shop".into(),
+            account,
+            last_attempt_at: utc(T0 + HOUR),
+            last_error: Some(RefreshError {
+                kind: FailureKind::Auth,
+                message: "gh failed: HTTP 401: Bad credentials".into(),
+            }),
+            next_retry_at: Some(utc(T0 + HOUR + 60)),
+            consecutive_failures: failures,
+        };
+        let before = Some(Account {
+            login: "before".into(),
+            id: Some(1),
+        });
+        write_status(&status_path(&path), &failed(before.clone(), 3)).unwrap();
+        // the first request fails: whose failure it is, is not known, so it
+        // is recorded as no account's, and the backoff keeps growing
+        let now = T0 + 2 * HOUR;
+        World::failing(now, 0, "gh failed: error connecting to api.github.com")
+            .fetch(&root, &automatic("30m"));
+        let recorded = status(&root).unwrap();
+        assert_eq!(recorded.account, None);
+        assert_eq!(recorded.consecutive_failures, 4);
+        assert_eq!(recorded.last_error.unwrap().kind, FailureKind::Network);
+        // another account answers and fails: its failures count from one
+        write_status(&status_path(&path), &failed(before, 3)).unwrap();
+        World::failing(now, 1, "gh failed: timeout").fetch(&root, &automatic("30m"));
+        let recorded = status(&root).unwrap();
+        assert_eq!(recorded.consecutive_failures, 1);
+        assert_eq!(recorded.account.unwrap().id, Some(7));
+    }
+
+    #[test]
+    fn a_failure_no_later_than_the_snapshot_is_past_and_neither_waits_nor_counts() {
+        // a fetch wrote the snapshot after the failure and stopped before
+        // its status
+        let root = root("past-failure", Some(T0 + HOUR));
+        let path = root.join(DEFAULT_PATH);
+        write_status(
+            &status_path(&path),
+            &RefreshStatus {
+                schema: STATUS_SCHEMA,
+                source: "github".into(),
+                host: "github.com".into(),
+                repository: "acme/shop".into(),
+                account: None,
+                last_attempt_at: utc(T0),
+                last_error: Some(RefreshError {
+                    kind: FailureKind::Network,
+                    message: "gh failed: timeout".into(),
+                }),
+                next_retry_at: Some(utc(T0 + 6 * HOUR)),
+                consecutive_failures: 6,
+            },
+        )
+        .unwrap();
+        let world = World::failing(T0 + 2 * HOUR, 1, "gh failed: timeout");
+        let done = world.fetch(&root, &automatic("30m"));
+        assert_eq!(done.outcome, Outcome::NotWritten, "{}", done.message);
+        assert!(world.calls.get() > 0);
+        assert_eq!(status(&root).unwrap().consecutive_failures, 1);
+    }
+
+    #[test]
+    fn a_status_of_another_repository_is_not_this_ones_backoff() {
+        let root = root("other-repository", Some(T0));
+        let path = root.join(DEFAULT_PATH);
+        write_status(
+            &status_path(&path),
+            &RefreshStatus {
+                schema: STATUS_SCHEMA,
+                source: "github".into(),
+                host: "github.com".into(),
+                repository: "acme/web".into(),
+                account: None,
+                last_attempt_at: utc(T0 + HOUR),
+                last_error: Some(RefreshError {
+                    kind: FailureKind::Network,
+                    message: "gh failed: timeout".into(),
+                }),
+                next_retry_at: Some(utc(T0 + 9 * HOUR)),
+                consecutive_failures: 5,
+            },
+        )
+        .unwrap();
+        let world = World::failing(T0 + 2 * HOUR, 1, "gh failed: timeout");
+        world.fetch(&root, &automatic("30m"));
+        assert!(world.calls.get() > 0);
+        let recorded = status(&root).unwrap();
+        assert_eq!(
+            (recorded.repository.as_str(), recorded.consecutive_failures),
+            ("acme/shop", 1)
+        );
+    }
+
+    #[test]
+    fn an_automatic_refresh_never_overwrites_a_snapshot_it_cannot_read() {
+        let root = root("unreadable", None);
+        let path = root.join(DEFAULT_PATH);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        for (text, says) in [
+            (
+                "{\"schema\": 2}",
+                "snapshot schema 2, and this archmap reads 1",
+            ),
+            ("{", "no snapshot: "),
+        ] {
+            std::fs::write(&path, text).unwrap();
+            let world = world(T0);
+            let done = world.fetch(&root, &automatic("30m"));
+            assert_eq!(done.outcome, Outcome::NotWritten);
+            assert!(
+                done.message.starts_with(".archmap/github.json: "),
+                "{}",
+                done.message
+            );
+            assert!(done.message.contains(says), "{}", done.message);
+            assert!(
+                done.message.ends_with(
+                    ": an automatic refresh never overwrites a snapshot it cannot read, so \
+                     nothing was fetched; `archmap fetch github` fetches it again"
+                ),
+                "{}",
+                done.message
+            );
+            assert_eq!(world.calls.get(), 0);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+            assert_eq!(status(&root), None);
+        }
+        // one that cannot be read at all
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let done = world(T0).fetch(&root, &automatic("30m"));
+        assert!(
+            done.message.starts_with(".archmap/github.json: not read: "),
+            "{}",
+            done.message
+        );
+        std::fs::remove_dir(&path).unwrap();
+        // a fetch asked for replaces a newer format, and says so
+        std::fs::write(&path, "{\"schema\": 2}").unwrap();
+        let done = world(T0).fetch(&root, &updating());
+        assert!(
+            done.message
+                .contains(" (fetched whole: the snapshot has a newer format): "),
+            "{}",
+            done.message
+        );
+    }
 
     #[test]
     fn a_whole_fetch_in_place_of_an_update_keeps_the_snapshots_range() {

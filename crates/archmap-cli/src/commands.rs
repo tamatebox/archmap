@@ -200,8 +200,19 @@ fn print_answer(answer: Answer) -> ExitCode {
     }
 }
 
+/// `fetch github`: 0 when the snapshot was written or an automatic
+/// refresh had nothing to do, 1 when nothing was written that was asked
+/// for (said on stderr), 2 for a wrong invocation (from `main`).
 pub fn fetch_github(path: &str, request: &archmap_app::FetchRequest) -> Result<ExitCode> {
-    let written = archmap_app::fetch_github(Path::new(path), request)?;
-    print!("{written}");
-    Ok(ExitCode::SUCCESS)
+    let fetched = archmap_app::fetch_github(Path::new(path), request)?;
+    match fetched.outcome {
+        archmap_app::Outcome::Written | archmap_app::Outcome::Skipped => {
+            println!("{}", fetched.message);
+            Ok(ExitCode::SUCCESS)
+        }
+        archmap_app::Outcome::NotWritten => {
+            eprintln!("{}", fetched.message);
+            Ok(ExitCode::from(1))
+        }
+    }
 }

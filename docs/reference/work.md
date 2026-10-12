@@ -83,6 +83,78 @@ a whole fetch in place of an update reads the snapshot's own range. A
 failed update leaves the snapshot as it was. A plain `archmap fetch github`
 always fetches whole.
 
+### Automatic refreshes
+
+`archmap fetch github --if-older-than 30m` is for a hook or a scheduler
+that runs it often, from several sessions at once. It updates as
+`--update` does, whole fetches and `--full-if-older-than` included, but
+only when the snapshot's last fetch (`fetched_at`, whole or update) is
+older than the limit and no wait after a failure runs; otherwise it asks
+GitHub nothing and says why (`fresh: .archmap/github.json was fetched
+2026-10-04 09:30 UTC, within 30m: nothing fetched`). With no snapshot it
+fetches one whole. It never overwrites a snapshot it cannot read, whether
+of a newer format, corrupt or unreadable: it says which and that a fetch
+asked for replaces it.
+
+**One fetch at a time.** Every fetch of a snapshot, plain, `--update` or
+automatic, first takes an OS advisory lock on the file beside it
+(`.archmap/github.json.lock`), held until the process ends however it
+ends; the file stays. What a fetch decides (fresh, waiting, update or
+whole) it decides under the lock, from the snapshot and the status as they
+are then, so a refresh that waited for nothing never repeats one that just
+ran. When another fetch holds the lock, nothing is asked: an automatic
+refresh says `busy: another archmap fetch is updating
+.archmap/github.json: nothing fetched`, while a fetch asked for says the
+same without `busy:` and fails. A lock that cannot be taken (its directory
+cannot be created) is an error, never taken for another fetch.
+
+**Status.** Each attempt is recorded beside the snapshot, after it, in
+`.archmap/github.status.json` (`<name>.status.json` beside `-o <name>.json`),
+which only a fetch writes: the source, host and repository, the account
+the attempt ran as when it learned it, when the attempt began, and after a
+failure its kind (`rate_limit`, `secondary_rate_limit`, `auth`, `network`,
+`other`), its message with no token or credentials, `next_retry_at` and
+`consecutive_failures`. A success clears the failure; a failure leaves the
+snapshot as it was. A status of another host or repository, as after `-o`
+names one file for another `--repo`, is no wait of this one, and the next
+attempt replaces it. A failure that began no later than the snapshot's
+fetch is past, as after a fetch wrote the snapshot and stopped before its
+status: no refresh waits on it or counts it.
+
+**Waiting after a failure.** Automatic refreshes wait 5 minutes after a
+failure, doubled with each failure in a row up to 6 hours, and at least a
+minute. For a rate limit they follow GitHub's guidance: the failed
+response's `retry-after` first; for a limit spent (`x-ratelimit-remaining:
+0`) its `x-ratelimit-reset`; for the primary limit without those headers,
+the reset `gh api rate_limit` gives, which counts against no primary
+limit. That endpoint is never asked after a secondary limit: it may count
+toward one and cannot tell when one ends, so a secondary limit without
+headers waits as other failures do, exponentially longer each time. A
+fetch asked for (`archmap fetch github`, with or without `--update`)
+ignores the wait and is recorded the same way.
+
+**Accounts.** Failures in a row count per account: a failure as another
+account than the last one's counts from one. The account is the one the
+host names in the first answer (`viewer`); a failure before that answer is
+recorded with no account, never as the previous account's, and keeps the
+count. Nothing is asked while the snapshot is fresh or a wait runs, so a
+change of gh's account is not seen until the next attempt (the `waiting:`
+line says so); a fetch asked for sees it at once.
+
+**What answers say.** A failed attempt that began after the snapshot's
+fetch, for the snapshot's host and repository, shows beside it: in
+`summary`'s Coverage (`work refresh: the last attempt, 2026-10-04 10:00
+UTC, failed (rate limit): GraphQL: API rate limit exceeded for user ID 7.;
+no automatic attempt before 2026-10-04 11:00 UTC`, after `work: none (no
+snapshot at .archmap/github.json)` when no fetch has succeeded yet), as a
+`refresh:` line in `query '#N'` and in the Work section, and as `refresh`
+in their JSON (`last_attempt_at`, `error` with `kind` and `message`,
+`next_retry_at`, `consecutive_failures`). Since the status is written after
+the snapshot, an attempt stopped between the two leaves a failure older
+than the snapshot, which shows nowhere and delays no refresh. Answers give times, never an age,
+and never the account. They describe the snapshot and do not change what
+it holds; the MCP server reads them and never fetches.
+
 ## The snapshot
 
 `.archmap/github.json` under the root, beside `scan`'s default output; the

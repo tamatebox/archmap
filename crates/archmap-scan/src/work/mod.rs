@@ -1,37 +1,73 @@
 //! A work snapshot: read as a fetch wrote it, and fetched from GitHub by
 //! [`github`] only when a command asks to fetch.
 
-use std::path::Path;
+use std::fs::{File, OpenOptions, TryLockError};
+use std::path::{Path, PathBuf};
 
 pub mod github;
 
-use archmap_core::work::{Snapshot, WORK_SCHEMA};
+use archmap_core::work::{RefreshStatus, Snapshot, STATUS_SCHEMA, WORK_SCHEMA};
+use serde::Serialize;
 
 /// Where a fetch writes the snapshot and readers look for it, relative to
 /// the root.
 pub const DEFAULT_PATH: &str = ".archmap/github.json";
 
+/// Why a snapshot that exists could not be read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReadError {
+    /// The file system refused it (permissions, a directory, ...).
+    Unreadable(String),
+    /// Not JSON, or not a snapshot's shape.
+    Corrupt(String),
+    /// Another format version: `found` is the file's, `None` when it names
+    /// none.
+    Schema { found: Option<u64> },
+}
+
+impl ReadError {
+    /// Written by a newer archmap, which this one must not overwrite
+    /// unasked.
+    pub fn is_newer(&self) -> bool {
+        matches!(self, ReadError::Schema { found: Some(n) } if *n > u64::from(WORK_SCHEMA))
+    }
+}
+
+impl std::fmt::Display for ReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReadError::Unreadable(error) => write!(f, "not read: {error}"),
+            ReadError::Corrupt(error) => write!(f, "no snapshot: {error}"),
+            ReadError::Schema { found } => write!(
+                f,
+                "snapshot schema {}, and this archmap reads {WORK_SCHEMA}: fetch it again",
+                found.map_or("none".to_owned(), |s| s.to_string())
+            ),
+        }
+    }
+}
+
 /// The snapshot at `path`, normalized; `Ok(None)` when there is none. An
 /// error says what is wrong with the file, not where it is: the caller names
 /// it as its answers do, relative to the root.
-pub fn read(path: &Path) -> Result<Option<Snapshot>, String> {
+pub fn read(path: &Path) -> Result<Option<Snapshot>, ReadError> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("not read: {error}")),
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+            return Err(ReadError::Corrupt(error.to_string()))
+        }
+        Err(error) => return Err(ReadError::Unreadable(error.to_string())),
     };
     let schema = serde_json::from_str::<serde_json::Value>(&text)
-        .map_err(|error| format!("no snapshot: {error}"))?
+        .map_err(|error| ReadError::Corrupt(error.to_string()))?
         .get("schema")
         .and_then(serde_json::Value::as_u64);
     if schema != Some(u64::from(WORK_SCHEMA)) {
-        return Err(format!(
-            "snapshot schema {}, and this archmap reads {WORK_SCHEMA}: fetch it again",
-            schema.map_or("none".to_owned(), |s| s.to_string())
-        ));
+        return Err(ReadError::Schema { found: schema });
     }
     let mut snapshot: Snapshot =
-        serde_json::from_str(&text).map_err(|error| format!("no snapshot: {error}"))?;
+        serde_json::from_str(&text).map_err(|error| ReadError::Corrupt(error.to_string()))?;
     snapshot.normalize();
     Ok(Some(snapshot))
 }
@@ -40,17 +76,85 @@ pub fn read(path: &Path) -> Result<Option<Snapshot>, String> {
 /// renamed over it, so a reader never sees half a file and a failure
 /// leaves an older snapshot as it was.
 pub fn write(path: &Path, snapshot: &Snapshot) -> Result<(), String> {
-    let text = serde_json::to_string_pretty(snapshot).map_err(|e| e.to_string())? + "\n";
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
+    write_whole(path, snapshot)
+}
+
+/// Write `value` as JSON to `path` whole, through a temporary file beside
+/// it renamed over it. Errors name no path: the caller names the file.
+fn write_whole<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(value).map_err(|e| e.to_string())? + "\n";
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir).map_err(|e| format!("creating its directory: {e}"))?;
     }
-    let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    std::fs::write(&temporary, text)
-        .map_err(|e| format!("writing {}: {e}", temporary.display()))?;
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let temporary = path.with_file_name(format!("{name}.{}.tmp", std::process::id()));
+    std::fs::write(&temporary, text).map_err(|e| format!("writing it: {e}"))?;
     std::fs::rename(&temporary, path).map_err(|e| {
         let _ = std::fs::remove_file(&temporary);
-        format!("writing {}: {e}", path.display())
+        format!("writing it: {e}")
     })
+}
+
+/// The status file of the snapshot at `snapshot`: `github.status.json`
+/// beside `github.json`.
+pub fn status_path(snapshot: &Path) -> PathBuf {
+    let stem = snapshot
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    snapshot.with_file_name(format!("{stem}.status.json"))
+}
+
+/// The refresh status at `path`; `None` when there is none, or none this
+/// archmap reads: the status only advises, and the next attempt writes it
+/// again.
+pub fn read_status(path: &Path) -> Option<RefreshStatus> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let status: RefreshStatus = serde_json::from_str(&text).ok()?;
+    (status.schema == STATUS_SCHEMA).then_some(status)
+}
+
+/// Write the refresh status whole, as a snapshot is written.
+pub fn write_status(path: &Path, status: &RefreshStatus) -> Result<(), String> {
+    write_whole(path, status)
+}
+
+/// What taking a snapshot's lock found.
+#[derive(Debug)]
+pub enum Locked {
+    /// This process holds it until the file is dropped.
+    Held(File),
+    /// Another process holds it: a fetch of this snapshot is running.
+    Busy,
+}
+
+/// Take the lock every fetch of the snapshot at `snapshot` shares: an OS
+/// advisory lock on `<snapshot>.lock` beside it, which ends with the
+/// process however it ends. The file is created when missing and never
+/// removed, since removing it could let two processes lock two files.
+/// Another holder is `Busy`; an error of the file system is an error.
+pub fn lock(snapshot: &Path) -> Result<Locked, String> {
+    if let Some(dir) = snapshot.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir).map_err(|e| format!("creating its directory: {e}"))?;
+    }
+    let name = snapshot
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(snapshot.with_file_name(format!("{name}.lock")))
+        .map_err(|e| format!("opening its lock: {e}"))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Locked::Held(file)),
+        Err(TryLockError::WouldBlock) => Ok(Locked::Busy),
+        Err(TryLockError::Error(e)) => Err(format!("locking it: {e}")),
+    }
 }
 
 /// A time in seconds since the epoch as RFC 3339 in UTC

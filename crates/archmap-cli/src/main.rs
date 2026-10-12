@@ -201,6 +201,12 @@ enum FetchSource {
         /// than this (30m, 24h, 7d).
         #[arg(long, default_value = "24h")]
         full_if_older_than: String,
+        /// An automatic refresh, as a hook runs it: update only when the
+        /// snapshot's last fetch is older than this (30m) and no backoff
+        /// after a failure runs; exit 0 when there is nothing to do or
+        /// another fetch is running. Implies --update.
+        #[arg(long, conflicts_with_all = ["since", "all"])]
+        if_older_than: Option<String>,
     },
 }
 
@@ -259,6 +265,7 @@ fn main() -> ExitCode {
                     output,
                     update,
                     full_if_older_than,
+                    if_older_than,
                 },
         } => commands::fetch_github(
             &path,
@@ -271,6 +278,7 @@ fn main() -> ExitCode {
                 output: output.as_deref(),
                 update,
                 full_if_older_than: &full_if_older_than,
+                if_older_than: if_older_than.as_deref(),
             },
         ),
         Command::Mcp { path } => archmap_mcp::serve_stdio(archmap_mcp::Options { root: path })

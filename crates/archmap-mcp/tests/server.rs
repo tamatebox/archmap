@@ -343,6 +343,50 @@ async fn query_answers_an_item_of_the_work_snapshot_as_the_app_does() {
 }
 
 #[tokio::test]
+async fn a_failed_refresh_is_read_once_recorded_and_the_server_never_fetches() {
+    let repo = Repo::python("refresh");
+    let snapshot = r#"{"schema": 1, "source": "github", "host": "github.com",
+        "repository": "acme/shop", "fetched_at": "2026-10-03T09:00:00Z",
+        "range": {"since_rule": "all", "bound": 5000, "issues": 1, "pull_requests": 0},
+        "relation_types": ["closed_by"],
+        "items": [{"kind": "issue", "number": 7, "id": "I_7", "title": "Run fails",
+                   "state": "open", "created_at": "2026-01-01T00:00:00Z",
+                   "updated_at": "2026-01-01T00:00:00Z"}],
+        "relations": []}"#;
+    repo.write(".archmap/github.json", snapshot);
+    let server = Server::new(repo.0.clone());
+    let client = connect(server.clone()).await;
+    let summary = || call(&client, "summary", serde_json::json!({}));
+    assert!(!ok(&summary().await).contains("work refresh:"));
+    assert_eq!(server.scans(), 1);
+    // a fetch elsewhere fails and records it beside the snapshot
+    repo.write(
+        ".archmap/github.status.json",
+        r#"{"schema": 1, "source": "github", "host": "github.com", "repository": "acme/shop",
+            "last_attempt_at": "2026-10-04T10:00:00Z",
+            "last_error": {"kind": "network", "message": "gh failed: timeout"},
+            "next_retry_at": "2026-10-04T10:05:00Z", "consecutive_failures": 1}"#,
+    );
+    let line = "the last attempt, 2026-10-04 10:00 UTC, failed (network): gh failed: timeout; \
+                no automatic attempt before 2026-10-04 10:05 UTC";
+    let text = ok(&summary().await);
+    assert!(
+        text.contains(&format!("\nwork refresh: {line}\n")),
+        "{text}"
+    );
+    assert_eq!(server.scans(), 2, "the status changed");
+    let item = ok(&call(&client, "query", serde_json::json!({"target": "#7"})).await);
+    assert!(item.contains(&format!("\n  refresh: {line}\n")), "{item}");
+    // the server read them and changed nothing: no fetch took the lock
+    assert_eq!(
+        std::fs::read_to_string(repo.0.join(".archmap/github.json")).unwrap(),
+        snapshot
+    );
+    assert!(!repo.0.join(".archmap/github.json.lock").exists());
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn every_tool_answers_on_a_fixture() {
     let client = connect(Server::new(fixture("simple-python-project"))).await;
     let summary = ok(&call(&client, "summary", serde_json::json!({})).await);
