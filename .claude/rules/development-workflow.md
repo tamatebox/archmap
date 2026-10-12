@@ -20,7 +20,8 @@ independent review → fix only what it blocks → suggest the commit.
 3. **Check**: the commands in CLAUDE.md, "Commands to run after every change"
 4. **Review** once the change is final, with `code-reviewer`. Pass no `model` or `effort`: its
    frontmatter sets them, and `CLAUDE_CODE_EFFORT_LEVEL` or `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`
-   would override it. Hand it the requirement and acceptance criteria verbatim; the change as a
+   would override it. Hand it the requirement and acceptance criteria verbatim, with the issue
+   number when there is one; the change as a
    file (`git diff HEAD -- <paths>` written to the scratchpad) plus every untracked file, which
    `git diff` omits; and what step 3 ran and what passed or failed. Until the verdict arrives,
    nothing in the reviewed files changes and nothing is reported done. If `code-reviewer` is

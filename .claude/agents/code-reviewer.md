@@ -46,6 +46,12 @@ runs it.
   dependents and tests are where to look for what the diff missed. Search for what archmap does
   not see (CLAUDE.md, "Navigating this repository"): method calls through a value, macros whose
   arguments are no expressions, text pinned in tests or docs
+- `impact`'s `Changed in the same commits` lists files that changed with the target: one the diff
+  leaves out (a `docs/reference/` page, a README row, a test or fixture) is a place to look for
+  what the change missed, never a BLOCK by itself, since history is no dependency. When the
+  requirement names an issue, `query '#N'` gives its links, and the Work sections the issues that
+  earlier commits to the same files closed: check the change undoes none of them. The snapshot is
+  as old as the answer says
 - Run the changed behavior when it is cheap: the command on the fixture, the one test. A claim
   about output is settled by the output
 - Judge:

@@ -14,7 +14,7 @@ Planned work lives in GitHub issues on tamatebox/archmap. The repository is publ
 3. Issues that share a milestone are decided together at that step, not one by one.
 4. An issue labeled `needs-decision` is not started, and not skipped when later items build on it: bring its open questions and options to the user. Once decided, comment the decision on the issue in a few lines and remove the label; the decision itself lands in CLAUDE.md, `.claude/rules/`, README or `docs/reference/` with the change that implements it.
 5. Open issues that are neither in a plan nor labeled `later` are taken only when the user asks.
-6. Read the issue, then the parts of `docs/reference/`, `README.md` and `plugins/archmap/skills/archmap/SKILL.md` it touches. Local design notes under `docs/superpowers/` (never committed) may hold more; whatever is copied from them into an issue or a commit follows the private-repository rule in CLAUDE.md.
+6. Read the issue, then `cargo run -q -p archmap-cli -- query '#N'`: the links GitHub records for it and the files the commits of linked items changed, the places to open first (the snapshot is as old as the answer says; the plugin's `auto_refresh` keeps it, and fetching is the user's). Then the parts of `docs/reference/`, `README.md` and `plugins/archmap/skills/archmap/SKILL.md` it touches. Local design notes under `docs/superpowers/` (never committed) may hold more; whatever is copied from them into an issue or a commit follows the private-repository rule in CLAUDE.md.
 
 ## File or edit an issue
 
@@ -31,7 +31,7 @@ Planned work lives in GitHub issues on tamatebox/archmap. The repository is publ
 ## Close an issue
 
 - The change that closes it also updates `docs/reference/` and `README.md` wherever behavior changed, and the plugin skill and the MCP texts only as CLAUDE.md says. None of them ever cites issue numbers.
-- Suggest `Closes #<n>` in the body of the commit message, on the last commit when the work spans several, so the issue closes on push and links to the commit.
+- Suggest `(closes #<n>)` at the end of the commit's one-line subject, on the last commit when the work spans several, so the issue closes on push, and `(#<n>)` on a commit that follows up a closed one: GitHub records the reference, which `query '#N'` and the Work sections follow from the issue to its code.
 - When the user says the push is done, tick the items it closed in the plan issue, as the next section says.
 - Update any local design note that links the issue.
 
