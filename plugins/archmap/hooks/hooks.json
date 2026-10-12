@@ -1,0 +1,17 @@
+{
+  "description": "When the user turns auto_refresh on, refresh the project's GitHub work snapshot in the background as a session starts (archmap fetch github --if-older-than).",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|fork",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/refresh-work.sh\"",
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}

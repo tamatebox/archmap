@@ -45,7 +45,34 @@ claude plugin install archmap@archmap
 ```
 
 Without the binary, `/mcp` shows the server as failed and the skill tells
-the agent to install archmap. The skill directory,
+the agent to install archmap.
+
+The plugin can also keep the work snapshot that `query '#123'` and the Work
+sections read fresh: a SessionStart hook that runs `archmap fetch github
+--if-older-than 30m` in the background as a session starts, resumes, is
+cleared or forked (not when it is compacted). It is off by default, since
+it fetches through your gh login and writes `.archmap/github.json`, issue
+and pull request titles included, into the project. Turn it on, and set
+the interval, in `/config` or with `claude plugin configure
+archmap@archmap` (`auto_refresh`, `auto_refresh_interval`); turning it off
+there leaves the MCP server and the skill as they are. When on, it starts
+no fetch and writes nothing unless archmap with `--if-older-than`, gh and a
+github.com login are there, and archmap fetches only a project whose
+`origin` is on github.com, as `archmap fetch github` does without `--repo`:
+for GitHub Enterprise or an SSH alias, fetch by hand with `--repo`. The
+first fetch, of a year of items, runs without holding the session. archmap
+decides the rest as for a fetch by hand: nothing while the snapshot is
+younger than the interval, one fetch at a time, a wait after a failure,
+the snapshot's own title setting and bound kept, and a failure shown by
+`summary` and `query` rather than in the session. A fetch by hand
+(`archmap fetch github`, with or without `--update`) still works at any
+time and writes the same snapshot. The hook prints nothing into the
+session. `claude -p` cancels it when the session ends, so a short
+non-interactive session may end before the fetch does; the snapshot then
+stays as it was. The hook runs through `sh`: on Windows, through Git
+Bash. Windows is not supported yet: Claude Code starts the hook in every
+session, so where `sh` is missing (Windows without Git Bash) starting it
+may fail, and show a hook error, even with `auto_refresh` off. The skill directory,
 `plugins/archmap/skills/archmap/`, follows the
 [Agent Skills](https://agentskills.io/specification) format, so other agents
 can use a copy of it, and any MCP client can start the server itself:
@@ -207,7 +234,7 @@ comes later.
 | 5 Cross-system Graph | OpenAPI, Terraform, databases, HTTP, events, CI/build/deploy relationships | planned |
 | 6 Change & Work Graph | 6A local git history: commits, renames and the files changed together; 6B issues, pull requests and their explicit links from a fetched GitHub snapshot; 6C code to work and work to code at query time, Issue → PR → Commit → File | done: 6A: files changed in the same commits in `impact`; 6B: `fetch github` (whole, `--update` with what changed since, or `--if-older-than` as a hook runs it: one fetch at a time, waiting after failures) and `query '#123'`, issues, pull requests and their links from a snapshot ([work.md](docs/reference/work.md)); 6C: the pull requests and issues linked to the commits that changed a file or component in `impact` and `query`, and the files a pull request's or issue's commits changed in `query '#123'` |
 | 7 Semantic Enrichment | LLM naming, responsibilities, intent and other semantic interpretations, stored separately as inferred facts | planned |
-| 8 Agent Interface | plugin and skill for agents; MCP server over the same engine | MCP server (`archmap mcp`), plugin and skill |
+| 8 Agent Interface | plugin and skill for agents; MCP server over the same engine | MCP server (`archmap mcp`), plugin and skill, and the plugin's opt-in hook that refreshes the work snapshot as a session starts |
 | 9 Incremental / Runtime | incremental scans and caches; runtime traces and other observed execution relationships | planned |
 
 Phase 4 never runs over the whole repository by default. The cheap scan

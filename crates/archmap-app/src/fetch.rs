@@ -40,7 +40,11 @@ pub struct FetchRequest<'a> {
     pub since: Option<&'a str>,
     /// Every item, whatever its date.
     pub all: bool,
-    pub max_items: usize,
+    /// Items read per kind at most; when not given, the snapshot's own
+    /// bound for an automatic refresh, else [`DEFAULT_MAX_ITEMS`].
+    pub max_items: Option<usize>,
+    /// `false` when titles are left out (`--no-titles`); an automatic
+    /// refresh also leaves them out of a snapshot fetched without them.
     pub titles: bool,
     /// Where to write; `.archmap/github.json` under the root otherwise.
     pub output: Option<&'a Path>,
@@ -184,12 +188,23 @@ pub(crate) fn fetch_with(
                 _ => true,
             }
     });
+    // an automatic refresh keeps the snapshot's title setting and bound
+    // where the command gives none, so titles left out stay out
+    let kept = match &previous {
+        Ok(Some(snapshot)) if automatic => Some(snapshot),
+        _ => None,
+    };
+    let titles = request.titles && !kept.is_some_and(|s| s.no_titles);
+    let max_items = request
+        .max_items
+        .or(kept.map(|s| s.range.bound))
+        .unwrap_or(DEFAULT_MAX_ITEMS);
     if let (Some(ttl), Some(limit)) = (ttl, request.if_older_than) {
         match &previous {
             Ok(Some(snapshot)) => {
                 // fresh only as what this fetch asks for: another's is
                 // updated, which fetches it whole and says why
-                let asked = (request.titles, request.max_items);
+                let asked = (titles, max_items);
                 let same = fetched_otherwise(snapshot, &host, &repository, asked).is_none();
                 if same && seconds(&snapshot.fetched_at).is_some_and(|at| at > env.now - ttl) {
                     return Ok(skipped(format!(
@@ -230,8 +245,8 @@ pub(crate) fn fetch_with(
         name,
         since,
         since_rule,
-        max_items: request.max_items,
-        titles: request.titles,
+        max_items,
+        titles,
         now: utc(env.now),
         // a margin for a local clock ahead of GitHub's
         reread_since: utc(env.now - 300),
@@ -795,7 +810,7 @@ mod tests {
             repo: None,
             since: Some("2026-01-01"),
             all: false,
-            max_items: 100,
+            max_items: Some(100),
             titles: true,
             output: None,
             update: false,
@@ -804,9 +819,11 @@ mod tests {
         }
     }
 
+    /// As a hook runs it: no bound given.
     fn automatic(limit: &'static str) -> FetchRequest<'static> {
         FetchRequest {
             if_older_than: Some(limit),
+            max_items: None,
             ..plain()
         }
     }
@@ -931,7 +948,7 @@ mod tests {
             ),
             (
                 FetchRequest {
-                    max_items: 50,
+                    max_items: Some(50),
                     ..automatic("30m")
                 },
                 "shop",
@@ -957,6 +974,55 @@ mod tests {
             .fetch(&root, &automatic("30m"))
             .message
             .starts_with("fresh: "));
+    }
+
+    #[test]
+    fn an_automatic_refresh_keeps_the_snapshots_title_setting_and_bound_unless_given() {
+        let root = root("kept", None);
+        let without = FetchRequest {
+            titles: false,
+            max_items: Some(50),
+            ..plain()
+        };
+        world(T0).fetch(&root, &without);
+        // within the limit it is fresh as it is
+        let fresh = world(T0 + 60);
+        assert!(fresh
+            .fetch(&root, &automatic("30m"))
+            .message
+            .starts_with("fresh: "));
+        assert_eq!(fresh.calls.get(), 0);
+        // past it, an update that keeps both, never a whole fetch with titles
+        let done = world(T0 + HOUR).fetch(&root, &automatic("30m"));
+        assert!(done.message.starts_with("updated "), "{}", done.message);
+        let after = snapshot(&root);
+        assert!(after.no_titles);
+        assert_eq!(after.range.bound, 50);
+        // what the command gives still counts
+        let done = world(T0 + 2 * HOUR).fetch(
+            &root,
+            &FetchRequest {
+                max_items: Some(100),
+                ..automatic("30m")
+            },
+        );
+        assert!(
+            done.message
+                .contains(" (fetched whole: the snapshot was fetched with another bound): "),
+            "{}",
+            done.message
+        );
+        assert!(snapshot(&root).no_titles);
+        // and a fetch asked for takes its own defaults, as before
+        let done = world(T0 + 3 * HOUR).fetch(&root, &updating());
+        assert!(
+            done.message.contains(
+                " (fetched whole: the snapshot was fetched with the other title setting): "
+            ),
+            "{}",
+            done.message
+        );
+        assert!(!snapshot(&root).no_titles);
     }
 
     #[test]

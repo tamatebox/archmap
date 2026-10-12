@@ -873,7 +873,9 @@ than `--full-if-older-than` (`30m`, `24h`, `7d`; 24h by default).
 `--if-older-than 30m` (not with `--since` or `--all`) is an automatic
 refresh: an update only when the snapshot's last fetch is older than the
 limit and no wait after a failure runs, else nothing asked (`fresh: ...`,
-`waiting: ...`). Every fetch of a snapshot takes a lock beside it, and one
+`waiting: ...`). It keeps the snapshot's own title setting and bound when
+the command gives none (`--no-titles`, `--max-items`), so titles left out
+stay out; the plugin's hook runs it so (README, Agent plugin). Every fetch of a snapshot takes a lock beside it, and one
 that finds another fetch running asks nothing (`busy: ...` for an
 automatic refresh); each attempt is recorded in
 `.archmap/github.status.json`, which answers read to say that the last

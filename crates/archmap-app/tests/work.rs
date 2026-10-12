@@ -442,7 +442,7 @@ fn a_fetch_takes_its_host_from_origin_only_on_github_com() {
         repo: None,
         since: None,
         all: false,
-        max_items: 10,
+        max_items: Some(10),
         titles: true,
         output: None,
         update: false,

@@ -1,8 +1,22 @@
 {
   "name": "archmap",
-  "description": "MCP server and skill for archmap, which maps a repository's components and dependencies (summary, query, impact, check). Requires the archmap binary on PATH, installed separately: cargo install --git https://github.com/tamatebox/archmap archmap-cli",
+  "description": "MCP server, skill and an opt-in SessionStart hook for archmap, which maps a repository's components and dependencies (summary, query, impact, check). Requires the archmap binary on PATH, installed separately: cargo install --git https://github.com/tamatebox/archmap archmap-cli",
   "author": { "name": "tamatebox" },
   "repository": "https://github.com/tamatebox/archmap",
   "license": "MIT",
-  "keywords": ["architecture", "dependencies", "impact-analysis", "codebase-map"]
+  "keywords": ["architecture", "dependencies", "impact-analysis", "codebase-map"],
+  "userConfig": {
+    "auto_refresh": {
+      "type": "boolean",
+      "title": "Refresh the work snapshot as a session starts",
+      "description": "Run `archmap fetch github --if-older-than` in the background when a session starts, through your gh login, for a project whose origin is on github.com. It writes .archmap/github.json, with issue and pull request titles unless the snapshot was fetched with --no-titles. Off by default.",
+      "default": false
+    },
+    "auto_refresh_interval": {
+      "type": "string",
+      "title": "Refresh when the snapshot is older than",
+      "description": "A duration as archmap takes it: 30m, 2h, 1d.",
+      "default": "30m"
+    }
+  }
 }

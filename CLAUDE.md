@@ -50,7 +50,7 @@ Never add a dependency that points against the arrow. Never make `archmap-core` 
 ## Distributed plugin
 
 - `plugins/archmap/` is what users install, for agents that *use* archmap in their own repositories; this file is for agents that develop archmap. `.claude-plugin/marketplace.json` lists it.
-- The plugin only calls the `archmap` binary: `.mcp.json` declares `archmap mcp --path ${CLAUDE_PROJECT_DIR:-.}`, and the binary is installed separately. Keep `crates/` vendor-neutral: nothing in them knows about any agent, and the server takes its root from `--path` and each call's `path`, never from an agent's environment variables.
+- The plugin only calls the `archmap` binary: `.mcp.json` declares `archmap mcp --path ${CLAUDE_PROJECT_DIR:-.}`, `hooks/hooks.json` an opt-in SessionStart hook (`userConfig` `auto_refresh`, off by default) whose script checks only what a fetch needs and runs `archmap fetch github --if-older-than` in the background, leaving every decision to the CLI, and the binary is installed separately. Keep `crates/` vendor-neutral: nothing in them knows about any agent, and the server takes its root from `--path` and each call's `path`, never from an agent's environment variables.
 - `archmap` on PATH is a copy from the last `cargo install`, not the working tree. Develop and verify with `cargo run`; before trying a change through the plugin, reinstall with `cargo install --path crates/archmap-cli`.
 - `plugins/archmap/skills/archmap/SKILL.md` and the MCP texts (`crates/archmap-mcp/src/text.rs`, with the tools' parameter descriptions) are read before any answer, the MCP texts in every session, so they hold only what no answer can say: how to call archmap, when it helps, and the principles for judging an answer. What a mark, heading or count means is said in the answer (its `Marks` line, headings, `Not traced`) and in `docs/reference/`; a new mark, list or gap goes there, never into these texts, and a gap an answer can name goes into that answer's `Not traced`. Update them when a command, flag or parameter they name changes or a principle changes. They never name a capability archmap lacks or prescribe an order of tools. A test in `archmap-mcp` caps what a client receives, and SKILL.md stays under 4,500 bytes (`wc -c`); raising a cap is the user's decision.
 - README is the overview; `docs/reference/` (analyzers, graph, commands, mcp, rules, history, work) is where behavior is documented. A change that alters behavior updates the page that states it in the same change. README's "Support by language" marks and gap notes summarize `analyzers.md`; a change that closes or opens a gap updates both, and one that closes a gap only a README note names updates the note. README's Roadmap table states each phase's status: a change that ships part of a phase updates its row. Facts shared by every language go in `graph.md` or `commands.md`, not under each language.
@@ -101,8 +101,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo check --workspace
 cargo run -q -p archmap-cli -- check
+sh plugins/archmap/hooks/refresh-work.test.sh
 ```
 
-The last command enforces archmap's own `{cli, mcp} -> app -> scan -> core` direction from `archmap.toml`.
+The fifth command enforces archmap's own `{cli, mcp} -> app -> scan -> core` direction from `archmap.toml`. The last tests the plugin's hook with stand-ins for archmap and gh, and with the debug binary the tests built.
 
 Try the tool on itself as a smoke test without writing files: `cargo run -p archmap-cli -- scan . -o -`

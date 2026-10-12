@@ -181,11 +181,13 @@ enum FetchSource {
         /// Every item, whatever its date.
         #[arg(long)]
         all: bool,
-        /// Items read per kind at most, newest first.
-        #[arg(long, default_value_t = archmap_app::DEFAULT_MAX_ITEMS)]
-        max_items: usize,
+        /// Items read per kind at most, newest first [default: 5000; with
+        /// --if-older-than, the snapshot's own].
+        #[arg(long)]
+        max_items: Option<usize>,
         /// Keep numbers, states and times only: titles may be confidential
-        /// and reach whatever reads the answers.
+        /// and reach whatever reads the answers. With --if-older-than, a
+        /// snapshot fetched without titles stays without them.
         #[arg(long)]
         no_titles: bool,
         /// Write here instead of `<path>/.archmap/github.json`.
@@ -204,7 +206,8 @@ enum FetchSource {
         /// An automatic refresh, as a hook runs it: update only when the
         /// snapshot's last fetch is older than this (30m) and no backoff
         /// after a failure runs; exit 0 when there is nothing to do or
-        /// another fetch is running. Implies --update.
+        /// another fetch is running. Implies --update, and keeps the
+        /// snapshot's title setting and bound unless given.
         #[arg(long, conflicts_with_all = ["since", "all"])]
         if_older_than: Option<String>,
     },

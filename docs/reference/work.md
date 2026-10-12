@@ -86,16 +86,19 @@ always fetches whole.
 ### Automatic refreshes
 
 `archmap fetch github --if-older-than 30m` is for a hook or a scheduler
-that runs it often, from several sessions at once. It updates as
+that runs it often, from several sessions at once, such as the agent
+plugin's SessionStart hook (README, Agent plugin). It updates as
 `--update` does, whole fetches and `--full-if-older-than` included, but
 only when the snapshot's last fetch (`fetched_at`, whole or update) is
 older than the limit and no wait after a failure runs; otherwise it asks
 GitHub nothing and says why (`fresh: .archmap/github.json was fetched
-2026-10-04 09:30 UTC, within 30m: nothing fetched`). A snapshot is fresh
-only as what the fetch asks for: one of another source, host or
-repository, or fetched with the other title setting or another bound, is
-updated however recent, which fetches it whole and says why, as
-`--update` does. One whose fetch time cannot be read (edited by hand) is
+2026-10-04 09:30 UTC, within 30m: nothing fetched`). The title setting
+and bound the command does not give (`--no-titles`, `--max-items`) are the
+snapshot's own, so a snapshot fetched without titles stays without them.
+A snapshot is fresh only as what the fetch asks for: one of another
+source, host or repository, or of another title setting or bound the
+command gives, is updated however recent, which fetches it whole and says
+why, as `--update` does. One whose fetch time cannot be read (edited by hand) is
 never fresh either, and is fetched whole. With no snapshot it fetches one
 whole. It never overwrites a snapshot it cannot read, whether
 of a newer format, corrupt or unreadable: it says which and that a fetch
