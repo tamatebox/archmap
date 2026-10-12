@@ -322,8 +322,10 @@ name, and never enter the graph, `scan` or `graph.json`. A use is an
 identifier that the language's scoping, within its file, resolves to the
 symbol: through the binding an import statement makes for it (an alias, a
 default import, `import x = require()`, a CommonJS `require`, an `import()`
-or `vi.importActual()` awaited, and a destructuring of a module bound
-whole; where a module is one declaration, `module.exports = logger` or
+or `vi.importActual()` awaited or handed to a function written directly in
+its `then` whose first parameter is a name or an object pattern
+(`import('./m').then((m) => m.f())`; a `function` that reads `arguments`
+is not followed), and a destructuring of a module bound whole; where a module is one declaration, `module.exports = logger` or
 `export = Engine`, a binding of it whole is that declaration, so
 `logger.info()` after `const logger = require('./logger')` uses `logger`,
 as do `import { info } from './logger'` and `typeof
@@ -349,12 +351,13 @@ ends in `as <name>` when the code names it otherwise. The heading counts the
 uses in test code apart (`5 in tests`, or `all in tests`):
 
 ```text
-Used at: 24 in 16 files, 5 in tests, showing 10 (20 calls, 4 types)
+Used at: 28 in 16 files, 7 in tests, showing 10 (23 calls, 5 types)
   src/app.ts:11 (call) as fp, src/app.ts:11:20 (call) as m.formatPrice, src/app.ts:11:38 (call) as m.formatPrice, +1 more in this file
+  scripts/lazy.mjs:3 (call), scripts/lazy.mjs:7 (call) as m.formatPrice, scripts/lazy.mjs:11 (call)
   src/view.tsx:9 (call) as money.formatPrice, src/view.tsx:10 (call), src/view.tsx:11 (call) as all.money.formatPrice
   ...
   never used (1 import): src/unused.ts:1
-  never named (1 import of the whole module): tests/actual.test.ts:2
+  never named (1 import of the whole module): src/rates.ts:1
   mocked (2 places, keys of tests' mock factories, no use): tests/mocked.test.ts:4 (test), tests/partial.test.ts:5 (test)
 ```
 
@@ -391,7 +394,7 @@ code may call the member through it unseen, so a statement whose class is
 used as a value is never `never used`; constructing the class, an
 `instanceof` and a type name call no static member and count for nothing.
 `Not traced` also names the places that use the symbol's module as a value (`whole module`: passed as an
-argument, `ns[key]`, the promise of an `import()` not awaited), which may use
+argument, `ns[key]`, the promise of an `import()` neither awaited nor followed through its `then`), which may use
 it unseen; and the statements whose
 uses were not read, with why (`uses`): two statements on one line that load
 different files (`ambiguous statement`), a line that no longer holds the

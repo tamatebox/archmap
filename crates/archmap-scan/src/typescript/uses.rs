@@ -20,13 +20,14 @@ use archmap_core::{
 };
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    BinaryOperator, BindingIdentifier, BindingPattern, CallExpression, ClassElement, Expression,
-    IdentifierReference, ImportDeclarationSpecifier, ModuleExportName, Program, Statement,
-    TSImportTypeQualifier, TSModuleReference,
+    Argument, BinaryOperator, BindingIdentifier, BindingPattern, CallExpression, ClassElement,
+    Expression, FormalParameter, Function, IdentifierReference, ImportDeclarationSpecifier,
+    ModuleExportName, ObjectPattern, Program, Statement, TSImportTypeQualifier, TSModuleReference,
 };
 use oxc_ast::AstKind;
+use oxc_ast_visit::Visit;
 use oxc_parser::Parser;
-use oxc_semantic::{AstNode, AstNodes, NodeId, Semantic, SemanticBuilder, SymbolId};
+use oxc_semantic::{AstNode, AstNodes, NodeId, ScopeFlags, Semantic, SemanticBuilder, SymbolId};
 use oxc_span::{GetSpan, Span};
 
 use super::exports::{Export, MAX_HOPS};
@@ -565,8 +566,14 @@ impl<'g> Pass<'g, '_> {
                         Some((id, span)) => {
                             follow_node(read, id, span, "", &all, 0, &mut uses, self.out);
                         }
-                        // a promise of the module, whatever is done with it
-                        None => self.out.escapes.push(evidence_at(read, node.kind().span())),
+                        None => match then_parameter(nodes, node) {
+                            Some(parameter) => {
+                                follow_parameter(read, parameter, &all, &mut uses, self.out);
+                            }
+                            // a promise of the module, whatever else is
+                            // done with it
+                            None => self.out.escapes.push(evidence_at(read, node.kind().span())),
+                        },
                     }
                 }
                 _ => {}
@@ -799,6 +806,54 @@ fn loaded_value(nodes: &AstNodes, node: &AstNode) -> Option<(NodeId, Span)> {
     }
 }
 
+/// The first parameter of a callback passed directly to the `then` of the
+/// promise at `node` (`import('./m').then((m) => ..)`), which the promise
+/// hands the module to.
+fn then_parameter<'a>(nodes: &AstNodes<'a>, node: &AstNode<'a>) -> Option<&'a FormalParameter<'a>> {
+    let member = nodes.parent_node(node.id());
+    let AstKind::StaticMemberExpression(m) = member.kind() else {
+        return None;
+    };
+    if m.property.name != "then" || m.object.span() != node.kind().span() {
+        return None;
+    }
+    let AstKind::CallExpression(call) = nodes.parent_kind(member.id()) else {
+        return None;
+    };
+    if call.callee.span() != m.span {
+        return None;
+    }
+    let params = match call.arguments.first()? {
+        Argument::ArrowFunctionExpression(f) => &f.params,
+        Argument::FunctionExpression(f) if !reads_arguments(f) => &f.params,
+        _ => return None,
+    };
+    params.items.first()
+}
+
+/// Whether a function's own code reads `arguments`, which hands its
+/// parameters on unnamed.
+fn reads_arguments(function: &Function) -> bool {
+    let mut reads = ReadsArguments(false);
+    reads.visit_formal_parameters(&function.params);
+    if let Some(body) = &function.body {
+        reads.visit_function_body(body);
+    }
+    reads.0
+}
+
+/// Whether code reads `arguments`: an arrow function shares its enclosing
+/// function's, a nested function has its own.
+struct ReadsArguments(bool);
+
+impl<'a> Visit<'a> for ReadsArguments {
+    fn visit_identifier_reference(&mut self, it: &IdentifierReference<'a>) {
+        self.0 |= it.name == "arguments";
+    }
+
+    fn visit_function(&mut self, _: &Function<'a>, _: ScopeFlags) {}
+}
+
 /// The local name the defining file declares its export `exported` by:
 /// `rates` for `export { rates as RATES }`; `None` when it is declared by
 /// that name.
@@ -968,16 +1023,8 @@ fn follow_node(
         }
         return;
     }
-    let module = read.holds_module(rests);
-    let class = !module && read.holds_class(rests);
-    let escape = |out: &mut SymbolUses| {
-        if module {
-            out.escapes.push(evidence_at(read, span));
-        } else if class {
-            out.escapes
-                .push(evidence_at(read, span).with_note(CLASS_ESCAPE));
-        }
-    };
+    let class = !read.holds_module(rests) && read.holds_class(rests);
+    let escape = |out: &mut SymbolUses| escape_at(read, span, rests, out);
     let member = |name: &str, at: Span, uses: &mut Vec<SymbolUse>, out: &mut SymbolUses| {
         let next: Vec<Vec<String>> = rests
             .iter()
@@ -1063,41 +1110,7 @@ fn follow_node(
             let BindingPattern::ObjectPattern(pattern) = &d.id else {
                 return escape(out);
             };
-            if destructured >= MAX_DESTRUCTURINGS || pattern.rest.is_some() {
-                escape(out);
-            }
-            if destructured >= MAX_DESTRUCTURINGS {
-                return;
-            }
-            for property in &pattern.properties {
-                let Some(key) = property.key.static_name() else {
-                    escape(out);
-                    continue;
-                };
-                let next: Vec<Vec<String>> = rests
-                    .iter()
-                    .filter(|r| r[0] == key.as_ref())
-                    .map(|r| r[1..].to_vec())
-                    .collect();
-                if next.is_empty() {
-                    continue;
-                }
-                let Some(binding) = bound_identifier(&property.value) else {
-                    escape(out);
-                    continue;
-                };
-                if let Some(symbol) = binding.symbol_id.get() {
-                    follow_binding(
-                        read,
-                        symbol,
-                        &binding.name,
-                        &next,
-                        destructured + 1,
-                        uses,
-                        out,
-                    );
-                }
-            }
+            destructure(read, pattern, span, rests, destructured, uses, out);
         }
         // a subclass reaches the members of the class it extends, statics
         // included (`Rich.open()`, `super.open()`)
@@ -1123,6 +1136,97 @@ fn follow_node(
         // its static members
         _ if class && !class_as_value(read, id, span) => {}
         _ => escape(out),
+    }
+}
+
+/// Where what leads to the symbol along `rests`, at `span`, is used other
+/// than by a static name: an escape where it holds the module whole or the
+/// class of a static member, nothing otherwise.
+fn escape_at(read: &Read, span: Span, rests: &[Vec<String>], out: &mut SymbolUses) {
+    if read.holds_module(rests) {
+        out.escapes.push(evidence_at(read, span));
+    } else if read.holds_class(rests) {
+        out.escapes
+            .push(evidence_at(read, span).with_note(CLASS_ESCAPE));
+    }
+}
+
+/// Follow the names an object pattern binds from what leads to the symbol
+/// along `rests`, none of them empty, one step on each; `span` escapes
+/// where a name is not followed.
+fn destructure(
+    read: &Read,
+    pattern: &ObjectPattern,
+    span: Span,
+    rests: &[Vec<String>],
+    destructured: usize,
+    uses: &mut Vec<SymbolUse>,
+    out: &mut SymbolUses,
+) {
+    if destructured >= MAX_DESTRUCTURINGS || pattern.rest.is_some() {
+        escape_at(read, span, rests, out);
+    }
+    if destructured >= MAX_DESTRUCTURINGS {
+        return;
+    }
+    for property in &pattern.properties {
+        let Some(key) = property.key.static_name() else {
+            escape_at(read, span, rests, out);
+            continue;
+        };
+        let next: Vec<Vec<String>> = rests
+            .iter()
+            .filter(|r| r[0] == key.as_ref())
+            .map(|r| r[1..].to_vec())
+            .collect();
+        if next.is_empty() {
+            continue;
+        }
+        let Some(binding) = bound_identifier(&property.value) else {
+            escape_at(read, span, rests, out);
+            continue;
+        };
+        if let Some(symbol) = binding.symbol_id.get() {
+            follow_binding(
+                read,
+                symbol,
+                &binding.name,
+                &next,
+                destructured + 1,
+                uses,
+                out,
+            );
+        }
+    }
+}
+
+/// Follow the module a promise hands to a `then` callback's parameter
+/// along `rests`, as `const` follows it from an `await`: a binding of the
+/// module whole, or a destructuring of it.
+fn follow_parameter(
+    read: &Read,
+    parameter: &FormalParameter,
+    rests: &[Vec<String>],
+    uses: &mut Vec<SymbolUse>,
+    out: &mut SymbolUses,
+) {
+    if let Some(binding) = bound_identifier(&parameter.pattern) {
+        if let Some(symbol) = binding.symbol_id.get() {
+            follow_binding(read, symbol, &binding.name, rests, 0, uses, out);
+        }
+        return;
+    }
+    // the module is the symbol (`module.exports = logger`), which the
+    // pattern reads
+    if rests.iter().any(Vec::is_empty) {
+        uses.push(make_use(read, parameter.span, UseRole::Read, None));
+        return;
+    }
+    match &parameter.pattern {
+        BindingPattern::ObjectPattern(pattern) => {
+            destructure(read, pattern, parameter.span, rests, 0, uses, out);
+        }
+        _ => escape_at(read, parameter.span, rests, out),
     }
 }
 

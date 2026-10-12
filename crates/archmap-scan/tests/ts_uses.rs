@@ -66,6 +66,10 @@ fn a_function_is_used_through_every_binding_that_reaches_it() {
             "scripts/cjs.cjs:4:23 call via 1",
             "scripts/cjs.cjs:4:48 call as money.formatPrice via 2",
             "scripts/lazy.mjs:3:10 call via 2",
+            // the module a promise hands to its `then` callback, bound whole
+            // and destructured
+            "scripts/lazy.mjs:7:50 call as m.formatPrice via 7",
+            "scripts/lazy.mjs:11:62 call via 11",
             // `export { formatPrice as fp3 }` in the defining file
             "src/aliased.ts:3:29 call as all.fp3 via 1",
             // the destructuring binds `g`, as an import binds a name
@@ -92,6 +96,9 @@ fn a_function_is_used_through_every_binding_that_reaches_it() {
             // `await vi.importActual(..)`
             "tests/actual.test.ts:2:56 type via 2 (test)",
             "tests/actual.test.ts:3:10 call via 2 (test)",
+            // and through a `function` that `then` hands the module to
+            "tests/actual.test.ts:7:33 type via 7 (test)",
+            "tests/actual.test.ts:8:14 call as m.formatPrice via 7 (test)",
             // a mock stands in for the module, but the call names the symbol
             "tests/mocked.test.ts:8:24 call via 1 (test)",
             "tests/money.test.ts:3:24 call via 1 (test)",
@@ -100,12 +107,14 @@ fn a_function_is_used_through_every_binding_that_reaches_it() {
         "{:#?}",
         shown(&found)
     );
-    // `send(m)`, the promise of `import()` and a spread of the real module
-    // into a mock may use it unseen
+    // `send(m)`, the promise of `import()` handed to no callback written
+    // there or to a `function` that may pass it on by `arguments`, and a
+    // spread of the real module into a mock may use it unseen
     assert_eq!(
         places(&found.escapes),
         [
-            "scripts/lazy.mjs:7",
+            "scripts/lazy.mjs:15",
+            "scripts/lazy.mjs:19",
             "src/app.ts:8",
             "tests/partial.test.ts:4"
         ],
@@ -243,6 +252,7 @@ fn a_class_is_used_by_new_by_its_static_members_and_in_types() {
             "src/typeof.ts:3:26 type as m via 1",
             "src/types.ts:3:32 type via 1",
             "tests/actual.test.ts:2:56 type via 2 (test)",
+            "tests/actual.test.ts:7:33 type via 7 (test)",
         ]
     );
 }
@@ -260,6 +270,7 @@ fn a_member_is_used_through_its_class_and_through_this_in_its_own_kind() {
             "src/money.ts:21:17 call as this.open",
             "src/typeof.ts:3:26 type as m via 1",
             "tests/actual.test.ts:2:56 type via 2 (test)",
+            "tests/actual.test.ts:7:33 type via 7 (test)",
         ]
     );
     // a subclass inherits statics too (`Rich.open()`, `super.open()`): the
@@ -280,6 +291,7 @@ fn a_member_is_used_through_its_class_and_through_this_in_its_own_kind() {
             "src/money.ts:17:29 call as this.pay",
             "src/typeof.ts:3:26 type as m via 1",
             "tests/actual.test.ts:2:56 type via 2 (test)",
+            "tests/actual.test.ts:7:33 type via 7 (test)",
         ]
     );
     // the class's importers may call it through values (`w?.pay(7)`,
@@ -323,6 +335,7 @@ fn a_default_export_and_a_renamed_export_are_used_by_their_local_names() {
             "src/importtype.ts:1:28 type via 1",
             "src/typeof.ts:3:26 type as m via 1",
             "tests/actual.test.ts:2:56 type via 2 (test)",
+            "tests/actual.test.ts:7:33 type via 7 (test)",
         ]
     );
     // `export { rates as RATES }`: the uses of `rates`
@@ -334,6 +347,7 @@ fn a_default_export_and_a_renamed_export_are_used_by_their_local_names() {
             "src/rates.ts:3:26 read as money.RATES via 1",
             "src/typeof.ts:3:26 type as m via 1",
             "tests/actual.test.ts:2:56 type via 2 (test)",
+            "tests/actual.test.ts:7:33 type via 7 (test)",
         ]
     );
 }
@@ -440,6 +454,8 @@ fn a_module_that_is_one_declaration_gives_it_to_require() {
         [
             "src/app.js:2:1 read via 1",
             "src/held.js:1:18 read via 1",
+            // a `then` callback's parameter that destructures it
+            "src/later.mjs:1:50 read via 1",
             "src/logger.js:6:18 read",
             "src/named.mjs:1:10 read as info via 1",
             "src/typed.ts:1:46 type via 1",

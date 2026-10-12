@@ -1143,8 +1143,8 @@ fn a_file_by_symbol_says_what_query_on_each_symbol_could_not_follow() {
     assert!(
         text.contains(
             "\n  formatPrice, Wallet, Wallet.open, +5 more:\n    \
-             whole module: 3 places use the module as a value, which may use this: \
-             scripts/lazy.mjs:7, src/app.ts:8, tests/partial.test.ts:4 (test)\n    \
+             whole module: 4 places use the module as a value, which may use this: \
+             scripts/lazy.mjs:15, scripts/lazy.mjs:19, src/app.ts:8, +1 more\n    \
              uses: not read in 1 place: src/two.ts:1 (ambiguous statement)\n  \
              Wallet.open, Wallet.pay, Wallet.settle, +1 more:\n    subclasses: "
         ),

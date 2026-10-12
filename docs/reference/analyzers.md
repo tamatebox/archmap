@@ -615,7 +615,9 @@ Files `.ts .tsx .mts .cts .js .jsx .mjs .cjs`, `.d.ts` included, parsed with `ox
 - `Used at` does not read a method called through a value of its type (`wallet.pay()`), a member
   reached through a subclass (`Rich.open()`, `super.m()`; `Not traced` names the classes that extend it),
   `this.m()` in a subclass that only inherits `m`, what an `import()` or a `vi.importActual()` that is
-  not awaited gives (`import('./m').then((m) => m.f())`, named as a `whole module` place), a member
+  not awaited gives other than to a function written directly in its `then` whose first parameter
+  is a name or an object pattern (`.then(show)`, `.then((m) => m).then((m) => m.f())`, a `function`
+  that reads `arguments`, named as a `whole module` place), a member
   kept under another name (`const fp = ns.formatPrice` is one use, and the uses of `fp` are not
   followed), or a static member called through its class held as a value (`const W = Wallet;
   W.open()`, `make(Wallet)`, named as a `class values` place). `this.m()` names the class's `m`, which

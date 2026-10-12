@@ -2826,14 +2826,15 @@ fn query_on_a_ts_symbol_lists_where_it_is_used() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/ts-uses");
     let text = query_text(&root, &["formatPrice"]);
     // two uses that would read alike say their columns
-    let used_at = "\nUsed at: 24 in 16 files, 5 in tests, showing 10 (20 calls, 4 types)\n\
+    let used_at = "\nUsed at: 28 in 16 files, 7 in tests, showing 10 (23 calls, 5 types)\n\
          \x20 src/app.ts:11 (call) as fp, src/app.ts:11:20 (call) as m.formatPrice, \
          src/app.ts:11:38 (call) as m.formatPrice, +1 more in this file\n\
+         \x20 scripts/lazy.mjs:3 (call), scripts/lazy.mjs:7 (call) as m.formatPrice, \
+         scripts/lazy.mjs:11 (call)\n\
          \x20 src/view.tsx:9 (call) as money.formatPrice, src/view.tsx:10 (call), \
          src/view.tsx:11 (call) as all.money.formatPrice\n\
          \x20 scripts/cjs.cjs:4 (call), scripts/cjs.cjs:4 (call) as money.formatPrice\n\
          \x20 src/cast.ts:3 (call) as m.formatPrice, src/cast.ts:4 (call) as m.formatPrice\n\
-         \x20 scripts/lazy.mjs:3 (call)\n\
          \x20 src/aliased.ts:3 (call) as all.fp3\n\
          \x20 src/hoisted.ts:1 (call)\n\
          \x20 src/importtype.ts:1 (type)\n\
@@ -2844,8 +2845,8 @@ fn query_on_a_ts_symbol_lists_where_it_is_used() {
          \x20 mocked (2 places, keys of tests' mock factories, no use): tests/mocked.test.ts:4 (test), tests/partial.test.ts:5 (test)\n";
     assert!(text.contains(used_at), "{text}");
     for line in [
-        "  whole module: 3 places use the module as a value, which may use this: \
-         scripts/lazy.mjs:7, src/app.ts:8, tests/partial.test.ts:4 (test)\n",
+        "  whole module: 4 places use the module as a value, which may use this: \
+         scripts/lazy.mjs:15, scripts/lazy.mjs:19, src/app.ts:8, +1 more\n",
         "  uses: not read in 1 place: src/two.ts:1 (ambiguous statement)\n",
     ] {
         assert!(text.contains(line), "{line}\n{text}");
@@ -2855,11 +2856,12 @@ fn query_on_a_ts_symbol_lists_where_it_is_used() {
     let rates = query_text(&root, &["RATES"]);
     assert!(
         rates.contains(
-            "\nUsed at: 5 in 5 files, 1 in tests (3 types, 2 read)\n  src/importtype.ts:1 (type)\n  \
+            "\nUsed at: 6 in 5 files, 2 in tests (4 types, 2 read)\n  src/importtype.ts:1 (type)\n  \
              src/money.ts:29 (read) as rates\n  src/rates.ts:3 (read) as money.RATES\n  \
-             src/typeof.ts:3 (type) as m\n  tests/actual.test.ts:2 (type) (test)\n  \
-             never named (6 imports of the whole module): scripts/cjs.cjs:2, src/aliased.ts:1, \
-             src/cast.ts:1, +3 more\n"
+             src/typeof.ts:3 (type) as m\n  \
+             tests/actual.test.ts:2 (type) (test), tests/actual.test.ts:7 (type) (test)\n  \
+             never named (9 imports of the whole module): scripts/cjs.cjs:2, scripts/lazy.mjs:7, \
+             scripts/lazy.mjs:11, +6 more\n"
         ),
         "{rates}"
     );
@@ -2867,7 +2869,7 @@ fn query_on_a_ts_symbol_lists_where_it_is_used() {
     let method = query_text(&root, &["Wallet.pay"]);
     assert!(
         method.contains(
-            "\nUsed at: through the class and this only: 5 in 4 files, 1 in tests (2 calls, 3 types)\n\
+            "\nUsed at: through the class and this only: 6 in 4 files, 2 in tests (2 calls, 4 types)\n\
              \x20 src/money.ts:13 (call) as this.pay, src/money.ts:17 (call) as this.pay\n"
         ),
         "{method}"
@@ -2875,8 +2877,8 @@ fn query_on_a_ts_symbol_lists_where_it_is_used() {
     assert!(
         method.contains(
             "  values: calls through a value of the type (x.m()) need its type, which is not \
-             read; 10 imports of the type or its module may make them: scripts/cjs.cjs:2, \
-             src/aliased.ts:1, src/app.ts:1, +7 more\n"
+             read; 13 imports of the type or its module may make them: scripts/cjs.cjs:2, \
+             scripts/lazy.mjs:7, scripts/lazy.mjs:11, +10 more\n"
         ),
         "{method}"
     );
@@ -2900,7 +2902,7 @@ fn query_on_a_ts_symbol_lists_where_it_is_used() {
         .unwrap();
     let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let uses = value[0]["used_at"]["uses"].as_array().unwrap();
-    assert_eq!(uses.len(), 24);
+    assert_eq!(uses.len(), 28);
     assert_eq!(
         uses[0],
         serde_json::json!({
