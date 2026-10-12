@@ -98,11 +98,22 @@ snapshot's own, so a snapshot fetched without titles stays without them.
 A snapshot is fresh only as what the fetch asks for: one of another
 source, host or repository, or of another title setting or bound the
 command gives, is updated however recent, which fetches it whole and says
-why, as `--update` does. One whose fetch time cannot be read (edited by hand) is
-never fresh either, and is fetched whole. With no snapshot it fetches one
-whole. It never overwrites a snapshot it cannot read, whether
-of a newer format, corrupt or unreadable: it says which and that a fetch
-asked for replaces it.
+why, as `--update` does. One whose fetch time cannot be read (edited by
+hand) is never fresh either, and is fetched whole. It never overwrites a
+snapshot it cannot read, whether of a newer format, corrupt or unreadable:
+it says which and that a fetch asked for replaces it.
+
+Which repository, without `--repo`, depends on `origin`. An `origin` on
+github.com names it, and with no snapshot yet the refresh fetches one
+whole. An `origin` that names no github.com repository (an SSH alias, an
+enterprise host) names one only through a snapshot that a fetch with
+`--repo` wrote: the refresh updates the repository that snapshot names if
+`origin` names the same owner and name on the same host, an alias's host
+as `ssh -G` gives it ([commands.md](commands.md#fetch-github)), and under
+the lock it checks the snapshot is still of that repository. With no such
+snapshot it stops and fetches nothing: the first fetch of such a project
+is by hand. Either way, before the lock it asks gh's store whether it
+holds a login for the host, and without one writes nothing.
 
 **One fetch at a time.** Every fetch of a snapshot, plain, `--update` or
 automatic, first takes an OS advisory lock on the file beside it

@@ -56,11 +56,14 @@ and pull request titles included, into the project. Turn it on, and set
 the interval, in `/config` or with `claude plugin configure
 archmap@archmap` (`auto_refresh`, `auto_refresh_interval`); turning it off
 there leaves the MCP server and the skill as they are. When on, it starts
-no fetch and writes nothing unless archmap with `--if-older-than`, gh and a
-github.com login are there, and archmap fetches only a project whose
-`origin` is on github.com, as `archmap fetch github` does without `--repo`:
-for GitHub Enterprise or an SSH alias, fetch by hand with `--repo`. The
-first fetch, of a year of items, runs without holding the session. archmap
+no fetch and writes nothing unless archmap with `--if-older-than` and gh
+are there, and archmap writes nothing unless gh holds a login for the host
+it fetches from. The hook names no repository, so archmap takes the
+`origin`'s on github.com. For an SSH alias (`git@github-work:acme/shop.git`)
+or a GitHub Enterprise host, fetch once by hand with `--repo`; from then on
+the hook refreshes the snapshot that fetch wrote, as long as `origin` names
+its owner and name on its host (for an alias, the host `ssh -G` gives it).
+The first fetch, of a year of items, runs without holding the session. archmap
 decides the rest as for a fetch by hand: nothing while the snapshot is
 younger than the interval, one fetch at a time, a wait after a failure,
 the snapshot's own title setting and bound kept, and a failure shown by

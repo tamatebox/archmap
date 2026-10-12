@@ -240,6 +240,44 @@ pub fn without_credentials(url: &str) -> String {
     }
 }
 
+/// Whether a remote URL reaches its host over SSH (`git@host:owner/name`,
+/// `ssh://host/owner/name`), where the host may be an alias of SSH's
+/// configuration.
+pub fn over_ssh(url: &str) -> bool {
+    url.starts_with("ssh://") || (!url.contains("://") && remote_repository(url).is_some())
+}
+
+/// The host SSH's configuration names for `alias` (`ssh -G`, which reads
+/// the user's configuration and connects nowhere), as GitHub's SSH host
+/// over port 443 (`ssh.github.com`) is github.com; `None` when ssh cannot
+/// say. An alias the configuration does not name is its own host.
+pub fn ssh_host(alias: &str) -> Option<String> {
+    if alias.starts_with('-') {
+        return None;
+    }
+    let out = std::process::Command::new("ssh")
+        .args(["-G", alias])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    host_named(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// The host a configuration as `ssh -G` prints it names.
+fn host_named(config: &str) -> Option<String> {
+    config
+        .lines()
+        .find_map(|line| line.strip_prefix("hostname "))
+        .map(|host| match host.trim().to_ascii_lowercase().as_str() {
+            "ssh.github.com" => "github.com".to_owned(),
+            host => host.to_owned(),
+        })
+}
+
 /// The host, owner and name of the repository a remote URL names
 /// (`https://github.com/acme/shop.git`, `git@github.com:acme/shop.git`,
 /// `ssh://git@github.com/acme/shop`), the host as written: an SSH alias
@@ -269,6 +307,25 @@ pub fn remote_repository(url: &str) -> Option<(String, String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_ssh_remote_and_the_host_its_alias_names() {
+        assert!(over_ssh("git@github-work:acme/shop.git"));
+        assert!(over_ssh("ssh://git@github.com/acme/shop"));
+        assert!(!over_ssh("https://github.com/acme/shop.git"));
+        assert!(!over_ssh("/srv/git/shop"));
+        // GitHub's SSH host over port 443 is github.com
+        assert_eq!(
+            host_named("user git\nhostname ssh.github.com\nport 443\n"),
+            Some("github.com".into())
+        );
+        assert_eq!(
+            host_named("hostname GHE.Example.com\n"),
+            Some("ghe.example.com".into())
+        );
+        assert_eq!(host_named("user git\n"), None);
+        assert_eq!(ssh_host("-oProxyCommand=x"), None);
+    }
 
     #[test]
     fn times_are_rfc_3339_in_utc() {

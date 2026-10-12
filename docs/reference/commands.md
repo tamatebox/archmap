@@ -852,12 +852,24 @@ its active account: with several accounts, choose with `GH_CONFIG_DIR` or
 `GH_TOKEN`); archmap never reads it. The repository is `--repo
 OWNER/NAME`, else the root's `origin` when it is on github.com; another
 host is named with `--repo HOST/OWNER/NAME` and must be one gh is logged
-in to, since a clone can name any `origin`. An SSH alias is not resolved:
-for an alias of github.com (`git@github-work:acme/shop.git`) name the
-repository with `--repo acme/shop`, as the error for such an `origin`
-says; the error shows the `origin` without the credentials its URL may
-carry (`https://user:token@host/..`). The
-date is `--since`, else the committer date of the oldest commit the local
+in to, since a clone can name any `origin`. A fetch asked for (plain or
+`--update`) resolves no SSH alias: for an alias of github.com
+(`git@github-work:acme/shop.git`) name the repository with `--repo
+acme/shop`, as the error for such an `origin` says. Only an automatic
+refresh (`--if-older-than`) without `--repo` goes further, and only
+through the snapshot such a fetch wrote: it updates that snapshot's
+repository when `origin` names its owner and name on its host, the host
+`origin` names (an enterprise host) or, for an `origin` over SSH, the
+host `ssh -G` gives the alias, which reads the user's SSH configuration
+and connects nowhere (GitHub's `ssh.github.com` is github.com). A snapshot anyone could write
+into the project so points the fetch at no repository `origin` does not
+name, and an alias whose host ssh cannot tell is not guessed at: it stops
+as a fetch would, saying why the snapshot was not taken. An automatic
+refresh also asks gh's own store whether it holds a login for the host
+(`gh auth token`, no network) before it takes the lock, and without one
+writes nothing. The errors show the `origin` without the credentials its
+URL may carry (`https://user:token@host/..`).
+The date is `--since`, else the committer date of the oldest commit the local
 history read holds, else (in a shallow clone, or with fewer than 100
 commits) 365 days before the fetch; `--all` reads every item. The snapshot
 is written whole or not at all, beside `scan`'s output unless `-o` names
@@ -890,8 +902,10 @@ running). Nothing written goes to stderr with exit code 1: a failed
 fetch, a login gh cannot confirm for another host included (its message,
 then `.archmap/github.json is as it was; the failure (network) is recorded
 in .archmap/github.status.json: no automatic attempt before ...`), a fetch
-asked for while another runs, or an automatic refresh that will not
-overwrite a snapshot it cannot read. Exit code 2 is an
+asked for while another runs, an automatic refresh with no gh login for
+its host or no gh to ask, or an automatic refresh that will not overwrite
+a snapshot it cannot read, or that finds the snapshot it took its
+repository from replaced by the time it holds the lock. Exit code 2 is an
 invocation error: a wrong flag, date or duration, no repository to name,
 or a lock that cannot be taken.
 

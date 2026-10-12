@@ -166,8 +166,11 @@ enum FetchSource {
     /// authors; no token is written. Writes nothing unless the whole fetch
     /// succeeds.
     Github {
-        /// Repository root to write into, and whose `origin` names the
-        /// repository on github.com.
+        /// Repository root to write into, whose `origin` names the repository
+        /// when it is on github.com; for an SSH alias or another host, name
+        /// it with --repo. --if-older-than then refreshes the snapshot that
+        /// fetch wrote while `origin` names the same repository on the same
+        /// host (an alias's host as `ssh -G` gives it).
         #[arg(long, default_value = ".")]
         path: String,
         /// The repository: OWNER/NAME on github.com, or HOST/OWNER/NAME for

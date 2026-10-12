@@ -16,8 +16,8 @@ use archmap_scan::work::github::{
     RateHints, Response, Run, Update,
 };
 use archmap_scan::work::{
-    lock, read, read_status, remote_repository, seconds, status_path, utc, without_credentials,
-    write, write_status, Locked, ReadError, DEFAULT_PATH,
+    lock, over_ssh, read, read_status, remote_repository, seconds, ssh_host, status_path, utc,
+    without_credentials, write, write_status, Locked, ReadError, DEFAULT_PATH,
 };
 use serde_json::Value;
 
@@ -126,8 +126,47 @@ pub fn duration(text: &str) -> Result<i64> {
 
 /// Fetch, write the snapshot, and say what was done.
 pub fn fetch_github(root: &Path, request: &FetchRequest) -> Result<Fetched> {
-    let repository = repository(root, request.repo)?;
+    limits(request)?;
+    let automatic = request.if_older_than.is_some();
+    let (repository, from_snapshot) = match repository(root, request.repo) {
+        Ok(repository) => (repository, false),
+        Err(refused) => {
+            // an automatic refresh updates the snapshot a fetch with --repo
+            // wrote for an origin that names no github.com repository
+            let url = (automatic && request.repo.is_none())
+                .then(|| archmap_scan::history::origin_url(root))
+                .flatten();
+            let Some((url, origin)) = url.and_then(|u| Some((u.clone(), remote_repository(&u)?)))
+            else {
+                return Err(refused);
+            };
+            let path = snapshot_file(root, request);
+            let shown = relative(root, &path);
+            let ssh = over_ssh(&url).then_some(ssh_host as fn(&str) -> Option<String>);
+            let repository =
+                snapshot_repository(&origin, ssh, &read(&path), &shown).map_err(|why| {
+                    anyhow!(
+                        "{refused}; an automatic refresh would update the repository of a \
+                         snapshot fetched so, but {why}"
+                    )
+                })?;
+            (repository, true)
+        }
+    };
     let host = repository.0.clone();
+    // an automatic refresh with no login for the host writes nothing
+    if automatic {
+        match holds_token(&host) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Ok(not_written(format!(
+                    "gh holds no login for {host}: nothing fetched (`gh auth login --hostname \
+                     {host}`)"
+                )))
+            }
+            Err(error) => return Ok(not_written(format!("{error}: nothing fetched"))),
+        }
+    }
     let gh = RefCell::new(Gh::new(&host));
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -140,28 +179,33 @@ pub fn fetch_github(root: &Path, request: &FetchRequest) -> Result<Fetched> {
         logged_in: Box::new(logged_in),
         now,
     };
-    fetch_with(root, request, repository, &mut env)
+    fetch_with(root, request, (repository, from_snapshot), &mut env)
 }
 
-/// `fetch_github` with what it reaches outside the repository given.
-/// Everything is decided under the snapshot's lock, from the snapshot and
-/// the status as they are then.
-pub(crate) fn fetch_with(
-    root: &Path,
-    request: &FetchRequest,
-    (host, owner, name): (String, String, String),
-    env: &mut Env,
-) -> Result<Fetched> {
-    // wrong durations and dates fail before anything runs, whether used or not
+/// The whole limit and the automatic refresh's limit of a request, its
+/// date checked: wrong durations and dates fail before anything runs,
+/// whether used or not.
+fn limits(request: &FetchRequest) -> Result<(i64, Option<i64>)> {
     let full_limit = duration(request.full_if_older_than)?;
     let ttl = request.if_older_than.map(duration).transpose()?;
     request.since.map(given_since).transpose()?;
+    Ok((full_limit, ttl))
+}
+
+/// `fetch_github` with what it reaches outside the repository given, and
+/// the repository with whether it was taken from the snapshot. Everything
+/// is decided under the snapshot's lock, from the snapshot and the status
+/// as they are then.
+pub(crate) fn fetch_with(
+    root: &Path,
+    request: &FetchRequest,
+    ((host, owner, name), from_snapshot): ((String, String, String), bool),
+    env: &mut Env,
+) -> Result<Fetched> {
+    let (full_limit, ttl) = limits(request)?;
     let automatic = ttl.is_some();
     let repository = format!("{owner}/{name}");
-    let path = match request.output {
-        Some(path) => path.to_path_buf(),
-        None => root.join(DEFAULT_PATH),
-    };
+    let path = snapshot_file(root, request);
     let shown = relative(root, &path);
     let status_file = status_path(&path);
     let status_shown = relative(root, &status_file);
@@ -176,6 +220,16 @@ pub(crate) fn fetch_with(
         }
     };
     let previous = read(&path);
+    // a repository taken from the snapshot is that snapshot's still
+    let still = |s: &Snapshot| {
+        s.source == "github" && s.host == host && s.repository.eq_ignore_ascii_case(&repository)
+    };
+    if from_snapshot && !matches!(&previous, Ok(Some(s)) if still(s)) {
+        return Ok(not_written(format!(
+            "{shown} is no longer of {host}/{repository}, which `origin` named through it: \
+             nothing fetched"
+        )));
+    }
     // what the last attempts at this repository left since the snapshot: a
     // failure no later than its fetch is past, since a fetch wrote the
     // snapshot after it, and may have stopped before writing its status
@@ -546,6 +600,78 @@ fn not_written(message: String) -> Fetched {
     }
 }
 
+/// Where the snapshot of a fetch is: `output`, else `.archmap/github.json`
+/// under the root.
+fn snapshot_file(root: &Path, request: &FetchRequest) -> std::path::PathBuf {
+    match request.output {
+        Some(path) => path.to_path_buf(),
+        None => root.join(DEFAULT_PATH),
+    }
+}
+
+/// The repository an automatic refresh updates when `origin` names no
+/// github.com repository: the one the snapshot names, which a fetch with
+/// --repo wrote, when it is of the owner and name `origin` names, on the
+/// host `origin` names (an enterprise host), or for an `origin` over SSH
+/// on the host SSH's configuration gives its alias (`ssh`). Else why not:
+/// a snapshot anyone may have written into the project points the fetch at
+/// no repository `origin` does not name, and an alias whose host cannot be
+/// told is not guessed at.
+fn snapshot_repository(
+    (origin_host, owner, name): &(String, String, String),
+    ssh: Option<fn(&str) -> Option<String>>,
+    snapshot: &Result<Option<Snapshot>, ReadError>,
+    shown: &str,
+) -> Result<(String, String, String), String> {
+    let snapshot = match snapshot {
+        Ok(Some(snapshot)) => snapshot,
+        Ok(None) => return Err(format!("there is none at {shown}")),
+        Err(error) => return Err(format!("{shown}: {error}")),
+    };
+    let named = format!("{owner}/{name}");
+    let same = snapshot.source == "github" && snapshot.repository.eq_ignore_ascii_case(&named);
+    let parts = snapshot.repository.split_once('/').filter(|_| same);
+    let Some((owner, name)) = parts else {
+        return Err(format!(
+            "the one at {shown} is of {}/{}, not {named}",
+            snapshot.host, snapshot.repository
+        ));
+    };
+    let host = &snapshot.host;
+    if !host.eq_ignore_ascii_case(origin_host) {
+        let why = match ssh.map(|resolve| resolve(origin_host)) {
+            None => format!("`origin` names {origin_host}"),
+            Some(None) => format!("ssh cannot tell which host {origin_host} is"),
+            Some(Some(real)) if real.eq_ignore_ascii_case(host) => String::new(),
+            Some(Some(real)) => format!("ssh takes {origin_host} to {real}"),
+        };
+        if !why.is_empty() {
+            return Err(format!("the one at {shown} is of {host}, and {why}"));
+        }
+    }
+    Ok((host.clone(), owner.to_owned(), name.to_owned()))
+}
+
+/// Whether gh holds a token for `host`, asked of its own store (`gh auth
+/// token`), which reaches no network; `Err` when gh cannot be run, which
+/// says nothing of a login.
+fn holds_token(host: &str) -> Result<bool, String> {
+    Command::new("gh")
+        .args(["auth", "token", "--hostname", host])
+        .env("GH_PROMPT_DISABLED", "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => {
+                "the gh CLI is not installed: see https://cli.github.com".to_owned()
+            }
+            _ => format!("running gh: {error}"),
+        })
+}
+
 /// `path` relative to the root when it is inside it, with `/`.
 fn relative(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
@@ -780,7 +906,7 @@ mod tests {
         /// A fetch of `acme/<name>`.
         fn fetch_of(&self, root: &Path, request: &FetchRequest, name: &str) -> Result<Fetched> {
             let repository = ("github.com".into(), "acme".into(), name.into());
-            fetch_with(root, request, repository, &mut self.env())
+            fetch_with(root, request, (repository, false), &mut self.env())
         }
     }
 
@@ -1026,6 +1152,114 @@ mod tests {
     }
 
     #[test]
+    fn an_origin_that_names_no_github_com_repository_takes_the_snapshot_of_its_owner_and_name() {
+        let root = root("alias", Some(T0));
+        let path = root.join(DEFAULT_PATH);
+        let shown = ".archmap/github.json";
+        let origin = |host: &str, owner: &str, name: &str| (host.into(), owner.into(), name.into());
+        let github: fn(&str) -> Option<String> = |_| Some("github.com".into());
+        let itself: fn(&str) -> Option<String> = |alias| Some(alias.into());
+        let silent: fn(&str) -> Option<String> = |_| None;
+        let alias = origin("github-work", "Acme", "Shop");
+        // an SSH alias of github.com: the snapshot's own repository
+        assert_eq!(
+            snapshot_repository(&alias, Some(github), &read(&path), shown),
+            Ok(origin("github.com", "acme", "shop"))
+        );
+        // an alias SSH takes elsewhere, or names nothing for, or cannot tell
+        assert_eq!(
+            snapshot_repository(&alias, Some(itself), &read(&path), shown),
+            Err(
+                "the one at .archmap/github.json is of github.com, and ssh takes github-work to \
+                 github-work"
+                    .into()
+            )
+        );
+        assert_eq!(
+            snapshot_repository(&alias, Some(silent), &read(&path), shown),
+            Err(
+                "the one at .archmap/github.json is of github.com, and ssh cannot tell which \
+                 host github-work is"
+                    .into()
+            )
+        );
+        // an enterprise origin never takes github.com's repository of its name
+        let enterprise = origin("ghe.example.com", "acme", "shop");
+        assert_eq!(
+            snapshot_repository(&enterprise, None, &read(&path), shown),
+            Err(
+                "the one at .archmap/github.json is of github.com, and `origin` names \
+                 ghe.example.com"
+                    .into()
+            )
+        );
+        assert_eq!(
+            snapshot_repository(&enterprise, Some(itself), &read(&path), shown).unwrap_err(),
+            "the one at .archmap/github.json is of github.com, and ssh takes ghe.example.com to \
+             ghe.example.com"
+        );
+        // but takes its own host's
+        let mut own = snapshot(&root);
+        own.host = "ghe.example.com".into();
+        assert_eq!(
+            snapshot_repository(&enterprise, None, &Ok(Some(own)), shown),
+            Ok(enterprise.clone())
+        );
+        // another repository, none, or one that cannot be read: why not
+        assert_eq!(
+            snapshot_repository(
+                &origin("github-work", "acme", "web"),
+                Some(github),
+                &read(&path),
+                shown
+            ),
+            Err("the one at .archmap/github.json is of github.com/acme/shop, not acme/web".into())
+        );
+        assert_eq!(
+            snapshot_repository(&alias, Some(github), &Ok(None), shown),
+            Err("there is none at .archmap/github.json".into())
+        );
+        let unreadable = Err(ReadError::Corrupt("expected value".into()));
+        let why = snapshot_repository(&alias, Some(github), &unreadable, shown).unwrap_err();
+        assert!(why.starts_with(".archmap/github.json: "), "{why}");
+    }
+
+    #[test]
+    fn a_repository_taken_from_the_snapshot_is_checked_again_under_the_lock() {
+        // another fetch replaced the snapshot after it was read
+        let root = root("replaced", Some(T0));
+        let world = world(T0 + HOUR);
+        let repository = ("github.com".into(), "acme".into(), "web".into());
+        let done = fetch_with(
+            &root,
+            &automatic("30m"),
+            (repository, true),
+            &mut world.env(),
+        )
+        .unwrap();
+        assert_eq!(
+            done,
+            not_written(
+                ".archmap/github.json is no longer of github.com/acme/web, which `origin` named \
+                 through it: nothing fetched"
+                    .into()
+            )
+        );
+        assert_eq!(world.calls.get(), 0);
+        assert_eq!(snapshot(&root).repository, "acme/shop");
+        // still the same, it runs as any refresh does
+        let repository = ("github.com".into(), "acme".into(), "shop".into());
+        let done = fetch_with(
+            &root,
+            &automatic("30m"),
+            (repository, true),
+            &mut world.env(),
+        )
+        .unwrap();
+        assert_eq!(done.outcome, Outcome::Written, "{}", done.message);
+    }
+
+    #[test]
     fn a_snapshot_whose_fetch_time_cannot_be_read_is_never_fresh() {
         let root = root("unreadable-time", Some(T0));
         let path = root.join(DEFAULT_PATH);
@@ -1234,7 +1468,7 @@ mod tests {
                 ..world.env()
             };
             let repository = ("ghe.example.com".into(), "acme".into(), "shop".into());
-            let done = fetch_with(&root, &automatic("30m"), repository, &mut env).unwrap();
+            let done = fetch_with(&root, &automatic("30m"), (repository, false), &mut env).unwrap();
             drop(env);
             assert_eq!(world.calls.get(), 0);
             done
