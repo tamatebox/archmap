@@ -287,6 +287,39 @@ fn without_a_snapshot_the_answer_says_where_it_looked() {
 }
 
 #[test]
+fn an_unreadable_snapshot_is_named_from_the_root() {
+    let mut repo = Repo::new("unreadable");
+    repo.write_package();
+    repo.commit("src/a.ts", "export const a = 1;\n");
+    std::fs::create_dir_all(repo.dir.join(".archmap")).unwrap();
+    std::fs::write(repo.dir.join(".archmap/github.json"), "{\n").unwrap();
+    let ws = scan(&repo.dir);
+    let absolute = repo.dir.to_string_lossy().into_owned();
+    let summary = ws.summary(DEFAULT_DEPTH, false);
+    assert!(
+        summary.contains("\nwork: unreadable: .archmap/github.json: no snapshot: "),
+        "{summary}"
+    );
+    let file = query(&ws, "src/a.ts", Format::Text);
+    assert!(
+        file.contains("\nWork: not read (.archmap/github.json: no snapshot: "),
+        "{file}"
+    );
+    let item = ws
+        .query(&QueryRequest {
+            target: "#1",
+            depth: DEFAULT_DEPTH,
+            format: Format::Text,
+            verbose: false,
+        })
+        .unwrap_err()
+        .to_string();
+    for answer in [&summary, &file, &item] {
+        assert!(!answer.contains(&absolute), "{answer}");
+    }
+}
+
+#[test]
 fn summary_names_the_snapshot_and_another_path_can_be_read() {
     let (repo, _) = shop("summary");
     let summary = scan(&repo.dir).summary(DEFAULT_DEPTH, false);
@@ -357,6 +390,25 @@ fn a_fetch_takes_its_host_from_origin_only_on_github_com() {
     .unwrap_err()
     .to_string();
     assert!(error.contains("--since takes a date"), "{error}");
+    // credentials an `origin` carries never reach the error, whether its
+    // repository is read from it or not
+    for (url, shown) in [
+        (
+            "https://ci:ghs_secret@evil.example/acme/shop.git",
+            "(https://evil.example/acme/shop.git)",
+        ),
+        (
+            "https://ci:ghs_secret@evil.example/group/sub/shop.git",
+            "(https://evil.example/group/sub/shop.git)",
+        ),
+    ] {
+        repo.git(&["remote", "set-url", "origin", url]);
+        let error = archmap_app::fetch_github(&repo.dir, &request)
+            .unwrap_err()
+            .to_string();
+        assert!(!error.contains("ghs_secret"), "{error}");
+        assert!(error.contains(shown), "{error}");
+    }
 }
 
 fn impact(ws: &Workspace, target: &str, format: Format) -> String {

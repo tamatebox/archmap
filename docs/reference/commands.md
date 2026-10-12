@@ -852,7 +852,8 @@ host is named with `--repo HOST/OWNER/NAME` and must be one gh is logged
 in to, since a clone can name any `origin`. An SSH alias is not resolved:
 for an alias of github.com (`git@github-work:acme/shop.git`) name the
 repository with `--repo acme/shop`, as the error for such an `origin`
-says. The
+says; the error shows the `origin` without the credentials its URL may
+carry (`https://user:token@host/..`). The
 date is `--since`, else the committer date of the oldest commit the local
 history read holds, else (in a shallow clone, or with fewer than 100
 commits) 365 days before the fetch; `--all` reads every item. The snapshot

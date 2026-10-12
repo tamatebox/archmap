@@ -11,26 +11,27 @@ use archmap_core::work::{Snapshot, WORK_SCHEMA};
 /// the root.
 pub const DEFAULT_PATH: &str = ".archmap/github.json";
 
-/// The snapshot at `path`, normalized; `Ok(None)` when there is none.
+/// The snapshot at `path`, normalized; `Ok(None)` when there is none. An
+/// error says what is wrong with the file, not where it is: the caller names
+/// it as its answers do, relative to the root.
 pub fn read(path: &Path) -> Result<Option<Snapshot>, String> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("reading {}: {error}", path.display())),
+        Err(error) => return Err(format!("not read: {error}")),
     };
     let schema = serde_json::from_str::<serde_json::Value>(&text)
-        .map_err(|error| format!("{} is no snapshot: {error}", path.display()))?
+        .map_err(|error| format!("no snapshot: {error}"))?
         .get("schema")
         .and_then(serde_json::Value::as_u64);
     if schema != Some(u64::from(WORK_SCHEMA)) {
         return Err(format!(
-            "{} has snapshot schema {}, and this archmap reads {WORK_SCHEMA}: fetch it again",
-            path.display(),
+            "snapshot schema {}, and this archmap reads {WORK_SCHEMA}: fetch it again",
             schema.map_or("none".to_owned(), |s| s.to_string())
         ));
     }
-    let mut snapshot: Snapshot = serde_json::from_str(&text)
-        .map_err(|error| format!("{} is no snapshot: {error}", path.display()))?;
+    let mut snapshot: Snapshot =
+        serde_json::from_str(&text).map_err(|error| format!("no snapshot: {error}"))?;
     snapshot.normalize();
     Ok(Some(snapshot))
 }
@@ -75,6 +76,30 @@ pub fn utc(time: i64) -> String {
     )
 }
 
+/// A remote URL without the credentials it may carry before its host
+/// (`https://user:token@host/..`, `token@host:..`), as an answer or an error
+/// may show it.
+pub fn without_credentials(url: &str) -> String {
+    let (scheme, rest) = match url.split_once("://") {
+        Some((scheme, rest)) => (Some(scheme), rest),
+        None => (None, url),
+    };
+    // the authority ends at the first `/`, or for an scp-like address at
+    // the first `:`
+    let end = match scheme {
+        Some(_) => rest.find('/').unwrap_or(rest.len()),
+        None => rest.find(':').unwrap_or(rest.len()),
+    };
+    let rest = match rest[..end].rfind('@') {
+        Some(at) => &rest[at + 1..],
+        None => rest,
+    };
+    match scheme {
+        Some(scheme) => format!("{scheme}://{rest}"),
+        None => rest.to_owned(),
+    }
+}
+
 /// The host, owner and name of the repository a remote URL names
 /// (`https://github.com/acme/shop.git`, `git@github.com:acme/shop.git`,
 /// `ssh://git@github.com/acme/shop`), the host as written: an SSH alias
@@ -109,6 +134,32 @@ mod tests {
     fn times_are_rfc_3339_in_utc() {
         assert_eq!(utc(0), "1970-01-01T00:00:00Z");
         assert_eq!(utc(1_768_383_000), "2026-01-14T09:30:00Z");
+    }
+
+    #[test]
+    fn a_remote_shown_keeps_no_credentials() {
+        for (url, shown) in [
+            (
+                "https://ci-token:ghs_secret@git.example.com/acme/shop.git",
+                "https://git.example.com/acme/shop.git",
+            ),
+            (
+                "ssh://git@github.com:22/acme/shop",
+                "ssh://github.com:22/acme/shop",
+            ),
+            (
+                "ghs_secret@git.example.com:acme/shop.git",
+                "git.example.com:acme/shop.git",
+            ),
+            // an `@` past the host is no credential
+            (
+                "https://git.example.com/acme/sh@p.git",
+                "https://git.example.com/acme/sh@p.git",
+            ),
+            ("/srv/git/shop.git", "/srv/git/shop.git"),
+        ] {
+            assert_eq!(without_credentials(url), shown, "{url}");
+        }
     }
 
     #[test]

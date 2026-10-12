@@ -9,7 +9,7 @@ use anyhow::{bail, Context, Result};
 use archmap_core::history::HistoryState;
 use archmap_core::work::SinceRule;
 use archmap_scan::work::github::{fetch, gh, FetchOptions};
-use archmap_scan::work::{remote_repository, utc, write, DEFAULT_PATH};
+use archmap_scan::work::{remote_repository, utc, without_credentials, write, DEFAULT_PATH};
 
 /// Items read per kind unless told otherwise.
 pub const DEFAULT_MAX_ITEMS: usize = 5_000;
@@ -81,15 +81,16 @@ fn repository(root: &Path, repo: Option<&str>) -> Result<(String, String, String
     let Some(repo) = repo else {
         let url = archmap_scan::history::origin_url(root)
             .context("the root has no `origin` remote: name the repository with --repo")?;
+        let shown = without_credentials(&url);
         return match remote_repository(&url) {
             Some((host, owner, name)) if host == "github.com" => Ok((host, owner, name)),
             Some((host, owner, name)) => bail!(
-                "`origin` ({url}) is not a github.com repository: name it with --repo \
+                "`origin` ({shown}) is not a github.com repository: name it with --repo \
                  {owner}/{name} if `{host}` is an SSH alias of github.com, else with \
                  --repo HOST/{owner}/{name}"
             ),
             None => bail!(
-                "`origin` ({url}) is not a github.com repository: name it with --repo \
+                "`origin` ({shown}) is not a github.com repository: name it with --repo \
                  [HOST/]OWNER/NAME"
             ),
         };

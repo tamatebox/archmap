@@ -183,10 +183,13 @@ impl Workspace {
         path.to_string_lossy().replace('\\', "/")
     }
 
-    /// The work snapshot, read once: `Ok(None)` when there is none.
+    /// The work snapshot, read once: `Ok(None)` when there is none. An
+    /// error names the file relative to the root, as answers name files.
     fn snapshot(&self) -> &Result<Option<Snapshot>, String> {
-        self.snapshot
-            .get_or_init(|| archmap_scan::work::read(&self.snapshot_path))
+        self.snapshot.get_or_init(|| {
+            archmap_scan::work::read(&self.snapshot_path)
+                .map_err(|error| format!("{}: {error}", self.snapshot_path()))
+        })
     }
 
     /// The Markdown summary at `depth`; `verbose` lists everything.
