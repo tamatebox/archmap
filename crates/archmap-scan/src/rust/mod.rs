@@ -299,21 +299,41 @@ fn source_pass(
                     .chain(node.path.iter().cloned())
                     .collect()
             };
-            for symbol in &facts.symbols {
-                // a `pub mod` with a file of its own is that file's component
-                let module_file = (symbol.kind == SymbolKind::Module)
-                    .then(|| node.children.get(&symbol.name))
-                    .flatten()
-                    .map(|&child| forest.nodes[child].file)
-                    .filter(|&f| f != node.file && forest.owners[f] != package.id);
-                let id = match module_file {
-                    Some(f) => forest.owners[f].as_str().to_owned(),
-                    None => base
-                        .iter()
-                        .chain(std::iter::once(&symbol.name))
-                        .map(String::as_str)
-                        .collect::<Vec<_>>()
-                        .join("::"),
+            let ids: Vec<String> = facts
+                .symbols
+                .iter()
+                .map(|symbol| {
+                    // a `pub mod` with a file of its own is that file's component
+                    let module_file = (symbol.kind == SymbolKind::Module)
+                        .then(|| node.children.get(&symbol.name))
+                        .flatten()
+                        .map(|&child| forest.nodes[child].file)
+                        .filter(|&f| f != node.file && forest.owners[f] != package.id);
+                    match module_file {
+                        Some(f) => forest.owners[f].as_str().to_owned(),
+                        None => base
+                            .iter()
+                            .chain(std::iter::once(&symbol.name))
+                            .map(String::as_str)
+                            .collect::<Vec<_>>()
+                            .join("::"),
+                    }
+                })
+                .collect();
+            // a type and a value may share a name (`pub trait Pay` and `pub
+            // fn Pay`): the value's id names its kind
+            let types: BTreeSet<&str> = facts
+                .symbols
+                .iter()
+                .zip(&ids)
+                .filter(|(symbol, _)| Ns::of(symbol.kind) == Some(Ns::Type))
+                .map(|(_, id)| id.as_str())
+                .collect();
+            for (symbol, id) in facts.symbols.iter().zip(&ids) {
+                let id = match symbol.kind {
+                    SymbolKind::Function if types.contains(id.as_str()) => format!("{id}+fn"),
+                    SymbolKind::Constant if types.contains(id.as_str()) => format!("{id}+const"),
+                    _ => id.clone(),
                 };
                 // test code defines it: a test target, a `#[cfg(test)]`
                 // module, or its own mark

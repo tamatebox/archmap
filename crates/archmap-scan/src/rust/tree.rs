@@ -29,7 +29,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use archmap_core::{ComponentId, Scope};
+use archmap_core::{ComponentId, Scope, SymbolKind};
 
 use super::source::{ModDecl, ModuleFacts, PathRef, RustFile, UseDecl};
 use super::{DeclaredTargets, TargetKind};
@@ -738,6 +738,23 @@ pub(super) type Via = (usize, u32);
 pub(super) enum Ns {
     Type,
     Value,
+}
+
+impl Ns {
+    /// The namespace of a symbol of `kind`, where it shares its name with
+    /// an item of the other: a struct beside a value of its name has named
+    /// fields, as a tuple or unit struct is a value too.
+    pub(super) fn of(kind: SymbolKind) -> Option<Ns> {
+        match kind {
+            SymbolKind::Struct
+            | SymbolKind::Enum
+            | SymbolKind::Trait
+            | SymbolKind::TypeAlias
+            | SymbolKind::Module => Some(Ns::Type),
+            SymbolKind::Function | SymbolKind::Constant => Some(Ns::Value),
+            SymbolKind::Other => None,
+        }
+    }
 }
 
 /// The `use` declarations in other files a path went through: the first,

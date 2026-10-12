@@ -406,7 +406,16 @@ fn collect(items: &[Item], module: usize, file: &mut RustFile) {
                 }
             }
             Item::Impl(imp) => {
-                let self_ty = render(imp.self_ty.to_token_stream());
+                // a method is its type's however the `impl` writes the
+                // type's path (`impl model::Order`): `Order::make`
+                let written = match &*imp.self_ty {
+                    syn::Type::Path(p) if p.qself.is_none() => p.path.segments.last(),
+                    _ => None,
+                };
+                let self_ty = render(
+                    written
+                        .map_or_else(|| imp.self_ty.to_token_stream(), ToTokens::to_token_stream),
+                );
                 let owner = self_type(&imp.self_ty, line_of(imp.impl_token.span));
                 for impl_item in &imp.items {
                     let ImplItem::Fn(method) = impl_item else {
@@ -987,6 +996,7 @@ fn render(tokens: proc_macro2::TokenStream) -> String {
         (" ;", ";"),
         (" :", ":"),
         (": :", "::"),
+        (":: ", "::"),
         ("< ", "<"),
         (" <", "<"),
         (" >", ">"),
@@ -1046,6 +1056,14 @@ mod tests {
                 (vec!["crate", "model", "Edge"], false, 4)
             ]
         );
+        // the name is the type's own, with its generics, however the
+        // `impl` writes its path
+        let names: Vec<&str> = file.modules[0]
+            .symbols
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(names, ["Wrapper<T>::new", "Edge::kind"]);
     }
 
     #[test]
@@ -1440,6 +1458,15 @@ pub fn f(given: u32) -> Receipt {
         assert_eq!(
             sig,
             "pub fn scan(root: &Path, options: &ScanOptions) -> Result<Vec<u8>, Error>"
+        );
+        // a path keeps no space after its `::`
+        let f: syn::ItemFn = syn::parse_quote! {
+            pub fn parse(text: &str) -> Result<crate::model::Order, toml::de::Error> { todo!() }
+        };
+        let (vis, fsig) = (&f.vis, &f.sig);
+        assert_eq!(
+            render(quote::quote!(#vis #fsig)),
+            "pub fn parse(text: &str) -> Result<crate::model::Order, toml::de::Error>"
         );
     }
 }

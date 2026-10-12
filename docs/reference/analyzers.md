@@ -47,7 +47,12 @@ into the model in [graph.md](graph.md); how the commands present it is in
   carries `test`. In the files of targets other than the library and `src/main.rs`, a symbol's id
   starts with its file's place in the package (`kiosk::tests/total.rs::helper`), so a `pub fn
   helper` in two tests and in the library are three symbols; `pub mod a;` is the symbol of the
-  module it loads
+  module it loads. A method is `Type::method` by its type's own name, with its generics, however
+  the `impl` writes the type (`impl model::Order` gives `Order::make`). The compiler keeps types
+  apart from values, so a module may define a function or a constant of a type's name (`pub
+  trait Pay` and `pub fn Pay`, `pub mod bake;` and `pub fn bake`): the value's id then ends in
+  `+fn` or `+const` (`cart::fee::Pay+fn`), and `Used at` tells two such symbols apart by the
+  namespace each path reads the name in
 - `use` declarations become `import` edges to the module that defines what they name, through
   `crate::`, `self::`, `super::`, other internal crates, re-exports, globs (which bring in only
   what the importing module can see) and `#[macro_export]` macros; the evidence names that

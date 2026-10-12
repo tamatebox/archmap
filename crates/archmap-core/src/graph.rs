@@ -2164,9 +2164,9 @@ pub struct SymbolImporters<'a> {
 }
 
 /// The name a member is imported by: its type's, without generics and
-/// module path (`Edge` for `crate:: model:: Edge::kind`, `Wrapper` for
-/// `Wrapper<crate::a::B>::new`, `Class` for `Class.method`); any other
-/// symbol goes by its own name.
+/// module path (`Wrapper` for `Wrapper<crate::a::B>::new`, `Fee` for a
+/// method of `impl dyn crate::a::Fee`, `Class` for `Class.method`); any
+/// other symbol goes by its own name.
 fn reached_name(name: &str) -> &str {
     let Some((owner, _)) = name.rsplit_once("::").or_else(|| name.rsplit_once('.')) else {
         return name;
@@ -3527,7 +3527,7 @@ mod tests {
         // without such evidence: the type's name, without generics and path
         for (name, reached) in [
             ("Wrapper<crate::a::B>::new", "Wrapper"),
-            ("crate:: model:: Edge::kind", "Edge"),
+            ("dyn crate::a::Fee::rate", "Fee"),
             ("Resolver<'a>::new", "Resolver"),
             ("Class.method", "Class"),
             ("greet", "greet"),

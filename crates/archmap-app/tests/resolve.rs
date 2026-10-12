@@ -239,6 +239,24 @@ fn an_id_of_a_component_and_of_another_symbol_gives_both() {
 }
 
 #[test]
+fn a_rust_type_and_a_value_of_one_name_are_taken_by_their_ids() {
+    // `pub trait Pay` and `pub fn Pay` in one module
+    let ws = scan(&fixture("rust-namespaces"));
+    let answer = query(&ws, "Pay");
+    assert_eq!(answer.found, Found::Candidates, "{}", answer.output);
+    for expected in [
+        "\n  bakery::fee::Pay  src/fee.rs:1  trait",
+        "\n  bakery::fee::Pay+fn  src/fee.rs:7  function",
+    ] {
+        assert!(answer.output.contains(expected), "{}", answer.output);
+    }
+    for id in ["bakery::fee::Pay", "bakery::fee::Pay+fn"] {
+        assert_eq!(query(&ws, id).found, Found::One, "{id}");
+        assert_eq!(impact(&ws, id).found, Found::One, "{id}");
+    }
+}
+
+#[test]
 fn a_module_and_its_own_symbol_are_one_target() {
     // `pub mod invoice;` is both a component and a symbol of one id
     let ws = scan(&fixture("simple-rust-workspace"));

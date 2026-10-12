@@ -43,6 +43,10 @@ struct Target {
     /// A trait: values call its methods (`card.fee()`) where a `use` brings
     /// it into scope, which no path shows.
     trait_item: bool,
+    /// The namespace of an item whose module has a symbol of its name in
+    /// the other (`pub trait Pay` and `pub fn Pay`), which tells the two
+    /// apart; `None` when nothing shares its name.
+    ns: Option<Ns>,
 }
 
 /// Read the uses of the Rust `symbol` into `out`. `statements` are those
@@ -170,7 +174,8 @@ fn target(index: &Index, resolver: &Resolver, symbol: &Symbol) -> Option<Target>
         .and_then(|e| e.target.as_deref())
         .unwrap_or(&location.file);
     let file = file_index(index, file)?;
-    // the declaration, in the module of its file that holds it
+    // the declaration, in the module of its file that holds it; a type and
+    // a value of one name may share a line
     let at = file_index(index, &location.file)?;
     let declared = index.files[at]
         .parsed
@@ -178,10 +183,9 @@ fn target(index: &Index, resolver: &Resolver, symbol: &Symbol) -> Option<Target>
         .iter()
         .enumerate()
         .find_map(|(module, facts)| {
-            let decl = facts
-                .symbols
-                .iter()
-                .find(|s| s.name == symbol.name && Some(s.line) == location.line)?;
+            let decl = facts.symbols.iter().find(|s| {
+                s.name == symbol.name && s.kind == symbol.kind && Some(s.line) == location.line
+            })?;
             Some((module, decl))
         });
     // an item is defined where it is declared; a method's type where the
@@ -212,6 +216,16 @@ fn target(index: &Index, resolver: &Resolver, symbol: &Symbol) -> Option<Target>
     let pattern =
         member.is_none() && matches!(symbol.kind, SymbolKind::Constant | SymbolKind::Struct);
     let trait_item = member.is_none() && symbol.kind == SymbolKind::Trait;
+    let ns = declared
+        .filter(|_| member.is_none())
+        .and_then(|(module, decl)| {
+            let own = Ns::of(decl.kind)?;
+            index.files[at].parsed.modules[module]
+                .symbols
+                .iter()
+                .any(|s| s.name == decl.name && Ns::of(s.kind).is_some_and(|ns| ns != own))
+                .then_some(own)
+        });
     Some(Target {
         file,
         module,
@@ -220,6 +234,7 @@ fn target(index: &Index, resolver: &Resolver, symbol: &Symbol) -> Option<Target>
         instance,
         pattern,
         trait_item,
+        ns,
     })
 }
 
@@ -643,6 +658,15 @@ impl Walker<'_> {
             && self
                 .naming(&segments[..segments.len() - 1], leading_colon, false)
                 .is_some();
+        // a type and a value of one name: the namespace the path reads the
+        // name in tells which it names, a qualifier's being the type's
+        let read = match qualifier {
+            true => Ns::Type,
+            false => namespace(value),
+        };
+        if self.target.ns.is_some_and(|ns| ns != read) {
+            return false;
+        }
         let role = match qualifier {
             true => UseRole::Read,
             false => role,

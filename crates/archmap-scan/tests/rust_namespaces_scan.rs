@@ -2,7 +2,10 @@
 //! `bakery`'s `lib.rs` declares `mod parse;` (private) and `pub mod split;`,
 //! and re-exports the function of each module's own name. The compiler keeps
 //! types and values apart, so a call names the function, and a `use` takes
-//! every namespace the name has that it can see.
+//! every namespace the name has that it can see. `lib.rs` also defines `pub
+//! mod bake;` beside `pub fn bake()`, `fee.rs` a trait and a function `Pay`,
+//! `rate.rs` a constant and a struct `Rate` on one line, and `read.rs` a
+//! method of `impl model::Order`.
 
 use std::path::Path;
 
@@ -114,4 +117,74 @@ fn a_call_reaches_the_function_a_module_shares_its_name_with() {
         uses_of(&report, "bakery::split::helper"),
         ["tests/t.rs:9 call as split::helper via 2"]
     );
+}
+
+#[test]
+fn a_type_and_a_value_of_one_name_are_two_symbols() {
+    let report = report();
+    let symbols = |name: &str| -> Vec<String> {
+        report
+            .graph
+            .symbols
+            .values()
+            .filter(|s| s.name == name)
+            .map(|s| format!("{} {:?}", s.id.as_str(), s.kind))
+            .collect()
+    };
+    // the value's id names its kind; the type keeps its own
+    assert_eq!(
+        symbols("Pay"),
+        ["bakery::fee::Pay Trait", "bakery::fee::Pay+fn Function"]
+    );
+    assert_eq!(
+        symbols("Rate"),
+        [
+            "bakery::rate::Rate Struct",
+            "bakery::rate::Rate+const Constant"
+        ]
+    );
+    // a module with a file of its own is its component's id
+    assert_eq!(
+        symbols("bake"),
+        ["bakery::bake Module", "bakery::bake+fn Function"]
+    );
+    // the namespace a path reads the name in tells them apart
+    assert_eq!(
+        uses_of(&report, "bakery::fee::Pay"),
+        ["src/read.rs:11 type via 1"]
+    );
+    assert_eq!(
+        uses_of(&report, "bakery::fee::Pay+fn"),
+        ["src/read.rs:7 call via 1"]
+    );
+    assert_eq!(
+        uses_of(&report, "bakery::bake+fn"),
+        ["src/lib.rs:24 call", "src/lib.rs:24 call"]
+    );
+    // each is found by its kind on the line they share
+    assert_eq!(
+        uses_of(&report, "bakery::rate::Rate"),
+        [
+            "src/bill.rs:3 type via 1",
+            "src/rate.rs:2 type",
+            "src/rate.rs:2 new"
+        ]
+    );
+    assert_eq!(
+        uses_of(&report, "bakery::rate::Rate+const"),
+        ["src/bill.rs:4 read via 1"]
+    );
+}
+
+#[test]
+fn a_method_is_its_type_s_however_the_impl_writes_its_path() {
+    let report = report();
+    let ids: Vec<&str> = report
+        .graph
+        .symbols
+        .values()
+        .filter(|s| s.name.ends_with("::make"))
+        .map(|s| s.id.as_str())
+        .collect();
+    assert_eq!(ids, ["bakery::read::Order::make"]);
 }
