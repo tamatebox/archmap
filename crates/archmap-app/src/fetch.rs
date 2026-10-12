@@ -8,8 +8,8 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 use archmap_core::history::HistoryState;
 use archmap_core::work::SinceRule;
-use archmap_scan::work::github::{fetch, gh, FetchOptions};
-use archmap_scan::work::{remote_repository, utc, without_credentials, write, DEFAULT_PATH};
+use archmap_scan::work::github::{fetch, gh, update, FetchOptions, Update};
+use archmap_scan::work::{read, remote_repository, utc, without_credentials, write, DEFAULT_PATH};
 
 /// Items read per kind unless told otherwise.
 pub const DEFAULT_MAX_ITEMS: usize = 5_000;
@@ -32,6 +32,34 @@ pub struct FetchRequest<'a> {
     pub titles: bool,
     /// Where to write; `.archmap/github.json` under the root otherwise.
     pub output: Option<&'a Path>,
+    /// Update the snapshot at `output` with the items changed since its
+    /// fetch rather than fetch it whole, when it can.
+    pub update: bool,
+    /// For an update: fetch whole when the last whole fetch is older than
+    /// this (`30m`, `24h`, `7d`).
+    pub full_if_older_than: &'a str,
+}
+
+/// A duration as `fetch github` takes it: a whole number of seconds,
+/// minutes, hours or days (`90s`, `30m`, `24h`, `7d`).
+pub fn duration(text: &str) -> Result<i64> {
+    let wrong =
+        || anyhow::anyhow!("a duration is a number and s, m, h or d (30m, 24h), not `{text}`");
+    let unit = text.chars().last().ok_or_else(wrong)?;
+    let number = &text[..text.len() - unit.len_utf8()];
+    let per = match unit {
+        's' => 1,
+        'm' => 60,
+        'h' => 3_600,
+        'd' => 86_400,
+        _ => return Err(wrong()),
+    };
+    match number.parse::<i64>() {
+        Ok(n) if n >= 0 && !number.starts_with('+') => {
+            n.checked_mul(per).context("that duration is too long")
+        }
+        _ => Err(wrong()),
+    }
 }
 
 /// Fetch, write the snapshot, and say what was written.
@@ -41,8 +69,10 @@ pub fn fetch_github(root: &Path, request: &FetchRequest) -> Result<String> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
+    // a wrong limit fails before anything runs, whether it is used or not
+    let full_limit = duration(request.full_if_older_than)?;
     let (since, since_rule) = since(root, request, now_secs)?;
-    let options = FetchOptions {
+    let mut options = FetchOptions {
         host: host.clone(),
         owner,
         name,
@@ -54,22 +84,60 @@ pub fn fetch_github(root: &Path, request: &FetchRequest) -> Result<String> {
         // a margin for a local clock ahead of GitHub's
         reread_since: utc(now_secs - 300),
     };
-    let mut run = gh(&host);
-    let snapshot = fetch(&options, &mut run).map_err(anyhow::Error::msg)?;
     let path = match request.output {
         Some(path) => path.to_path_buf(),
         None => root.join(DEFAULT_PATH),
     };
-    write(&path, &snapshot).map_err(anyhow::Error::msg)?;
     let shown = path
         .strip_prefix(root)
         .unwrap_or(&path)
         .display()
         .to_string();
+    let mut run = gh(&host);
+    // an update when the snapshot allows one, else why it is fetched whole
+    let whole = match request.update {
+        false => None,
+        true => Some(match read(&path) {
+            Ok(None) => "there is no snapshot".to_owned(),
+            Err(_) => "the snapshot could not be read".to_owned(),
+            Ok(Some(previous)) => {
+                let whole_after = utc(now_secs - full_limit);
+                match update(&options, &mut run, &previous, &whole_after)
+                    .map_err(anyhow::Error::msg)?
+                {
+                    Update::Merged { snapshot, read } => {
+                        write(&path, &snapshot).map_err(anyhow::Error::msg)?;
+                        return Ok(format!(
+                            "updated {shown} with {} changed since {}: {}\n",
+                            crate::work_line::plural_word(read, "item", "items"),
+                            crate::work_line::utc_minute(&previous.fetched_at),
+                            crate::work_line::range_line(&snapshot)
+                        ));
+                    }
+                    Update::Whole { reason } => {
+                        over_range(&mut options, &previous.range);
+                        reason
+                    }
+                }
+            }
+        }),
+    };
+    let snapshot = fetch(&options, &mut run).map_err(anyhow::Error::msg)?;
+    write(&path, &snapshot).map_err(anyhow::Error::msg)?;
+    let why = whole
+        .map(|reason| format!(" (fetched whole: {reason})"))
+        .unwrap_or_default();
     Ok(format!(
-        "wrote {shown}: {}\n",
+        "wrote {shown}{why}: {}\n",
         crate::work_line::range_line(&snapshot)
     ))
+}
+
+/// A whole fetch in place of a refused update reads the snapshot's own
+/// range, which `--update` takes no flag to change.
+fn over_range(options: &mut FetchOptions, range: &archmap_core::work::Range) {
+    options.since = range.updated_since.clone();
+    options.since_rule = range.since_rule;
 }
 
 /// The host, owner and name to fetch. The root's `origin` names only a
@@ -159,5 +227,58 @@ fn since(root: &Path, request: &FetchRequest, now: i64) -> Result<(Option<String
     {
         Some(oldest) => Ok((Some(utc(oldest)), SinceRule::OldestCommitRead)),
         None => Ok((Some(utc(now - 365 * 86_400)), SinceRule::Days365)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_whole_fetch_in_place_of_an_update_keeps_the_snapshots_range() {
+        let mut options = FetchOptions {
+            host: "github.com".into(),
+            owner: "acme".into(),
+            name: "shop".into(),
+            since: Some("2026-01-01T00:00:00Z".into()),
+            since_rule: SinceRule::OldestCommitRead,
+            max_items: 10,
+            titles: true,
+            now: "2026-10-04T00:00:00Z".into(),
+            reread_since: "2026-10-03T23:55:00Z".into(),
+        };
+        // a snapshot of every item stays one of every item
+        let range = archmap_core::work::Range {
+            updated_since: None,
+            since_rule: SinceRule::All,
+            bound: 10,
+            reached_bound: false,
+            effective_since: None,
+            issues: 0,
+            pull_requests: 0,
+        };
+        over_range(&mut options, &range);
+        assert_eq!((options.since, options.since_rule), (None, SinceRule::All));
+    }
+
+    #[test]
+    fn a_duration_is_a_number_and_a_unit() {
+        assert_eq!(duration("90s").unwrap(), 90);
+        assert_eq!(duration("30m").unwrap(), 1_800);
+        assert_eq!(duration("24h").unwrap(), 86_400);
+        assert_eq!(duration("7d").unwrap(), 604_800);
+        for wrong in [
+            "",
+            "h",
+            "1.5h",
+            "-1h",
+            "+1h",
+            "24",
+            "1w",
+            "99999999999999999d",
+            "24時",
+        ] {
+            assert!(duration(wrong).is_err(), "{wrong}");
+        }
     }
 }

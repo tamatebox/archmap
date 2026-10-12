@@ -179,11 +179,16 @@ pub(crate) fn render(out: &mut String, section: &WorkSection, verbose: bool) -> 
         }
         let _ = writeln!(out, "{line}");
     }
-    let _ = writeln!(
-        out,
-        "  work: {}; states as of the fetch",
-        links.coverage.line
-    );
+    // after an update, what only an item's own timeline records (a commit
+    // that references it) is as of the whole fetch
+    let states = match links.coverage.whole_fetched_at {
+        Some(_) => {
+            "states as of the update, and links only an item's own timeline records as of the \
+             whole fetch"
+        }
+        None => "states as of the fetch",
+    };
+    let _ = writeln!(out, "  work: {}; {states}", links.coverage.line);
     truncated
 }
 

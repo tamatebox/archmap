@@ -690,6 +690,10 @@ pub struct WorkCoverage<'a> {
     pub source: &'a str,
     pub repository: &'a str,
     pub fetched_at: &'a str,
+    /// The last whole fetch, when an update came after it: what only an
+    /// item's own timeline records, and items' absence, are as of it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub whole_fetched_at: Option<&'a str>,
     pub range: &'a Range,
     #[serde(skip)]
     pub(crate) line: String,

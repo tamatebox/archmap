@@ -191,6 +191,16 @@ enum FetchSource {
         /// Write here instead of `<path>/.archmap/github.json`.
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Update the snapshot with the items changed since its fetch
+        /// rather than fetch every item again; fetch whole, and say why,
+        /// when the snapshot was fetched another way or by another account,
+        /// or more items changed than the bound reads.
+        #[arg(long, conflicts_with_all = ["since", "all"])]
+        update: bool,
+        /// With --update: fetch whole when the last whole fetch is older
+        /// than this (30m, 24h, 7d).
+        #[arg(long, default_value = "24h")]
+        full_if_older_than: String,
     },
 }
 
@@ -247,6 +257,8 @@ fn main() -> ExitCode {
                     max_items,
                     no_titles,
                     output,
+                    update,
+                    full_if_older_than,
                 },
         } => commands::fetch_github(
             &path,
@@ -257,6 +269,8 @@ fn main() -> ExitCode {
                 max_items,
                 titles: !no_titles,
                 output: output.as_deref(),
+                update,
+                full_if_older_than: &full_if_older_than,
             },
         ),
         Command::Mcp { path } => archmap_mcp::serve_stdio(archmap_mcp::Options { root: path })

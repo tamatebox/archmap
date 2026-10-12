@@ -208,6 +208,7 @@ fn links<'a>(
             source: &snapshot.source,
             repository: &snapshot.repository,
             fetched_at: &snapshot.fetched_at,
+            whole_fetched_at: crate::work_line::updated_from(snapshot),
             range: &snapshot.range,
             line: range_line(snapshot),
         },

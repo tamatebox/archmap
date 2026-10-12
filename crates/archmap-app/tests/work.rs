@@ -357,6 +357,61 @@ fn an_unreadable_snapshot_is_named_from_the_root() {
 }
 
 #[test]
+fn an_updated_snapshot_says_since_when_what_items_did_not_change_is_known() {
+    let (repo, _) = shop("updated");
+    let path = repo.dir.join(".archmap/github.json");
+    let mut snapshot: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    snapshot["whole_fetched_at"] = "2026-10-03T09:00:00Z".into();
+    snapshot["fetched_at"] = "2026-10-04T09:30:00Z".into();
+    std::fs::write(&path, snapshot.to_string()).unwrap();
+    let ws = scan(&repo.dir);
+    let summary = ws.summary(DEFAULT_DEPTH, false);
+    assert!(
+        summary.contains(
+            ", fetched whole 2026-10-03 09:00 UTC, updated 2026-10-04 09:30 UTC, as visible to \
+             the account that fetched\n"
+        ),
+        "{summary}"
+    );
+    let item = query(&ws, "#12", Format::Text);
+    assert!(
+        item.contains(
+            "\n  updated: since the whole fetch of 2026-10-03 09:00 UTC, only the items that \
+             changed were read again, so a cross-reference or a commit reference to an item that \
+             did not change, and an item deleted or hidden since, are as of that fetch\n"
+        ),
+        "{item}"
+    );
+    // JSON says it as well, for an item and for a file's work
+    let json: serde_json::Value = serde_json::from_str(&query(&ws, "#12", Format::Json)).unwrap();
+    assert_eq!(
+        json["coverage"]["whole_fetched_at"], "2026-10-03T09:00:00Z",
+        "{json}"
+    );
+    let file = query(&ws, "src/price.ts", Format::Text);
+    assert!(
+        file.contains(
+            "; states as of the update, and links only an item's own timeline records as of \
+             the whole fetch\n"
+        ),
+        "{file}"
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&query(&ws, "src/price.ts", Format::Json)).unwrap();
+    assert_eq!(
+        json["work"]["coverage"]["whole_fetched_at"], "2026-10-03T09:00:00Z",
+        "{json}"
+    );
+    // a snapshot fetched whole says nothing of it
+    let (whole, _) = shop("whole");
+    let ws = scan(&whole.dir);
+    assert!(!query(&ws, "#12", Format::Text).contains("\n  updated:"));
+    let json: serde_json::Value = serde_json::from_str(&query(&ws, "#12", Format::Json)).unwrap();
+    assert!(json["coverage"].get("whole_fetched_at").is_none(), "{json}");
+}
+
+#[test]
 fn summary_names_the_snapshot_and_another_path_can_be_read() {
     let (repo, _) = shop("summary");
     let summary = scan(&repo.dir).summary(DEFAULT_DEPTH, false);
@@ -390,6 +445,8 @@ fn a_fetch_takes_its_host_from_origin_only_on_github_com() {
         max_items: 10,
         titles: true,
         output: None,
+        update: false,
+        full_if_older_than: "24h",
     };
     // refused before anything runs: no gh, nothing written
     let error = archmap_app::fetch_github(&repo.dir, &request)

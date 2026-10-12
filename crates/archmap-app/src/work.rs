@@ -184,6 +184,9 @@ struct NotSeen {
 struct Coverage<'a> {
     source: &'a str,
     fetched_at: &'a str,
+    /// The last whole fetch, when an update came after it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    whole_fetched_at: Option<&'a str>,
     range: &'a archmap_core::work::Range,
     relation_types: &'a [RelationType],
     #[serde(skip_serializing_if = "<[_]>::is_empty")]
@@ -323,6 +326,7 @@ fn view<'a>(
         coverage: Coverage {
             source: &snapshot.source,
             fetched_at: &snapshot.fetched_at,
+            whole_fetched_at: crate::work_line::updated_from(snapshot),
             range: &snapshot.range,
             relation_types: &snapshot.relation_types,
             unavailable: &snapshot.unavailable,
@@ -507,6 +511,14 @@ fn text(view: &WorkView, snapshot: &Snapshot, history: &History, verbose: bool) 
         not_traced.push(format!(
             "  outside the range: {} of these links name items the snapshot does not hold",
             view.coverage.outside_range
+        ));
+    }
+    if let Some(whole) = crate::work_line::updated_from(snapshot) {
+        not_traced.push(format!(
+            "  updated: since the whole fetch of {}, only the items that changed were read \
+             again, so a cross-reference or a commit reference to an item that did not change, \
+             and an item deleted or hidden since, are as of that fetch",
+            crate::work_line::utc_minute(whole)
         ));
     }
     // squash and rebase merges rewrite the SHAs a pull request lists

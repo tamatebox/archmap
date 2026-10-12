@@ -76,6 +76,42 @@ pub fn utc(time: i64) -> String {
     )
 }
 
+/// Seconds since the epoch of a time `utc` writes (`2026-01-14T09:30:00Z`);
+/// `None` for any other form.
+pub fn seconds(time: &str) -> Option<i64> {
+    let b = time.as_bytes();
+    let shape = b.len() == 20
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b[10] == b'T'
+        && b[13] == b':'
+        && b[16] == b':'
+        && b[19] == b'Z';
+    if !shape {
+        return None;
+    }
+    let number = |range: std::ops::Range<usize>| -> Option<i64> { time.get(range)?.parse().ok() };
+    let (year, month, day) = (number(0..4)?, number(5..7)?, number(8..10)?);
+    let (hour, minute, second) = (number(11..13)?, number(14..16)?, number(17..19)?);
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
+        return None;
+    }
+    // a civil date to days, after Howard Hinnant's `days_from_civil`
+    let y = year - i64::from(month <= 2);
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
+}
+
 /// A remote URL without the credentials it may carry before its host
 /// (`https://user:token@host/..`, `token@host:..`), as an answer or an error
 /// may show it.
@@ -134,6 +170,11 @@ mod tests {
     fn times_are_rfc_3339_in_utc() {
         assert_eq!(utc(0), "1970-01-01T00:00:00Z");
         assert_eq!(utc(1_768_383_000), "2026-01-14T09:30:00Z");
+        for time in [0, 1_768_383_000, 951_782_400, 4_107_542_399] {
+            assert_eq!(seconds(&utc(time)), Some(time), "{time}");
+        }
+        assert_eq!(seconds("2026-01-14T09:30:00+09:00"), None);
+        assert_eq!(seconds("2026-13-14T09:30:00Z"), None);
     }
 
     #[test]

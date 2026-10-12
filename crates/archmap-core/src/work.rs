@@ -24,8 +24,22 @@ pub struct Snapshot {
     pub host: String,
     /// `owner/name`.
     pub repository: String,
-    /// When the fetch ran, as the tracker's clock gives times (UTC).
+    /// When the fetch ran, as the tracker's clock gives times (UTC): the
+    /// last one, whole or an update.
     pub fetched_at: String,
+    /// When the last whole fetch ran. An update reads only the items
+    /// updated since the fetch before it, so what only an item's own
+    /// timeline records without changing the item (a cross-reference to
+    /// it, a commit that references it) and items deleted or hidden since
+    /// are as of this time. `None` in a snapshot written before updates
+    /// existed, which was fetched whole at `fetched_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub whole_fetched_at: Option<String>,
+    /// The account the snapshot was fetched as: an update by another
+    /// account fetches whole instead, so one snapshot never holds what two
+    /// accounts saw. Never shown in answers; no token is kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<Account>,
     pub range: Range,
     /// The relation types fetched; "no link" holds only for these.
     pub relation_types: Vec<RelationType>,
@@ -41,6 +55,15 @@ pub struct Snapshot {
     /// repository elsewhere, a deleted item): GitHub answers `null` for it.
     #[serde(default, skip_serializing_if = "NotVisible::is_empty")]
     pub not_visible: NotVisible,
+}
+
+/// A tracker account: its login and, when the tracker gives it, its
+/// numeric id, which stays when the login is renamed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Account {
+    pub login: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<u64>,
 }
 
 /// Counts of what the tracker answered `null` for.
@@ -149,6 +172,11 @@ pub struct Item {
     /// when the tracker stops listing (GitHub at 250).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit_count: Option<usize>,
+    /// The links and events of this item the account could not see, so an
+    /// update that reads it again replaces them; the snapshot's
+    /// `not_visible` sums them.
+    #[serde(default, skip_serializing_if = "NotVisible::is_empty")]
+    pub not_visible: NotVisible,
 }
 
 /// A link the tracker records, by the field or event it is observed in.
@@ -248,7 +276,101 @@ pub struct Relation {
     pub will_close: Option<bool>,
 }
 
+/// Which end of a relation recorded an observation: the item that was read
+/// when the field or event named `observed` gave it. `None` for a name no
+/// fetch writes.
+pub fn recorded_by(observed: &str) -> Option<RecordedBy> {
+    let end = match observed {
+        "Issue.subIssues" | "Issue.blockedBy" | "Issue.duplicateOf" | "ClosedEvent.closer" => {
+            RecordedBy::From
+        }
+        "Issue.parent" | "Issue.blocking" | "CrossReferencedEvent" | "ReferencedEvent" => {
+            RecordedBy::To
+        }
+        o if o.starts_with("PullRequest.closingIssuesReferences") => RecordedBy::From,
+        o if o.starts_with("Issue.closedByPullRequestsReferences") => RecordedBy::To,
+        _ => return None,
+    };
+    Some(end)
+}
+
+/// The end of a relation an observation was read from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordedBy {
+    From,
+    To,
+}
+
 impl Snapshot {
+    /// Merge `update`, a read of the items updated since this snapshot's
+    /// fetch, into it: each item read replaces the one held, with what it
+    /// records; a link of a type both ends record goes when either end was
+    /// read (the update gives it again if that end still records it), and
+    /// the observations the other items recorded of the other types stay. The range,
+    /// the whole fetch's time and what only the whole fetch could say stay
+    /// this snapshot's; the counts of what the account could not see are
+    /// summed again from the items, apart from items no page could show,
+    /// where the larger count stays.
+    pub fn merge(&mut self, update: Snapshot) {
+        let read: std::collections::BTreeSet<u64> = update.items.iter().map(|i| i.number).collect();
+        self.items.retain(|i| !read.contains(&i.number));
+        self.items.extend(update.items);
+        let recorded_by_read = |relation: &Relation, observed: &str| {
+            let end = match recorded_by(observed) {
+                Some(RecordedBy::From) => &relation.from,
+                Some(RecordedBy::To) => &relation.to,
+                None => return false,
+            };
+            matches!(end, Ref::Item { item } if read.contains(item))
+        };
+        let read_end = |end: &Ref| matches!(end, Ref::Item { item } if read.contains(item));
+        let mut relations = Vec::with_capacity(self.relations.len() + update.relations.len());
+        for mut relation in std::mem::take(&mut self.relations) {
+            // a type both ends record: the end read answers for it as of the
+            // update, and gives it again if it still holds
+            if relation.kind.seen_from() == SeenFrom::Both
+                && (read_end(&relation.from) || read_end(&relation.to))
+            {
+                continue;
+            }
+            let observed = std::mem::take(&mut relation.observed);
+            relation.observed = observed
+                .into_iter()
+                .filter(|o| !recorded_by_read(&relation, o))
+                .collect();
+            if !relation.observed.is_empty() {
+                relations.push(relation);
+            }
+        }
+        relations.extend(update.relations);
+        self.relations = relations;
+        self.fetched_at = update.fetched_at;
+        self.repository = update.repository;
+        let walked = self.not_visible.items.max(update.not_visible.items);
+        self.normalize();
+        self.not_visible = self.items_not_visible();
+        self.not_visible.items = walked;
+        self.range.issues = self.count(ItemKind::Issue);
+        self.range.pull_requests = self.count(ItemKind::PullRequest);
+    }
+
+    /// The links and events of its items the account could not see, summed.
+    pub fn items_not_visible(&self) -> NotVisible {
+        let mut sum = NotVisible::default();
+        for item in &self.items {
+            for (kind, n) in &item.not_visible.links {
+                *sum.links.entry(*kind).or_default() += n;
+            }
+            sum.events += item.not_visible.events;
+        }
+        sum
+    }
+
+    /// The items of `kind` held.
+    pub fn count(&self, kind: ItemKind) -> usize {
+        self.items.iter().filter(|i| i.kind == kind).count()
+    }
+
     /// Sort items and relations and merge a relation seen from two sides
     /// into one, so the same answers give the same snapshot. An item read
     /// twice (again, after it changed during the fetch) keeps its last
@@ -314,6 +436,8 @@ mod tests {
             host: "github.com".into(),
             repository: "acme/shop".into(),
             fetched_at: "2026-10-03T00:00:00Z".into(),
+            whole_fetched_at: Some("2026-10-03T00:00:00Z".into()),
+            account: None,
             range: Range {
                 updated_since: None,
                 since_rule: SinceRule::All,
@@ -403,11 +527,145 @@ mod tests {
             merge_commit: None,
             commits: Vec::new(),
             commit_count: None,
+            not_visible: NotVisible::default(),
         };
         let mut s = snapshot(Vec::new());
         s.items = vec![item(ItemState::Open), item(ItemState::Closed)];
         s.normalize();
         assert_eq!(s.items.len(), 1);
         assert_eq!(s.items[0].state, ItemState::Closed);
+    }
+
+    #[test]
+    fn an_update_replaces_what_the_items_it_read_record_and_keeps_the_rest() {
+        let issue = |number: u64, events: usize| Item {
+            kind: ItemKind::Issue,
+            number,
+            id: format!("I_{number}"),
+            title: None,
+            state: ItemState::Open,
+            state_reason: None,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+            closed_at: None,
+            merged_at: None,
+            merge_commit: None,
+            commits: Vec::new(),
+            commit_count: None,
+            not_visible: NotVisible {
+                events,
+                ..NotVisible::default()
+            },
+        };
+        let issue_side = "Issue.closedByPullRequestsReferences(excludeUserLinked)";
+        let pull_side = "PullRequest.closingIssuesReferences(excludeUserLinked)";
+        // #1 is closed by #5, which both record; #9 cross-references #1 and #2
+        let mut before = snapshot(vec![
+            relation(RelationType::Closes, 5, 1, issue_side),
+            relation(RelationType::Closes, 5, 1, pull_side),
+            relation(RelationType::CrossReferenced, 9, 1, "CrossReferencedEvent"),
+            relation(RelationType::CrossReferenced, 9, 2, "CrossReferencedEvent"),
+        ]);
+        before.items = vec![issue(1, 2), issue(2, 1)];
+        before.normalize();
+        before.not_visible = before.items_not_visible();
+        // #1 read again: still closed by #5, cross-referenced by #7 now
+        let mut update = snapshot(vec![
+            relation(RelationType::Closes, 5, 1, issue_side),
+            relation(RelationType::CrossReferenced, 7, 1, "CrossReferencedEvent"),
+        ]);
+        update.fetched_at = "2026-10-04T00:00:00Z".into();
+        update.whole_fetched_at = None;
+        update.items = vec![issue(1, 0)];
+        let mut after = before.clone();
+        after.merge(update);
+        let links: Vec<(RelationType, Ref, Ref, Vec<String>)> = after
+            .relations
+            .iter()
+            .map(|r| (r.kind, r.from.clone(), r.to.clone(), r.observed.clone()))
+            .collect();
+        let item = |n| Ref::Item { item: n };
+        assert_eq!(
+            links,
+            [
+                // both ends record it: #1, read, gives it again
+                (
+                    RelationType::Closes,
+                    item(5),
+                    item(1),
+                    vec![issue_side.to_owned()]
+                ),
+                (
+                    RelationType::CrossReferenced,
+                    item(7),
+                    item(1),
+                    vec!["CrossReferencedEvent".to_owned()]
+                ),
+                (
+                    RelationType::CrossReferenced,
+                    item(9),
+                    item(2),
+                    vec!["CrossReferencedEvent".to_owned()]
+                ),
+            ]
+        );
+        assert_eq!(after.not_visible.events, 1);
+        assert_eq!(after.fetched_at, "2026-10-04T00:00:00Z");
+        assert_eq!(
+            after.whole_fetched_at.as_deref(),
+            Some("2026-10-03T00:00:00Z")
+        );
+        assert_eq!(after.range.issues, 2);
+        // merging the same update again gives the same snapshot
+        let mut again = after.clone();
+        let mut same = snapshot(vec![
+            relation(RelationType::Closes, 5, 1, issue_side),
+            relation(RelationType::CrossReferenced, 7, 1, "CrossReferencedEvent"),
+        ]);
+        same.fetched_at = "2026-10-04T00:00:00Z".into();
+        same.items = vec![issue(1, 0)];
+        again.merge(same);
+        assert_eq!(again, after);
+    }
+
+    #[test]
+    fn a_link_both_ends_record_goes_when_the_end_read_no_longer_records_it() {
+        let item = |kind: ItemKind, number: u64| Item {
+            kind,
+            number,
+            id: format!("X_{number}"),
+            title: None,
+            state: ItemState::Open,
+            state_reason: None,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+            closed_at: None,
+            merged_at: None,
+            merge_commit: None,
+            commits: Vec::new(),
+            commit_count: None,
+            not_visible: NotVisible::default(),
+        };
+        let mut before = snapshot(vec![
+            relation(
+                RelationType::Closes,
+                5,
+                1,
+                "Issue.closedByPullRequestsReferences(excludeUserLinked)",
+            ),
+            relation(
+                RelationType::Closes,
+                5,
+                1,
+                "PullRequest.closingIssuesReferences(excludeUserLinked)",
+            ),
+        ]);
+        before.items = vec![item(ItemKind::Issue, 1), item(ItemKind::PullRequest, 5)];
+        before.normalize();
+        // #5 no longer closes #1; #1 did not change, so it was not read
+        let mut update = snapshot(Vec::new());
+        update.items = vec![item(ItemKind::PullRequest, 5)];
+        before.merge(update);
+        assert!(before.relations.is_empty(), "{:?}", before.relations);
     }
 }

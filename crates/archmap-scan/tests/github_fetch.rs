@@ -5,7 +5,7 @@
 use std::cell::RefCell;
 
 use archmap_core::work::{ItemState, Ref, RelationType, SinceRule};
-use archmap_scan::work::github::{fetch, FetchOptions};
+use archmap_scan::work::github::{fetch, update, FetchOptions, Update};
 use serde_json::{json, Value};
 
 fn options(since: Option<&str>) -> FetchOptions {
@@ -47,6 +47,7 @@ fn schema(full: bool) -> Value {
     json!({"data": {
         "issue": {"fields": issue},
         "pull": {"fields": [field("closingIssuesReferences", &["userLinkedOnly", "excludeUserLinked"])]},
+        "viewer": {"login": "fetcher", "databaseId": 7},
     }})
 }
 
@@ -98,7 +99,7 @@ fn issues(cursor: Option<&str>) -> Value {
             json!({"data": {"repository": {"nameWithOwner": "acme/shop", "issues": page(vec![json!({
             "id": "I_9", "number": 9, "title": "Rates", "state": "OPEN", "stateReason": null,
             "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-02T00:00:00Z",
-            "closedAt": null, "parent": null, "duplicateOf": null,
+            "closedAt": null, "parent": null, "duplicateOf": reference(7, "acme/shop"),
             "subIssues": empty(), "blockedBy": empty(), "blocking": empty(),
             "closes": empty(), "linked": empty(), "events": empty(),
         })], None)}}})
@@ -390,5 +391,295 @@ fn an_error_says_where_in_the_answer_it_arose() {
     assert!(
         error.contains("Resource not accessible (at repository.issues.nodes.3.events)"),
         "{error}"
+    );
+}
+
+/// The options of an update a day after the fetch `options` describes.
+fn next_day() -> FetchOptions {
+    FetchOptions {
+        now: "2026-10-04T09:00:00Z".into(),
+        reread_since: "2026-10-04T08:55:00Z".into(),
+        ..options(Some("2025-10-03T00:00:00Z"))
+    }
+}
+
+#[test]
+fn an_update_reads_the_items_changed_since_the_fetch_and_keeps_the_others() {
+    let previous = fetch(
+        &options(Some("2025-10-03T00:00:00Z")),
+        &mut recorded(true, &RefCell::new(Vec::new())),
+    )
+    .unwrap();
+    assert_eq!(previous.account.as_ref().unwrap().login, "fetcher");
+    let requests = RefCell::new(Vec::new());
+    let mut changed = |request: &Value| {
+        requests.borrow_mut().push(request.clone());
+        let query = request["query"].as_str().unwrap();
+        let since = request["variables"]["since"].as_str();
+        match query {
+            q if q.starts_with("query Schema") => Ok(schema(true)),
+            // what changed since the fetch, five minutes before it included:
+            // #9, closed, cross-referenced by #20
+            q if q.starts_with("query Issues") && since == Some("2026-10-03T08:55:00Z") => Ok(
+                json!({"data": {"repository": {"nameWithOwner": "acme/shop", "issues": page(vec![json!({
+                    "id": "I_9", "number": 9, "title": "Rates", "state": "CLOSED",
+                    "stateReason": "NOT_PLANNED", "createdAt": "2026-01-01T00:00:00Z",
+                    "updatedAt": "2026-10-03T12:00:00Z", "closedAt": "2026-10-03T12:00:00Z",
+                    "parent": null, "duplicateOf": null, "subIssues": empty(),
+                    "blockedBy": empty(), "blocking": page(vec![reference(12, "acme/shop")], None),
+                    "closes": empty(), "linked": empty(),
+                    "events": page(vec![json!({"__typename": "CrossReferencedEvent",
+                        "referencedAt": "2026-10-03T11:00:00Z", "willCloseTarget": false,
+                        "source": {"__typename": "Issue", "number": 20,
+                                   "repository": {"nameWithOwner": "acme/shop"}}})], None),
+                })], None)}}}),
+            ),
+            q if q.starts_with("query Issues") => Ok(
+                json!({"data": {"repository": {"nameWithOwner": "acme/shop", "issues": empty()}}}),
+            ),
+            // the newest pull request was updated before: the walk stops
+            q if q.starts_with("query PullRequests") => Ok(pulls()),
+            q => panic!("unexpected request: {q}"),
+        }
+    };
+    let Update::Merged { snapshot, read } =
+        update(&next_day(), &mut changed, &previous, "2026-10-01T00:00:00Z").unwrap()
+    else {
+        panic!("fetched whole")
+    };
+    assert_eq!(read, 1);
+    let nine = snapshot.item(9).unwrap();
+    assert_eq!(
+        (nine.state, nine.state_reason.as_deref()),
+        (ItemState::Closed, Some("not_planned"))
+    );
+    let item = |n| Ref::Item { item: n };
+    assert!(snapshot
+        .relations
+        .iter()
+        .any(|r| r.kind == RelationType::CrossReferenced && r.from == item(20) && r.to == item(9)));
+    // the links of #12 and #15 stay: #9, read, gives again the one both
+    // ends record
+    let unchanged = |s: &archmap_core::work::Snapshot| -> Vec<_> {
+        s.relations
+            .iter()
+            .filter(|r| r.to == item(12) || r.from == item(12))
+            .map(|r| (r.kind, r.from.clone(), r.to.clone(), r.at.clone()))
+            .collect()
+    };
+    assert_eq!(unchanged(&snapshot), unchanged(&previous));
+    assert_eq!(snapshot.item(15), previous.item(15));
+    assert_eq!(snapshot.not_visible, previous.not_visible);
+    assert_eq!(snapshot.range, {
+        let mut range = previous.range.clone();
+        range.issues = 2;
+        range
+    });
+    assert_eq!(snapshot.fetched_at, "2026-10-04T09:00:00Z");
+    assert_eq!(
+        snapshot.whole_fetched_at.as_deref(),
+        Some("2026-10-03T09:00:00Z")
+    );
+    // the walks start five minutes before the fetch, and the rest is not
+    // read again
+    let asked: Vec<String> = requests
+        .borrow()
+        .iter()
+        .map(|r| {
+            let query = r["query"].as_str().unwrap();
+            let name = query.split([' ', '(']).nth(1).unwrap_or("").to_owned();
+            format!("{name} {}", r["variables"]["since"].as_str().unwrap_or("-"))
+        })
+        .collect();
+    assert_eq!(
+        asked,
+        [
+            "Schema -",
+            "Issues 2026-10-03T08:55:00Z",
+            "PullRequests -",
+            "Issues 2026-10-04T08:55:00Z",
+            "PullRequests -"
+        ]
+    );
+}
+
+#[test]
+fn an_update_fetches_whole_when_the_snapshot_was_fetched_otherwise() {
+    let previous = fetch(
+        &options(Some("2025-10-03T00:00:00Z")),
+        &mut recorded(true, &RefCell::new(Vec::new())),
+    )
+    .unwrap();
+    let whole = |options: &FetchOptions,
+                 previous: &archmap_core::work::Snapshot,
+                 after: &str,
+                 viewer: (&str, u64)|
+     -> (String, usize) {
+        let requests = RefCell::new(0);
+        let mut run = |request: &Value| {
+            *requests.borrow_mut() += 1;
+            let query = request["query"].as_str().unwrap();
+            assert!(query.starts_with("query Schema"), "{query}");
+            let mut answer = schema(true);
+            answer["data"]["viewer"]["login"] = viewer.0.into();
+            answer["data"]["viewer"]["databaseId"] = viewer.1.into();
+            Ok(answer)
+        };
+        match update(options, &mut run, previous, after).unwrap() {
+            Update::Whole { reason } => (reason, *requests.borrow()),
+            Update::Merged { .. } => panic!("merged"),
+        }
+    };
+    // decided before any request
+    let old = whole(
+        &next_day(),
+        &previous,
+        "2026-10-03T10:00:00Z",
+        ("fetcher", 7),
+    );
+    assert_eq!(
+        old,
+        ("its last whole fetch is older than the limit".to_owned(), 0)
+    );
+    let untitled = FetchOptions {
+        titles: false,
+        ..next_day()
+    };
+    assert_eq!(
+        whole(&untitled, &previous, "2026-10-01T00:00:00Z", ("fetcher", 7)),
+        (
+            "the snapshot was fetched with the other title setting".to_owned(),
+            0
+        )
+    );
+    let elsewhere = FetchOptions {
+        name: "web".into(),
+        ..next_day()
+    };
+    assert_eq!(
+        whole(
+            &elsewhere,
+            &previous,
+            "2026-10-01T00:00:00Z",
+            ("fetcher", 7)
+        ),
+        ("the snapshot is of another repository".to_owned(), 0)
+    );
+    let bounded = FetchOptions {
+        max_items: 10,
+        ..next_day()
+    };
+    assert_eq!(
+        whole(&bounded, &previous, "2026-10-01T00:00:00Z", ("fetcher", 7)),
+        ("the snapshot was fetched with another bound".to_owned(), 0)
+    );
+    let mut written_before = previous.clone();
+    written_before.whole_fetched_at = None;
+    assert_eq!(
+        whole(
+            &next_day(),
+            &written_before,
+            "2026-10-01T00:00:00Z",
+            ("fetcher", 7)
+        ),
+        ("the snapshot records no whole fetch".to_owned(), 0)
+    );
+    // decided once the host answers
+    let mut anonymous = previous.clone();
+    anonymous.account = None;
+    assert_eq!(
+        whole(
+            &next_day(),
+            &anonymous,
+            "2026-10-01T00:00:00Z",
+            ("fetcher", 7)
+        ),
+        ("the snapshot records no account".to_owned(), 1)
+    );
+    let mut fewer = previous.clone();
+    fewer.unavailable = vec![RelationType::SubIssue];
+    assert_eq!(
+        whole(&next_day(), &fewer, "2026-10-01T00:00:00Z", ("fetcher", 7)).0,
+        "the host offers other link types than when the snapshot was fetched"
+    );
+    // another account answers: by id, whatever the login
+    assert_eq!(
+        whole(
+            &next_day(),
+            &previous,
+            "2026-10-01T00:00:00Z",
+            ("fetcher", 8)
+        ),
+        ("the snapshot was fetched as another account".to_owned(), 1)
+    );
+}
+
+#[test]
+fn every_observation_a_fetch_writes_names_the_end_that_recorded_it() {
+    let snapshot = fetch(
+        &options(Some("2025-10-03T00:00:00Z")),
+        &mut recorded(true, &RefCell::new(Vec::new())),
+    )
+    .unwrap();
+    // an update replaces what an item read records only through this
+    let observed: Vec<&str> = snapshot
+        .relations
+        .iter()
+        .flat_map(|r| r.observed.iter().map(String::as_str))
+        .collect();
+    assert!(observed.len() >= 8, "{observed:?}");
+    for name in observed {
+        assert!(
+            archmap_core::work::recorded_by(name).is_some(),
+            "no end for {name}"
+        );
+    }
+}
+
+#[test]
+fn an_update_that_reaches_the_bound_or_fails_writes_nothing_of_its_own() {
+    let bounded = FetchOptions {
+        max_items: 1,
+        ..options(Some("2025-10-03T00:00:00Z"))
+    };
+    let previous = fetch(&bounded, &mut recorded(true, &RefCell::new(Vec::new()))).unwrap();
+    // two issues changed, one read at most: an update would miss one
+    let next = FetchOptions {
+        max_items: 1,
+        ..next_day()
+    };
+    let mut many = |request: &Value| {
+        let query = request["query"].as_str().unwrap();
+        match query {
+            q if q.starts_with("query Schema") => Ok(schema(true)),
+            q if q.starts_with("query Issues") => {
+                Ok(issues(request["variables"]["cursor"].as_str()))
+            }
+            q if q.starts_with("query More") => Ok(
+                json!({"data": {"node": {"subIssues": page(vec![reference(14, "acme/shop")], None)}}}),
+            ),
+            q => panic!("unexpected request: {q}"),
+        }
+    };
+    match update(&next, &mut many, &previous, "2026-10-01T00:00:00Z").unwrap() {
+        Update::Whole { reason } => assert_eq!(
+            reason,
+            "more items changed since its fetch than the bound reads"
+        ),
+        Update::Merged { .. } => panic!("merged"),
+    }
+    // an error fails the update whole
+    let mut failing = |request: &Value| match request["query"].as_str().unwrap() {
+        q if q.starts_with("query Schema") => Ok(schema(true)),
+        _ => Err("HTTP 502".to_owned()),
+    };
+    let previous = fetch(
+        &options(Some("2025-10-03T00:00:00Z")),
+        &mut recorded(true, &RefCell::new(Vec::new())),
+    )
+    .unwrap();
+    assert_eq!(
+        update(&next_day(), &mut failing, &previous, "2026-10-01T00:00:00Z").unwrap_err(),
+        "HTTP 502"
     );
 }

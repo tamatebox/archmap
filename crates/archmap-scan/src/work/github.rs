@@ -14,8 +14,8 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 use archmap_core::work::{
-    Item, ItemKind, ItemState, NotVisible, Range, Ref, Relation, RelationType, SinceRule, Snapshot,
-    WORK_SCHEMA,
+    Account, Item, ItemKind, ItemState, NotVisible, Range, Ref, Relation, RelationType, SinceRule,
+    Snapshot, WORK_SCHEMA,
 };
 use serde_json::{json, Value};
 
@@ -91,9 +91,16 @@ pub fn gh(host: &str) -> impl FnMut(&Value) -> Result<Value, String> + '_ {
     }
 }
 
-/// Fetch a snapshot.
-pub fn fetch(options: &FetchOptions, run: &mut Run) -> Result<Snapshot, String> {
-    let fields = schema(run)?;
+/// What the host offers and who the fetch runs as.
+struct Probe {
+    types: BTreeSet<RelationType>,
+    unavailable: Vec<RelationType>,
+    account: Option<Account>,
+}
+
+/// Ask the host which link types it offers and which account answers.
+fn probe(run: &mut Run) -> Result<Probe, String> {
+    let (fields, account) = schema(run)?;
     let has = |owner: &str, field: &str| fields.contains(&(owner.to_owned(), field.to_owned()));
     let closing = has("Issue", "closedByPullRequestsReferences.userLinkedOnly")
         && has("PullRequest", "closingIssuesReferences.userLinkedOnly");
@@ -123,61 +130,150 @@ pub fn fetch(options: &FetchOptions, run: &mut Run) -> Result<Snapshot, String> 
         .filter(|(_, ok)| !*ok)
         .map(|(t, _)| *t)
         .collect();
-
-    let mut fetch = Fetch {
-        options,
+    Ok(Probe {
         types,
-        repository: format!("{}/{}", options.owner, options.name),
-        items: Vec::new(),
-        relations: Vec::new(),
-        not_visible: NotVisible::default(),
-    };
+        unavailable,
+        account,
+    })
+}
+
+/// Fetch a snapshot whole.
+pub fn fetch(options: &FetchOptions, run: &mut Run) -> Result<Snapshot, String> {
+    let probe = probe(run)?;
+    let mut fetch = Fetch::new(options, probe.types.clone());
     let since = options.since.as_deref();
     let issues_bounded = fetch.issues(run, since, options.max_items)?;
     let pulls_bounded = fetch.pulls(run, since, options.max_items)?;
-    // what changed while the walks ran, read again: the last read stays
-    let again = Some(options.reread_since.as_str());
-    fetch.issues(run, again, usize::MAX)?;
-    fetch.pulls(run, again, usize::MAX)?;
+    fetch.again(run)?;
     let reached_bound = issues_bounded.is_some() || pulls_bounded.is_some();
     let effective_since = [issues_bounded, pulls_bounded].into_iter().flatten().max();
-    let mut snapshot = Snapshot {
-        schema: WORK_SCHEMA,
-        source: "github".to_owned(),
-        host: options.host.clone(),
-        repository: fetch.repository.clone(),
-        fetched_at: options.now.clone(),
-        range: Range {
-            updated_since: options.since.clone(),
-            since_rule: options.since_rule,
-            bound: options.max_items,
-            reached_bound,
-            effective_since,
-            issues: 0,
-            pull_requests: 0,
-        },
-        relation_types: fetch.types.iter().copied().collect(),
-        unavailable,
-        no_titles: !options.titles,
-        items: fetch.items,
-        relations: fetch.relations,
-        not_visible: fetch.not_visible,
+    let range = Range {
+        updated_since: options.since.clone(),
+        since_rule: options.since_rule,
+        bound: options.max_items,
+        reached_bound,
+        effective_since,
+        issues: 0,
+        pull_requests: 0,
     };
-    snapshot.normalize();
-    let count = |kind| snapshot.items.iter().filter(|i| i.kind == kind).count();
-    snapshot.range.issues = count(ItemKind::Issue);
-    snapshot.range.pull_requests = count(ItemKind::PullRequest);
-    Ok(snapshot)
+    Ok(fetch.snapshot(probe, range, Some(options.now.clone())))
+}
+
+/// What an update gave: the snapshot with the items updated since its
+/// fetch merged in, or why it must be fetched whole instead.
+#[derive(Debug)]
+pub enum Update {
+    Merged {
+        snapshot: Box<Snapshot>,
+        read: usize,
+    },
+    Whole {
+        reason: String,
+    },
+}
+
+/// Update `previous` with the issues and pull requests updated since its
+/// fetch began, less five minutes. It is fetched whole instead when it
+/// was fetched another way: by another account, from another host or
+/// repository, with other link types or another title setting or bound,
+/// by an archmap that recorded no whole fetch or account; when its last
+/// whole fetch began before `whole_after`; and when more items changed
+/// than the bound reads.
+pub fn update(
+    options: &FetchOptions,
+    run: &mut Run,
+    previous: &Snapshot,
+    whole_after: &str,
+) -> Result<Update, String> {
+    let whole = |reason: &str| {
+        Ok(Update::Whole {
+            reason: reason.to_owned(),
+        })
+    };
+    let Some(whole_at) = previous.whole_fetched_at.as_deref() else {
+        return whole("the snapshot records no whole fetch");
+    };
+    if whole_at < whole_after {
+        return whole("its last whole fetch is older than the limit");
+    }
+    let repository = format!("{}/{}", options.owner, options.name);
+    if previous.source != "github"
+        || previous.host != options.host
+        || !previous.repository.eq_ignore_ascii_case(&repository)
+    {
+        return whole("the snapshot is of another repository");
+    }
+    if previous.no_titles == options.titles {
+        return whole("the snapshot was fetched with the other title setting");
+    }
+    if previous.range.bound != options.max_items {
+        return whole("the snapshot was fetched with another bound");
+    }
+    let Some(since) = crate::work::seconds(&previous.fetched_at) else {
+        return whole("the snapshot's fetch time is unreadable");
+    };
+    let probe = probe(run)?;
+    match (&probe.account, &previous.account) {
+        (Some(now), Some(then)) if same_account(now, then) => {}
+        (_, None) => return whole("the snapshot records no account"),
+        _ => return whole("the snapshot was fetched as another account"),
+    }
+    if previous.relation_types != probe.types.iter().copied().collect::<Vec<_>>()
+        || previous.unavailable != probe.unavailable
+    {
+        return whole("the host offers other link types than when the snapshot was fetched");
+    }
+    let mut fetch = Fetch::new(options, probe.types.clone());
+    let since = crate::work::utc(since - 300);
+    // more changed than the bound reads: an update would miss some
+    let bounded = "more items changed since its fetch than the bound reads";
+    if fetch
+        .issues(run, Some(&since), options.max_items)?
+        .is_some()
+    {
+        return whole(bounded);
+    }
+    if fetch.pulls(run, Some(&since), options.max_items)?.is_some() {
+        return whole(bounded);
+    }
+    fetch.again(run)?;
+    let read = {
+        let mut numbers: Vec<u64> = fetch.items.iter().map(|i| i.number).collect();
+        numbers.sort_unstable();
+        numbers.dedup();
+        numbers.len()
+    };
+    let changes = fetch.snapshot(probe, previous.range.clone(), None);
+    let mut snapshot = Box::new(previous.clone());
+    snapshot.merge(changes);
+    Ok(Update::Merged { snapshot, read })
+}
+
+/// The same account: by its numeric id when both have one, which stays
+/// when the login is renamed, else by login.
+fn same_account(a: &Account, b: &Account) -> bool {
+    match (a.id, b.id) {
+        (Some(x), Some(y)) => x == y,
+        _ => a.login.eq_ignore_ascii_case(&b.login),
+    }
 }
 
 /// The fields of `Issue` and `PullRequest` the host offers, as `(type,
 /// field)`, and `(type, field.argument)` for their arguments.
-fn schema(run: &mut Run) -> Result<BTreeSet<(String, String)>, String> {
+type Fields = BTreeSet<(String, String)>;
+
+/// The fields the host offers, and the account that answers.
+fn schema(run: &mut Run) -> Result<(Fields, Option<Account>), String> {
     let request = json!({
         "query": "query Schema { issue: __type(name: \"Issue\") { fields { name args { name } } } \
-                  pull: __type(name: \"PullRequest\") { fields { name args { name } } } }"
+                  pull: __type(name: \"PullRequest\") { fields { name args { name } } } \
+                  viewer { login databaseId } }"
     });
     let answer = data(run(&request)?)?;
+    let account = answer["viewer"]["login"].as_str().map(|login| Account {
+        login: login.to_owned(),
+        id: answer["viewer"]["databaseId"].as_u64(),
+    });
     let mut found = BTreeSet::new();
     for (key, owner) in [("issue", "Issue"), ("pull", "PullRequest")] {
         for field in answer[key]["fields"].as_array().into_iter().flatten() {
@@ -192,7 +288,7 @@ fn schema(run: &mut Run) -> Result<BTreeSet<(String, String)>, String> {
             }
         }
     }
-    Ok(found)
+    Ok((found, account))
 }
 
 /// A response's `data`, or its errors as one message, each with where in
@@ -233,7 +329,61 @@ struct Fetch<'o> {
     repository: String,
     items: Vec<Item>,
     relations: Vec<Relation>,
+    /// Items no page could show.
     not_visible: NotVisible,
+    /// What the item being read has that the account cannot see.
+    current: NotVisible,
+}
+
+impl<'o> Fetch<'o> {
+    fn new(options: &'o FetchOptions, types: BTreeSet<RelationType>) -> Self {
+        Fetch {
+            options,
+            types,
+            repository: format!("{}/{}", options.owner, options.name),
+            items: Vec::new(),
+            relations: Vec::new(),
+            not_visible: NotVisible::default(),
+            current: NotVisible::default(),
+        }
+    }
+
+    /// What changed while the walks ran, read again: the last read stays.
+    fn again(&mut self, run: &mut Run) -> Result<(), String> {
+        let again = self.options.reread_since.clone();
+        self.issues(run, Some(&again), usize::MAX)?;
+        self.pulls(run, Some(&again), usize::MAX)?;
+        Ok(())
+    }
+
+    /// The items and links read as a snapshot over `range`; `whole_at` for
+    /// a whole fetch.
+    fn snapshot(self, probe: Probe, range: Range, whole_at: Option<String>) -> Snapshot {
+        let mut snapshot = Snapshot {
+            schema: WORK_SCHEMA,
+            source: "github".to_owned(),
+            host: self.options.host.clone(),
+            repository: self.repository,
+            fetched_at: self.options.now.clone(),
+            whole_fetched_at: whole_at,
+            account: probe.account,
+            range,
+            relation_types: self.types.iter().copied().collect(),
+            unavailable: probe.unavailable,
+            no_titles: !self.options.titles,
+            items: self.items,
+            relations: self.relations,
+            not_visible: NotVisible::default(),
+        };
+        snapshot.normalize();
+        // an item read twice counts once: its last read stays
+        let walked = self.not_visible.items;
+        snapshot.not_visible = snapshot.items_not_visible();
+        snapshot.not_visible.items = walked;
+        snapshot.range.issues = snapshot.count(ItemKind::Issue);
+        snapshot.range.pull_requests = snapshot.count(ItemKind::PullRequest);
+        snapshot
+    }
 }
 
 /// A nested connection to page on from a node, with what its nodes are.
@@ -494,7 +644,7 @@ impl Fetch<'_> {
             value["number"].as_u64(),
             value["repository"]["nameWithOwner"].as_str(),
         ) else {
-            *self.not_visible.links.entry(kind).or_default() += 1;
+            *self.current.links.entry(kind).or_default() += 1;
             return None;
         };
         Some(match repository.eq_ignore_ascii_case(&self.repository) {
@@ -564,6 +714,7 @@ impl Fetch<'_> {
             merge_commit: None,
             commits: Vec::new(),
             commit_count: None,
+            not_visible: NotVisible::default(),
         });
         if self.has(RelationType::SubIssue) {
             if !node["parent"].is_null() {
@@ -628,6 +779,15 @@ impl Fetch<'_> {
             }
         }
         self.events(&node["events"], &this);
+        self.close_item();
+    }
+
+    /// Give the item just read what of it the account could not see.
+    fn close_item(&mut self) {
+        let unseen = std::mem::take(&mut self.current);
+        if let Some(item) = self.items.last_mut() {
+            item.not_visible = unseen;
+        }
     }
 
     fn pull(&mut self, node: &Value) {
@@ -658,6 +818,7 @@ impl Fetch<'_> {
             merge_commit: node["mergeCommit"]["oid"].as_str().map(str::to_owned),
             commit_count: node["commits"]["totalCount"].as_u64().map(|n| n as usize),
             commits,
+            not_visible: NotVisible::default(),
         });
         if self.has(RelationType::Closes) {
             for issue in self.refs(&node["closes"], RelationType::Closes) {
@@ -678,6 +839,7 @@ impl Fetch<'_> {
             }
         }
         self.events(&node["events"], &this);
+        self.close_item();
     }
 
     /// The links an item's timeline records: cross-references to it,
@@ -703,7 +865,7 @@ impl Fetch<'_> {
                 Some("ReferencedEvent") => {
                     let Some(oid) = event["commit"]["oid"].as_str() else {
                         *self
-                            .not_visible
+                            .current
                             .links
                             .entry(RelationType::Referenced)
                             .or_default() += 1;
@@ -740,7 +902,7 @@ impl Fetch<'_> {
                     }
                 }
                 // a node the account cannot see, of any type asked for
-                _ => self.not_visible.events += 1,
+                _ => self.current.events += 1,
             }
         }
     }

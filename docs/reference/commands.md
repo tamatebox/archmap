@@ -838,6 +838,7 @@ name from the same file is not affected. Two things widen or narrow it:
 archmap fetch github                          # the root's origin on github.com, into .archmap/github.json
 archmap fetch github --repo acme/shop --since 2026-01-01
 archmap fetch github --repo ghe.example.com/acme/shop --no-titles -o ../shop-github.json
+archmap fetch github --update                 # only what changed since the snapshot's fetch
 ```
 
 `fetch github` writes the work snapshot that `query '#N'`, the Work
@@ -859,8 +860,16 @@ history read holds, else (in a shallow clone, or with fewer than 100
 commits) 365 days before the fetch; `--all` reads every item. The snapshot
 is written whole or not at all, beside `scan`'s output unless `-o` names
 another file, and the command prints what it wrote. `--no-titles` keeps
-numbers, states and times only. What a snapshot holds, the link types and
-what each fetch asks GitHub are in [work.md](work.md). It is the only
+numbers, states and times only. `--update` (not with `--since` or `--all`)
+reads only the items changed since the snapshot's fetch and merges them in,
+printing how many (`updated .archmap/github.json with 3 items changed since
+2026-10-03 09:00 UTC: ...`); it fetches whole instead, saying why (`wrote
+... (fetched whole: the snapshot was fetched as another account): ...`),
+when the snapshot was fetched another way or by another account, when more
+items changed than the bound reads, or when its last whole fetch is older
+than `--full-if-older-than` (`30m`, `24h`, `7d`; 24h by default). What a
+snapshot holds, the link types, what each fetch asks GitHub and what an
+update cannot see are in [work.md](work.md). It is the only
 command that reaches the network; the MCP server does not offer it.
 
 ## How a target is found

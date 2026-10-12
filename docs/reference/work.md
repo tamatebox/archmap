@@ -14,7 +14,7 @@ GraphQL API, through the gh CLI, which keeps the token:
 
 1. the schema, to leave out the link types whose fields the host lacks (a
    GitHub Enterprise Server without sub-issues or dependencies), recorded as
-   not available;
+   not available, and the account the fetch runs as (`viewer`);
 2. the issues updated since the date, 50 a page, newest first;
 3. the pull requests, 25 a page by update, until the first one updated
    before the date;
@@ -37,10 +37,51 @@ so 5,000 of each cost about 500. The bound reached, the snapshot says from
 when its range holds everything (`effective_since`). Links are as visible
 to the account that fetched: what it cannot see GitHub answers `null` for,
 and the snapshot counts it, never drops it silently (`not_visible`: link
-ends per type, timeline events, items), and which account fetched is not
-recorded. A closing GitHub names no closer for is no `closed_by` link,
+ends per type, timeline events, items). The snapshot records the account
+that fetched (its login and numeric id, never a token), so that an update
+by another account fetches whole; answers never show it. A closing GitHub names no closer for is no `closed_by` link,
 whether the issue was closed by hand or the closer is hidden from the
 account: a missing `closed_by` never means "closed by hand".
+
+### Updates
+
+`archmap fetch github --update` reads only what changed since the
+snapshot's fetch: the issues and pull requests updated since it began, less
+five minutes, through the same steps 1 to 5, each item whole with every
+nested list. Each item read replaces the one held, with every link it
+records; the links the other items record stay. Items are kept by number,
+the result is sorted as a whole fetch's is, and the counts of what the
+account could not see are summed again from the items, so updating twice
+with the same answers gives the same snapshot.
+
+An update reads nothing new of an item whose `updatedAt` did not change,
+and GitHub leaves it unchanged when another item cross-references it or a
+commit references it: those two types are recorded on the referenced
+item's timeline. An item deleted, transferred or hidden from the account
+since is not seen either. So the snapshot keeps the time of its last whole
+fetch apart (`whole_fetched_at`): answers name both times (`fetched whole
+2026-10-03 09:00 UTC, updated 2026-10-04 09:30 UTC`), and `query '#N'`'s
+`Not traced` says that cross-references and commit references to items
+that did not change, and items deleted or hidden, are as of the whole fetch;
+a Work section's last line says the same (`states as of the update, and
+links only an item's own timeline records as of the whole fetch`), and
+JSON's coverage gives `whole_fetched_at`. `closed_by` and `duplicate_of`
+change the item's `updatedAt`. A link of a type both ends record (`closes`,
+`linked`, sub-issues, blocking) goes when either end is read again, and
+comes back when that end still records it: a link one end no longer
+records is missed until the other end is read, never kept from that end's
+older read.
+
+An update fetches whole instead, and says why, when there is no snapshot or
+it cannot be read, when it records no whole fetch or no account (written
+before updates existed), when its host, repository, link types, title
+setting or bound differ, when the account answering differs (by numeric id,
+else by login), when more items changed than the bound reads, and when its
+last whole fetch began longer ago than `--full-if-older-than` (24 hours by
+default). The range's start and bound stay those of the whole fetch, and
+a whole fetch in place of an update reads the snapshot's own range. A
+failed update leaves the snapshot as it was. A plain `archmap fetch github`
+always fetches whole.
 
 ## The snapshot
 
@@ -56,7 +97,8 @@ CLI's `query --snapshot FILE` reads another. It holds:
   observed in (`observed`), and the ones of other repositories by their
   repository and number;
 - what was fetched: the source, host and repository, the fetch's time
-  (UTC), the range (`updated_since`, what set that date, the bound, whether
+  (UTC) and, apart, the last whole fetch's (`whole_fetched_at`), the
+  account that fetched (`account`: `login`, `id`), the range (`updated_since`, what set that date, the bound, whether
   it was reached and then the effective date), the link types fetched,
   those the host does not offer, and what the fetching account could not
   see.
@@ -190,7 +232,8 @@ JSON (`--format json`) gives the item, every link with its type, its end,
 the other end and what observed it, every commit with `matched_by` and its
 time or a `reason` (`no_local_commit_with_same_sha`, `beyond_history_read`,
 `not_in_head`, `foreign`, `no_history`, `not_looked_up`), the snapshot's
-coverage, `not_seen` (each link type the item's end cannot see, with the
+coverage (`whole_fetched_at` once an update came after the whole fetch),
+`not_seen` (each link type the item's end cannot see, with the
 end the item would be: for an item the snapshot does not hold, the types
 only its own end records), `code` (the files, each once, `components`, `only_mentions`,
 and `through`: a pull request with its `links`, `commits`,
@@ -261,4 +304,5 @@ with its connecting commits by kind, `merged_as` and its `items` (each
 with its `other` end, when the snapshot holds it its `kind`, `state` and
 `title`, and its `links` by `type` and the `end` the pull request is),
 `from_commits` with each linking commit by `type`,
-`unlinked`, `older`, `large` and the snapshot's coverage.
+`unlinked`, `older`, `large` and the snapshot's coverage
+(`whole_fetched_at` once updated).

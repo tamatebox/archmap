@@ -35,12 +35,33 @@ pub(crate) fn range_line(snapshot: &Snapshot) -> String {
             day(effective)
         );
     }
-    let _ = write!(
-        line,
-        ", fetched {}, as visible to the account that fetched",
-        utc_minute(&snapshot.fetched_at)
-    );
+    // an update read only the items changed since the fetch before it
+    match updated_from(snapshot) {
+        Some(whole) => {
+            let _ = write!(
+                line,
+                ", fetched whole {}, updated {}, as visible to the account that fetched",
+                utc_minute(whole),
+                utc_minute(&snapshot.fetched_at)
+            );
+        }
+        None => {
+            let _ = write!(
+                line,
+                ", fetched {}, as visible to the account that fetched",
+                utc_minute(&snapshot.fetched_at)
+            );
+        }
+    }
     line
+}
+
+/// When the snapshot was last fetched whole, if an update came after.
+pub(crate) fn updated_from(snapshot: &Snapshot) -> Option<&str> {
+    snapshot
+        .whole_fetched_at
+        .as_deref()
+        .filter(|whole| *whole != snapshot.fetched_at)
 }
 
 /// The date of a time as the tracker gives it (`2026-09-20T10:00:00Z`).
@@ -57,7 +78,7 @@ pub(crate) fn plural_word(n: usize, one: &str, many: &str) -> String {
 
 /// `2026-10-02T23:55:12Z` as `2026-10-02 23:55 UTC`, so a fetch late in
 /// the day where the reader lives does not read as a day old.
-fn utc_minute(time: &str) -> String {
+pub(crate) fn utc_minute(time: &str) -> String {
     match (time.get(..10), time.get(11..16)) {
         (Some(date), Some(minute)) => format!("{date} {minute} UTC"),
         _ => time.to_owned(),
