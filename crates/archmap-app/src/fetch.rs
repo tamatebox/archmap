@@ -9,7 +9,7 @@ use anyhow::{bail, Context, Result};
 use archmap_core::history::HistoryState;
 use archmap_core::work::SinceRule;
 use archmap_scan::work::github::{fetch, gh, FetchOptions};
-use archmap_scan::work::{github_remote, utc, write, DEFAULT_PATH};
+use archmap_scan::work::{remote_repository, utc, write, DEFAULT_PATH};
 
 /// Items read per kind unless told otherwise.
 pub const DEFAULT_MAX_ITEMS: usize = 5_000;
@@ -74,19 +74,25 @@ pub fn fetch_github(root: &Path, request: &FetchRequest) -> Result<String> {
 
 /// The host, owner and name to fetch. The root's `origin` names only a
 /// github.com repository: a clone can name any host, and gh would send it
-/// the token it keeps for that host. Another host must be named, and be one
-/// gh is logged in to.
+/// the token it keeps for that host. Another host, an SSH alias of
+/// github.com included, must be named, and be one gh is logged in to; the
+/// error says what `origin` names.
 fn repository(root: &Path, repo: Option<&str>) -> Result<(String, String, String)> {
     let Some(repo) = repo else {
         let url = archmap_scan::history::origin_url(root)
             .context("the root has no `origin` remote: name the repository with --repo")?;
-        let (owner, name) = github_remote(&url).with_context(|| {
-            format!(
+        return match remote_repository(&url) {
+            Some((host, owner, name)) if host == "github.com" => Ok((host, owner, name)),
+            Some((host, owner, name)) => bail!(
+                "`origin` ({url}) is not a github.com repository: name it with --repo \
+                 {owner}/{name} if `{host}` is an SSH alias of github.com, else with \
+                 --repo HOST/{owner}/{name}"
+            ),
+            None => bail!(
                 "`origin` ({url}) is not a github.com repository: name it with --repo \
                  [HOST/]OWNER/NAME"
-            )
-        })?;
-        return Ok(("github.com".to_owned(), owner, name));
+            ),
+        };
     };
     let parts: Vec<&str> = repo.split('/').collect();
     let valid = |p: &str| {

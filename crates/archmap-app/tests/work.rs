@@ -326,7 +326,10 @@ fn a_fetch_takes_its_host_from_origin_only_on_github_com() {
         .unwrap_err()
         .to_string();
     assert!(
-        error.contains("is not a github.com repository: name it with --repo"),
+        error.contains(
+            "is not a github.com repository: name it with --repo acme/shop if \
+             `evil.example` is an SSH alias of github.com, else with --repo HOST/acme/shop"
+        ),
         "{error}"
     );
     assert!(!repo.dir.join(".archmap").exists());

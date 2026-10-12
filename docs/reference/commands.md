@@ -844,8 +844,11 @@ gh holds the token (`GH_TOKEN`, `GITHUB_TOKEN` or its login, per host, for
 its active account: with several accounts, choose with `GH_CONFIG_DIR` or
 `GH_TOKEN`); archmap never reads it. The repository is `--repo
 OWNER/NAME`, else the root's `origin` when it is on github.com; another
-host (an SSH alias included) is named with `--repo HOST/OWNER/NAME` and
-must be one gh is logged in to, since a clone can name any `origin`. The
+host is named with `--repo HOST/OWNER/NAME` and must be one gh is logged
+in to, since a clone can name any `origin`. An SSH alias is not resolved:
+for an alias of github.com (`git@github-work:acme/shop.git`) name the
+repository with `--repo acme/shop`, as the error for such an `origin`
+says. The
 date is `--since`, else the committer date of the oldest commit the local
 history read holds, else (in a shallow clone, or with fewer than 100
 commits) 365 days before the fetch; `--all` reads every item. The snapshot

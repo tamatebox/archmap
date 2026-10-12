@@ -75,15 +75,20 @@ pub fn utc(time: i64) -> String {
     )
 }
 
-/// The owner and name of a github.com repository a remote URL names
+/// The host, owner and name of the repository a remote URL names
 /// (`https://github.com/acme/shop.git`, `git@github.com:acme/shop.git`,
-/// `ssh://git@github.com/acme/shop`); `None` for any other host, which a
-/// fetch takes only when named.
-pub fn github_remote(url: &str) -> Option<(String, String)> {
-    let path = url
-        .strip_prefix("https://github.com/")
-        .or_else(|| url.strip_prefix("git@github.com:"))
-        .or_else(|| url.strip_prefix("ssh://git@github.com/"))?;
+/// `ssh://git@github.com/acme/shop`), the host as written: an SSH alias
+/// stays the alias, which a fetch takes only for the host it names.
+pub fn remote_repository(url: &str) -> Option<(String, String, String)> {
+    let (authority, path) = match url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("ssh://"))
+    {
+        Some(rest) => rest.split_once('/')?,
+        None => url.split_once(':').filter(|(a, _)| !a.contains('/'))?,
+    };
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let host = host.split_once(':').map_or(host, |(h, _)| h);
     let path = path.trim_end_matches('/');
     let path = path.strip_suffix(".git").unwrap_or(path);
     let (owner, name) = path.split_once('/')?;
@@ -92,7 +97,8 @@ pub fn github_remote(url: &str) -> Option<(String, String)> {
             && p.bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
     };
-    (part(owner) && part(name)).then(|| (owner.to_owned(), name.to_owned()))
+    (part(host) && !host.starts_with('-') && part(owner) && part(name))
+        .then(|| (host.to_owned(), owner.to_owned(), name.to_owned()))
 }
 
 #[cfg(test)]
@@ -106,27 +112,37 @@ mod tests {
     }
 
     #[test]
-    fn only_a_github_com_remote_names_a_repository() {
+    fn a_remote_names_its_host_as_written() {
+        let named = |host: &str| Some((host.into(), "acme".into(), "shop".into()));
         for url in [
             "https://github.com/acme/shop.git",
             "https://github.com/acme/shop",
             "git@github.com:acme/shop.git",
             "ssh://git@github.com/acme/shop",
+            "ssh://git@github.com:22/acme/shop/",
         ] {
-            assert_eq!(
-                github_remote(url),
-                Some(("acme".into(), "shop".into())),
-                "{url}"
-            );
+            assert_eq!(remote_repository(url), named("github.com"), "{url}");
+        }
+        for (url, host) in [
+            ("https://evil.example/acme/shop", "evil.example"),
+            ("git@gitlab.com:acme/shop.git", "gitlab.com"),
+            (
+                "https://github.com.evil.example/acme/shop",
+                "github.com.evil.example",
+            ),
+            // an SSH alias, which only ssh's config resolves
+            ("git@github-work:acme/shop.git", "github-work"),
+        ] {
+            assert_eq!(remote_repository(url), named(host), "{url}");
         }
         for url in [
-            "https://evil.example/acme/shop",
-            "git@gitlab.com:acme/shop.git",
-            "https://github.com.evil.example/acme/shop",
             "https://github.com/acme",
             "/srv/git/shop.git",
+            "../shop",
+            "file:///srv/git/acme/shop.git",
+            "git@-oProxyCommand=x:acme/shop.git",
         ] {
-            assert_eq!(github_remote(url), None, "{url}");
+            assert_eq!(remote_repository(url), None, "{url}");
         }
     }
 }
