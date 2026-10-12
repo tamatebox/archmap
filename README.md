@@ -279,4 +279,4 @@ cargo run -q -p archmap-cli -- check
 
 The last command checks archmap's own `{cli, mcp} -> app -> scan -> core` direction
 against `archmap.toml`. Behavior is documented in `docs/reference/`; see
-`CLAUDE.md` for design principles and contribution rules.
+`CLAUDE.md` and `.claude/rules/` for design principles and contribution rules.

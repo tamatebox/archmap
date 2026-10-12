@@ -12,7 +12,7 @@ Planned work lives in GitHub issues on tamatebox/archmap. The repository is publ
 1. A plan issue is optional. When there is one (pinned, its title starts with `Plan:`; `gh issue list --state open --search '"Plan:" in:title'`), it is the only place that records the order, and the first unchecked item is next, once its boxes are brought up to date (see "Keep a plan's boxes ticked"); items without an issue number (a review round, a milestone) are steps the user runs: ask. Lines of work that run in parallel each have a plan of their own, and a session follows one of them. Without one, propose candidates from the open issues and let the user choose.
 2. Check whether the item is already in progress: uncommitted changes in the working tree that belong to it, or a plan for it under `docs/superpowers/plans/`, mean another session may be on it. Ask the user before starting.
 3. Issues that share a milestone are decided together at that step, not one by one.
-4. An issue labeled `needs-decision` is not started, and not skipped when later items build on it: bring its open questions and options to the user. Once decided, comment the decision on the issue in a few lines and remove the label; the decision itself lands in CLAUDE.md, README or `docs/reference/` with the change that implements it.
+4. An issue labeled `needs-decision` is not started, and not skipped when later items build on it: bring its open questions and options to the user. Once decided, comment the decision on the issue in a few lines and remove the label; the decision itself lands in CLAUDE.md, `.claude/rules/`, README or `docs/reference/` with the change that implements it.
 5. Open issues that are neither in a plan nor labeled `later` are taken only when the user asks.
 6. Read the issue, then the parts of `docs/reference/`, `README.md` and `plugins/archmap/skills/archmap/SKILL.md` it touches. Local design notes under `docs/superpowers/` (never committed) may hold more; whatever is copied from them into an issue or a commit follows the private-repository rule in CLAUDE.md.
 
@@ -26,7 +26,7 @@ Planned work lives in GitHub issues on tamatebox/archmap. The repository is publ
 - Add a milestone only when the user puts the issue into that review.
 - A body names only technical dependencies (`Builds on #1`), never the order, which only a plan issue records.
 - Pass bodies with `--body-file - <<'EOF'`, never `--body "..."`: the shell would run the backticks.
-- Not issues: the roadmap phases (README), principles and settled rulings (CLAUDE.md, commit messages), and agent trials.
+- Not issues: the roadmap phases (README), principles and settled rulings (CLAUDE.md, `.claude/rules/`, commit messages), and agent trials.
 
 ## Close an issue
 
