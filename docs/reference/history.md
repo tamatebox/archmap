@@ -22,9 +22,9 @@ commit message is read.
 - **Bound:** the first 10,000 commits that change the root, in git's
   default order from HEAD (newest committer date first). A longer history
   stops there, said in the answer.
-- **Renames:** git's detection, `-M50%` with at most 1,000 candidate
-  pairs per commit; past that, git finds exact renames only, said in the
-  answer. A merge commit is read for its parents only, never compared with
+- **Renames:** git's detection, `-M50%` with a rename limit of 1,000
+  (`-l1000`): where a commit deletes or adds more files than that as
+  candidates, git finds exact renames only, said in the answer. A merge commit is read for its parents only, never compared with
   them.
 - **Shallow clones:** the clone's boundary commits show their whole tree as
   added, so their changes are not read; the history ends at the clone's

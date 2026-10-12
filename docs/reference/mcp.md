@@ -95,14 +95,17 @@ failed scan keeps nothing, and the next call tries again; a target outside
 the root fails before any scan. Calls run one at a time, so two calls on one root scan it
 once, and a call on a very large root holds the others until its scan ends.
 Nothing is written to disk; `.archmap/graph.json` is never read, while
-`.archmap/github.json` is, by `'#N'` targets and `summary`'s Coverage; the
-server never reaches the network and fetches nothing. The uses
+`.archmap/github.json` is, by `'#N'` targets, the Work sections of `query`
+and `impact`, and `summary`'s Coverage; the server never reaches the network
+and fetches nothing. The uses
 of a symbol that `query` lists are read from the files when it asks, after
 the stamp, so they read the same files as the graph; for Rust, the module
 trees the scan built are kept beside the graph to resolve them, which adds
 a few MB to a kept root (about 3 MB for rust-lang/cargo's 1,374 files).
-The committed git history that `impact` reads for the files changed in the
-same commits is read once per kept graph, on the first `impact`.
+The committed git history, which `impact` reads for the files changed in
+the same commits and, when a snapshot exists, the Work sections and
+`summary`'s Coverage read to meet it, is read once per kept graph, on the
+first call that needs it.
 
 On a synthetic tree of 20,000 Python files, the first call takes about
 1.1 s and a call that reuses the graph about 0.1 s, almost all of it the

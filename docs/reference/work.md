@@ -61,8 +61,9 @@ CLI's `query --snapshot FILE` reads another. It holds:
   those the host does not offer, and what the fetching account could not
   see.
 
-No bodies, comments, authors or other accounts' names are kept, and no
-token: titles are the one free text. In a private repository titles may be
+No bodies, comments or authors are kept, and no token: titles are the one
+free text, and another repository's `owner/name` (whose owner may be a
+person's account) is kept only where a link names it. In a private repository titles may be
 confidential, and they reach whatever reads `query`'s output, agents
 included.
 
@@ -212,7 +213,7 @@ and items the snapshot links to the commits that changed the target, just
 before `Not traced`:
 
 ```text
-Work: 3 of the 4 commits that changed src/pricing/price.ts are linked to 2 pull requests and 1 issue
+Work: 3 of the 4 commits that changed src/pricing/price.ts are linked to 2 pull requests and 2 issues
   pull requests: 2
   #18 pull request, merged 2026-01-04: Rates in yaml
     by merge commit: c6677fc 2026-01-04

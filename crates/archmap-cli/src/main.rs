@@ -86,8 +86,8 @@ enum Command {
         /// Show every symbol, neighbor and location instead of capped lists.
         #[arg(long)]
         verbose: bool,
-        /// The work snapshot that `'#N'` targets read, instead of the
-        /// root's `.archmap/github.json`.
+        /// The work snapshot that `'#N'` targets and the Work section
+        /// read, instead of the root's `.archmap/github.json`.
         #[arg(long)]
         snapshot: Option<PathBuf>,
         /// For a file: each public symbol with the statements that take it

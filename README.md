@@ -116,10 +116,10 @@ behavior and known gaps are in [analyzers.md](docs/reference/analyzers.md).
 Besides code, `impact` reads the root's committed git history with the git
 CLI ([history.md](docs/reference/history.md)): commits, their parents and
 times, and the files each changed, renames included; never uncommitted
-changes, authors or messages, and never the network. `query '#123'` and
-`summary` read the issues, pull requests and links that `archmap fetch
-github` wrote ([work.md](docs/reference/work.md)); no other command
-fetches.
+changes, authors or messages, and never the network. `query '#123'`, the
+Work sections of `query` and `impact`, and `summary` read the issues, pull
+requests and links that `archmap fetch github` wrote
+([work.md](docs/reference/work.md)); no other command fetches.
 No analyzer sees runtime coupling (HTTP, databases, queues, subprocesses,
 configuration-driven loading) or follows a module loaded by a name computed
 at runtime, and nothing is inferred; `summary`, `query` and `impact` say what

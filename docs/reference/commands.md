@@ -840,8 +840,8 @@ archmap fetch github --repo acme/shop --since 2026-01-01
 archmap fetch github --repo ghe.example.com/acme/shop --no-titles -o ../shop-github.json
 ```
 
-`fetch github` writes the work snapshot that `query '#N'` and `summary`'s
-Coverage read: the issues and pull requests updated since a date, newest
+`fetch github` writes the work snapshot that `query '#N'`, the Work
+sections of `query` and `impact`, and `summary`'s Coverage read: the issues and pull requests updated since a date, newest
 first up to `--max-items` (5,000) of each, and the links GitHub records
 between them, through GitHub's GraphQL API with the gh CLI as transport.
 gh holds the token (`GH_TOKEN`, `GITHUB_TOKEN` or its login, per host, for
