@@ -28,6 +28,9 @@ only:
   (the MCP tools serve the last installed binary). Never `scan` without `-o -`: it writes
   `.archmap/` into the root it scans, a fixture included. Never `fetch`: it reaches the network
 - `cargo test`, `cargo check`, `cargo clippy` without `--fix`, `cargo fmt --all --check`
+- `sh plugins/archmap/hooks/refresh-work.test.sh`, which works in a temporary directory, with
+  `ARCHMAP_TEST_BIN` set to a stand-in in the scratchpad when needed, and `claude plugin
+  validate .`. Never start a `claude` session: it reaches the API
 - git that changes nothing: `diff`, `log`, `show`, `status`, `grep`, `blame`
 - reading commands: `grep`, `rg`, `sed -n`, `wc -c` and the like
 
@@ -54,9 +57,10 @@ runs it.
     inference, declared against observed, a false finding where missing one is the rule,
     deterministic output without absolute paths, and the dependency direction
   - tests: the new behavior and the case it must not fire on. A test that asserts something is
-    absent also asserts something present from the same scan, or it passes when nothing was read
-    at all. A fixture that cannot produce the shape in question gives it no coverage, however many
-    tests use it. A guard built on a hand-written list stops guarding when something new appears
+    absent also asserts something present from the same run (what a scan read, a call made, a
+    file written), or it passes when nothing ran at all. A fixture that cannot produce the shape
+    in question gives it no coverage, however many tests use it. A guard built on a hand-written
+    list stops guarding when something new appears
   - edits outside the requirement
 
 ## Gates
@@ -73,6 +77,7 @@ Each is a `BLOCK` when the change triggers it:
   (`wc -c`)
 - Items of `archmap-scan` or `archmap-core` re-exported to an interface, which `check` does not
   catch
+- A plugin that `claude plugin validate .` fails, apart from its warning about the missing version
 - Names, paths, packages or layouts that look taken from a real project rather than invented, in
   code, comments, fixtures, tests or docs
 

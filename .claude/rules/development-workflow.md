@@ -29,7 +29,9 @@ independent review → fix only what it blocks → suggest the commit.
 5. **Act on the verdict**
    - `PASS` → report, listing its `ADVISORY` items unfixed for Ryota to decide, and suggest the
      commit; the reviewer never sees its message, so check it against the private-repository rule
-     in CLAUDE.md yourself
+     in CLAUDE.md yourself. Fold changes into an earlier commit only when `git log
+     origin/main..HEAD` still lists it: a pushed commit gets a commit of its own after it, never an
+     amend or a force push
    - `BLOCK` → confirm each finding in the code before fixing it, running the mutation it names;
      a wrong finding gets the reason, naming the two things compared, not a "fix". Run step 3
      again, then send the same reviewer (`SendMessage`; a fresh one if it cannot be resumed) the
